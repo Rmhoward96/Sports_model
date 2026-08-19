@@ -1,12 +1,11 @@
 """Generate game-level predictions for the current slate and write them out.
 
-v0 model (`mlb-game-v0-pitching`): each team's expected runs is driven by the
-OPPOSING starter's run-prevention profile (docs/methodology.md Part B). Team-offense
-differentiation is the v1 upgrade.
+v1 model (`mlb-game-v1-teamoff`): each team's per-PA outcome vector is the odds-ratio
+blend of its own OFFENSE and the OPPOSING starter's run-prevention, relative to league
+(docs/methodology.md Part A step 2 + Part B). Park/weather/bullpen are later upgrades.
 
-Data sources:
-  - pitcher profiles: committed snapshot assets/profiles/feat_pitcher_profile.parquet
-    (so this runs in CI without the ~1GB raw backfill)
+Data sources (all committed snapshots so this runs in CI without the ~1GB raw backfill):
+  - profiles: assets/profiles/{feat_pitcher_profile,feat_team_offense,ref_league_rates}.parquet
   - schedule: Supabase daily_schedule if DATABASE_URL is set, else local DuckDB
   - output: Supabase game_predictions if DATABASE_URL is set, else local DuckDB
 
@@ -23,17 +22,19 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 import duckdb
 
-from sportsmodel import config
+from sportsmodel import config, teams
 from sportsmodel.db import get_duckdb, upsert_game_predictions
-from sportsmodel.model import game
+from sportsmodel.model import game, rates
 
-MODEL_VERSION = "mlb-game-v0-pitching"
+MODEL_VERSION = "mlb-game-v1-teamoff"
 OUTCOMES = ["p_bb", "p_k", "p_1b", "p_2b", "p_3b", "p_hr", "p_out"]
-_MIN_PA = 150  # below this in the season window, prefer 'career'
+_MIN_PA = 150       # below this in the season window, prefer 'career' (pitchers)
+_MIN_TEAM_PA = 1000  # teams accrue PAs fast; season window is usually rich enough
 PROFILE_DIR = config.PROJECT_ROOT / "assets" / "profiles"
 
 SCHED_COLS = [
-    "game_pk", "game_date", "home_team_name", "away_team_name",
+    "game_pk", "game_date",
+    "home_team_id", "home_team_name", "away_team_id", "away_team_name",
     "home_probable_pitcher_id", "home_probable_pitcher_name",
     "away_probable_pitcher_id", "away_probable_pitcher_name",
 ]
@@ -85,6 +86,37 @@ def load_pitcher_vectors(pitcher_ids) -> dict[int, dict]:
     return {pid: v for pid, (_, v) in best.items()}
 
 
+def load_team_offense_vectors() -> dict[str, dict]:
+    """Best offensive vector (vs_hand=ALL) per team abbreviation, from the snapshot."""
+    path = PROFILE_DIR / "feat_team_offense.parquet"
+    con = duckdb.connect(":memory:")
+    rows = con.execute(
+        f"SELECT team, window_name, pa, {', '.join(OUTCOMES)} "
+        f"FROM read_parquet('{path}') WHERE vs_hand = 'ALL'"
+    ).fetchall()
+    con.close()
+    best: dict[str, tuple[int, dict]] = {}
+    for r in rows:
+        team, win, pa = r[0], r[1], r[2]
+        vec = {o: r[3 + i] for i, o in enumerate(OUTCOMES)}
+        rank = 0 if (win == "season" and pa >= _MIN_TEAM_PA) else (1 if win == "career" else 2)
+        if team not in best or rank < best[team][0]:
+            best[team] = (rank, vec)
+    return {t: v for t, (_, v) in best.items()}
+
+
+def load_league_vector() -> dict:
+    """League-average per-PA vector (vs_hand=ALL, career) — the odds-ratio baseline."""
+    path = PROFILE_DIR / "ref_league_rates.parquet"
+    con = duckdb.connect(":memory:")
+    r = con.execute(
+        f"SELECT {', '.join(OUTCOMES)} FROM read_parquet('{path}') "
+        f"WHERE vs_hand = 'ALL' AND window_name = 'career' LIMIT 1"
+    ).fetchone()
+    con.close()
+    return {o: r[i] for i, o in enumerate(OUTCOMES)}
+
+
 def write_predictions(preds: list[dict]) -> None:
     if config.DATABASE_URL:
         n = upsert_game_predictions(preds)
@@ -119,17 +151,22 @@ def main() -> None:
 
     ids = [g["home_probable_pitcher_id"] for g in games] + \
           [g["away_probable_pitcher_id"] for g in games]
-    vecs = load_pitcher_vectors(ids)
+    pitchers = load_pitcher_vectors(ids)
+    team_off = load_team_offense_vectors()
+    league = load_league_vector()
 
     preds, skipped = [], 0
     for g in games:
-        home_vec = vecs.get(g["home_probable_pitcher_id"])
-        away_vec = vecs.get(g["away_probable_pitcher_id"])
-        if home_vec is None or away_vec is None:
+        home_sp = pitchers.get(g["home_probable_pitcher_id"])
+        away_sp = pitchers.get(g["away_probable_pitcher_id"])
+        home_off = team_off.get(teams.statcast_abbrev(g["home_team_id"]))
+        away_off = team_off.get(teams.statcast_abbrev(g["away_team_id"]))
+        if None in (home_sp, away_sp, home_off, away_off):
             skipped += 1
             continue
-        home_runs = game.expected_runs(away_vec)   # home offense limited by away SP
-        away_runs = game.expected_runs(home_vec)
+        # Each team's vector = its offense blended with the opposing starter (odds-ratio).
+        home_runs = game.expected_runs(rates.matchup_vector(home_off, away_sp, league))
+        away_runs = game.expected_runs(rates.matchup_vector(away_off, home_sp, league))
         res = game.win_total_probabilities(home_runs, away_runs)
         preds.append({
             "game_pk": g["game_pk"], "model_version": MODEL_VERSION,

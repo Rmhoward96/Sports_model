@@ -105,6 +105,38 @@ def build_pitcher_profiles(con) -> int:
     return con.execute("SELECT count(*) FROM feat_pitcher_profile").fetchone()[0]
 
 
+def build_team_offense_profiles(con) -> int:
+    """feat_team_offense: each team's offensive per-PA rates, by opposing pitcher hand.
+
+    Batting team derived from inning half: Top => away bats, Bottom => home bats.
+    """
+    rates = _rate_cols()
+    base = f"""
+    WITH base AS (
+        SELECT CASE WHEN inning_topbot='Top' THEN away_team ELSE home_team END AS team,
+               p_throws AS opp_hand,
+               CAST(SUBSTR(CAST(game_date AS VARCHAR), 1, 4) AS INT) AS yr,
+               {_OUTCOME_CASE} AS outcome,
+               estimated_woba_using_speedangle AS xwoba
+        FROM read_parquet('{_PARQUET_GLOB}')
+        WHERE events IS NOT NULL AND inning_topbot IS NOT NULL AND p_throws IN ('L','R')
+    ),
+    maxyr AS (SELECT max(yr) AS y FROM base)
+    """
+    vs_hand = "CASE WHEN GROUPING(opp_hand)=1 THEN 'ALL' ELSE opp_hand END AS vs_hand"
+    grouping = "GROUP BY GROUPING SETS ((team, opp_hand), (team))"
+    query = f"""
+    {base}
+    SELECT team, {vs_hand}, 'career' AS window_name, COUNT(*) AS pa, {rates}
+    FROM base {grouping}
+    UNION ALL
+    SELECT team, {vs_hand}, 'season' AS window_name, COUNT(*) AS pa, {rates}
+    FROM base WHERE yr = (SELECT y FROM maxyr) {grouping}
+    """
+    con.execute(f"CREATE OR REPLACE TABLE feat_team_offense AS {query}")
+    return con.execute("SELECT count(*) FROM feat_team_offense").fetchone()[0]
+
+
 def build_league_rates(con) -> int:
     """ref_league_rates: all-player baseline per outcome, by hand and window."""
     rates = _rate_cols()
@@ -127,5 +159,6 @@ def build_all(con) -> dict[str, int]:
     return {
         "feat_batter_profile": build_batter_profiles(con),
         "feat_pitcher_profile": build_pitcher_profiles(con),
+        "feat_team_offense": build_team_offense_profiles(con),
         "ref_league_rates": build_league_rates(con),
     }
