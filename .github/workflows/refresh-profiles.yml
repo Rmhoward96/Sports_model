@@ -1,0 +1,49 @@
+name: refresh-profiles
+
+# Keeps the model's rate profiles current. Re-pulls Statcast, rebuilds the profile
+# snapshots, and commits them back to the repo so the daily prediction job (which
+# reads the committed snapshots) picks up fresh numbers automatically. Weekly is
+# plenty — season aggregates move slowly — and runs before Monday's daily job so
+# that day already uses fresh data.
+on:
+  schedule:
+    - cron: "0 11 * * 1"   # Mondays 11:00 UTC (~5-6 AM Central), before the daily job
+  workflow_dispatch: {}
+
+permissions:
+  contents: write          # allow committing the refreshed snapshots back
+
+jobs:
+  refresh:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90     # full Statcast re-pull + rebuild
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v10.0.1
+
+      - name: Sync deps
+        run: uv sync
+
+      - name: Re-pull Statcast (resumable per season)
+        env:
+          SM_DATA_DIR: ${{ github.workspace }}/data
+        run: uv run python scripts/backfill_mlb.py
+
+      - name: Rebuild profile snapshots
+        env:
+          SM_DATA_DIR: ${{ github.workspace }}/data
+        run: uv run python scripts/build_profiles.py
+
+      - name: Commit refreshed snapshots
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add assets/profiles/*.parquet
+          if git diff --staged --quiet; then
+            echo "No profile changes this week."
+          else
+            git commit -m "chore: weekly profile refresh [skip ci]"
+            git push
+          fi
