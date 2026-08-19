@@ -28,6 +28,11 @@ def main() -> None:
     for table, n in counts.items():
         print(f"  {table}: {n:,} rows")
 
+    # Regress individual-player profiles toward league (small-sample control).
+    for table in ("feat_batter_profile", "feat_pitcher_profile"):
+        transforms.shrink_toward_league(con, table)
+    print("  applied shrinkage to batter + pitcher profiles")
+
     PROFILE_DIR.mkdir(parents=True, exist_ok=True)
     for table in counts:
         out = PROFILE_DIR / f"{table}.parquet"

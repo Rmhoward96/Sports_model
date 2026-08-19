@@ -48,5 +48,25 @@ CREATE TABLE IF NOT EXISTS game_predictions (
 
 CREATE INDEX IF NOT EXISTS idx_game_predictions_date ON game_predictions (game_date);
 
--- Later: player-prop predictions (Hits, Total Bases, etc.) land in their own table
--- once lineup ingestion + per-batter profiles are wired.
+-- Player-prop projections written by scripts/generate_props.py. One row per
+-- (game, player, market). projected_mean is the number to compare to the book line;
+-- prob_over is P(over the standard line). lineup_source = confirmed|projected.
+CREATE TABLE IF NOT EXISTS prop_predictions (
+    game_pk        BIGINT NOT NULL,
+    player_id      BIGINT NOT NULL,
+    market         TEXT NOT NULL,          -- hits | total_bases | home_run
+    model_version  TEXT NOT NULL,
+    generated_at   TIMESTAMPTZ NOT NULL DEFAULT now(),
+    game_date      DATE,
+    player_name    TEXT,
+    team_name      TEXT,
+    batting_slot   INTEGER,
+    projected_pa   REAL,
+    lineup_source  TEXT,
+    projected_mean REAL,
+    line           REAL,
+    prob_over      REAL,
+    PRIMARY KEY (game_pk, player_id, market, model_version)
+);
+
+CREATE INDEX IF NOT EXISTS idx_prop_predictions_date ON prop_predictions (game_date);

@@ -37,6 +37,19 @@ def apply_hr_multiplier(vec: dict[str, float], mult: float) -> dict[str, float]:
     return {k: val / total for k, val in v.items()}
 
 
+def apply_park_to_vector(vec: dict[str, float], pf: float) -> dict[str, float]:
+    """Fold a run park factor into a per-PA vector (scale all hit outcomes, renormalize).
+
+    For props we need park at the outcome level (more hits/HR at Coors), not just as a
+    team-run multiplier. Approximate: scale 1B/2B/3B/HR by the run factor.
+    """
+    v = dict(vec)
+    for k in ("p_1b", "p_2b", "p_3b", "p_hr"):
+        v[k] = v[k] * pf
+    total = sum(v.values())
+    return {k: val / total for k, val in v.items()}
+
+
 def apply_bip_defense(vec: dict[str, float], factor: float) -> dict[str, float]:
     """Scale ball-in-play hits (1B/2B/3B) by the fielding team's defense factor.
 

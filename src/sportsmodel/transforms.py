@@ -250,6 +250,31 @@ def build_league_rates(con) -> int:
     return con.execute("SELECT count(*) FROM ref_league_rates").fetchone()[0]
 
 
+def shrink_toward_league(con, table: str) -> None:
+    """Empirical-Bayes regression of a player profile's rates toward league average.
+
+    Small samples are noise (a 20-PA hitter with 3 HR is not a 15% HR bat). Each rate
+    becomes (rate*pa + k*league_rate)/(pa + k) with per-outcome k (stabilization PA),
+    then the 7 outcomes are renormalized. See docs/methodology.md §A.1.
+    """
+    from .model.rates import DEFAULT_K, OUTCOMES
+
+    league = dict(zip(OUTCOMES, con.execute(
+        f"SELECT {', '.join(OUTCOMES)} FROM ref_league_rates "
+        f"WHERE vs_hand='ALL' AND window_name='career' LIMIT 1"
+    ).fetchone()))
+
+    df = con.execute(f"SELECT * FROM {table}").df()
+    for o in OUTCOMES:
+        k = DEFAULT_K[o]
+        df[o] = (df[o] * df["pa"] + k * league[o]) / (df["pa"] + k)
+    total = df[list(OUTCOMES)].sum(axis=1)
+    for o in OUTCOMES:
+        df[o] = df[o] / total
+    df["p_hit"] = df["p_1b"] + df["p_2b"] + df["p_3b"] + df["p_hr"]
+    con.execute(f"CREATE OR REPLACE TABLE {table} AS SELECT * FROM df")
+
+
 def build_all(con) -> dict[str, int]:
     return {
         "feat_batter_profile": build_batter_profiles(con),

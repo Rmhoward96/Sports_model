@@ -60,6 +60,34 @@ def upsert_daily_schedule(records: list[dict]) -> int:
     return len(rows)
 
 
+def upsert_prop_predictions(records: list[dict]) -> int:
+    """Upsert player-prop projections into Supabase `prop_predictions`.
+
+    Idempotent on (game_pk, player_id, market, model_version) — so a later confirmed
+    lineup run overwrites the earlier projected-lineup rows in place.
+    """
+    if not records:
+        return 0
+    cols = [
+        "game_pk", "player_id", "market", "model_version", "game_date",
+        "player_name", "team_name", "batting_slot", "projected_pa",
+        "lineup_source", "projected_mean", "line", "prob_over",
+    ]
+    key = ("game_pk", "player_id", "market", "model_version")
+    updates = ", ".join(f"{c} = EXCLUDED.{c}" for c in cols if c not in key)
+    placeholders = ", ".join(["%s"] * len(cols))
+    sql = (
+        f"INSERT INTO prop_predictions ({', '.join(cols)}) VALUES ({placeholders}) "
+        f"ON CONFLICT (game_pk, player_id, market, model_version) "
+        f"DO UPDATE SET {updates}, generated_at = now()"
+    )
+    rows = [tuple(r.get(c) for c in cols) for r in records]
+    with get_postgres() as conn, conn.cursor() as cur:
+        cur.executemany(sql, rows)
+        conn.commit()
+    return len(rows)
+
+
 def upsert_game_predictions(records: list[dict]) -> int:
     """Upsert game-level predictions into Supabase `game_predictions`.
 

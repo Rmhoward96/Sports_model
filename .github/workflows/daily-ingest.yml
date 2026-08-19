@@ -51,3 +51,9 @@ jobs:
           DATABASE_URL: ${{ secrets.DATABASE_URL }}
           SM_DATA_DIR: ${{ github.workspace }}/data
         run: uv run python scripts/generate_predictions.py
+
+      - name: Generate player props (projected lineups)
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+          SM_DATA_DIR: ${{ github.workspace }}/data
+        run: uv run python scripts/generate_props.py
