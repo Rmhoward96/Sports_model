@@ -24,7 +24,9 @@ def backfill_season(season: int, *, overwrite: bool = False) -> Path:
     if out.exists() and not overwrite:
         return out
 
-    from pybaseball import statcast  # heavy import; keep it lazy
+    from pybaseball import cache, statcast  # heavy import; keep it lazy
+
+    cache.enable()  # persist per-day subqueries so a network blip loses no progress
 
     start = f"{season}-{config.SEASON_START_MMDD}"
     end = f"{season}-{config.SEASON_END_MMDD}"

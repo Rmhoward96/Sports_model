@@ -27,5 +27,26 @@ CREATE TABLE IF NOT EXISTS daily_schedule (
 
 CREATE INDEX IF NOT EXISTS idx_daily_schedule_date ON daily_schedule (game_date);
 
--- Later: gold_game_predictions and gold_player_prop_predictions (from db/schema.sql)
--- land alongside this and become the tables you actually browse for edges.
+-- Game-level predictions written by scripts/generate_predictions.py. Denormalized
+-- (carries team + pitcher names) so it's readable directly in the Table Editor.
+CREATE TABLE IF NOT EXISTS game_predictions (
+    game_pk                     BIGINT NOT NULL,
+    model_version               TEXT NOT NULL,
+    generated_at                TIMESTAMPTZ NOT NULL DEFAULT now(),
+    game_date                   DATE,
+    home_team_name              TEXT,
+    away_team_name              TEXT,
+    home_probable_pitcher_name  TEXT,
+    away_probable_pitcher_name  TEXT,
+    pred_home_score             REAL,
+    pred_away_score             REAL,
+    pred_total                  REAL,
+    pred_margin                 REAL,
+    home_win_prob               REAL,
+    PRIMARY KEY (game_pk, model_version)
+);
+
+CREATE INDEX IF NOT EXISTS idx_game_predictions_date ON game_predictions (game_date);
+
+-- Later: player-prop predictions (Hits, Total Bases, etc.) land in their own table
+-- once lineup ingestion + per-batter profiles are wired.

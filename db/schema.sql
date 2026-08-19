@@ -399,12 +399,12 @@ CREATE TABLE feat_batter_profile (
     player_id  BIGINT NOT NULL REFERENCES dim_player(player_id),
     as_of_date DATE NOT NULL,                -- leakage guard: rates known as of this date
     vs_hand    TEXT NOT NULL,                -- 'L' | 'R' | 'ALL' (opposing pitcher hand)
-    window     TEXT NOT NULL,                -- 'season' | '30d' | 'career'
+    window_name TEXT NOT NULL,               -- 'season' | '30d' | 'career' ('window' is reserved SQL)
     pa         INTEGER,
     p_out REAL, p_bb REAL, p_k REAL,
     p_1b REAL, p_2b REAL, p_3b REAL, p_hr REAL,
     p_hit REAL, xwoba REAL, iso REAL,        -- convenience aggregates
-    PRIMARY KEY (player_id, as_of_date, vs_hand, window)
+    PRIMARY KEY (player_id, as_of_date, vs_hand, window_name)
 );
 
 -- Rolling/season pitcher rates ALLOWED, split by opposing batter handedness,
@@ -413,7 +413,7 @@ CREATE TABLE feat_pitcher_profile (
     player_id  BIGINT NOT NULL REFERENCES dim_player(player_id),
     as_of_date DATE NOT NULL,
     vs_hand    TEXT NOT NULL,                -- 'L' | 'R' | 'ALL' (opposing batter hand)
-    window     TEXT NOT NULL,
+    window_name TEXT NOT NULL,               -- 'season' | '30d' | 'career' ('window' is reserved SQL)
     bf         INTEGER,                      -- batters faced (sample size)
     p_out REAL, p_bb REAL, p_k REAL,
     p_1b REAL, p_2b REAL, p_3b REAL, p_hr REAL,
@@ -422,7 +422,7 @@ CREATE TABLE feat_pitcher_profile (
     avg_outs_per_start   REAL,
     avg_pitches_per_start REAL,
     pitches_per_pa       REAL,
-    PRIMARY KEY (player_id, as_of_date, vs_hand, window)
+    PRIMARY KEY (player_id, as_of_date, vs_hand, window_name)
 );
 
 -- League expected plate appearances by batting-order slot (the biggest lever for

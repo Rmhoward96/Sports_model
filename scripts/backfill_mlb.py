@@ -8,7 +8,11 @@ Usage:
 from __future__ import annotations
 
 import argparse
+import sys
 from datetime import date
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from sportsmodel import config
 from sportsmodel.ingest import mlb_statcast

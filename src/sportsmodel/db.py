@@ -58,3 +58,31 @@ def upsert_daily_schedule(records: list[dict]) -> int:
         cur.executemany(sql, rows)
         conn.commit()
     return len(rows)
+
+
+def upsert_game_predictions(records: list[dict]) -> int:
+    """Upsert game-level predictions into Supabase `game_predictions`.
+
+    Idempotent on (game_pk, model_version) — re-running a model version overwrites.
+    """
+    if not records:
+        return 0
+    cols = [
+        "game_pk", "model_version", "game_date",
+        "home_team_name", "away_team_name",
+        "home_probable_pitcher_name", "away_probable_pitcher_name",
+        "pred_home_score", "pred_away_score", "pred_total", "pred_margin",
+        "home_win_prob",
+    ]
+    key = ("game_pk", "model_version")
+    updates = ", ".join(f"{c} = EXCLUDED.{c}" for c in cols if c not in key)
+    placeholders = ", ".join(["%s"] * len(cols))
+    sql = (
+        f"INSERT INTO game_predictions ({', '.join(cols)}) VALUES ({placeholders}) "
+        f"ON CONFLICT (game_pk, model_version) DO UPDATE SET {updates}, generated_at = now()"
+    )
+    rows = [tuple(r.get(c) for c in cols) for r in records]
+    with get_postgres() as conn, conn.cursor() as cur:
+        cur.executemany(sql, rows)
+        conn.commit()
+    return len(rows)
