@@ -1,0 +1,27 @@
+name: daily-ingest
+
+# MLB runs cleanly on GitHub-hosted runners (unlike NBA's stats.nba.com, which
+# blocks datacenter IPs). Adjust cron as needed; times are UTC.
+on:
+  schedule:
+    - cron: "0 13 * * *"   # 13:00 UTC daily (~morning US), before day slates lock
+  workflow_dispatch: {}     # allow manual runs
+
+jobs:
+  ingest:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+
+      - name: Set up Python + sync deps
+        run: uv sync
+
+      - name: Daily MLB ingest
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}   # optional; unset => local-only
+          SM_DATA_DIR: ${{ github.workspace }}/data
+        run: uv run python scripts/daily_ingest.py

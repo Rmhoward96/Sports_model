@@ -1,0 +1,30 @@
+[project]
+name = "sportsmodel"
+version = "0.1.0"
+description = "Multi-sport prediction engine — MLB-first: mass data ingest + matchup-based projections for scores, totals, winners, and player props."
+requires-python = ">=3.11"
+dependencies = [
+    "duckdb>=1.1",
+    "polars>=1.0",
+    "pandas>=2.0",
+    "pyarrow>=16.0",
+    "pybaseball>=2.2",
+    "httpx>=0.27",
+    "tenacity>=9.0",
+    "python-dotenv>=1.0",
+    "psycopg[binary]>=3.2",
+]
+
+[dependency-groups]
+dev = ["pytest>=8.0"]
+serving = ["streamlit>=1.36"]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/sportsmodel"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

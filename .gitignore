@@ -1,0 +1,18 @@
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+*.egg-info/
+.pytest_cache/
+
+# Env / secrets
+.env
+
+# Data warehouse + raw parquet (regenerable; never commit)
+data/
+*.duckdb
+*.duckdb.wal
+*.parquet
+
+# OS
+.DS_Store

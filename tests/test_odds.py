@@ -1,0 +1,24 @@
+import pytest
+
+from sportsmodel.model import odds
+
+
+def test_american_to_prob_minus_110():
+    # -110 implies 110/210 = 0.5238 (the classic breakeven).
+    assert odds.american_to_prob(-110) == pytest.approx(110 / 210, abs=1e-6)
+
+
+def test_american_to_prob_plus_money():
+    assert odds.american_to_prob(150) == pytest.approx(100 / 250)
+
+
+def test_remove_vig_two_way_sums_to_one():
+    a, b = odds.no_vig_two_way(-110, -110)
+    assert a + b == pytest.approx(1.0)
+    assert a == pytest.approx(0.5)
+
+
+def test_prob_to_american_roundtrip():
+    for p in (0.25, 0.4, 0.5, 0.62, 0.8):
+        line = odds.prob_to_american(p)
+        assert odds.american_to_prob(line) == pytest.approx(p, abs=0.01)
