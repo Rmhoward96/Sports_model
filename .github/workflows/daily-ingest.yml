@@ -1,14 +1,34 @@
 name: daily-ingest
 
-# MLB runs cleanly on GitHub-hosted runners (unlike NBA's stats.nba.com, which
-# blocks datacenter IPs). Adjust cron as needed; times are UTC.
+# Target: 08:30 America/Chicago year-round. GitHub cron is UTC-only and does not
+# follow DST, so we fire at BOTH 13:30 UTC (= 08:30 CDT, summer) and 14:30 UTC
+# (= 08:30 CST, winter); the `gate` job lets only the one that is actually 08:30
+# in Chicago proceed. Manual runs (workflow_dispatch) always proceed.
 on:
   schedule:
-    - cron: "0 13 * * *"   # 13:00 UTC daily (~morning US), before day slates lock
-  workflow_dispatch: {}     # allow manual runs
+    - cron: "30 13 * * *"   # 08:30 Central during Daylight Time (UTC-5)
+    - cron: "30 14 * * *"   # 08:30 Central during Standard Time (UTC-6)
+  workflow_dispatch: {}
 
 jobs:
+  gate:
+    runs-on: ubuntu-latest
+    outputs:
+      run: ${{ steps.check.outputs.run }}
+    steps:
+      - id: check
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            echo "run=true" >> "$GITHUB_OUTPUT"          # manual runs always go
+          elif [ "$(TZ=America/Chicago date +%H)" = "08" ]; then
+            echo "run=true" >> "$GITHUB_OUTPUT"          # it's the 08:xx Central firing
+          else
+            echo "run=false" >> "$GITHUB_OUTPUT"         # the off-season duplicate; skip
+          fi
+
   ingest:
+    needs: gate
+    if: needs.gate.outputs.run == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
