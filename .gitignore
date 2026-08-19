@@ -14,5 +14,9 @@ data/
 *.duckdb.wal
 *.parquet
 
+# Exception: small rate-profile snapshots the hosted prediction job reads
+!assets/profiles/
+!assets/profiles/*.parquet
+
 # OS
 .DS_Store

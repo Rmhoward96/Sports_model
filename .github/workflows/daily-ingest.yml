@@ -45,3 +45,9 @@ jobs:
           DATABASE_URL: ${{ secrets.DATABASE_URL }}   # optional; unset => local-only
           SM_DATA_DIR: ${{ github.workspace }}/data
         run: uv run python scripts/daily_ingest.py
+
+      - name: Generate game predictions
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+          SM_DATA_DIR: ${{ github.workspace }}/data
+        run: uv run python scripts/generate_predictions.py
