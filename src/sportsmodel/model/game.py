@@ -19,6 +19,24 @@ EXTRA_INNING_HOME_EDGE = 0.04
 _MAX_RUNS = 30                 # truncation for the runs PMF
 
 
+BETA_TEMP = 0.006          # HR multiplier per °F above 70 [tunable]
+_HR_MULT_CLAMP = (0.80, 1.20)
+
+
+def weather_hr_multiplier(temp_f: float) -> float:
+    """Warm air carries the ball: HR multiplier from game-time temperature."""
+    m = 1 + BETA_TEMP * (temp_f - 70)
+    return min(max(m, _HR_MULT_CLAMP[0]), _HR_MULT_CLAMP[1])
+
+
+def apply_hr_multiplier(vec: dict[str, float], mult: float) -> dict[str, float]:
+    """Scale a vector's HR rate and renormalize to a valid per-PA distribution."""
+    v = dict(vec)
+    v["p_hr"] = v["p_hr"] * mult
+    total = sum(v.values())
+    return {k: val / total for k, val in v.items()}
+
+
 def expected_woba(vec: dict[str, float]) -> float:
     """Team/'batter' wOBA from a per-PA outcome vector."""
     return sum(w * vec[o] for o, w in WOBA_WEIGHTS.items())

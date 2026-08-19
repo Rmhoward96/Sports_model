@@ -49,3 +49,17 @@ def test_total_over_monotonic():
     p_high = game.prob_total_over(4.5, 4.5, 9.5)
     assert p_low > p_high
     assert 0.0 < p_high < p_low < 1.0
+
+
+def test_weather_hr_multiplier():
+    assert game.weather_hr_multiplier(70) == pytest.approx(1.0)
+    assert game.weather_hr_multiplier(90) > 1.0   # hot -> more HR
+    assert game.weather_hr_multiplier(45) < 1.0   # cold -> fewer HR
+    assert game.weather_hr_multiplier(200) == pytest.approx(1.20)  # clamped
+
+
+def test_apply_hr_multiplier_renormalizes_and_lifts_runs():
+    v = game.apply_hr_multiplier(LG_VEC, 1.15)
+    assert sum(v.values()) == pytest.approx(1.0)
+    assert v["p_hr"] > LG_VEC["p_hr"]
+    assert game.expected_runs(v) > game.expected_runs(LG_VEC)

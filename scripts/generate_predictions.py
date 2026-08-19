@@ -22,14 +22,15 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 import duckdb
 
-from sportsmodel import config, teams
+from sportsmodel import config, teams, venues, weather
 from sportsmodel.db import get_duckdb, upsert_game_predictions
 from sportsmodel.model import game, rates
 
-MODEL_VERSION = "mlb-game-v1-teamoff"
+MODEL_VERSION = "mlb-game-v1-context"
 OUTCOMES = ["p_bb", "p_k", "p_1b", "p_2b", "p_3b", "p_hr", "p_out"]
 _MIN_PA = 150       # below this in the season window, prefer 'career' (pitchers)
 _MIN_TEAM_PA = 1000  # teams accrue PAs fast; season window is usually rich enough
+_STARTER_SHARE = 0.62  # fraction of a team's PAs faced by the opposing starter [tunable]
 PROFILE_DIR = config.PROJECT_ROOT / "assets" / "profiles"
 
 SCHED_COLS = [
@@ -105,6 +106,39 @@ def load_team_offense_vectors() -> dict[str, dict]:
     return {t: v for t, (_, v) in best.items()}
 
 
+def load_team_bullpen_vectors() -> dict[str, dict]:
+    """Best bullpen allowed-rate vector (vs_hand=ALL) per team abbreviation."""
+    path = PROFILE_DIR / "feat_team_bullpen.parquet"
+    con = duckdb.connect(":memory:")
+    rows = con.execute(
+        f"SELECT team, window_name, pa, {', '.join(OUTCOMES)} "
+        f"FROM read_parquet('{path}') WHERE vs_hand = 'ALL'"
+    ).fetchall()
+    con.close()
+    best: dict[str, tuple[int, dict]] = {}
+    for r in rows:
+        team, win, pa = r[0], r[1], r[2]
+        vec = {o: r[3 + i] for i, o in enumerate(OUTCOMES)}
+        rank = 0 if (win == "season" and pa >= _MIN_TEAM_PA) else (1 if win == "career" else 2)
+        if team not in best or rank < best[team][0]:
+            best[team] = (rank, vec)
+    return {t: v for t, (_, v) in best.items()}
+
+
+def blend(vec_sp: dict, vec_bp: dict, sp_share: float) -> dict:
+    """Weighted average of two per-PA vectors (both sum to 1, so does the result)."""
+    return {o: sp_share * vec_sp[o] + (1 - sp_share) * vec_bp[o] for o in OUTCOMES}
+
+
+def load_park_factors() -> dict[str, float]:
+    """{team abbrev: run park factor} for the team's home park."""
+    path = PROFILE_DIR / "park_factors.parquet"
+    con = duckdb.connect(":memory:")
+    rows = con.execute(f"SELECT team, pf_runs FROM read_parquet('{path}')").fetchall()
+    con.close()
+    return {t: pf for t, pf in rows}
+
+
 def load_league_vector() -> dict:
     """League-average per-PA vector (vs_hand=ALL, career) — the odds-ratio baseline."""
     path = PROFILE_DIR / "ref_league_rates.parquet"
@@ -153,20 +187,40 @@ def main() -> None:
           [g["away_probable_pitcher_id"] for g in games]
     pitchers = load_pitcher_vectors(ids)
     team_off = load_team_offense_vectors()
+    bullpen = load_team_bullpen_vectors()
     league = load_league_vector()
+    park = load_park_factors()
+
+    def team_runs(off, opp_sp, opp_bp, pf, hr_mult):
+        """Blend opposing starter (~62% of PAs) with bullpen; apply park + weather."""
+        vec_sp = rates.matchup_vector(off, opp_sp, league)
+        vec_bp = rates.matchup_vector(off, opp_bp, league) if opp_bp else vec_sp
+        vec = blend(vec_sp, vec_bp, _STARTER_SHARE)
+        if hr_mult != 1.0:
+            vec = game.apply_hr_multiplier(vec, hr_mult)
+        return game.expected_runs(vec, park_factor=pf)
 
     preds, skipped = [], 0
     for g in games:
+        home_abbrev = teams.statcast_abbrev(g["home_team_id"])
+        away_abbrev = teams.statcast_abbrev(g["away_team_id"])
         home_sp = pitchers.get(g["home_probable_pitcher_id"])
         away_sp = pitchers.get(g["away_probable_pitcher_id"])
-        home_off = team_off.get(teams.statcast_abbrev(g["home_team_id"]))
-        away_off = team_off.get(teams.statcast_abbrev(g["away_team_id"]))
+        home_off = team_off.get(home_abbrev)
+        away_off = team_off.get(away_abbrev)
         if None in (home_sp, away_sp, home_off, away_off):
             skipped += 1
             continue
-        # Each team's vector = its offense blended with the opposing starter (odds-ratio).
-        home_runs = game.expected_runs(rates.matchup_vector(home_off, away_sp, league))
-        away_runs = game.expected_runs(rates.matchup_vector(away_off, home_sp, league))
+        pf = park.get(home_abbrev, 1.0)  # both teams bat in the home park
+        # Weather HR nudge for outdoor parks (both teams share the environment).
+        p = venues.park(home_abbrev)
+        hr_mult = 1.0
+        if p and p[2]:
+            temp = weather.fetch_game_temp(p[0], p[1], g["game_date"])
+            if temp is not None:
+                hr_mult = game.weather_hr_multiplier(temp)
+        home_runs = team_runs(home_off, away_sp, bullpen.get(away_abbrev), pf, hr_mult)
+        away_runs = team_runs(away_off, home_sp, bullpen.get(home_abbrev), pf, hr_mult)
         res = game.win_total_probabilities(home_runs, away_runs)
         preds.append({
             "game_pk": g["game_pk"], "model_version": MODEL_VERSION,
