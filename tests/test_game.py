@@ -63,3 +63,12 @@ def test_apply_hr_multiplier_renormalizes_and_lifts_runs():
     assert sum(v.values()) == pytest.approx(1.0)
     assert v["p_hr"] > LG_VEC["p_hr"]
     assert game.expected_runs(v) > game.expected_runs(LG_VEC)
+
+
+def test_apply_bip_defense_good_defense_lowers_runs():
+    good = game.apply_bip_defense(LG_VEC, 0.95)   # better defense (fewer BIP hits)
+    bad = game.apply_bip_defense(LG_VEC, 1.05)    # worse defense
+    assert sum(good.values()) == pytest.approx(1.0)
+    assert sum(bad.values()) == pytest.approx(1.0)
+    assert good["p_1b"] < LG_VEC["p_1b"] < bad["p_1b"]
+    assert game.expected_runs(good) < game.expected_runs(LG_VEC) < game.expected_runs(bad)

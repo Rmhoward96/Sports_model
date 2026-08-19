@@ -137,6 +137,33 @@ def build_team_offense_profiles(con) -> int:
     return con.execute("SELECT count(*) FROM feat_team_offense").fetchone()[0]
 
 
+def build_team_defense(con) -> int:
+    """feat_team_defense(team, def_factor): fielding quality on balls in play.
+
+    On BIP (contact, excluding K/BB/HBP/HR), compare a team's ACTUAL hits allowed to
+    the EXPECTED hits from contact quality (estimated_ba_using_speedangle). A team that
+    allows fewer hits than its contact quality predicts is fielding well. Normalized so
+    league-average = 1.0; def_factor < 1 = better defense. Clamped to a sane band.
+    """
+    query = f"""
+    WITH bip AS (
+        SELECT CASE WHEN inning_topbot='Top' THEN home_team ELSE away_team END AS team,
+               CASE WHEN events IN ('single','double','triple') THEN 1.0 ELSE 0.0 END AS actual_hit,
+               estimated_ba_using_speedangle AS xhit
+        FROM read_parquet('{_PARQUET_GLOB}')
+        WHERE events IS NOT NULL AND inning_topbot IS NOT NULL
+          AND events NOT IN ('strikeout','strikeout_double_play','walk','intent_walk','hit_by_pitch','home_run')
+          AND estimated_ba_using_speedangle IS NOT NULL
+    ),
+    lg AS (SELECT avg(actual_hit) / avg(xhit) AS lgr FROM bip)
+    SELECT team,
+           greatest(0.92, least(1.08, (avg(actual_hit) / avg(xhit)) / (SELECT lgr FROM lg))) AS def_factor
+    FROM bip GROUP BY team
+    """
+    con.execute(f"CREATE OR REPLACE TABLE feat_team_defense AS {query}")
+    return con.execute("SELECT count(*) FROM feat_team_defense").fetchone()[0]
+
+
 def build_team_bullpen_profiles(con) -> int:
     """feat_team_bullpen: each team's relief run-prevention (innings >= 7 as a proxy).
 
@@ -229,6 +256,7 @@ def build_all(con) -> dict[str, int]:
         "feat_pitcher_profile": build_pitcher_profiles(con),
         "feat_team_offense": build_team_offense_profiles(con),
         "feat_team_bullpen": build_team_bullpen_profiles(con),
+        "feat_team_defense": build_team_defense(con),
         "park_factors": build_park_factors(con),
         "ref_league_rates": build_league_rates(con),
     }

@@ -37,6 +37,18 @@ def apply_hr_multiplier(vec: dict[str, float], mult: float) -> dict[str, float]:
     return {k: val / total for k, val in v.items()}
 
 
+def apply_bip_defense(vec: dict[str, float], factor: float) -> dict[str, float]:
+    """Scale ball-in-play hits (1B/2B/3B) by the fielding team's defense factor.
+
+    factor < 1 = better defense (fewer BIP hits). HR excluded (defense can't touch it).
+    """
+    v = dict(vec)
+    for k in ("p_1b", "p_2b", "p_3b"):
+        v[k] = v[k] * factor
+    total = sum(v.values())
+    return {k: val / total for k, val in v.items()}
+
+
 def expected_woba(vec: dict[str, float]) -> float:
     """Team/'batter' wOBA from a per-PA outcome vector."""
     return sum(w * vec[o] for o, w in WOBA_WEIGHTS.items())

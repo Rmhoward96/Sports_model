@@ -26,7 +26,7 @@ from sportsmodel import config, teams, venues, weather
 from sportsmodel.db import get_duckdb, upsert_game_predictions
 from sportsmodel.model import game, rates
 
-MODEL_VERSION = "mlb-game-v1-context"
+MODEL_VERSION = "mlb-game-v2-defense"
 OUTCOMES = ["p_bb", "p_k", "p_1b", "p_2b", "p_3b", "p_hr", "p_out"]
 _MIN_PA = 150       # below this in the season window, prefer 'career' (pitchers)
 _MIN_TEAM_PA = 1000  # teams accrue PAs fast; season window is usually rich enough
@@ -139,6 +139,15 @@ def load_park_factors() -> dict[str, float]:
     return {t: pf for t, pf in rows}
 
 
+def load_team_defense() -> dict[str, float]:
+    """{team abbrev: defense factor on balls in play} (<1 = better defense)."""
+    path = PROFILE_DIR / "feat_team_defense.parquet"
+    con = duckdb.connect(":memory:")
+    rows = con.execute(f"SELECT team, def_factor FROM read_parquet('{path}')").fetchall()
+    con.close()
+    return {t: f for t, f in rows}
+
+
 def load_league_vector() -> dict:
     """League-average per-PA vector (vs_hand=ALL, career) — the odds-ratio baseline."""
     path = PROFILE_DIR / "ref_league_rates.parquet"
@@ -190,12 +199,15 @@ def main() -> None:
     bullpen = load_team_bullpen_vectors()
     league = load_league_vector()
     park = load_park_factors()
+    defense = load_team_defense()
 
-    def team_runs(off, opp_sp, opp_bp, pf, hr_mult):
-        """Blend opposing starter (~62% of PAs) with bullpen; apply park + weather."""
+    def team_runs(off, opp_sp, opp_bp, pf, hr_mult, opp_def):
+        """Offense vs opposing starter (~62%)+bullpen, then defense, park, weather."""
         vec_sp = rates.matchup_vector(off, opp_sp, league)
         vec_bp = rates.matchup_vector(off, opp_bp, league) if opp_bp else vec_sp
         vec = blend(vec_sp, vec_bp, _STARTER_SHARE)
+        if opp_def != 1.0:
+            vec = game.apply_bip_defense(vec, opp_def)  # opposing fielders convert BIP
         if hr_mult != 1.0:
             vec = game.apply_hr_multiplier(vec, hr_mult)
         return game.expected_runs(vec, park_factor=pf)
@@ -219,8 +231,11 @@ def main() -> None:
             temp = weather.fetch_game_temp(p[0], p[1], g["game_date"])
             if temp is not None:
                 hr_mult = game.weather_hr_multiplier(temp)
-        home_runs = team_runs(home_off, away_sp, bullpen.get(away_abbrev), pf, hr_mult)
-        away_runs = team_runs(away_off, home_sp, bullpen.get(home_abbrev), pf, hr_mult)
+        # Each offense is converted by the OPPOSING team's defense.
+        home_runs = team_runs(home_off, away_sp, bullpen.get(away_abbrev), pf, hr_mult,
+                              defense.get(away_abbrev, 1.0))
+        away_runs = team_runs(away_off, home_sp, bullpen.get(home_abbrev), pf, hr_mult,
+                              defense.get(home_abbrev, 1.0))
         res = game.win_total_probabilities(home_runs, away_runs)
         preds.append({
             "game_pk": g["game_pk"], "model_version": MODEL_VERSION,
