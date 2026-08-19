@@ -14,7 +14,7 @@ from datetime import date, timedelta
 import polars as pl
 
 from sportsmodel import config
-from sportsmodel.db import get_duckdb
+from sportsmodel.db import get_duckdb, upsert_daily_schedule
 from sportsmodel.ingest import mlb_statsapi
 
 
@@ -38,14 +38,20 @@ def main() -> None:
     df.write_parquet(out)
     print(f"Wrote {len(df)} rows -> {out}")
 
-    con = get_duckdb()
-    con.execute(
-        "CREATE OR REPLACE TABLE stg_schedule_raw AS SELECT * FROM read_parquet(?)",
-        [str(out)],
-    )
-    n = con.execute("SELECT count(*) FROM stg_schedule_raw").fetchone()[0]
-    con.close()
-    print(f"Loaded {n} rows into DuckDB table stg_schedule_raw.")
+    if config.DATABASE_URL:
+        # Hosted mode (e.g. GitHub Actions): persist to Supabase, the durable store.
+        n = upsert_daily_schedule(records)
+        print(f"Upserted {n} rows into Supabase table daily_schedule.")
+    else:
+        # Local mode: load into DuckDB for local browsing.
+        con = get_duckdb()
+        con.execute(
+            "CREATE OR REPLACE TABLE stg_schedule_raw AS SELECT * FROM read_parquet(?)",
+            [str(out)],
+        )
+        n = con.execute("SELECT count(*) FROM stg_schedule_raw").fetchone()[0]
+        con.close()
+        print(f"Loaded {n} rows into local DuckDB table stg_schedule_raw.")
 
 
 if __name__ == "__main__":

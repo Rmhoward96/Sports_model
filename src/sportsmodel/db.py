@@ -31,3 +31,30 @@ def get_postgres():
 def read_parquet_glob(con: duckdb.DuckDBPyConnection, pattern: str | Path):
     """Register a parquet glob as a queryable relation."""
     return con.read_parquet(str(pattern))
+
+
+def upsert_daily_schedule(records: list[dict]) -> int:
+    """Upsert daily-slate records into Supabase `daily_schedule` (idempotent on game_pk).
+
+    Returns rows written. Requires DATABASE_URL and the daily_schedule table
+    (db/serving_bootstrap.sql). Safe to call every run — re-pulls overwrite in place.
+    """
+    if not records:
+        return 0
+    cols = [
+        "game_pk", "game_date", "status", "venue_id", "venue_name",
+        "home_team_id", "home_team_name", "away_team_id", "away_team_name",
+        "home_probable_pitcher_id", "home_probable_pitcher_name",
+        "away_probable_pitcher_id", "away_probable_pitcher_name",
+    ]
+    updates = ", ".join(f"{c} = EXCLUDED.{c}" for c in cols if c != "game_pk")
+    placeholders = ", ".join(["%s"] * len(cols))
+    sql = (
+        f"INSERT INTO daily_schedule ({', '.join(cols)}) VALUES ({placeholders}) "
+        f"ON CONFLICT (game_pk) DO UPDATE SET {updates}, updated_at = now()"
+    )
+    rows = [tuple(r.get(c) for c in cols) for r in records]
+    with get_postgres() as conn, conn.cursor() as cur:
+        cur.executemany(sql, rows)
+        conn.commit()
+    return len(rows)
