@@ -25,10 +25,12 @@ from sportsmodel.ingest import mlb_lineups
 from sportsmodel.model import game, props, rates
 
 MODEL_VERSION = "mlb-props-v1"
-MARKETS = ["hits", "total_bases", "home_run"]
+HITTER_MARKETS = ["hits", "total_bases", "home_run", "hrr"]
+PITCHER_MARKETS = ["pitcher_ks", "hits_allowed", "outs_recorded"]
 SCHED_COLS = [
     "game_pk", "game_date", "home_team_id", "home_team_name", "away_team_id",
-    "away_team_name", "home_probable_pitcher_id", "away_probable_pitcher_id",
+    "away_team_name", "home_probable_pitcher_id", "home_probable_pitcher_name",
+    "away_probable_pitcher_id", "away_probable_pitcher_name",
 ]
 
 
@@ -65,7 +67,7 @@ def side_rows(lineup, opp_sp, opp_def, pf, hr_mult, team_name, g) -> list[dict]:
         if pf != 1.0:
             vec = game.apply_park_to_vector(vec, pf)
         proj = props.batter_props(vec, slot)
-        for market in MARKETS:
+        for market in HITTER_MARKETS:
             m = proj[market]
             out.append({
                 "game_pk": g["game_pk"], "player_id": pid, "market": market,
@@ -74,6 +76,31 @@ def side_rows(lineup, opp_sp, opp_def, pf, hr_mult, team_name, g) -> list[dict]:
                 "projected_pa": proj["projected_pa"], "lineup_source": lineup["source"],
                 "projected_mean": m["mean"], "line": m["line"], "prob_over": m["prob_over"],
             })
+    return out
+
+
+def pitcher_rows(pid, pvec, pname, team_name, opp_lineup, workload, g) -> list[dict]:
+    """Pitcher-prop rows for one starter vs the opposing lineup."""
+    if pvec is None or pid is None or pid not in workload or not opp_lineup["batting_order"]:
+        return []
+    opp_ids = [b for b, _ in opp_lineup["batting_order"]]
+    bvecs = profiles.load_batter_vectors(opp_ids)
+    opp_vecs = [rates.matchup_vector(bv, pvec, _LEAGUE)
+                for b in opp_ids if (bv := bvecs.get(b)) is not None]
+    if not opp_vecs:
+        return []
+    avg_bf, sd_bf, avg_outs, sd_outs = workload[pid]
+    pp = props.pitcher_props(opp_vecs, avg_bf, sd_bf ** 2, avg_outs, sd_outs)
+    out = []
+    for market in PITCHER_MARKETS:
+        m = pp[market]
+        out.append({
+            "game_pk": g["game_pk"], "player_id": int(pid), "market": market,
+            "model_version": MODEL_VERSION, "game_date": g["game_date"],
+            "player_name": pname, "team_name": team_name, "batting_slot": None,
+            "projected_pa": avg_bf, "lineup_source": opp_lineup["source"],
+            "projected_mean": m["mean"], "line": m["line"], "prob_over": m["prob_over"],
+        })
     return out
 
 
@@ -87,6 +114,7 @@ def main() -> None:
 
     pids = [g["home_probable_pitcher_id"] for g in games] + [g["away_probable_pitcher_id"] for g in games]
     pitchers = profiles.load_pitcher_vectors(pids)
+    workload = profiles.load_pitcher_workload(pids)
     defense = profiles.load_team_defense()
     park = profiles.load_park_factors()
     _LEAGUE = profiles.load_league_vector()
@@ -117,9 +145,15 @@ def main() -> None:
                     confirmed += 1
                 else:
                     projected += 1
+        # Pitcher props: each starter vs the OPPOSING lineup.
+        rows += pitcher_rows(g["home_probable_pitcher_id"], home_sp,
+                             g["home_probable_pitcher_name"], g["home_team_name"],
+                             lu["away"], workload, g)
+        rows += pitcher_rows(g["away_probable_pitcher_id"], away_sp,
+                             g["away_probable_pitcher_name"], g["away_team_name"],
+                             lu["home"], workload, g)
 
-    print(f"{len(rows)} prop rows ({len(rows)//len(MARKETS)} batters); "
-          f"lineups: {confirmed} confirmed / {projected} projected sides")
+    print(f"{len(rows)} prop rows; lineups: {confirmed} confirmed / {projected} projected sides")
     if rows:
         write_rows(rows)
 

@@ -70,3 +70,18 @@ def load_team_defense() -> dict[str, float]:
     rows = con.execute(f"SELECT team, def_factor FROM read_parquet('{path}')").fetchall()
     con.close()
     return {t: f for t, f in rows}
+
+
+def load_pitcher_workload(ids) -> dict[int, tuple]:
+    """{player_id: (avg_bf, sd_bf, avg_outs, sd_outs)} for starters with >= 3 starts."""
+    keys = sorted({int(i) for i in ids if i is not None})
+    if not keys:
+        return {}
+    path = PROFILE_DIR / "feat_pitcher_workload.parquet"
+    con = duckdb.connect(":memory:")
+    rows = con.execute(
+        f"SELECT player_id, avg_bf, sd_bf, avg_outs, sd_outs FROM read_parquet('{path}') "
+        f"WHERE player_id IN ({','.join(map(str, keys))})"
+    ).fetchall()
+    con.close()
+    return {int(r[0]): (r[1], r[2], r[3], r[4]) for r in rows}

@@ -250,6 +250,47 @@ def build_league_rates(con) -> int:
     return con.execute("SELECT count(*) FROM ref_league_rates").fetchone()[0]
 
 
+# Outs recorded by a PA outcome (double plays count 2, triple plays 3).
+_OUTS_CASE = """
+CASE
+  WHEN events IN ('grounded_into_double_play','double_play','strikeout_double_play','sac_fly_double_play') THEN 2
+  WHEN events = 'triple_play' THEN 3
+  WHEN events IN ('strikeout','field_out','force_out','fielders_choice_out','other_out','sac_bunt','sac_fly') THEN 1
+  ELSE 0
+END
+"""
+
+
+def build_pitcher_workload(con) -> int:
+    """feat_pitcher_workload: a starter's avg batters faced & outs recorded per start.
+
+    A 'start' = a game in which the pitcher threw in the 1st inning. Feeds the pitcher
+    props (BF -> Ks / Hits Allowed; outs -> Outs Recorded). Requires >= 3 starts.
+    """
+    query = f"""
+    WITH pas AS (
+        SELECT game_pk, CAST(pitcher AS BIGINT) AS player_id, inning, {_OUTS_CASE} AS outs
+        FROM read_parquet('{_PARQUET_GLOB}')
+        WHERE events IS NOT NULL AND pitcher IS NOT NULL
+    ),
+    starts AS (SELECT DISTINCT game_pk, player_id FROM pas WHERE inning = 1),
+    per_start AS (
+        SELECT p.game_pk, p.player_id, COUNT(*) AS bf, SUM(p.outs) AS outs
+        FROM pas p JOIN starts s USING (game_pk, player_id)
+        GROUP BY p.game_pk, p.player_id
+    )
+    SELECT player_id,
+           avg(bf)                          AS avg_bf,
+           coalesce(stddev_samp(bf), 3.0)   AS sd_bf,
+           avg(outs)                        AS avg_outs,
+           coalesce(stddev_samp(outs), 6.0) AS sd_outs,
+           count(*)                         AS starts
+    FROM per_start GROUP BY player_id HAVING count(*) >= 3
+    """
+    con.execute(f"CREATE OR REPLACE TABLE feat_pitcher_workload AS {query}")
+    return con.execute("SELECT count(*) FROM feat_pitcher_workload").fetchone()[0]
+
+
 def shrink_toward_league(con, table: str) -> None:
     """Empirical-Bayes regression of a player profile's rates toward league average.
 
@@ -282,6 +323,7 @@ def build_all(con) -> dict[str, int]:
         "feat_team_offense": build_team_offense_profiles(con),
         "feat_team_bullpen": build_team_bullpen_profiles(con),
         "feat_team_defense": build_team_defense(con),
+        "feat_pitcher_workload": build_pitcher_workload(con),
         "park_factors": build_park_factors(con),
         "ref_league_rates": build_league_rates(con),
     }

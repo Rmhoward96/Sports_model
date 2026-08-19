@@ -7,7 +7,33 @@ use Poisson-binomial / convolution forms rather than a single Binomial.
 from __future__ import annotations
 
 from collections.abc import Sequence
-from math import prod
+from math import erf, exp, lgamma, log, prod, sqrt
+
+
+def nb_pmf(mean: float, var: float, xmax: int = 30) -> list[float]:
+    """Negative-binomial PMF from a target mean and variance (Poisson if var<=mean)."""
+    if mean <= 0:
+        return [1.0] + [0.0] * xmax
+    if var <= mean * 1.0000001:  # not overdispersed -> Poisson
+        out = [exp(-mean)]
+        for x in range(1, xmax + 1):
+            out.append(out[-1] * mean / x)
+        s = sum(out)
+        return [v / s for v in out]
+    r = mean * mean / (var - mean)
+    p = mean / var
+    logp, log1mp = log(p), log(1 - p)
+    out = [exp(lgamma(x + r) - lgamma(r) - lgamma(x + 1) + r * logp + x * log1mp)
+           for x in range(xmax + 1)]
+    s = sum(out)
+    return [v / s for v in out]
+
+
+def normal_sf(line: float, mean: float, sd: float) -> float:
+    """P(X > line) for X ~ Normal(mean, sd)."""
+    if sd <= 0:
+        return 1.0 if mean > line else 0.0
+    return 0.5 * (1 - erf((line - mean) / (sd * sqrt(2))))
 
 
 def poisson_binomial_pmf(probs: Sequence[float]) -> list[float]:
