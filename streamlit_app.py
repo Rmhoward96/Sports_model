@@ -1,8 +1,8 @@
 """Sports Model — online dashboard (Streamlit Community Cloud).
 
-Reads predictions + odds from Supabase. Filter by league and bet type; see today's
-board with the model number next to the market line and the implied edge; and track
-how predictions have compared to closing lines as that history accumulates.
+Reads predictions + odds from Supabase. Filter by league, date, game, and bet type;
+see the model number next to the market line and the implied edge; and track how
+predictions have compared to closing lines as that history accumulates.
 
 Deploy: share.streamlit.io -> connect this repo -> main file streamlit_app.py ->
 add secret DATABASE_URL (Supabase session-pooler string). See docs/dashboard.md.
@@ -56,92 +56,120 @@ def american_to_prob(odds) -> float | None:
     return -odds / (-odds + 100) if odds < 0 else 100 / (odds + 100)
 
 
-# ---- latest market line per game/market/side (consensus across books) ----
-_LATEST = """
-WITH latest AS (
-    SELECT DISTINCT ON (game_pk, market, side, player_name, book)
-           game_pk, market, side, player_name, book, line, price
-    FROM odds_snapshot
-    ORDER BY game_pk, market, side, player_name, book, captured_at DESC
-)
-SELECT game_pk, market, side, player_name,
-       avg(line) AS line, avg(price) AS price, count(*) AS books
-FROM latest GROUP BY game_pk, market, side, player_name
-"""
+@st.cache_data(ttl=300)
+def dates_available() -> list:
+    df = q("SELECT DISTINCT game_date FROM daily_schedule ORDER BY game_date DESC")
+    return df.game_date.tolist() if not df.empty else []
 
 
 @st.cache_data(ttl=300)
-def latest_odds() -> pd.DataFrame:
-    return q(_LATEST)
+def games_on(d) -> pd.DataFrame:
+    return q("""SELECT game_pk, away_team_name || ' @ ' || home_team_name AS matchup
+                FROM daily_schedule WHERE game_date = %s ORDER BY matchup""", (d,))
 
 
-def game_board(model_version: str, game_market: str) -> pd.DataFrame:
+@st.cache_data(ttl=300)
+def latest_odds(pks: tuple) -> pd.DataFrame:
+    """Consensus latest line per (game, market, side, player) across books."""
+    if not pks:
+        return pd.DataFrame()
+    return q("""
+        WITH latest AS (
+            SELECT DISTINCT ON (game_pk, market, side, player_name, book)
+                   game_pk, market, side, player_name, book, line, price
+            FROM odds_snapshot WHERE game_pk = ANY(%s)
+            ORDER BY game_pk, market, side, player_name, book, captured_at DESC
+        )
+        SELECT game_pk, market, side, player_name,
+               avg(line) AS line, avg(price) AS price, count(*) AS books
+        FROM latest GROUP BY game_pk, market, side, player_name
+    """, (list(pks),))
+
+
+@st.cache_data(ttl=300)
+def odds_status() -> tuple:
+    df = q("SELECT max(captured_at) AS mx, count(DISTINCT game_pk) AS g FROM odds_snapshot")
+    if df.empty or df.mx.iloc[0] is None:
+        return None, 0
+    return df.mx.iloc[0], int(df.g.iloc[0])
+
+
+def game_board(mv, market, gdate, pks) -> tuple[pd.DataFrame, int, int]:
     preds = q("""
-        SELECT game_pk, game_date, away_team_name, home_team_name,
-               pred_away_score, pred_home_score, pred_total, pred_margin, home_win_prob
-        FROM game_predictions WHERE model_version = %s
-    """, (model_version,))
+        SELECT game_pk, away_team_name, home_team_name, pred_away_score, pred_home_score,
+               pred_total, pred_margin, home_win_prob
+        FROM game_predictions
+        WHERE model_version = %s AND game_date = %s AND game_pk = ANY(%s)
+    """, (mv, gdate, list(pks)))
     if preds.empty:
-        return preds
-    odds = latest_odds()
-    rows = []
+        return preds, 0, 0
+    odds = latest_odds(tuple(preds.game_pk.tolist()))
+    rows, matched = [], 0
     for _, g in preds.iterrows():
-        o = odds[odds.game_pk == g.game_pk]
+        o = odds[odds.game_pk == g.game_pk] if not odds.empty else pd.DataFrame()
+        has = False
         row = {"Game": f"{g.away_team_name} @ {g.home_team_name}",
                "Proj score": f"{g.pred_away_score:.1f}-{g.pred_home_score:.1f}"}
-        if game_market == "total":
-            mkt = o[o.market == "total"]["line"].mean()
+        if market == "total":
+            mkt = o[o.market == "total"]["line"].mean() if not o.empty else float("nan")
+            has = pd.notna(mkt)
             row["Model total"] = round(g.pred_total, 1)
-            row["Market total"] = round(mkt, 1) if pd.notna(mkt) else None
-            row["Edge"] = round(g.pred_total - mkt, 1) if pd.notna(mkt) else None
-            row["Lean"] = ("OVER" if g.pred_total > mkt else "UNDER") if pd.notna(mkt) else "—"
-        elif game_market == "moneyline":
-            hp = o[(o.market == "moneyline") & (o.side == "home")]["price"].mean()
-            ap = o[(o.market == "moneyline") & (o.side == "away")]["price"].mean()
+            row["Market total"] = round(mkt, 1) if has else "—"
+            row["Edge"] = round(g.pred_total - mkt, 1) if has else "—"
+            row["Lean"] = ("OVER" if g.pred_total > mkt else "UNDER") if has else "—"
+        elif market == "moneyline":
+            hp = o[(o.market == "moneyline") & (o.side == "home")]["price"].mean() if not o.empty else float("nan")
+            ap = o[(o.market == "moneyline") & (o.side == "away")]["price"].mean() if not o.empty else float("nan")
             mh, ma = american_to_prob(hp), american_to_prob(ap)
             novig = mh / (mh + ma) if mh and ma else None
+            has = novig is not None
             row["Model home win%"] = f"{g.home_win_prob*100:.0f}%"
-            row["Market home win%"] = f"{novig*100:.0f}%" if novig else "—"
-            row["Edge"] = round((g.home_win_prob - novig) * 100, 1) if novig else None
+            row["Market home win%"] = f"{novig*100:.0f}%" if has else "—"
+            row["Edge"] = f"{(g.home_win_prob - novig)*100:+.0f} pts" if has else "—"
         else:  # spread / run line
-            row["Model margin"] = round(g.pred_margin, 1)
-            mkt = o[(o.market == "spread") & (o.side == "home")]["line"].mean()
-            row["Market run line"] = round(mkt, 1) if pd.notna(mkt) else None
+            mkt = o[(o.market == "spread") & (o.side == "home")]["line"].mean() if not o.empty else float("nan")
+            has = pd.notna(mkt)
+            row["Model margin (home)"] = round(g.pred_margin, 1)
+            row["Market run line"] = round(mkt, 1) if has else "—"
+        matched += int(has)
         rows.append(row)
-    return pd.DataFrame(rows)
+    return pd.DataFrame(rows), matched, len(preds)
 
 
-def props_board(model_version: str, market: str) -> pd.DataFrame:
+def props_board(mv, market, gdate, pks) -> tuple[pd.DataFrame, int, int]:
     preds = q("""
-        SELECT p.game_pk, p.player_name, p.team_name, p.projected_mean, p.line,
-               p.prob_over, p.lineup_source
-        FROM prop_predictions p WHERE p.model_version = %s AND p.market = %s
-    """, (model_version, market))
+        SELECT game_pk, player_name, team_name, projected_mean, line, prob_over, lineup_source
+        FROM prop_predictions
+        WHERE model_version = %s AND market = %s AND game_date = %s AND game_pk = ANY(%s)
+    """, (mv, market, gdate, list(pks)))
     if preds.empty:
-        return preds
-    odds = latest_odds()
-    om = odds[odds.market == market].copy()
-    om["key"] = om.player_name.str.lower().str.strip()
-    over = om[om.side == "over"]
-    rows = []
+        return preds, 0, 0
+    odds = latest_odds(tuple(preds.game_pk.unique().tolist()))
+    over = odds[(odds.market == market) & (odds.side == "over")].copy() if not odds.empty else pd.DataFrame()
+    if not over.empty:
+        over["key"] = over.player_name.str.lower().str.strip()
+    rows, matched = [], 0
     for _, p in preds.iterrows():
         k = str(p.player_name).lower().strip()
-        line = over[over.key == k]["line"].mean()
-        price = over[over.key == k]["price"].mean()
+        line = over[over.key == k]["line"].mean() if not over.empty else float("nan")
+        price = over[over.key == k]["price"].mean() if not over.empty else float("nan")
+        has = pd.notna(line)
+        matched += int(has)
         rows.append({
             "Player": p.player_name, "Team": p.team_name,
             "Model proj": round(p.projected_mean, 2),
-            "Book line": round(line, 1) if pd.notna(line) else None,
-            "Edge": round(p.projected_mean - line, 2) if pd.notna(line) else None,
+            "Book line": round(line, 1) if has else "—",
+            "Edge": round(p.projected_mean - line, 2) if has else "—",
             "Model P(over)": f"{p.prob_over*100:.0f}%",
-            "Over price": int(price) if pd.notna(price) else None,
+            "Over price": int(price) if pd.notna(price) else "—",
             "Lineup": p.lineup_source,
         })
     df = pd.DataFrame(rows)
-    return df.sort_values("Edge", ascending=False, na_position="last") if "Edge" in df else df
+    numeric_edge = pd.to_numeric(df["Edge"], errors="coerce")
+    return df.assign(_e=numeric_edge).sort_values("_e", ascending=False, na_position="last").drop(columns="_e"), matched, len(preds)
 
 
-def model_versions(table: str) -> list[str]:
+def model_versions(table) -> list:
     df = q(f"SELECT DISTINCT model_version FROM {table} ORDER BY model_version DESC")
     return df.model_version.tolist() if not df.empty else []
 
@@ -149,60 +177,76 @@ def model_versions(table: str) -> list[str]:
 # ============================ UI ============================
 st.title("⚾ Sports Model")
 
+mx, ng = odds_status()
+if mx is not None:
+    st.caption(f"Latest odds capture: **{mx:%Y-%m-%d %H:%M UTC}** · {ng} games with odds in the database")
+
+dates = dates_available()
+if not dates:
+    st.warning("No games in the database yet. Run the daily-ingest workflow.")
+    st.stop()
+
 with st.sidebar:
     st.header("Filters")
     league = st.selectbox("League", ["MLB"], help="NBA/NFL/NHL coming later")
+    gdate = st.selectbox("Date", dates, format_func=lambda d: d.strftime("%a %b %d, %Y"))
+    gdf = games_on(gdate)
+    opts = dict(zip(gdf.matchup, gdf.game_pk)) if not gdf.empty else {}
+    picked = st.multiselect("Games", list(opts), default=list(opts),
+                            help="Filter to specific games")
+    pks = tuple(opts[m] for m in picked)
     section = st.radio("View", ["📋 Board", "📈 vs Closing Line"])
     bet_group = st.radio("Bet type", ["Game lines", "Player props"])
-    if bet_group == "Game lines":
-        market = st.selectbox("Market", GAME_MARKETS, format_func=MARKET_LABELS.get)
-    else:
-        market = st.selectbox("Market", PROP_MARKETS, format_func=MARKET_LABELS.get)
+    markets = GAME_MARKETS if bet_group == "Game lines" else PROP_MARKETS
+    market = st.selectbox("Market", markets, format_func=MARKET_LABELS.get)
+
+if not pks:
+    st.info("Select at least one game.")
+    st.stop()
 
 if section == "📋 Board":
-    st.subheader(f"{league} — {MARKET_LABELS[market]}")
+    st.subheader(f"{league} — {MARKET_LABELS[market]} — {gdate:%b %d}")
     if bet_group == "Game lines":
         mvs = model_versions("game_predictions")
         if not mvs:
-            st.info("No game predictions yet. Run the daily-ingest workflow.")
+            st.info("No game predictions yet.")
         else:
-            df = game_board(mvs[0], market)
-            st.caption(f"Model: `{mvs[0]}` · Edge = model − market (positive favors the model's side)")
+            df, matched, total = game_board(mvs[0], market, gdate, pks)
+            st.caption(f"Model `{mvs[0]}` · **market data for {matched}/{total} games** · "
+                       f"Edge = model − market")
+            if matched == 0:
+                st.warning("No market lines matched these games — the captured odds are "
+                           "likely from a different date than these predictions. Odds match "
+                           "predictions on the same game day.")
             st.dataframe(df, use_container_width=True, hide_index=True)
     else:
         mvs = model_versions("prop_predictions")
         if not mvs:
-            st.info("No prop predictions yet. Run the daily-ingest / refresh-props workflow.")
+            st.info("No prop predictions yet.")
         else:
-            df = props_board(mvs[0], market)
-            st.caption(f"Model: `{mvs[0]}` · sorted by edge (model projection − book line)")
+            df, matched, total = props_board(mvs[0], market, gdate, pks)
+            st.caption(f"Model `{mvs[0]}` · **book lines for {matched}/{total} players** · "
+                       f"sorted by edge (model − book line)")
             st.dataframe(df, use_container_width=True, hide_index=True)
 
 else:  # vs Closing Line
     st.subheader(f"{league} — {MARKET_LABELS[market]}: predictions vs closing line")
-    st.info(
-        "This fills in as odds + predictions accumulate over the coming weeks. "
-        "Closing line = the last odds snapshot before first pitch."
-    )
+    st.info("This fills in as odds + predictions accumulate. Closing line = last snapshot "
+            "before first pitch.")
     hist = q("""
         WITH closing AS (
             SELECT DISTINCT ON (game_pk, market, side, player_name)
-                   game_pk, market, side, player_name, line, price, captured_at
+                   game_pk, market, side, player_name
             FROM odds_snapshot
             WHERE market = %s AND captured_at <= commence_time
             ORDER BY game_pk, market, side, player_name, captured_at DESC
         )
-        SELECT count(*) AS closing_lines,
-               count(DISTINCT game_pk) AS games
-        FROM closing
+        SELECT count(*) AS lines, count(DISTINCT game_pk) AS games FROM closing
     """, (market,))
-    n = int(hist.closing_lines.iloc[0]) if not hist.empty else 0
+    n = int(hist.lines.iloc[0]) if not hist.empty else 0
     games = int(hist.games.iloc[0]) if not hist.empty else 0
     c1, c2 = st.columns(2)
     c1.metric("Closing lines captured", f"{n:,}")
     c2.metric("Games covered", f"{games:,}")
-    if n == 0:
-        st.caption("No closing lines captured for this market yet — check back after a few game days.")
-    else:
-        st.caption("Detailed CLV (model number vs closing, edge distribution, and W/L "
-                   "once results are graded) is the next build on top of this data.")
+    st.caption("Full CLV (each prediction's number vs its closing line, edge, and W/L once "
+               "results are graded) is the next build on top of this data.")
