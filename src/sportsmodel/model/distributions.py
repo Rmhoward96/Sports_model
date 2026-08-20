@@ -62,6 +62,20 @@ def prob_at_least_one_hr(hr_probs: Sequence[float]) -> float:
     return 1.0 - prod(1 - p for p in hr_probs)
 
 
+def prob_over_dist(dist: dict, line: float) -> float:
+    """P(X > line) from a serialized distribution.
+
+    `dist` is either {"kind": "pmf", "pmf": [...]} (discrete counts) or
+    {"kind": "normal", "mean": m, "sd": s}. Lets us evaluate the model's own
+    distribution at *the book's* line, not just a fixed default line.
+    """
+    if not dist:
+        return float("nan")
+    if dist.get("kind") == "normal":
+        return normal_sf(line, dist["mean"], dist["sd"])
+    return sum(p for k, p in enumerate(dist.get("pmf") or []) if k > line)
+
+
 def _convolve(a: Sequence[float], b: Sequence[float]) -> list[float]:
     out = [0.0] * (len(a) + len(b) - 1)
     for i, av in enumerate(a):

@@ -9,7 +9,10 @@ add secret DATABASE_URL (Supabase session-pooler string). See docs/dashboard.md.
 """
 from __future__ import annotations
 
+import json
 import os
+from math import erf, exp, log, sqrt
+from pathlib import Path
 
 import pandas as pd
 import psycopg
@@ -54,6 +57,44 @@ def american_to_prob(odds) -> float | None:
         return None
     odds = float(odds)
     return -odds / (-odds + 100) if odds < 0 else 100 / (odds + 100)
+
+
+def decimal_odds(price) -> float:
+    price = float(price)
+    return 1 + (price / 100 if price > 0 else 100 / -price)
+
+
+@st.cache_resource
+def _calib() -> dict:
+    p = Path(__file__).resolve().parent / "assets" / "calibration.json"
+    try:
+        return json.loads(p.read_text())
+    except Exception:
+        return {}
+
+
+def calibrate(target: str, raw: float) -> float:
+    """Platt calibration, mirrored from sportsmodel.model.calibration (pure-python)."""
+    params = _calib().get(target)
+    if not params or raw != raw:
+        return raw
+    a, b = params
+    r = min(max(raw, 1e-6), 1 - 1e-6)
+    return 1.0 / (1.0 + exp(-(a * log(r / (1 - r)) + b)))
+
+
+def prob_over_dist(dist, line: float) -> float:
+    """Model P(X > line) from a stored distribution (pmf | normal)."""
+    if not dist:
+        return float("nan")
+    if isinstance(dist, str):
+        dist = json.loads(dist)
+    if dist.get("kind") == "normal":
+        sd = dist["sd"]
+        if sd <= 0:
+            return 1.0 if dist["mean"] > line else 0.0
+        return 0.5 * (1 - erf((line - dist["mean"]) / (sd * sqrt(2))))
+    return sum(p for k, p in enumerate(dist.get("pmf") or []) if k > line)
 
 
 @st.cache_data(ttl=300)
@@ -138,7 +179,7 @@ def game_board(mv, market, gdate, pks) -> tuple[pd.DataFrame, int, int]:
 
 def props_board(mv, market, gdate, pks) -> tuple[pd.DataFrame, int, int]:
     preds = q("""
-        SELECT game_pk, player_name, team_name, projected_mean, line, prob_over, lineup_source
+        SELECT game_pk, player_name, team_name, projected_mean, line, prob_over, dist, lineup_source
         FROM prop_predictions
         WHERE model_version = %s AND market = %s AND game_date = %s AND game_pk = ANY(%s)
     """, (mv, market, gdate, list(pks)))
@@ -146,27 +187,57 @@ def props_board(mv, market, gdate, pks) -> tuple[pd.DataFrame, int, int]:
         return preds, 0, 0
     odds = latest_odds(tuple(preds.game_pk.unique().tolist()))
     over = odds[(odds.market == market) & (odds.side == "over")].copy() if not odds.empty else pd.DataFrame()
-    if not over.empty:
-        over["key"] = over.player_name.str.lower().str.strip()
+    under = odds[(odds.market == market) & (odds.side == "under")].copy() if not odds.empty else pd.DataFrame()
+    for d in (over, under):
+        if not d.empty:
+            d["key"] = d.player_name.str.lower().str.strip()
     rows, matched = [], 0
     for _, p in preds.iterrows():
         k = str(p.player_name).lower().strip()
-        line = over[over.key == k]["line"].mean() if not over.empty else float("nan")
-        price = over[over.key == k]["price"].mean() if not over.empty else float("nan")
-        has = pd.notna(line)
-        matched += int(has)
-        rows.append({
-            "Player": p.player_name, "Team": p.team_name,
-            "Model proj": round(p.projected_mean, 2),
-            "Book line": round(line, 1) if has else "—",
-            "Edge": round(p.projected_mean - line, 2) if has else "—",
-            "Model P(over)": f"{p.prob_over*100:.0f}%",
-            "Over price": int(price) if pd.notna(price) else "—",
-            "Lineup": p.lineup_source,
-        })
-    df = pd.DataFrame(rows)
-    numeric_edge = pd.to_numeric(df["Edge"], errors="coerce")
-    return df.assign(_e=numeric_edge).sort_values("_e", ascending=False, na_position="last").drop(columns="_e"), matched, len(preds)
+        o = over[over.key == k] if not over.empty else pd.DataFrame()
+        u = under[under.key == k] if not under.empty else pd.DataFrame()
+        line = o["line"].mean() if not o.empty else float("nan")
+        po = o["price"].mean() if not o.empty else float("nan")
+        pu = u["price"].mean() if not u.empty else float("nan")
+        has = pd.notna(line) and pd.notna(po)
+        row = {"Player": p.player_name, "Team": p.team_name,
+               "Model proj": round(p.projected_mean, 2),
+               "Book line": round(line, 1) if has else "—"}
+        ev_sort = float("-inf")
+        if has:
+            matched += 1
+            p_over = calibrate(market, prob_over_dist(p.dist, float(line)))
+            io = american_to_prob(po)
+            iu = american_to_prob(pu) if pd.notna(pu) else (1 - io if io is not None else None)
+            novig_over = io / (io + iu) if io and iu else None
+            ev_over = p_over * decimal_odds(po) - 1 if p_over == p_over else float("nan")
+            ev_under = (1 - p_over) * decimal_odds(pu) - 1 if (p_over == p_over and pd.notna(pu)) else float("-inf")
+            if p_over != p_over:  # legacy row, no stored distribution
+                row.update({"Side": "—", "Model P": "—", "Market P": "—",
+                            "Edge": "—", "EV": "—", "Price": int(po) if pd.notna(po) else "—"})
+            else:
+                if ev_over >= ev_under:
+                    side, price, mp, mkp, ev = "OVER", po, p_over, novig_over, ev_over
+                else:
+                    side, price, mp, mkp, ev = "UNDER", pu, 1 - p_over, \
+                        (1 - novig_over if novig_over is not None else None), ev_under
+                row.update({
+                    "Side": side,
+                    "Model P": f"{mp*100:.0f}%",
+                    "Market P": f"{mkp*100:.0f}%" if mkp is not None else "—",
+                    "Edge": f"{(mp - mkp)*100:+.0f} pts" if mkp is not None else "—",
+                    "EV": f"{ev*100:+.1f}%",
+                    "Price": int(price) if pd.notna(price) else "—",
+                })
+                ev_sort = ev
+        else:
+            row.update({"Side": "—", "Model P": "—", "Market P": "—",
+                        "Edge": "—", "EV": "—", "Price": "—"})
+        row["Lineup"] = p.lineup_source
+        row["_ev"] = ev_sort
+        rows.append(row)
+    df = pd.DataFrame(rows).sort_values("_ev", ascending=False).drop(columns="_ev")
+    return df, matched, len(preds)
 
 
 def model_versions(table) -> list:
@@ -226,7 +297,9 @@ if section == "📋 Board":
         else:
             df, matched, total = props_board(mvs[0], market, gdate, pks)
             st.caption(f"Model `{mvs[0]}` · **book lines for {matched}/{total} players** · "
-                       f"sorted by edge (model − book line)")
+                       f"sorted by **EV**. Side = the model's +EV side at the book's line. "
+                       f"EV = model P(win) × decimal odds − 1 (per 1u); "
+                       f"Edge = model P − no-vig market P. Bet only clearly +EV.")
             st.dataframe(df, use_container_width=True, hide_index=True)
 
 else:  # vs Closing Line — the graded track record
@@ -235,10 +308,10 @@ else:  # vs Closing Line — the graded track record
                "1u at the closing price. Grows daily as games finalize.")
     df = q("""
         SELECT game_date, player_name, lean, model_number, closing_line, closing_price,
-               actual, result, profit, edge
+               model_prob, market_prob, ev, actual, result, profit, edge
         FROM prediction_results
         WHERE market = %s AND result IS NOT NULL
-        ORDER BY game_date DESC, edge DESC
+        ORDER BY game_date DESC, ev DESC NULLS LAST
     """, (market,))
     if df.empty:
         st.info("No graded results for this market yet — they appear after games finish "
@@ -250,13 +323,13 @@ else:  # vs Closing Line — the graded track record
         decided = wins + losses
         winpct = wins / decided if decided else 0.0
         roi = df.profit.sum() / len(df) if len(df) else 0.0
-        avg_edge = df.edge.mean()
+        avg_ev = pd.to_numeric(df.ev, errors="coerce").mean()
         c1, c2, c3, c4 = st.columns(4)
         rec = f"{wins}-{losses}" + (f"-{pushes}" if pushes else "")
         c1.metric("Record", rec)
         c2.metric("Win %", f"{winpct*100:.1f}%")
         c3.metric("ROI at close", f"{roi*100:+.1f}%")
-        c4.metric("Avg edge", f"{avg_edge:+.2f}")
+        c4.metric("Avg EV at close", f"{avg_ev*100:+.1f}%" if pd.notna(avg_ev) else "—")
         if decided < 30:
             st.warning(f"Only {decided} decided bets so far — far too small to mean anything. "
                        "Sample needs hundreds before ROI is signal, not noise.")

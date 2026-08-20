@@ -13,6 +13,7 @@ Usage:
 """
 from __future__ import annotations
 
+import json
 import sys
 from datetime import date
 from pathlib import Path
@@ -76,6 +77,9 @@ def side_rows(lineup, opp_sp, opp_def, pf, hr_mult, team_name, g) -> list[dict]:
                 "projected_pa": proj["projected_pa"], "lineup_source": lineup["source"],
                 "projected_mean": m["mean"], "line": m["line"],
                 "prob_over": calibration.calibrate(market, m["prob_over"]),
+                # Raw distribution so P(over) can be evaluated at the book's line;
+                # calibration is applied at scoring time (see grade_results/board).
+                "dist": json.dumps(m["dist"]),
             })
     return out
 
@@ -101,6 +105,7 @@ def pitcher_rows(pid, pvec, pname, team_name, opp_lineup, workload, g) -> list[d
             "player_name": pname, "team_name": team_name, "batting_slot": None,
             "projected_pa": avg_bf, "lineup_source": opp_lineup["source"],
             "projected_mean": m["mean"], "line": m["line"], "prob_over": m["prob_over"],
+            "dist": json.dumps(m["dist"]),
         })
     return out
 
@@ -170,11 +175,12 @@ def write_rows(rows: list[dict]) -> None:
             game_pk BIGINT, player_id BIGINT, market TEXT, model_version TEXT,
             game_date DATE, player_name TEXT, team_name TEXT, batting_slot INT,
             projected_pa REAL, lineup_source TEXT, projected_mean REAL, line REAL,
-            prob_over REAL, PRIMARY KEY (game_pk, player_id, market, model_version))
+            prob_over REAL, dist JSON,
+            PRIMARY KEY (game_pk, player_id, market, model_version))
     """)
     cols = ["game_pk", "player_id", "market", "model_version", "game_date",
             "player_name", "team_name", "batting_slot", "projected_pa",
-            "lineup_source", "projected_mean", "line", "prob_over"]
+            "lineup_source", "projected_mean", "line", "prob_over", "dist"]
     for r in rows:
         con.execute(
             f"INSERT OR REPLACE INTO prop_predictions ({','.join(cols)}) "

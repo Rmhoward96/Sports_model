@@ -35,3 +35,22 @@ def test_total_bases_distribution():
 def test_at_least_one_hr():
     # Three PA at 10% HR each: 1 - 0.9^3.
     assert d.prob_at_least_one_hr([0.1, 0.1, 0.1]) == pytest.approx(1 - 0.9**3)
+
+
+def test_prob_over_dist_pmf_at_book_line():
+    # Evaluate the model's own pmf at whatever line the book posts, not a default.
+    dist = {"kind": "pmf", "pmf": [0.30, 0.40, 0.20, 0.08, 0.02]}
+    assert d.prob_over_dist(dist, 0.5) == pytest.approx(0.70)   # P(>=1)
+    assert d.prob_over_dist(dist, 1.5) == pytest.approx(0.30)   # P(>=2)
+    assert d.prob_over_dist(dist, 2.5) == pytest.approx(0.10)   # P(>=3)
+
+
+def test_prob_over_dist_normal():
+    # Normal(mean=17, sd=3): P(> 17.5) just under half.
+    dist = {"kind": "normal", "mean": 17.0, "sd": 3.0}
+    assert d.prob_over_dist(dist, 17.5) == pytest.approx(0.434, abs=0.01)
+
+
+def test_prob_over_dist_empty_is_nan():
+    p = d.prob_over_dist(None, 0.5)
+    assert p != p  # NaN

@@ -65,7 +65,9 @@ CREATE TABLE IF NOT EXISTS prop_predictions (
     lineup_source  TEXT,
     projected_mean REAL,
     line           REAL,
-    prob_over      REAL,
+    prob_over      REAL,        -- P(over the default line); display continuity only
+    dist           JSONB,       -- model's raw outcome distribution (pmf | normal),
+                                -- so P(over) can be evaluated at the BOOK's line
     PRIMARY KEY (game_pk, player_id, market, model_version)
 );
 
@@ -108,7 +110,10 @@ CREATE TABLE IF NOT EXISTS prediction_results (
     actual        REAL,        -- actual runs/total/stat
     result        TEXT,        -- win | loss | push
     profit        REAL,        -- units at closing price (win: dec-1, loss: -1, push: 0)
-    edge          REAL,        -- model number − closing (signed toward the lean)
+    edge          REAL,        -- probability edge: model_prob − market_prob (props/ML)
+    model_prob    REAL,        -- model P(leaned side clears the closing line)
+    market_prob   REAL,        -- no-vig implied P(leaned side) from the closing prices
+    ev            REAL,        -- expected value per 1u at close: model_prob*dec − 1
     graded_at     TIMESTAMPTZ NOT NULL DEFAULT now(),
     PRIMARY KEY (game_pk, market, player_id, model_version)
 );

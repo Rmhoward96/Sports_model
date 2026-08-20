@@ -19,7 +19,8 @@ from .distributions import (
 # League expected plate appearances by batting-order slot (1-9). [tunable]
 SLOT_PA = {1: 4.65, 2: 4.55, 3: 4.44, 4: 4.34, 5: 4.23, 6: 4.13, 7: 4.02, 8: 3.92, 9: 3.81}
 
-# Standard line per market for the stored P(over); compare the mean to the book line.
+# Default line per market, used only for the stored display `prob_over`. The real
+# grading/board work evaluates each market's `dist` at the BOOK's actual line.
 DEFAULT_LINE = {
     "hits": 0.5, "total_bases": 1.5, "home_run": 0.5, "hrr": 1.5,
     "pitcher_ks": 5.5, "outs_recorded": 17.5, "hits_allowed": 5.5,
@@ -43,22 +44,27 @@ def batter_props(vec: dict[str, float], slot: int) -> dict:
 
     hits = hits_pmf(vecs)
     tb = total_bases_pmf(vecs)
+    p_hr1 = prob_at_least_one_hr([vec["p_hr"]] * n)
     return {
         "projected_pa": pa,
         "hits": {
             "mean": pa * p_hit,
             "line": DEFAULT_LINE["hits"],
             "prob_over": prob_over(hits, DEFAULT_LINE["hits"]),
+            "dist": {"kind": "pmf", "pmf": list(hits)},
         },
         "total_bases": {
             "mean": pa * tb1,
             "line": DEFAULT_LINE["total_bases"],
             "prob_over": prob_over(tb, DEFAULT_LINE["total_bases"]),
+            "dist": {"kind": "pmf", "pmf": list(tb)},
         },
         "home_run": {
             "mean": pa * vec["p_hr"],
             "line": DEFAULT_LINE["home_run"],
-            "prob_over": prob_at_least_one_hr([vec["p_hr"]] * n),
+            "prob_over": p_hr1,
+            # Y/N market: Bernoulli(P>=1 HR) -> pmf over {0,1}. P(over 0.5) = p_hr1.
+            "dist": {"kind": "pmf", "pmf": [1.0 - p_hr1, p_hr1]},
         },
         "hrr": _hrr(vec, pa),
     }
@@ -75,7 +81,9 @@ def _hrr(vec: dict[str, float], pa: float) -> dict:
     mean = e_h + e_r + e_rbi
     # Crude count distribution for P(over): Poisson at the combined mean.
     pmf = nb_pmf(mean, mean)  # var<=mean -> Poisson inside nb_pmf
-    return {"mean": mean, "line": DEFAULT_LINE["hrr"], "prob_over": prob_over(pmf, DEFAULT_LINE["hrr"])}
+    return {"mean": mean, "line": DEFAULT_LINE["hrr"],
+            "prob_over": prob_over(pmf, DEFAULT_LINE["hrr"]),
+            "dist": {"kind": "pmf", "pmf": list(pmf)}}
 
 
 def pitcher_props(opp_vecs: list[dict], avg_bf: float, var_bf: float,
@@ -96,17 +104,21 @@ def pitcher_props(opp_vecs: list[dict], avg_bf: float, var_bf: float,
 
     e_k, v_k = counting(kbar)
     e_h, v_h = counting(hbar)
+    k_pmf, h_pmf = nb_pmf(e_k, v_k), nb_pmf(e_h, v_h)
     return {
         "pitcher_ks": {
             "mean": e_k, "line": DEFAULT_LINE["pitcher_ks"],
-            "prob_over": prob_over(nb_pmf(e_k, v_k), DEFAULT_LINE["pitcher_ks"]),
+            "prob_over": prob_over(k_pmf, DEFAULT_LINE["pitcher_ks"]),
+            "dist": {"kind": "pmf", "pmf": list(k_pmf)},
         },
         "hits_allowed": {
             "mean": e_h, "line": DEFAULT_LINE["hits_allowed"],
-            "prob_over": prob_over(nb_pmf(e_h, v_h), DEFAULT_LINE["hits_allowed"]),
+            "prob_over": prob_over(h_pmf, DEFAULT_LINE["hits_allowed"]),
+            "dist": {"kind": "pmf", "pmf": list(h_pmf)},
         },
         "outs_recorded": {
             "mean": avg_outs, "line": DEFAULT_LINE["outs_recorded"],
             "prob_over": normal_sf(DEFAULT_LINE["outs_recorded"], avg_outs, sd_outs),
+            "dist": {"kind": "normal", "mean": float(avg_outs), "sd": float(sd_outs)},
         },
     }

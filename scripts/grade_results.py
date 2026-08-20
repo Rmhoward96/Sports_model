@@ -22,6 +22,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 from sportsmodel import config
 from sportsmodel.db import get_postgres, upsert_prediction_results
 from sportsmodel.ingest import mlb_results
+from sportsmodel.model import calibration
+from sportsmodel.model.distributions import prob_over_dist
 from sportsmodel.model.odds import american_to_prob
 
 BATTER_MARKETS = {"hits", "total_bases", "home_run", "hrr"}
@@ -100,11 +102,11 @@ def main() -> None:
                 rows += _grade_game(game_pk, gdate, mv, res, close, pred_total, home_wp)
 
             # prop predictions for this game/model
-            cur.execute("""SELECT player_id, player_name, market, projected_mean
+            cur.execute("""SELECT player_id, player_name, market, projected_mean, dist
                            FROM prop_predictions WHERE game_pk = %s AND model_version = %s""",
                         [game_pk, mv])
-            for pid, pname, market, proj in cur.fetchall():
-                r = _grade_prop(game_pk, gdate, mv, res, close, pid, pname, market, proj)
+            for pid, pname, market, proj, dist in cur.fetchall():
+                r = _grade_prop(game_pk, gdate, mv, res, close, pid, pname, market, proj, dist)
                 if r:
                     rows.append(r)
 
@@ -114,11 +116,13 @@ def main() -> None:
         print(f"Upserted {n} rows into prediction_results.")
 
 
-def _row(game_pk, market, pid, pname, mv, gdate, model_num, line, price, lean, actual, result, profit, edge):
+def _row(game_pk, market, pid, pname, mv, gdate, model_num, line, price, lean, actual,
+         result, profit, edge, model_prob=None, market_prob=None, ev=None):
     return {"game_pk": game_pk, "market": market, "player_id": pid, "player_name": pname,
             "model_version": mv, "game_date": gdate, "model_number": model_num,
             "closing_line": line, "closing_price": int(price) if price is not None else None,
-            "lean": lean, "actual": actual, "result": result, "profit": profit, "edge": edge}
+            "lean": lean, "actual": actual, "result": result, "profit": profit, "edge": edge,
+            "model_prob": model_prob, "market_prob": market_prob, "ev": ev}
 
 
 def _grade_game(game_pk, gdate, mv, res, close, pred_total, home_wp) -> list[dict]:
@@ -136,7 +140,9 @@ def _grade_game(game_pk, gdate, mv, res, close, pred_total, home_wp) -> list[dic
         market_p = novig_home if lean == "home" else 1 - novig_home
         out.append(_row(game_pk, "moneyline", 0, "", mv, gdate, home_wp, None, price, lean,
                         1.0 if hr_ > ar_ else 0.0, "win" if won else "loss",
-                        _decimal(price) - 1 if won else -1.0, model_p - market_p))
+                        _decimal(price) - 1 if won else -1.0, model_p - market_p,
+                        model_prob=model_p, market_prob=market_p,
+                        ev=model_p * _decimal(price) - 1))
     # Total
     over = close.get(("total", "over", ""))
     if over:
@@ -148,20 +154,65 @@ def _grade_game(game_pk, gdate, mv, res, close, pred_total, home_wp) -> list[dic
     return out
 
 
-def _grade_prop(game_pk, gdate, mv, res, close, pid, pname, market, proj) -> dict | None:
+def _model_p_over(market, dist, line):
+    """Calibrated model P(stat > line) from the stored distribution, or None."""
+    if not dist:
+        return None
+    if isinstance(dist, str):
+        import json
+        dist = json.loads(dist)
+    p = prob_over_dist(dist, line)
+    if p != p:  # NaN (empty/malformed distribution)
+        return None
+    return calibration.calibrate(market, p)
+
+
+def _grade_prop(game_pk, gdate, mv, res, close, pid, pname, market, proj, dist) -> dict | None:
+    """Grade one prop on EXPECTED VALUE at the book's line, not mean-vs-line.
+
+    The edge that matters for a threshold bet is P(clear the line) vs the price's
+    implied probability. Compute the model's P(over) at the *book's* line, pick the
+    side with the better EV, and record model/market probabilities + EV.
+    """
     src = res["batters"] if market in BATTER_MARKETS else res["pitchers"]
     stat = src.get(pid, {}).get(market) if pid in src else None
     if stat is None:
         return None
     pn = str(pname).lower().strip()
     over = close.get((market, "over", pn))
-    if not over:
+    if not over or over[0] is None or over[1] is None:
         return None
+    line, po = over[0], over[1]
+
+    p_over = _model_p_over(market, dist, line)
+    if p_over is None:
+        return None  # legacy row without a stored distribution -> no EV, skip
+
     under = close.get((market, "under", pn))
-    po, pu = over[1], (under[1] if under else over[1])
-    lean, price, result, profit, edge = _grade_ou(proj, over[0], stat, po, pu)
-    return _row(game_pk, market, pid, pname, mv, gdate, proj, over[0], price, lean,
-                float(stat), result, profit, edge)
+    pu = under[1] if under and under[1] is not None else None
+
+    ev_over = p_over * _decimal(po) - 1
+    ev_under = (1 - p_over) * _decimal(pu) - 1 if pu is not None else float("-inf")
+
+    # No-vig market probability of clearing the line.
+    io = american_to_prob(po)
+    iu = american_to_prob(pu) if pu is not None else (1 - io)
+    novig_over = io / (io + iu)
+
+    if ev_over >= ev_under:
+        lean, price, model_p, market_p, ev = "over", po, p_over, novig_over, ev_over
+    else:
+        lean, price, model_p, market_p, ev = "under", pu, 1 - p_over, 1 - novig_over, ev_under
+
+    if stat == line:
+        result, profit = "push", 0.0
+    else:
+        won = (stat > line) if lean == "over" else (stat < line)
+        result, profit = ("win", _decimal(price) - 1) if won else ("loss", -1.0)
+
+    return _row(game_pk, market, pid, pname, mv, gdate, proj, line, price, lean,
+                float(stat), result, profit, model_p - market_p,
+                model_prob=model_p, market_prob=market_p, ev=ev)
 
 
 if __name__ == "__main__":

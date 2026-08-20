@@ -71,7 +71,7 @@ def upsert_prop_predictions(records: list[dict]) -> int:
     cols = [
         "game_pk", "player_id", "market", "model_version", "game_date",
         "player_name", "team_name", "batting_slot", "projected_pa",
-        "lineup_source", "projected_mean", "line", "prob_over",
+        "lineup_source", "projected_mean", "line", "prob_over", "dist",
     ]
     key = ("game_pk", "player_id", "market", "model_version")
     updates = ", ".join(f"{c} = EXCLUDED.{c}" for c in cols if c not in key)
@@ -94,7 +94,8 @@ def upsert_prediction_results(records: list[dict]) -> int:
         return 0
     cols = ["game_pk", "market", "player_id", "player_name", "model_version",
             "game_date", "model_number", "closing_line", "closing_price", "lean",
-            "actual", "result", "profit", "edge"]
+            "actual", "result", "profit", "edge",
+            "model_prob", "market_prob", "ev"]
     key = ("game_pk", "market", "player_id", "model_version")
     updates = ", ".join(f"{c} = EXCLUDED.{c}" for c in cols if c not in key)
     placeholders = ", ".join(["%s"] * len(cols))
