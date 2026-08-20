@@ -188,8 +188,8 @@ def game_board(mv, market, gdate, pks) -> tuple[pd.DataFrame, int, int]:
             row["Edge"] = round(g.pred_total - mkt, 1) if has else "—"
             row["Lean"] = ("OVER" if g.pred_total > mkt else "UNDER") if has else "—"
         elif market == "moneyline":
-            hp = _main_price(o[(o.market == "moneyline") & (o.side == "home")])
-            ap = _main_price(o[(o.market == "moneyline") & (o.side == "away")])
+            hp = _main_price(o[(o.market == "moneyline") & (o.side == "home")]) if not o.empty else float("nan")
+            ap = _main_price(o[(o.market == "moneyline") & (o.side == "away")]) if not o.empty else float("nan")
             mh, ma = american_to_prob(hp), american_to_prob(ap)
             novig = mh / (mh + ma) if mh and ma else None
             has = novig is not None
