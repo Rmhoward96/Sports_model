@@ -60,6 +60,8 @@ def american_to_prob(odds) -> float | None:
 
 
 def decimal_odds(price) -> float:
+    if price is None or pd.isna(price) or float(price) == 0:
+        return float("nan")  # 0 / NaN is not a valid American price
     price = float(price)
     return 1 + (price / 100 if price > 0 else 100 / -price)
 
@@ -186,8 +188,11 @@ def props_board(mv, market, gdate, pks) -> tuple[pd.DataFrame, int, int]:
     if preds.empty:
         return preds, 0, 0
     odds = latest_odds(tuple(preds.game_pk.unique().tolist()))
-    over = odds[(odds.market == market) & (odds.side == "over")].copy() if not odds.empty else pd.DataFrame()
-    under = odds[(odds.market == market) & (odds.side == "under")].copy() if not odds.empty else pd.DataFrame()
+    # Drop invalid prices (0 / NULL — e.g. a book that posted only one side) so they
+    # never contaminate the consensus price or cause a divide-by-zero in EV.
+    valid = odds[odds.price.notna() & (odds.price != 0)] if not odds.empty else odds
+    over = valid[(valid.market == market) & (valid.side == "over")].copy() if not valid.empty else pd.DataFrame()
+    under = valid[(valid.market == market) & (valid.side == "under")].copy() if not valid.empty else pd.DataFrame()
     for d in (over, under):
         if not d.empty:
             d["key"] = d.player_name.str.lower().str.strip()
@@ -199,7 +204,7 @@ def props_board(mv, market, gdate, pks) -> tuple[pd.DataFrame, int, int]:
         line = o["line"].mean() if not o.empty else float("nan")
         po = o["price"].mean() if not o.empty else float("nan")
         pu = u["price"].mean() if not u.empty else float("nan")
-        has = pd.notna(line) and pd.notna(po)
+        has = pd.notna(line) and pd.notna(po) and po != 0
         row = {"Player": p.player_name, "Team": p.team_name,
                "Model proj": round(p.projected_mean, 2),
                "Book line": round(line, 1) if has else "—"}

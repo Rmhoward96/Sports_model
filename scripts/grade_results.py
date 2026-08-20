@@ -32,6 +32,8 @@ PITCHER_MARKETS = {"pitcher_ks", "hits_allowed", "outs_recorded"}
 
 def _decimal(price) -> float:
     price = float(price)
+    if price == 0:
+        return float("nan")  # 0 is not a valid American price
     return 1 + (price / 100 if price > 0 else 100 / -price)
 
 
@@ -180,7 +182,7 @@ def _grade_prop(game_pk, gdate, mv, res, close, pid, pname, market, proj, dist) 
         return None
     pn = str(pname).lower().strip()
     over = close.get((market, "over", pn))
-    if not over or over[0] is None or over[1] is None:
+    if not over or over[0] is None or not over[1]:  # `not over[1]` also drops price 0
         return None
     line, po = over[0], over[1]
 
@@ -189,7 +191,7 @@ def _grade_prop(game_pk, gdate, mv, res, close, pid, pname, market, proj, dist) 
         return None  # legacy row without a stored distribution -> no EV, skip
 
     under = close.get((market, "under", pn))
-    pu = under[1] if under and under[1] is not None else None
+    pu = under[1] if under and under[1] else None  # falsy (0 / None) -> treat as missing
 
     ev_over = p_over * _decimal(po) - 1
     ev_under = (1 - p_over) * _decimal(pu) - 1 if pu is not None else float("-inf")
