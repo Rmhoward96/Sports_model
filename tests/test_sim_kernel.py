@@ -126,3 +126,15 @@ def test_strikeout_outs_not_double_counted():
             f"Home starter sim {i}: fewer than 27 strikeouts, expected >= 27"
         assert away_starter_k >= 27, \
             f"Away starter sim {i}: fewer than 27 strikeouts, expected >= 27"
+
+
+def test_vectorized_matches_scalar_distribution():
+    spec = _spec()
+    a = K.simulate_scalar(spec, 4000, np.random.default_rng(3))
+    b = K.simulate(spec, 4000, np.random.default_rng(3))
+    # aggregate means should agree within Monte Carlo noise (~0.1 run)
+    assert abs(a.home_score.mean() - b.home_score.mean()) < 0.15
+    assert abs(a.away_score.mean() - b.away_score.mean()) < 0.15
+    # win prob within a couple points
+    from sportsmodel.sim.engine import home_win_prob
+    assert abs(home_win_prob(a) - home_win_prob(b)) < 0.03

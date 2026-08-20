@@ -245,3 +245,244 @@ def simulate_scalar(spec: GameSpec, n_sims: int, rng, max_extra: int = 11) -> Ga
             for m in ("k", "hits", "outs"):
                 pstats[pid][m][i] = s[m]
     return GameSims(hs, as_, bstats, pstats)
+
+
+# ---------------------------------------------------------------------------
+# Vectorized kernel: masked lock-step per PA across all n_sims games at once.
+#
+# Key simplification vs. the scalar BaseState: box-score stats never read
+# runner *identity* (see resolve_pa's docstring caveat -- identity placement
+# is approximate by design), only base *occupancy* and outs/runs. So instead
+# of tracking first/second/third player indices per sim, we carry a 3-bit
+# occupancy mask (bit0=first, bit1=second, bit2=third) per sim, matching the
+# `occ()` encoding BaseState/AdvancementTable already use. This lets every
+# per-PA operation lift straight to a masked numpy array op with no per-sim
+# Python loop.
+#
+# RNG draw order intentionally does NOT match simulate_scalar (this processes
+# all sims lock-step per PA rather than one full game at a time) -- semantics
+# match exactly, so aggregate distributions agree within Monte Carlo noise.
+# ---------------------------------------------------------------------------
+
+_POPCOUNT = np.array([bin(i).count("1") for i in range(8)], dtype=np.int64)
+
+
+def _team_tensors(order: list) -> tuple[np.ndarray, np.ndarray]:
+    """Precompute (3,9,7) TTO-variant starter vectors and (9,7) bullpen vectors.
+
+    Axis 0 of the starter tensor is times_through - 1 (clamped to 0,1,2), axis 1
+    is batting-order slot (0-8), axis 2 is the outcome code (matches _VEC_ORDER).
+    """
+    n = len(order)
+    sp = np.zeros((3, n, 7))
+    bp = np.zeros((n, 7))
+    for slot, b in enumerate(order):
+        for tt in (1, 2, 3):
+            v = apply_tto(b.vec_vs_sp, tt)
+            sp[tt - 1, slot] = [v[name] for name in _VEC_ORDER]
+        bp[slot] = [b.vec_vs_bp[name] for name in _VEC_ORDER]
+    return sp, bp
+
+
+def _build_adv_vec(adv: AdvancementTable) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """Precompute a padded (56, maxK) cum/end/runs structure keyed by
+    outcome_code*8+occ, mirroring AdvancementTable.sample (incl. its missing-key
+    fallback) so the vectorized lookup matches it exactly.
+    """
+    table_entries = adv._table
+    max_k = 1
+    for cum, _ends, _runs in table_entries.values():
+        max_k = max(max_k, len(cum))
+    n_rows = 7 * 8  # outcome codes 0-6, occ 0-7 -> key = outcome*8+occ
+    cum_mat = np.ones((n_rows, max_k))
+    end_mat = np.zeros((n_rows, max_k), dtype=np.int64)
+    runs_mat = np.zeros((n_rows, max_k), dtype=np.int64)
+    code_to_name = {S: "p_1b", D: "p_2b", T: "p_3b", OUT_INPLAY: "p_out"}
+    for code, name in code_to_name.items():
+        for occ in range(8):
+            row = code * 8 + occ
+            entry = table_entries.get((name, occ))
+            if entry is None:
+                # matches AdvancementTable.sample's missing-key fallback
+                end_mat[row, :] = (occ | 1) if code == S else occ
+                runs_mat[row, :] = 0
+                # cum_mat row stays all-ones (any u<1 selects col 0)
+            else:
+                cum, ends, runs = entry
+                k = len(cum)
+                cum_mat[row, :k] = cum
+                end_mat[row, :k] = ends
+                runs_mat[row, :k] = runs
+                if k < max_k:
+                    end_mat[row, k:] = ends[-1]
+                    runs_mat[row, k:] = runs[-1]
+                    # cum_mat tail stays 1.0 (default init) -> never selected
+                    # since cum[k-1] is already forced to 1.0 by from_rows
+    return cum_mat, end_mat, runs_mat
+
+
+def _resolve_pa_vec(occ, outcome, u, cum_mat, end_mat, runs_mat):
+    """Vectorized resolve_pa: same branches (K/HR/BB/table), occupancy-only."""
+    n = len(occ)
+    runs = np.zeros(n, dtype=np.int64)
+    outs_added = np.zeros(n, dtype=np.int64)
+    new_occ = occ.copy()
+    runners_before = _POPCOUNT[occ]
+
+    m_k = outcome == K
+    outs_added[m_k] = 1  # pure out, occupancy unchanged
+
+    m_hr = outcome == HR
+    runs[m_hr] = runners_before[m_hr] + 1
+    new_occ[m_hr] = 0
+
+    m_bb = outcome == BB
+    loaded = occ == 7
+    # force-only chain: if not loaded, always fills the lowest empty base
+    # (equivalent to the scalar first/second/third chain check); if loaded,
+    # occupancy stays full and a run is forced in.
+    bb_new_occ = np.where(loaded, 7, occ | (occ + 1))
+    runs[m_bb & loaded] = 1
+    new_occ[m_bb] = bb_new_occ[m_bb]
+
+    m_tab = (outcome == S) | (outcome == D) | (outcome == T) | (outcome == OUT_INPLAY)
+    key_idx = np.clip(outcome, 0, 6) * 8 + occ
+    row_cum = cum_mat[key_idx]
+    col = np.argmax(u[:, None] < row_cum, axis=1)
+    table_end = end_mat[key_idx, col]
+    table_runs = runs_mat[key_idx, col]
+    runners_after = _POPCOUNT[table_end]
+    table_outs = np.clip((runners_before + 1) - runners_after - table_runs, 0, 3)
+    runs[m_tab] = table_runs[m_tab]
+    outs_added[m_tab] = table_outs[m_tab]
+    new_occ[m_tab] = table_end[m_tab]
+
+    return runs, outs_added, new_occ
+
+
+def simulate(spec: GameSpec, n_sims: int, rng, max_extra: int = 11) -> GameSims:
+    """Vectorized kernel: same signature/semantics as simulate_scalar, but
+    processes all n_sims games lock-step per PA using masked numpy ops.
+    """
+    adv = getattr(spec, "adv", None) or AdvancementTable.from_rows([])
+    n = n_sims
+    home_order, away_order = spec.home_order, spec.away_order
+    home_sp, home_bp = _team_tensors(home_order)
+    away_sp, away_bp = _team_tensors(away_order)
+    cum_mat, end_mat, runs_mat = _build_adv_vec(adv)
+
+    hook_home = np.maximum(12.0, rng.normal(spec.home_starter.avg_bf, spec.home_starter.sd_bf, size=n))
+    hook_away = np.maximum(12.0, rng.normal(spec.away_starter.avg_bf, spec.away_starter.sd_bf, size=n))
+
+    scores_home = np.zeros(n, dtype=np.int64)
+    scores_away = np.zeros(n, dtype=np.int64)
+    idx_home = np.zeros(n, dtype=np.int64)
+    idx_away = np.zeros(n, dtype=np.int64)
+    bf_away_pitcher = np.zeros(n, dtype=np.int64)  # batters faced by the AWAY pitcher
+    bf_home_pitcher = np.zeros(n, dtype=np.int64)  # batters faced by the HOME pitcher
+    bf = [bf_away_pitcher, bf_home_pitcher]  # indexed by defense: 0=away, 1=home
+
+    home_box = {m: np.zeros((9, n), dtype=np.int64) for m in _BATTER_MARKETS if m != "hrr"}
+    away_box = {m: np.zeros((9, n), dtype=np.int64) for m in _BATTER_MARKETS if m != "hrr"}
+    hp = {m: np.zeros(n, dtype=np.int64) for m in ("k", "hits", "outs")}
+    ap = {m: np.zeros(n, dtype=np.int64) for m in ("k", "hits", "outs")}
+
+    game_over = np.zeros(n, dtype=bool)
+    sim_ids = np.arange(n)
+
+    def play_half(bat_team: int, inning: int, active_game: np.ndarray) -> None:
+        order = home_order if bat_team == 1 else away_order
+        box = home_box if bat_team == 1 else away_box
+        idx = idx_home if bat_team == 1 else idx_away
+        defense = 1 - bat_team
+        hook = hook_away if defense == 0 else hook_home
+        bf_def = bf[defense]
+        pline = ap if defense == 0 else hp
+        sp_tensor = home_sp if bat_team == 1 else away_sp
+        bp_tensor = home_bp if bat_team == 1 else away_bp
+
+        # fresh BaseState per half; extra-inning Manfred-rule runner on 2nd
+        occ = np.full(n, 2, dtype=np.int64) if inning > 9 else np.zeros(n, dtype=np.int64)
+        outs = np.zeros(n, dtype=np.int64)
+
+        while True:
+            active = active_game & (outs < 3)
+            if not active.any():
+                break
+            slot = idx % 9
+            times_through = bf_def // 9 + 1
+            tto_idx = np.clip(times_through, 1, 3) - 1
+            starter_in = bf_def < hook
+
+            vec_if_sp = sp_tensor[tto_idx, slot]
+            vec_if_bp = bp_tensor[slot]
+            vec = np.where(starter_in[:, None], vec_if_sp, vec_if_bp)
+
+            u1 = rng.random(n)
+            cum = np.cumsum(vec, axis=1)
+            cum[:, -1] = 1.0  # guard fp drift, same intent as scalar's fallback
+            outcome = np.argmax(u1[:, None] < cum, axis=1)
+
+            u2 = rng.random(n)
+            runs, outs_added, new_occ = _resolve_pa_vec(occ, outcome, u2, cum_mat, end_mat, runs_mat)
+
+            is_hit = (outcome == S) | (outcome == D) | (outcome == T) | (outcome == HR)
+            tb = np.select([outcome == S, outcome == D, outcome == T, outcome == HR], [1, 2, 3, 4], default=0)
+            is_hr = outcome == HR
+            is_k = outcome == K
+
+            m = active
+            rows, cols = slot[m], sim_ids[m]
+            box["hits"][rows, cols] += is_hit[m]
+            box["total_bases"][rows, cols] += tb[m]
+            box["hr"][rows, cols] += is_hr[m]
+            box["rbi"][rows, cols] += runs[m]
+            # per-batter "runs" credited only on the batter's own HR (see resolve_pa)
+            box["runs"][rows, cols] += is_hr[m]
+
+            if bat_team == 1:
+                scores_home[m] += runs[m]
+            else:
+                scores_away[m] += runs[m]
+
+            sm = m & starter_in  # pitcher line: starter only
+            pline["k"][sm] += is_k[sm]
+            pline["hits"][sm] += is_hit[sm]
+            pline["outs"][sm] += outs_added[sm]
+
+            outs[m] += outs_added[m]
+            bf_def[m] += 1
+            idx[m] += 1
+            occ[m] = new_occ[m]
+
+    inning = 1
+    while True:
+        active_game = ~game_over
+        play_half(0, inning, active_game)  # away bats (top)
+        play_half(1, inning, active_game)  # home bats (bottom)
+
+        decided_now = active_game & (inning >= 9) & (scores_home != scores_away)
+        game_over |= decided_now
+        remaining = active_game & ~decided_now
+        if inning >= 9 + max_extra:  # hard cap
+            tie = remaining & (scores_home == scores_away)
+            scores_home[tie] += 1  # break ties at the cap deterministically
+            game_over |= remaining
+
+        if game_over.all():
+            break
+        inning += 1
+
+    bstats = {}
+    for order, box in ((home_order, home_box), (away_order, away_box)):
+        for slot, b in enumerate(order):
+            line = {m: box[m][slot].astype(np.int32) for m in box}
+            line["hrr"] = (box["hits"][slot] + box["runs"][slot] + box["rbi"][slot]).astype(np.int32)
+            bstats[b.player_id] = line
+
+    pstats = {
+        spec.home_starter.player_id: {m: hp[m].astype(np.int32) for m in hp},
+        spec.away_starter.player_id: {m: ap[m].astype(np.int32) for m in ap},
+    }
+
+    return GameSims(scores_home.astype(np.int32), scores_away.astype(np.int32), bstats, pstats)
