@@ -13,6 +13,7 @@ dependencies = [
     "tenacity>=9.0",
     "python-dotenv>=1.0",
     "psycopg[binary]>=3.2",
+    "scipy>=1.11",
 ]
 
 [dependency-groups]

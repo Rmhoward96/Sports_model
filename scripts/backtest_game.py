@@ -116,14 +116,11 @@ def predict(off, opp_sp, opp_bp, opp_def, pf, league):
     return game.expected_runs(vec, park_factor=pf)
 
 
-def main() -> None:
-    ap = argparse.ArgumentParser()
-    ap.add_argument("--season", type=int, default=2025)
-    args = ap.parse_args()
-
-    samples = []  # (p_home_win, home_won, pred_total, actual_total)
+def run_backtest(season: int) -> list:
+    """Walk-forward; returns (p_home_win, home_won, pred_total, actual_total) per game."""
+    samples = []
     for month in _MONTHS:
-        cutoff = f"{args.season}-{month:02d}-01"
+        cutoff = f"{season}-{month:02d}-01"
         transforms.set_cutoff(cutoff)
         con = duckdb.connect(":memory:")
         con.execute("INSTALL json; LOAD json;")
@@ -136,7 +133,7 @@ def main() -> None:
         league = _load_league(con)
         transforms.set_cutoff(None)
 
-        games = month_games(con, args.season, month)
+        games = month_games(con, season, month)
         con.close()
         used = 0
         for gp, home, away, hr, ar, hsp, asp in games:
@@ -153,9 +150,15 @@ def main() -> None:
             samples.append((res["home_win_prob"], 1 if hr > ar else 0,
                             h_runs + a_runs, hr + ar))
             used += 1
-        print(f"  {args.season}-{month:02d}: {used} games scored")
+        print(f"  {season}-{month:02d}: {used} games scored")
+    return samples
 
-    report(samples)
+
+def main() -> None:
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--season", type=int, default=2025)
+    args = ap.parse_args()
+    report(run_backtest(args.season))
 
 
 def report(samples):

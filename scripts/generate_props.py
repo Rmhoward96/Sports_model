@@ -22,7 +22,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 from sportsmodel import config, profiles, teams, venues, weather
 from sportsmodel.db import get_duckdb, upsert_prop_predictions
 from sportsmodel.ingest import mlb_lineups
-from sportsmodel.model import game, props, rates
+from sportsmodel.model import calibration, game, props, rates
 
 MODEL_VERSION = "mlb-props-v1"
 HITTER_MARKETS = ["hits", "total_bases", "home_run", "hrr"]
@@ -74,7 +74,8 @@ def side_rows(lineup, opp_sp, opp_def, pf, hr_mult, team_name, g) -> list[dict]:
                 "model_version": MODEL_VERSION, "game_date": g["game_date"],
                 "player_name": name, "team_name": team_name, "batting_slot": slot,
                 "projected_pa": proj["projected_pa"], "lineup_source": lineup["source"],
-                "projected_mean": m["mean"], "line": m["line"], "prob_over": m["prob_over"],
+                "projected_mean": m["mean"], "line": m["line"],
+                "prob_over": calibration.calibrate(market, m["prob_over"]),
             })
     return out
 

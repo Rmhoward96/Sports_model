@@ -22,7 +22,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from sportsmodel import config, profiles, teams, venues, weather
 from sportsmodel.db import get_duckdb, upsert_game_predictions
-from sportsmodel.model import game, rates
+from sportsmodel.model import calibration, game, rates
 
 MODEL_VERSION = "mlb-game-v2-defense"
 OUTCOMES = ["p_bb", "p_k", "p_1b", "p_2b", "p_3b", "p_hr", "p_out"]
@@ -141,6 +141,7 @@ def main() -> None:
         away_runs = team_runs(away_off, home_sp, bullpen.get(home_abbrev), pf, hr_mult,
                               defense.get(home_abbrev, 1.0))
         res = game.win_total_probabilities(home_runs, away_runs)
+        res["home_win_prob"] = calibration.calibrate("win_prob", res["home_win_prob"])
         preds.append({
             "game_pk": g["game_pk"], "model_version": MODEL_VERSION,
             "game_date": g["game_date"],

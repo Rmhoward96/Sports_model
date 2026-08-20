@@ -2085,6 +2085,8 @@ dependencies = [
     { name = "pyarrow" },
     { name = "pybaseball" },
     { name = "python-dotenv" },
+    { name = "scipy", version = "1.17.1", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.12'" },
+    { name = "scipy", version = "1.18.0", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.12'" },
     { name = "tenacity" },
 ]
 
@@ -2106,6 +2108,7 @@ requires-dist = [
     { name = "pyarrow", specifier = ">=16.0" },
     { name = "pybaseball", specifier = ">=2.2" },
     { name = "python-dotenv", specifier = ">=1.0" },
+    { name = "scipy", specifier = ">=1.11" },
     { name = "tenacity", specifier = ">=9.0" },
 ]
 

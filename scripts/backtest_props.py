@@ -129,14 +129,11 @@ class Score:
               f"Brier={brier:.3f}  mean-MAE={mae:.2f}")
 
 
-def main() -> None:
-    ap = argparse.ArgumentParser()
-    ap.add_argument("--season", type=int, default=2025)
-    args = ap.parse_args()
-
+def run_backtest(season: int) -> dict:
+    """Walk-forward; returns {market: Score} of predicted P(over) vs actual outcomes."""
     scores = {m: Score() for m in BATTER_MARKETS + PITCHER_MARKETS}
     for month in _MONTHS:
-        transforms.set_cutoff(f"{args.season}-{month:02d}-01")
+        transforms.set_cutoff(f"{season}-{month:02d}-01")
         con = duckdb.connect(":memory:")
         con.execute("INSTALL json; LOAD json;")
         build_profiles(con)
@@ -151,7 +148,7 @@ def main() -> None:
         league = {o: r[i] for i, o in enumerate(OUTCOMES)}
         transforms.set_cutoff(None)
 
-        games, batters, pitchers = month_actuals(con, args.season, month)
+        games, batters, pitchers = month_actuals(con, season, month)
         con.close()
 
         gm = {g[0]: g for g in games}                 # game_pk -> (pk, home, away, home_sp, away_sp)
@@ -198,8 +195,15 @@ def main() -> None:
                 scores["pitcher_ks"].add(pp["pitcher_ks"]["prob_over"], ks, pp["pitcher_ks"]["mean"], pp["pitcher_ks"]["line"])
                 scores["hits_allowed"].add(pp["hits_allowed"]["prob_over"], ha, pp["hits_allowed"]["mean"], pp["hits_allowed"]["line"])
                 scores["outs_recorded"].add(pp["outs_recorded"]["prob_over"], outs, pp["outs_recorded"]["mean"], pp["outs_recorded"]["line"])
-        print(f"  {args.season}-{month:02d} done")
+        print(f"  {season}-{month:02d} done")
+    return scores
 
+
+def main() -> None:
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--season", type=int, default=2025)
+    args = ap.parse_args()
+    scores = run_backtest(args.season)
     print("\n" + "=" * 78)
     print(f"PROPS BACKTEST — {args.season}   (well-calibrated: pred P(over) ~ actual over-rate)")
     print("=" * 78)
