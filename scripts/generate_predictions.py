@@ -20,9 +20,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
-import duckdb
-
-from sportsmodel import config, teams, venues, weather
+from sportsmodel import config, profiles, teams, venues, weather
 from sportsmodel.db import get_duckdb, upsert_game_predictions
 from sportsmodel.model import game, rates
 
@@ -61,103 +59,9 @@ def load_schedule() -> list[dict]:
     return [dict(zip(SCHED_COLS, r)) for r in rows]
 
 
-def load_pitcher_vectors(pitcher_ids) -> dict[int, dict]:
-    """Best available allowed-rate vector (vs_hand=ALL) per pitcher, from the snapshot."""
-    ids = sorted({int(p) for p in pitcher_ids if p is not None})
-    if not ids:
-        return {}
-    path = PROFILE_DIR / "feat_pitcher_profile.parquet"
-    con = duckdb.connect(":memory:")
-    rows = con.execute(
-        f"""
-        SELECT player_id, window_name, pa, {', '.join(OUTCOMES)}
-        FROM read_parquet('{path}')
-        WHERE vs_hand = 'ALL' AND player_id IN ({','.join(map(str, ids))})
-        """
-    ).fetchall()
-    con.close()
-
-    best: dict[int, tuple[int, dict]] = {}
-    for r in rows:
-        pid, win, pa = int(r[0]), r[1], r[2]
-        vec = {o: r[3 + i] for i, o in enumerate(OUTCOMES)}
-        rank = 0 if (win == "season" and pa >= _MIN_PA) else (1 if win == "career" else 2)
-        if pid not in best or rank < best[pid][0]:
-            best[pid] = (rank, vec)
-    return {pid: v for pid, (_, v) in best.items()}
-
-
-def load_team_offense_vectors() -> dict[str, dict]:
-    """Best offensive vector (vs_hand=ALL) per team abbreviation, from the snapshot."""
-    path = PROFILE_DIR / "feat_team_offense.parquet"
-    con = duckdb.connect(":memory:")
-    rows = con.execute(
-        f"SELECT team, window_name, pa, {', '.join(OUTCOMES)} "
-        f"FROM read_parquet('{path}') WHERE vs_hand = 'ALL'"
-    ).fetchall()
-    con.close()
-    best: dict[str, tuple[int, dict]] = {}
-    for r in rows:
-        team, win, pa = r[0], r[1], r[2]
-        vec = {o: r[3 + i] for i, o in enumerate(OUTCOMES)}
-        rank = 0 if (win == "season" and pa >= _MIN_TEAM_PA) else (1 if win == "career" else 2)
-        if team not in best or rank < best[team][0]:
-            best[team] = (rank, vec)
-    return {t: v for t, (_, v) in best.items()}
-
-
-def load_team_bullpen_vectors() -> dict[str, dict]:
-    """Best bullpen allowed-rate vector (vs_hand=ALL) per team abbreviation."""
-    path = PROFILE_DIR / "feat_team_bullpen.parquet"
-    con = duckdb.connect(":memory:")
-    rows = con.execute(
-        f"SELECT team, window_name, pa, {', '.join(OUTCOMES)} "
-        f"FROM read_parquet('{path}') WHERE vs_hand = 'ALL'"
-    ).fetchall()
-    con.close()
-    best: dict[str, tuple[int, dict]] = {}
-    for r in rows:
-        team, win, pa = r[0], r[1], r[2]
-        vec = {o: r[3 + i] for i, o in enumerate(OUTCOMES)}
-        rank = 0 if (win == "season" and pa >= _MIN_TEAM_PA) else (1 if win == "career" else 2)
-        if team not in best or rank < best[team][0]:
-            best[team] = (rank, vec)
-    return {t: v for t, (_, v) in best.items()}
-
-
 def blend(vec_sp: dict, vec_bp: dict, sp_share: float) -> dict:
     """Weighted average of two per-PA vectors (both sum to 1, so does the result)."""
     return {o: sp_share * vec_sp[o] + (1 - sp_share) * vec_bp[o] for o in OUTCOMES}
-
-
-def load_park_factors() -> dict[str, float]:
-    """{team abbrev: run park factor} for the team's home park."""
-    path = PROFILE_DIR / "park_factors.parquet"
-    con = duckdb.connect(":memory:")
-    rows = con.execute(f"SELECT team, pf_runs FROM read_parquet('{path}')").fetchall()
-    con.close()
-    return {t: pf for t, pf in rows}
-
-
-def load_team_defense() -> dict[str, float]:
-    """{team abbrev: defense factor on balls in play} (<1 = better defense)."""
-    path = PROFILE_DIR / "feat_team_defense.parquet"
-    con = duckdb.connect(":memory:")
-    rows = con.execute(f"SELECT team, def_factor FROM read_parquet('{path}')").fetchall()
-    con.close()
-    return {t: f for t, f in rows}
-
-
-def load_league_vector() -> dict:
-    """League-average per-PA vector (vs_hand=ALL, career) — the odds-ratio baseline."""
-    path = PROFILE_DIR / "ref_league_rates.parquet"
-    con = duckdb.connect(":memory:")
-    r = con.execute(
-        f"SELECT {', '.join(OUTCOMES)} FROM read_parquet('{path}') "
-        f"WHERE vs_hand = 'ALL' AND window_name = 'career' LIMIT 1"
-    ).fetchone()
-    con.close()
-    return {o: r[i] for i, o in enumerate(OUTCOMES)}
 
 
 def write_predictions(preds: list[dict]) -> None:
@@ -194,12 +98,12 @@ def main() -> None:
 
     ids = [g["home_probable_pitcher_id"] for g in games] + \
           [g["away_probable_pitcher_id"] for g in games]
-    pitchers = load_pitcher_vectors(ids)
-    team_off = load_team_offense_vectors()
-    bullpen = load_team_bullpen_vectors()
-    league = load_league_vector()
-    park = load_park_factors()
-    defense = load_team_defense()
+    pitchers = profiles.load_pitcher_vectors(ids)
+    team_off = profiles.load_team_offense_vectors()
+    bullpen = profiles.load_team_bullpen_vectors()
+    league = profiles.load_league_vector()
+    park = profiles.load_park_factors()
+    defense = profiles.load_team_defense()
 
     def team_runs(off, opp_sp, opp_bp, pf, hr_mult, opp_def):
         """Offense vs opposing starter (~62%)+bullpen, then defense, park, weather."""

@@ -28,19 +28,34 @@ STARTER_SHARE = 0.62
 _MONTHS = [4, 5, 6, 7, 8, 9]  # regular-season months to test
 
 
-def _load_vecs(con, table, id_col, min_pa=150):
+# recency-weighted blend of the three windows (docs/methodology.md §A.1)
+_WEIGHTS = {"30d": 0.2, "season": 0.4, "career": 0.4}
+
+
+def _load_vecs(con, table, id_col, min_season_pa=150, min_recent_pa=40):
+    """Blend 30d/season/career per entity, gating thin windows and renormalizing."""
     rows = con.execute(
         f"SELECT {id_col}, window_name, pa, {', '.join(OUTCOMES)} "
         f"FROM {table} WHERE vs_hand='ALL'"
     ).fetchall()
-    best = {}
+    per: dict = {}
     for r in rows:
         key, win, pa = r[0], r[1], r[2]
         vec = {o: r[3 + i] for i, o in enumerate(OUTCOMES)}
-        rank = 0 if (win == "season" and pa >= min_pa) else (1 if win == "career" else 2)
-        if key not in best or rank < best[key][0]:
-            best[key] = (rank, vec)
-    return {k: v for k, (_, v) in best.items()}
+        per.setdefault(key, {})[win] = (pa, vec)
+
+    gate = {"30d": min_recent_pa, "season": min_season_pa, "career": 1}
+    out = {}
+    for key, wins in per.items():
+        parts = [(_WEIGHTS[w], vec) for w, (pa, vec) in wins.items()
+                 if w in _WEIGHTS and pa >= gate[w]]
+        if not parts:
+            if "career" in wins:
+                out[key] = wins["career"][1]
+            continue
+        tw = sum(w for w, _ in parts)
+        out[key] = {o: sum(w * vec[o] for w, vec in parts) / tw for o in OUTCOMES}
+    return out
 
 
 def _load_single(con, table, val_col):
@@ -113,9 +128,9 @@ def main() -> None:
         con = duckdb.connect(":memory:")
         con.execute("INSTALL json; LOAD json;")
         build_pit_profiles(con)
-        pit = _load_vecs(con, "feat_pitcher_profile", "player_id")
-        off = _load_vecs(con, "feat_team_offense", "team", min_pa=1000)
-        bp = _load_vecs(con, "feat_team_bullpen", "team", min_pa=1000)
+        pit = _load_vecs(con, "feat_pitcher_profile", "player_id", min_season_pa=150, min_recent_pa=40)
+        off = _load_vecs(con, "feat_team_offense", "team", min_season_pa=1000, min_recent_pa=300)
+        bp = _load_vecs(con, "feat_team_bullpen", "team", min_season_pa=1000, min_recent_pa=300)
         dfn = _load_single(con, "feat_team_defense", "def_factor")
         park = _load_single(con, "park_factors", "pf_runs")
         league = _load_league(con)

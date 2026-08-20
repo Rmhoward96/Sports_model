@@ -64,6 +64,7 @@ def _base_cte(id_col: str, opp_col: str) -> str:
         SELECT CAST({id_col} AS BIGINT)                            AS player_id,
                {opp_col}                                           AS opp_hand,
                CAST(SUBSTR(CAST(game_date AS VARCHAR), 1, 4) AS INT) AS yr,
+               CAST(game_date AS DATE)                             AS gdate,
                {_OUTCOME_CASE}                                     AS outcome,
                estimated_woba_using_speedangle                     AS xwoba
         FROM read_parquet('{_PARQUET_GLOB}')
@@ -72,7 +73,8 @@ def _base_cte(id_col: str, opp_col: str) -> str:
           AND {opp_col} IN ('L','R')
           {_date_filter()}
     ),
-    maxyr AS (SELECT max(yr) AS y FROM base)
+    maxyr AS (SELECT max(yr) AS y FROM base),
+    maxdate AS (SELECT max(gdate) AS d FROM base)
     """
 
 
@@ -100,6 +102,15 @@ def _profile_query(id_col: str, opp_col: str) -> str:
            {rates}
     FROM base
     WHERE yr = (SELECT y FROM maxyr)
+    {grouping}
+    UNION ALL
+    SELECT player_id,
+           {vs_hand},
+           '30d' AS window_name,
+           COUNT(*) AS pa,
+           {rates}
+    FROM base
+    WHERE gdate >= (SELECT d FROM maxdate) - INTERVAL 30 DAY
     {grouping}
     """
 
@@ -131,13 +142,15 @@ def build_team_offense_profiles(con) -> int:
         SELECT CASE WHEN inning_topbot='Top' THEN away_team ELSE home_team END AS team,
                p_throws AS opp_hand,
                CAST(SUBSTR(CAST(game_date AS VARCHAR), 1, 4) AS INT) AS yr,
+               CAST(game_date AS DATE) AS gdate,
                {_OUTCOME_CASE} AS outcome,
                estimated_woba_using_speedangle AS xwoba
         FROM read_parquet('{_PARQUET_GLOB}')
         WHERE events IS NOT NULL AND inning_topbot IS NOT NULL AND p_throws IN ('L','R')
           {_date_filter()}
     ),
-    maxyr AS (SELECT max(yr) AS y FROM base)
+    maxyr AS (SELECT max(yr) AS y FROM base),
+    maxdate AS (SELECT max(gdate) AS d FROM base)
     """
     vs_hand = "CASE WHEN GROUPING(opp_hand)=1 THEN 'ALL' ELSE opp_hand END AS vs_hand"
     grouping = "GROUP BY GROUPING SETS ((team, opp_hand), (team))"
@@ -148,6 +161,9 @@ def build_team_offense_profiles(con) -> int:
     UNION ALL
     SELECT team, {vs_hand}, 'season' AS window_name, COUNT(*) AS pa, {rates}
     FROM base WHERE yr = (SELECT y FROM maxyr) {grouping}
+    UNION ALL
+    SELECT team, {vs_hand}, '30d' AS window_name, COUNT(*) AS pa, {rates}
+    FROM base WHERE gdate >= (SELECT d FROM maxdate) - INTERVAL 30 DAY {grouping}
     """
     con.execute(f"CREATE OR REPLACE TABLE feat_team_offense AS {query}")
     return con.execute("SELECT count(*) FROM feat_team_offense").fetchone()[0]
@@ -193,6 +209,7 @@ def build_team_bullpen_profiles(con) -> int:
         SELECT CASE WHEN inning_topbot='Top' THEN home_team ELSE away_team END AS team,
                stand AS opp_hand,
                CAST(SUBSTR(CAST(game_date AS VARCHAR), 1, 4) AS INT) AS yr,
+               CAST(game_date AS DATE) AS gdate,
                {_OUTCOME_CASE} AS outcome,
                estimated_woba_using_speedangle AS xwoba
         FROM read_parquet('{_PARQUET_GLOB}')
@@ -200,7 +217,8 @@ def build_team_bullpen_profiles(con) -> int:
           AND inning >= 7 AND stand IN ('L','R')
           {_date_filter()}
     ),
-    maxyr AS (SELECT max(yr) AS y FROM base)
+    maxyr AS (SELECT max(yr) AS y FROM base),
+    maxdate AS (SELECT max(gdate) AS d FROM base)
     """
     vs_hand = "CASE WHEN GROUPING(opp_hand)=1 THEN 'ALL' ELSE opp_hand END AS vs_hand"
     grouping = "GROUP BY GROUPING SETS ((team, opp_hand), (team))"
@@ -211,6 +229,9 @@ def build_team_bullpen_profiles(con) -> int:
     UNION ALL
     SELECT team, {vs_hand}, 'season' AS window_name, COUNT(*) AS pa, {rates}
     FROM base WHERE yr = (SELECT y FROM maxyr) {grouping}
+    UNION ALL
+    SELECT team, {vs_hand}, '30d' AS window_name, COUNT(*) AS pa, {rates}
+    FROM base WHERE gdate >= (SELECT d FROM maxdate) - INTERVAL 30 DAY {grouping}
     """
     con.execute(f"CREATE OR REPLACE TABLE feat_team_bullpen AS {query}")
     return con.execute("SELECT count(*) FROM feat_team_bullpen").fetchone()[0]
