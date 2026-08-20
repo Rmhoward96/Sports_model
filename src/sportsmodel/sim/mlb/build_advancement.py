@@ -16,12 +16,15 @@ _EVENT_TO_OUTCOME = {
     "single": "p_1b",
     "double": "p_2b",
     "triple": "p_3b",
-    # every other batted-ball out / fielders choice / DP / sac counts as a generic out
+    # every other genuinely-retired-batter batted-ball event counts as a generic out
 }
+# Only events where the BATTER is retired. `field_error` (batter safe on an error)
+# and plain `fielders_choice` (no out recorded on the batter) are deliberately
+# excluded -- they are not outs and must not bias the "batter retired" distribution.
 _OUT_EVENTS = {
-    "field_out", "grounded_into_double_play", "force_out", "sac_fly", "sac_bunt",
-    "fielders_choice", "fielders_choice_out", "double_play", "field_error",
-    "sac_fly_double_play", "triple_play",
+    "field_out", "force_out", "grounded_into_double_play", "double_play",
+    "triple_play", "fielders_choice_out", "sac_fly", "sac_bunt",
+    "sac_fly_double_play",
 }
 
 _base_occ_expr = (
@@ -31,13 +34,35 @@ _base_occ_expr = (
 )
 
 
+def _outcome_case_sql() -> str:
+    """Build the `events` -> outcome SQL CASE from the module-level Python constants
+    above, so the event lists have a single source of truth (not duplicated in SQL
+    text, where they could silently desync from `_EVENT_TO_OUTCOME`/`_OUT_EVENTS`)."""
+    lines = ["CASE"]
+    for event, outcome in _EVENT_TO_OUTCOME.items():
+        lines.append(f"        WHEN events = '{event}' THEN '{outcome}'")
+    out_list = ", ".join(f"'{e}'" for e in sorted(_OUT_EVENTS))
+    lines.append(f"        WHEN events IN ({out_list}) THEN 'p_out'")
+    lines.append("        ELSE NULL")
+    lines.append("    END")
+    return "\n".join(lines)
+
+
 def build_advancement_table(con: duckdb.DuckDBPyConnection, _table: str | None = None) -> list[dict]:
     """Transition rows respecting the active cutoff. `_table` overrides the source
     (tests pass a small in-memory table); production reads the Statcast parquet."""
     src = _table or f"read_parquet('{transforms._PARQUET_GLOB}')"
-    cutoff = ""
+    # Production source is PITCH-level Statcast data: `events` is populated only on
+    # the terminal pitch of each PA. Every other transforms.build_* filters
+    # `events IS NOT NULL` before any per-PA window/aggregate -- we must too, or
+    # LEAD/ROW_NUMBER/COUNT below operate over ties (multiple pitch rows sharing one
+    # at_bat_number) and can resolve to the wrong row (e.g. another pitch of the SAME
+    # PA), corrupting next_occ/pa_idx/n_pa. Applied unconditionally (test fixtures
+    # included) so the same one-row-per-PA invariant holds everywhere.
+    conditions = ["events IS NOT NULL"]
     if _table is None and transforms._CUTOFF:  # same gate the other builders use
-        cutoff = f"WHERE CAST(game_date AS DATE) < DATE '{transforms._CUTOFF}'"
+        conditions.append(f"CAST(game_date AS DATE) < DATE '{transforms._CUTOFF}'")
+    where_clause = "WHERE " + " AND ".join(conditions)
 
     # 1) order PAs within each half-inning; read this PA's pre-state + the NEXT PA's
     #    pre-state (LEAD) + the batting-team score delta.
@@ -48,7 +73,7 @@ def build_advancement_table(con: duckdb.DuckDBPyConnection, _table: str | None =
                    {_base_occ_expr} AS occ,
                    COALESCE(post_bat_score - bat_score, 0) AS runs,
                    on_1b, on_2b, on_3b
-            FROM {src} {cutoff}
+            FROM {src} {where_clause}
         ),
         seq AS (
             SELECT *,
@@ -65,19 +90,10 @@ def build_advancement_table(con: duckdb.DuckDBPyConnection, _table: str | None =
     #    outs_added from runners-lost accounting isn't reliable, so derive outs_added
     #    from base+score bookkeeping: outs_added = (runners_before + 1) - runners_after - runs.
     #    runners_before = popcount(occ), runners_after = popcount(end_occ).
-    rows = con.execute("""
+    rows = con.execute(f"""
         WITH mapped AS (
             SELECT
-                CASE
-                    WHEN events IN ('single') THEN 'p_1b'
-                    WHEN events IN ('double') THEN 'p_2b'
-                    WHEN events IN ('triple') THEN 'p_3b'
-                    WHEN events IN ('field_out','grounded_into_double_play','force_out',
-                                    'sac_fly','sac_bunt','fielders_choice','fielders_choice_out',
-                                    'double_play','field_error','sac_fly_double_play','triple_play')
-                        THEN 'p_out'
-                    ELSE NULL
-                END AS outcome,
+                {_outcome_case_sql()} AS outcome,
                 occ,
                 runs,
                 CASE WHEN pa_idx = n_pa THEN 0 ELSE COALESCE(next_occ, 0) END AS end_occ
