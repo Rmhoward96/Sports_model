@@ -8,6 +8,9 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+import numpy as np
+
+from ..engine import GameSims
 from .advancement import AdvancementTable, TTO_MULT
 
 # per-PA vector order -> outcome codes
@@ -129,3 +132,116 @@ def resolve_pa(state: "BaseState", batter_idx: int, outcome: int, adv: Advanceme
     outs_added = max(0, min(3, outs_added))
     _fill_from_mask(state, end_occ, batter_idx, lead_first=(outcome == S))
     return runs, outs_added
+
+
+_BATTER_MARKETS = ("hits", "total_bases", "hr", "runs", "rbi", "hrr")
+
+
+def _new_box(order):
+    return {b.player_id: {m: 0 for m in _BATTER_MARKETS} for b in order}
+
+
+def _tb_for(outcome: int) -> int:
+    return {S: 1, D: 2, T: 3, HR: 4}.get(outcome, 0)
+
+
+def _sim_one(spec: GameSpec, adv: AdvancementTable, rng, max_extra: int) -> tuple[int, int, dict, dict, dict, dict]:
+    """One full game. Returns (home_runs, away_runs, home_box, away_box, hp_line, ap_line)."""
+    home_box, away_box = _new_box(spec.home_order), _new_box(spec.away_order)
+    # pitcher stat lines (starter only): K, hits allowed, outs
+    hp = {"k": 0, "hits": 0, "outs": 0}
+    ap = {"k": 0, "hits": 0, "outs": 0}
+    hook_home = max(12, rng.normal(spec.home_starter.avg_bf, spec.home_starter.sd_bf))
+    hook_away = max(12, rng.normal(spec.away_starter.avg_bf, spec.away_starter.sd_bf))
+    scores = [0, 0]           # [away, home]
+    idx = [0, 0]              # batting-order pointer [away, home]
+    bf = [0, 0]               # batters faced by the [away pitcher, home pitcher]
+
+    def half(bat_team, inning):
+        # bat_team: 0 away, 1 home. Defense is the other team; its starter faces batters.
+        order = spec.home_order if bat_team == 1 else spec.away_order
+        box = home_box if bat_team == 1 else away_box
+        defense = 0 if bat_team == 1 else 1
+        hook = hook_away if defense == 0 else hook_home
+        pline = ap if defense == 0 else hp
+        state = BaseState()
+        if inning > 9:
+            # extra-innings runner-on-2nd (Manfred) rule: start the half-inning with a
+            # runner on 2nd. We deliberately do NOT attribute this to a specific earlier
+            # batter's "runs" stat (see resolve_pa identity caveat) -- any nonnegative
+            # placeholder index works since only occupancy/outs/runs feed the box score.
+            state.second = (idx[bat_team] - 1) % 9
+        outs = 0
+        while outs < 3:
+            b = order[idx[bat_team] % 9]
+            faced = bf[defense]
+            starter_in = faced < hook
+            times_through = faced // 9 + 1
+            vec = apply_tto(b.vec_vs_sp, times_through) if starter_in else b.vec_vs_bp
+            u = rng.random()
+            outcome = sample_outcome(vec, u)
+            u2 = rng.random()
+            runs, outs_added = resolve_pa(state, idx[bat_team] % 9, outcome, adv, u2)
+            # box score
+            if outcome in (S, D, T, HR):
+                box[b.player_id]["hits"] += 1
+                box[b.player_id]["total_bases"] += _tb_for(outcome)
+                if outcome == HR:
+                    box[b.player_id]["hr"] += 1
+            box[b.player_id]["rbi"] += runs
+            scores[bat_team] += runs
+            # crude runs-scored credit: distribute `runs` to the batter's team tally only;
+            # per-batter "runs" credited to the batter on his own HR, else left aggregate
+            # (BaseState runner identity is approximate -- see Task 6 carried decision).
+            if outcome == HR:
+                box[b.player_id]["runs"] += 1
+            # pitcher line (starter only)
+            if starter_in:
+                if outcome == K:
+                    pline["k"] += 1
+                if outcome in (S, D, T, HR):
+                    pline["hits"] += 1
+                pline["outs"] += outs_added + (1 if outcome == K else 0)
+            outs += outs_added + (1 if outcome == K else 0)
+            bf[defense] += 1
+            idx[bat_team] += 1
+
+    inning = 1
+    while True:
+        half(0, inning)  # away bats (top)
+        half(1, inning)  # home bats (bottom)
+        if inning >= 9 and scores[1] != scores[0]:
+            break
+        if inning >= 9 + max_extra:  # hard cap
+            if scores[0] == scores[1]:
+                scores[1] += 1  # break ties at the cap deterministically
+            break
+        inning += 1
+
+    # finalize hrr
+    for box in (home_box, away_box):
+        for pid, s in box.items():
+            s["hrr"] = s["hits"] + s["runs"] + s["rbi"]
+    return scores[1], scores[0], home_box, away_box, hp, ap
+
+
+def simulate_scalar(spec: GameSpec, n_sims: int, rng, max_extra: int = 11) -> GameSims:
+    # spec may carry an optional `adv` table (Task 10 wires it); default to an empty one.
+    adv = getattr(spec, "adv", None) or AdvancementTable.from_rows([])
+    hs = np.zeros(n_sims, dtype=np.int32)
+    as_ = np.zeros(n_sims, dtype=np.int32)
+    bstats = {b.player_id: {m: np.zeros(n_sims, np.int32) for m in _BATTER_MARKETS}
+              for b in (*spec.home_order, *spec.away_order)}
+    pstats = {spec.home_starter.player_id: {m: np.zeros(n_sims, np.int32) for m in ("k", "hits", "outs")},
+              spec.away_starter.player_id: {m: np.zeros(n_sims, np.int32) for m in ("k", "hits", "outs")}}
+    for i in range(n_sims):
+        hr_, ar_, hbox, abox, hp, ap = _sim_one(spec, adv, rng, max_extra)
+        hs[i], as_[i] = hr_, ar_
+        for box in (hbox, abox):
+            for pid, s in box.items():
+                for m in _BATTER_MARKETS:
+                    bstats[pid][m][i] = s[m]
+        for pid, s in ((spec.home_starter.player_id, hp), (spec.away_starter.player_id, ap)):
+            for m in ("k", "hits", "outs"):
+                pstats[pid][m][i] = s[m]
+    return GameSims(hs, as_, bstats, pstats)
