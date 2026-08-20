@@ -113,19 +113,26 @@ def games_on(d) -> pd.DataFrame:
 
 @st.cache_data(ttl=300)
 def latest_odds(pks: tuple) -> pd.DataFrame:
-    """Consensus latest line per (game, market, side, player) across books."""
+    """Consensus per (game, market, side, player, LINE) across books.
+
+    One row per distinct line — never average across different lines. Books post
+    alternate lines (over 0.5 / 1.5 / 2.5…); collapsing them and averaging American
+    prices produces meaningless numbers. `price` is the median posted price at that
+    line; `books` counts how many books offer it (used to pick the main line).
+    """
     if not pks:
         return pd.DataFrame()
     return q("""
         WITH latest AS (
-            SELECT DISTINCT ON (game_pk, market, side, player_name, book)
-                   game_pk, market, side, player_name, book, line, price
+            SELECT DISTINCT ON (game_pk, market, side, player_name, line, book)
+                   game_pk, market, side, player_name, line, book, price
             FROM odds_snapshot WHERE game_pk = ANY(%s)
-            ORDER BY game_pk, market, side, player_name, book, captured_at DESC
+            ORDER BY game_pk, market, side, player_name, line, book, captured_at DESC
         )
-        SELECT game_pk, market, side, player_name,
-               avg(line) AS line, avg(price) AS price, count(*) AS books
-        FROM latest GROUP BY game_pk, market, side, player_name
+        SELECT game_pk, market, side, player_name, line,
+               count(*) AS books,
+               percentile_disc(0.5) WITHIN GROUP (ORDER BY price) AS price
+        FROM latest GROUP BY game_pk, market, side, player_name, line
     """, (list(pks),))
 
 
@@ -135,6 +142,26 @@ def odds_status() -> tuple:
     if df.empty or df.mx.iloc[0] is None:
         return None, 0
     return df.mx.iloc[0], int(df.g.iloc[0])
+
+
+def _main_line(df) -> float:
+    """Most-booked line in a market/side-filtered odds frame (tie -> lowest)."""
+    if df is None or df.empty:
+        return float("nan")
+    g = df.groupby("line", as_index=False)["books"].sum()
+    return float(g.sort_values(["books", "line"], ascending=[False, True]).iloc[0]["line"])
+
+
+def _main_price(df) -> float:
+    """Median price of the most-booked line (for moneyline, the single NULL line)."""
+    if df is None or df.empty:
+        return float("nan")
+    d = df.dropna(subset=["price"])
+    d = d[d.price != 0]
+    if d.empty:
+        return float("nan")
+    d = d.sort_values("books", ascending=False)
+    return float(d.iloc[0]["price"])
 
 
 def game_board(mv, market, gdate, pks) -> tuple[pd.DataFrame, int, int]:
@@ -154,15 +181,15 @@ def game_board(mv, market, gdate, pks) -> tuple[pd.DataFrame, int, int]:
         row = {"Game": f"{g.away_team_name} @ {g.home_team_name}",
                "Proj score": f"{g.pred_away_score:.1f}-{g.pred_home_score:.1f}"}
         if market == "total":
-            mkt = o[o.market == "total"]["line"].mean() if not o.empty else float("nan")
+            mkt = _main_line(o[o.market == "total"]) if not o.empty else float("nan")
             has = pd.notna(mkt)
             row["Model total"] = round(g.pred_total, 1)
             row["Market total"] = round(mkt, 1) if has else "—"
             row["Edge"] = round(g.pred_total - mkt, 1) if has else "—"
             row["Lean"] = ("OVER" if g.pred_total > mkt else "UNDER") if has else "—"
         elif market == "moneyline":
-            hp = o[(o.market == "moneyline") & (o.side == "home")]["price"].mean() if not o.empty else float("nan")
-            ap = o[(o.market == "moneyline") & (o.side == "away")]["price"].mean() if not o.empty else float("nan")
+            hp = _main_price(o[(o.market == "moneyline") & (o.side == "home")])
+            ap = _main_price(o[(o.market == "moneyline") & (o.side == "away")])
             mh, ma = american_to_prob(hp), american_to_prob(ap)
             novig = mh / (mh + ma) if mh and ma else None
             has = novig is not None
@@ -170,7 +197,7 @@ def game_board(mv, market, gdate, pks) -> tuple[pd.DataFrame, int, int]:
             row["Market home win%"] = f"{novig*100:.0f}%" if has else "—"
             row["Edge"] = f"{(g.home_win_prob - novig)*100:+.0f} pts" if has else "—"
         else:  # spread / run line
-            mkt = o[(o.market == "spread") & (o.side == "home")]["line"].mean() if not o.empty else float("nan")
+            mkt = _main_line(o[(o.market == "spread") & (o.side == "home")]) if not o.empty else float("nan")
             has = pd.notna(mkt)
             row["Model margin (home)"] = round(g.pred_margin, 1)
             row["Market run line"] = round(mkt, 1) if has else "—"
@@ -201,9 +228,15 @@ def props_board(mv, market, gdate, pks) -> tuple[pd.DataFrame, int, int]:
         k = str(p.player_name).lower().strip()
         o = over[over.key == k] if not over.empty else pd.DataFrame()
         u = under[under.key == k] if not under.empty else pd.DataFrame()
-        line = o["line"].mean() if not o.empty else float("nan")
-        po = o["price"].mean() if not o.empty else float("nan")
-        pu = u["price"].mean() if not u.empty else float("nan")
+        # Pick the player's MAIN line (most books; tie -> lowest line), then read the
+        # over/under price AT that line. Never blend different lines together.
+        if not o.empty:
+            main = o.sort_values(["books", "line"], ascending=[False, True]).iloc[0]
+            line, po = float(main["line"]), float(main["price"])
+            um = u[u.line == line] if not u.empty else pd.DataFrame()
+            pu = float(um["price"].iloc[0]) if not um.empty else float("nan")
+        else:
+            line = po = pu = float("nan")
         has = pd.notna(line) and pd.notna(po) and po != 0
         row = {"Player": p.player_name, "Team": p.team_name,
                "Model proj": round(p.projected_mean, 2),

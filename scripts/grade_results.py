@@ -49,20 +49,45 @@ def _grade_ou(model_num, line, actual, price_over, price_under):
 
 
 def closing_lines(cur, game_pk) -> dict:
-    """{(market, side, player_lower): (line, price)} — consensus closing across books."""
+    """{(market, side, player_lower): [(line, price, books), ...]} closing consensus.
+
+    One entry per distinct LINE (books post alternate lines; averaging across them —
+    or averaging American prices — is meaningless). `price` is the median posted price
+    at that line; `books` is how many books offered it (used to pick the main line).
+    """
     cur.execute("""
-        SELECT market, side, lower(coalesce(player_name, '')) pn, avg(line), avg(price)
+        SELECT market, side, lower(coalesce(player_name, '')) pn, line,
+               count(*) books,
+               percentile_disc(0.5) WITHIN GROUP (ORDER BY price) price
         FROM (
-            SELECT DISTINCT ON (market, side, player_name, book)
-                   market, side, player_name, book, line, price
+            SELECT DISTINCT ON (market, side, player_name, line, book)
+                   market, side, player_name, line, book, price
             FROM odds_snapshot WHERE game_pk = %s AND captured_at <= commence_time
-            ORDER BY market, side, player_name, book, captured_at DESC
-        ) t GROUP BY market, side, lower(coalesce(player_name, ''))
+            ORDER BY market, side, player_name, line, book, captured_at DESC
+        ) t GROUP BY market, side, lower(coalesce(player_name, '')), line
     """, [game_pk])
-    # avg() returns Decimal; cast to float so downstream arithmetic works.
-    return {(m, s, pn): (float(line) if line is not None else None,
-                         float(price) if price is not None else None)
-            for m, s, pn, line, price in cur.fetchall()}
+    out: dict = {}
+    for m, s, pn, line, books, price in cur.fetchall():
+        out.setdefault((m, s, pn), []).append(
+            (float(line) if line is not None else None,
+             float(price) if price is not None else None, int(books)))
+    return out
+
+
+def _primary(entries):
+    """Main line among consensus entries: most books, tie -> lowest line. -> (line, price)."""
+    if not entries:
+        return None
+    best = sorted(entries, key=lambda r: (-r[2], r[0] if r[0] is not None else -1))[0]
+    return best[0], best[1]
+
+
+def _price_at(entries, line):
+    """Price at a specific line among entries, or None."""
+    for l, p, _ in (entries or []):
+        if l == line:
+            return p
+    return None
 
 
 def main() -> None:
@@ -131,8 +156,8 @@ def _grade_game(game_pk, gdate, mv, res, close, pred_total, home_wp) -> list[dic
     out = []
     hr_, ar_ = res["home_runs"], res["away_runs"]
     # Moneyline
-    mh, ma = close.get(("moneyline", "home", "")), close.get(("moneyline", "away", ""))
-    if mh and ma:
+    mh, ma = _primary(close.get(("moneyline", "home", ""))), _primary(close.get(("moneyline", "away", "")))
+    if mh and ma and mh[1] and ma[1]:
         ph, pa = american_to_prob(mh[1]), american_to_prob(ma[1])
         novig_home = ph / (ph + pa)
         lean = "home" if home_wp > novig_home else "away"
@@ -145,13 +170,13 @@ def _grade_game(game_pk, gdate, mv, res, close, pred_total, home_wp) -> list[dic
                         _decimal(price) - 1 if won else -1.0, model_p - market_p,
                         model_prob=model_p, market_prob=market_p,
                         ev=model_p * _decimal(price) - 1))
-    # Total
-    over = close.get(("total", "over", ""))
-    if over:
-        under = close.get(("total", "under", ""))
-        po, pu = over[1], (under[1] if under else over[1])
-        lean, price, result, profit, edge = _grade_ou(pred_total, over[0], hr_ + ar_, po, pu)
-        out.append(_row(game_pk, "total", 0, "", mv, gdate, pred_total, over[0], price, lean,
+    # Total — grade at the main (most-booked) closing line.
+    over = _primary(close.get(("total", "over", "")))
+    if over and over[0] is not None and over[1]:
+        line = over[0]
+        pu = _price_at(close.get(("total", "under", "")), line) or over[1]
+        lean, price, result, profit, edge = _grade_ou(pred_total, line, hr_ + ar_, over[1], pu)
+        out.append(_row(game_pk, "total", 0, "", mv, gdate, pred_total, line, price, lean,
                         hr_ + ar_, result, profit, edge))
     return out
 
@@ -181,7 +206,7 @@ def _grade_prop(game_pk, gdate, mv, res, close, pid, pname, market, proj, dist) 
     if stat is None:
         return None
     pn = str(pname).lower().strip()
-    over = close.get((market, "over", pn))
+    over = _primary(close.get((market, "over", pn)))  # main (most-booked) closing line
     if not over or over[0] is None or not over[1]:  # `not over[1]` also drops price 0
         return None
     line, po = over[0], over[1]
@@ -190,8 +215,8 @@ def _grade_prop(game_pk, gdate, mv, res, close, pid, pname, market, proj, dist) 
     if p_over is None:
         return None  # legacy row without a stored distribution -> no EV, skip
 
-    under = close.get((market, "under", pn))
-    pu = under[1] if under and under[1] else None  # falsy (0 / None) -> treat as missing
+    pu = _price_at(close.get((market, "under", pn)), line)  # under price AT the same line
+    pu = pu if pu else None  # falsy (0 / None) -> treat as missing
 
     ev_over = p_over * _decimal(po) - 1
     ev_under = (1 - p_over) * _decimal(pu) - 1 if pu is not None else float("-inf")
