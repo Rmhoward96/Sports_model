@@ -229,24 +229,35 @@ if section == "📋 Board":
                        f"sorted by edge (model − book line)")
             st.dataframe(df, use_container_width=True, hide_index=True)
 
-else:  # vs Closing Line
-    st.subheader(f"{league} — {MARKET_LABELS[market]}: predictions vs closing line")
-    st.info("This fills in as odds + predictions accumulate. Closing line = last snapshot "
-            "before first pitch.")
-    hist = q("""
-        WITH closing AS (
-            SELECT DISTINCT ON (game_pk, market, side, player_name)
-                   game_pk, market, side, player_name
-            FROM odds_snapshot
-            WHERE market = %s AND captured_at <= commence_time
-            ORDER BY game_pk, market, side, player_name, captured_at DESC
-        )
-        SELECT count(*) AS lines, count(DISTINCT game_pk) AS games FROM closing
+else:  # vs Closing Line — the graded track record
+    st.subheader(f"{league} — {MARKET_LABELS[market]}: track record vs closing line")
+    st.caption("Each graded bet = the side the model favored vs the closing line, staked "
+               "1u at the closing price. Grows daily as games finalize.")
+    df = q("""
+        SELECT game_date, player_name, lean, model_number, closing_line, closing_price,
+               actual, result, profit, edge
+        FROM prediction_results
+        WHERE market = %s AND result IS NOT NULL
+        ORDER BY game_date DESC, edge DESC
     """, (market,))
-    n = int(hist.lines.iloc[0]) if not hist.empty else 0
-    games = int(hist.games.iloc[0]) if not hist.empty else 0
-    c1, c2 = st.columns(2)
-    c1.metric("Closing lines captured", f"{n:,}")
-    c2.metric("Games covered", f"{games:,}")
-    st.caption("Full CLV (each prediction's number vs its closing line, edge, and W/L once "
-               "results are graded) is the next build on top of this data.")
+    if df.empty:
+        st.info("No graded results for this market yet — they appear after games finish "
+                "and the grade-results job runs. Give it a few game days.")
+    else:
+        wins = int((df.result == "win").sum())
+        losses = int((df.result == "loss").sum())
+        pushes = int((df.result == "push").sum())
+        decided = wins + losses
+        winpct = wins / decided if decided else 0.0
+        roi = df.profit.sum() / len(df) if len(df) else 0.0
+        avg_edge = df.edge.mean()
+        c1, c2, c3, c4 = st.columns(4)
+        rec = f"{wins}-{losses}" + (f"-{pushes}" if pushes else "")
+        c1.metric("Record", rec)
+        c2.metric("Win %", f"{winpct*100:.1f}%")
+        c3.metric("ROI at close", f"{roi*100:+.1f}%")
+        c4.metric("Avg edge", f"{avg_edge:+.2f}")
+        if decided < 30:
+            st.warning(f"Only {decided} decided bets so far — far too small to mean anything. "
+                       "Sample needs hundreds before ROI is signal, not noise.")
+        st.dataframe(df, use_container_width=True, hide_index=True)

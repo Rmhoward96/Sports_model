@@ -88,6 +88,28 @@ def upsert_prop_predictions(records: list[dict]) -> int:
     return len(rows)
 
 
+def upsert_prediction_results(records: list[dict]) -> int:
+    """Upsert graded predictions into Supabase `prediction_results` (idempotent)."""
+    if not records:
+        return 0
+    cols = ["game_pk", "market", "player_id", "player_name", "model_version",
+            "game_date", "model_number", "closing_line", "closing_price", "lean",
+            "actual", "result", "profit", "edge"]
+    key = ("game_pk", "market", "player_id", "model_version")
+    updates = ", ".join(f"{c} = EXCLUDED.{c}" for c in cols if c not in key)
+    placeholders = ", ".join(["%s"] * len(cols))
+    sql = (
+        f"INSERT INTO prediction_results ({', '.join(cols)}) VALUES ({placeholders}) "
+        f"ON CONFLICT (game_pk, market, player_id, model_version) "
+        f"DO UPDATE SET {updates}, graded_at = now()"
+    )
+    rows = [tuple(r.get(c) for c in cols) for r in records]
+    with get_postgres() as conn, conn.cursor() as cur:
+        cur.executemany(sql, rows)
+        conn.commit()
+    return len(rows)
+
+
 def upsert_odds_snapshot(records: list[dict]) -> int:
     """Insert odds snapshots into Supabase `odds_snapshot` (idempotent per capture)."""
     if not records:

@@ -89,3 +89,28 @@ CREATE TABLE IF NOT EXISTS odds_snapshot (
 );
 
 CREATE INDEX IF NOT EXISTS idx_odds_snapshot_game ON odds_snapshot (game_pk, market);
+
+-- Graded predictions (scripts/grade_results.py): each prediction matched to its
+-- closing line + actual outcome. lean = the side the model favored vs the closing
+-- line; profit = units won staking 1u on that lean at the closing price. player_id=0
+-- for game-level markets. This is the model's real track record + CLV.
+CREATE TABLE IF NOT EXISTS prediction_results (
+    game_pk       BIGINT NOT NULL,
+    market        TEXT NOT NULL,
+    player_id     BIGINT NOT NULL DEFAULT 0,
+    player_name   TEXT,
+    model_version TEXT NOT NULL,
+    game_date     DATE,
+    model_number  REAL,        -- model prob (moneyline) or projection (total/props)
+    closing_line  REAL,        -- closing total/prop line (NULL for moneyline)
+    closing_price INTEGER,     -- American odds of the leaned side at close
+    lean          TEXT,        -- home | away | over | under
+    actual        REAL,        -- actual runs/total/stat
+    result        TEXT,        -- win | loss | push
+    profit        REAL,        -- units at closing price (win: dec-1, loss: -1, push: 0)
+    edge          REAL,        -- model number − closing (signed toward the lean)
+    graded_at     TIMESTAMPTZ NOT NULL DEFAULT now(),
+    PRIMARY KEY (game_pk, market, player_id, model_version)
+);
+
+CREATE INDEX IF NOT EXISTS idx_prediction_results_market ON prediction_results (market, game_date);

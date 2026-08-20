@@ -1,0 +1,25 @@
+name: grade-results
+
+# Grades predictions against closing lines + actual results into prediction_results.
+# Runs over a rolling window so games get graded once they finalize. Morning +
+# afternoon runs catch overnight and late-finishing games. Idempotent.
+on:
+  schedule:
+    - cron: "0 14 * * *"   # ~9 AM Central — grade last night's finished games
+    - cron: "0 20 * * *"   # afternoon catch-up for late finishers
+  workflow_dispatch: {}
+
+jobs:
+  grade:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v5
+      - name: Install uv
+        uses: astral-sh/setup-uv@v10.0.1
+      - name: Sync deps
+        run: uv sync
+      - name: Grade results
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+        run: uv run python scripts/grade_results.py
