@@ -1,4 +1,37 @@
 from sportsmodel.sim.mlb import kernel as K
+from sportsmodel.sim.mlb.advancement import AdvancementTable
+
+_EMPTY_ADV = AdvancementTable.from_rows([])
+
+
+def test_home_run_bases_loaded_scores_four():
+    st = K.BaseState(first=3, second=4, third=5)
+    runs, outs = K.resolve_pa(st, batter_idx=6, outcome=K.HR, adv=_EMPTY_ADV, u=0.0)
+    assert runs == 4 and outs == 0
+    assert st.occ() == 0  # bases cleared
+
+
+def test_walk_forces_only():
+    st = K.BaseState(first=1, second=-1, third=-1)
+    runs, outs = K.resolve_pa(st, batter_idx=2, outcome=K.BB, adv=_EMPTY_ADV, u=0.0)
+    assert runs == 0 and outs == 0
+    assert st.first == 2 and st.second == 1  # batter to 1st, forced runner to 2nd
+
+
+def test_strikeout_is_pure_out():
+    st = K.BaseState(first=1, second=-1, third=-1)
+    runs, outs = K.resolve_pa(st, batter_idx=2, outcome=K.K, adv=_EMPTY_ADV, u=0.0)
+    assert runs == 0 and outs == 1
+    assert st.first == 1  # unchanged
+
+
+def test_single_from_table_empty_bases():
+    adv = AdvancementTable.from_rows(
+        [{"outcome": "p_1b", "occ": 0, "end_occ": 1, "runs": 0, "prob": 1.0}])
+    st = K.BaseState(-1, -1, -1)
+    runs, outs = K.resolve_pa(st, batter_idx=7, outcome=K.S, adv=adv, u=0.5)
+    assert runs == 0 and outs == 0
+    assert st.first == 7 and st.second == -1  # batter on first
 
 
 def test_sample_outcome_cumulative():
