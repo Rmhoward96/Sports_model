@@ -10,6 +10,17 @@ from typing import Any
 from .mlb_statsapi import _get
 
 
+def final_game_pks(start_date: str, end_date: str) -> set[int]:
+    """game_pks that are actually Final in [start_date, end_date] (YYYY-MM-DD)."""
+    data = _get("/schedule", {"sportId": 1, "startDate": start_date, "endDate": end_date})
+    finals: set[int] = set()
+    for day in data.get("dates", []):
+        for g in day.get("games", []):
+            if g.get("status", {}).get("abstractGameState") == "Final":
+                finals.add(g["gamePk"])
+    return finals
+
+
 def _ip_to_outs(ip) -> int:
     """MLB innings-pitched like '5.2' -> outs (5*3 + 2)."""
     if ip is None:

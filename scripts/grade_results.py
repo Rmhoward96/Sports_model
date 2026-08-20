@@ -69,6 +69,9 @@ def main() -> None:
         raise SystemExit("DATABASE_URL required (grading reads/writes Supabase).")
 
     start = (date.today() - timedelta(days=args.days)).isoformat()
+    end = date.today().isoformat()
+    finals = mlb_results.final_game_pks(start, end)
+    print(f"{len(finals)} final games in window {start}..{end}")
     rows: list[dict] = []
     with get_postgres() as conn, conn.cursor() as cur:
         cur.execute("""
@@ -80,9 +83,11 @@ def main() -> None:
 
         graded_games = 0
         for game_pk, gdate, mv, home_name, away_name in games:
+            if game_pk not in finals:
+                continue  # only grade truly-final games (not live/scheduled)
             res = mlb_results.fetch_results(game_pk)
             if res is None:
-                continue  # not final yet
+                continue
             close = closing_lines(cur, game_pk)
             graded_games += 1
 
