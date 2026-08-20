@@ -1,0 +1,6 @@
+# Dependencies for the Streamlit dashboard (streamlit_app.py) on Streamlit Community
+# Cloud. The rest of the project uses pyproject.toml / uv; this file is ONLY for the
+# hosted UI, which reads from Supabase and doesn't need the sportsmodel package.
+streamlit>=1.36
+psycopg[binary]>=3.2
+pandas>=2.0
