@@ -13,7 +13,7 @@ from __future__ import annotations
 
 import os
 import sys
-from datetime import date, datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
@@ -25,20 +25,27 @@ from sportsmodel.ingest import odds
 INGEST_PROPS = os.getenv("INGEST_PROPS", "true").lower() != "false"
 
 
-def load_game_lookup() -> dict[tuple[str, str], int]:
-    """{(home_team_name, away_team_name): game_pk} for today's slate."""
-    today = date.today().isoformat()
-    cols = "game_pk, home_team_name, away_team_name"
+def load_game_lookup() -> dict[tuple[str, str, str], int]:
+    """{(home_team_name, away_team_name, game_date): game_pk} over a multi-day window.
+
+    Odds events span several upcoming days; matching by team + the event's resolved US
+    game date (not just "today UTC") avoids the date-boundary mismatch with predictions.
+    """
+    start = (date.today() - timedelta(days=2)).isoformat()
+    end = (date.today() + timedelta(days=3)).isoformat()
+    cols = "game_pk, home_team_name, away_team_name, game_date"
     if config.DATABASE_URL:
         from sportsmodel.db import get_postgres
         with get_postgres() as pg, pg.cursor() as cur:
-            cur.execute(f"SELECT {cols} FROM daily_schedule WHERE game_date = %s", [today])
+            cur.execute(f"SELECT {cols} FROM daily_schedule WHERE game_date BETWEEN %s AND %s",
+                        [start, end])
             rows = cur.fetchall()
     else:
         con = get_duckdb(read_only=True)
-        rows = con.execute(f"SELECT {cols} FROM stg_schedule_raw WHERE game_date = ?", [today]).fetchall()
+        rows = con.execute(f"SELECT {cols} FROM stg_schedule_raw WHERE game_date BETWEEN ? AND ?",
+                           [start, end]).fetchall()
         con.close()
-    return {(home, away): pk for pk, home, away in rows}
+    return {(home, away, str(gd)): pk for pk, home, away, gd in rows}
 
 
 def main() -> None:
@@ -52,7 +59,8 @@ def main() -> None:
     if INGEST_PROPS:
         markets = list(odds.PROP_MARKET_MAP.values())
         events = odds.fetch_events()
-        matched = [(e["id"], lookup.get((e.get("home_team"), e.get("away_team"))))
+        matched = [(e["id"], lookup.get((e.get("home_team"), e.get("away_team"),
+                                         odds.resolved_game_date(e.get("commence_time")))))
                    for e in events]
         matched = [(eid, gp) for eid, gp in matched if gp is not None]
         before = len(rows)

@@ -45,14 +45,14 @@ def load_schedule() -> list[dict]:
         from sportsmodel.db import get_postgres
         with get_postgres() as pg, pg.cursor() as cur:
             cur.execute(
-                f"SELECT {', '.join(SCHED_COLS)} FROM daily_schedule WHERE game_date = %s",
+                f"SELECT {', '.join(SCHED_COLS)} FROM daily_schedule WHERE game_date >= %s",
                 [today],
             )
             rows = cur.fetchall()
     else:
         con = get_duckdb(read_only=True)
         rows = con.execute(
-            f"SELECT {', '.join(SCHED_COLS)} FROM stg_schedule_raw WHERE game_date = ?",
+            f"SELECT {', '.join(SCHED_COLS)} FROM stg_schedule_raw WHERE game_date >= ?",
             [today],
         ).fetchall()
         con.close()

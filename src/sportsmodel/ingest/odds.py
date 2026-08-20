@@ -10,6 +10,7 @@ event, so they add up fast — keep an eye on the plan.
 from __future__ import annotations
 
 import os
+from datetime import datetime, timedelta
 from typing import Any
 
 import httpx
@@ -71,6 +72,22 @@ def fetch_event_props(event_id: str, markets: list[str], regions: str = "us") ->
     })
 
 
+def resolved_game_date(commence_iso: str | None) -> str | None:
+    """US game date (YYYY-MM-DD) from a UTC commence time.
+
+    MLB games commence ~17:00 UTC (afternoon) to ~05:00 UTC next day (west-coast
+    night). Shifting -10h maps every game in a US day back into that same calendar
+    day, so a night game whose UTC date is the next day resolves to its true US date.
+    """
+    if not commence_iso:
+        return None
+    try:
+        dt = datetime.fromisoformat(commence_iso.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    return (dt - timedelta(hours=10)).date().isoformat()
+
+
 def _row(game_pk, market, side, player_name, book, line, price, captured_at, commence):
     return {
         "game_pk": game_pk, "market": market, "side": side,
@@ -80,10 +97,15 @@ def _row(game_pk, market, side, player_name, book, line, price, captured_at, com
 
 
 def parse_game_odds(events, game_lookup, captured_at) -> list[dict]:
-    """Moneyline/total/spread rows joined to game_pk via (home, away) team names."""
+    """Moneyline/total/spread rows joined to game_pk via (home, away, game_date).
+
+    game_lookup is keyed by (home_team, away_team, US_game_date); the date is derived
+    from each event's commence_time so night games map to their correct game day.
+    """
     rows: list[dict] = []
     for ev in events:
-        gp = game_lookup.get((ev.get("home_team"), ev.get("away_team")))
+        gp = game_lookup.get((ev.get("home_team"), ev.get("away_team"),
+                              resolved_game_date(ev.get("commence_time"))))
         if gp is None:
             continue
         home, away, commence = ev["home_team"], ev["away_team"], ev.get("commence_time")
