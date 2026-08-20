@@ -86,9 +86,13 @@ CREATE TABLE IF NOT EXISTS odds_snapshot (
     line          REAL,                   -- total/spread/prop line (NULL for moneyline)
     price         INTEGER,                -- American odds
     commence_time TIMESTAMPTZ,
-    captured_at   TIMESTAMPTZ NOT NULL,
-    PRIMARY KEY (game_pk, market, side, player_name, book, captured_at)
+    captured_at   TIMESTAMPTZ NOT NULL
 );
+
+-- Uniqueness includes `line` (COALESCE for game-line NULLs) so a book's alternate
+-- prop lines (over 0.5 / 1.5 / 2.5) don't collide and overwrite each other.
+CREATE UNIQUE INDEX IF NOT EXISTS odds_snapshot_uniq ON odds_snapshot
+    (game_pk, market, side, player_name, book, captured_at, (COALESCE(line, -99999::real)));
 
 CREATE INDEX IF NOT EXISTS idx_odds_snapshot_game ON odds_snapshot (game_pk, market);
 
