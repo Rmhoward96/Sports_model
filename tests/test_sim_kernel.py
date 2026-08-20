@@ -1,5 +1,6 @@
 import numpy as np
 
+from sportsmodel.model import game as gamemodel
 from sportsmodel.sim.engine import GameSims
 from sportsmodel.sim.mlb import kernel as K
 from sportsmodel.sim.mlb.advancement import AdvancementTable
@@ -138,3 +139,13 @@ def test_vectorized_matches_scalar_distribution():
     # win prob within a couple points
     from sportsmodel.sim.engine import home_win_prob
     assert abs(home_win_prob(a) - home_win_prob(b)) < 0.03
+
+
+def test_sim_mean_runs_near_analytic():
+    spec = _spec()  # flat vectors, no park/def
+    sims = K.simulate(spec, 6000, np.random.default_rng(11))
+    sim_total = (sims.home_score.mean() + sims.away_score.mean())
+    # analytic expected runs for the same flat offense vector, ~38 PA/team
+    v = _flat_vec()
+    analytic = 2 * gamemodel.expected_runs(v)
+    assert abs(sim_total - analytic) < 1.5  # same ballpark; sim adds base-out realism
