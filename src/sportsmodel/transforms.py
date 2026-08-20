@@ -29,6 +29,20 @@ END
 # statcast files land here (partitioned season=YYYY/); recursive glob picks all up.
 _PARQUET_GLOB = str(config.RAW_DIR / "statcast" / "**" / "*.parquet")
 
+# Optional point-in-time cutoff for backtesting: when set (YYYY-MM-DD), every profile
+# is built using only games strictly before this date (no look-ahead leakage). None in
+# production. Set via set_cutoff(); every transform WHERE injects _date_filter().
+_CUTOFF: str | None = None
+
+
+def set_cutoff(cutoff: str | None) -> None:
+    global _CUTOFF
+    _CUTOFF = cutoff
+
+
+def _date_filter() -> str:
+    return f"AND CAST(game_date AS DATE) < DATE '{_CUTOFF}'" if _CUTOFF else ""
+
 
 def _rate_cols() -> str:
     """SQL fragment: outcome-rate columns computed from a grouped set of PAs."""
@@ -56,6 +70,7 @@ def _base_cte(id_col: str, opp_col: str) -> str:
         WHERE events IS NOT NULL
           AND {id_col} IS NOT NULL
           AND {opp_col} IN ('L','R')
+          {_date_filter()}
     ),
     maxyr AS (SELECT max(yr) AS y FROM base)
     """
@@ -120,6 +135,7 @@ def build_team_offense_profiles(con) -> int:
                estimated_woba_using_speedangle AS xwoba
         FROM read_parquet('{_PARQUET_GLOB}')
         WHERE events IS NOT NULL AND inning_topbot IS NOT NULL AND p_throws IN ('L','R')
+          {_date_filter()}
     ),
     maxyr AS (SELECT max(yr) AS y FROM base)
     """
@@ -154,6 +170,7 @@ def build_team_defense(con) -> int:
         WHERE events IS NOT NULL AND inning_topbot IS NOT NULL
           AND events NOT IN ('strikeout','strikeout_double_play','walk','intent_walk','hit_by_pitch','home_run')
           AND estimated_ba_using_speedangle IS NOT NULL
+          {_date_filter()}
     ),
     lg AS (SELECT avg(actual_hit) / avg(xhit) AS lgr FROM bip)
     SELECT team,
@@ -181,6 +198,7 @@ def build_team_bullpen_profiles(con) -> int:
         FROM read_parquet('{_PARQUET_GLOB}')
         WHERE events IS NOT NULL AND inning_topbot IS NOT NULL
           AND inning >= 7 AND stand IN ('L','R')
+          {_date_filter()}
     ),
     maxyr AS (SELECT max(yr) AS y FROM base)
     """
@@ -222,6 +240,7 @@ def build_park_factors(con) -> int:
         SELECT home_team, away_team, inning_topbot, {_WOBA_CASE} AS w
         FROM read_parquet('{_PARQUET_GLOB}')
         WHERE events IS NOT NULL AND inning_topbot IS NOT NULL
+          {_date_filter()}
     ),
     home AS (SELECT home_team AS team, avg(w) AS hw FROM pas WHERE inning_topbot='Bot' GROUP BY home_team),
     road AS (SELECT away_team AS team, avg(w) AS rw FROM pas WHERE inning_topbot='Top' GROUP BY away_team)
@@ -272,6 +291,7 @@ def build_pitcher_workload(con) -> int:
         SELECT game_pk, CAST(pitcher AS BIGINT) AS player_id, inning, {_OUTS_CASE} AS outs
         FROM read_parquet('{_PARQUET_GLOB}')
         WHERE events IS NOT NULL AND pitcher IS NOT NULL
+          {_date_filter()}
     ),
     starts AS (SELECT DISTINCT game_pk, player_id FROM pas WHERE inning = 1),
     per_start AS (
