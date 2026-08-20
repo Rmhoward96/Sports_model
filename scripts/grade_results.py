@@ -55,7 +55,10 @@ def closing_lines(cur, game_pk) -> dict:
             ORDER BY market, side, player_name, book, captured_at DESC
         ) t GROUP BY market, side, lower(coalesce(player_name, ''))
     """, [game_pk])
-    return {(m, s, pn): (line, price) for m, s, pn, line, price in cur.fetchall()}
+    # avg() returns Decimal; cast to float so downstream arithmetic works.
+    return {(m, s, pn): (float(line) if line is not None else None,
+                         float(price) if price is not None else None)
+            for m, s, pn, line, price in cur.fetchall()}
 
 
 def main() -> None:
