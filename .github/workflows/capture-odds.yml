@@ -1,17 +1,41 @@
 name: capture-odds
 
-# Snapshots MLB odds (game lines + player props) from The Odds API several times
-# through the game-day window, so the last snapshot before each game's commence_time
-# is captured as the closing line (used for CLV backtesting). Games are staggered, so
-# a few runs cover the afternoon/evening slate. Each run costs Odds API credits
-# (props are per-event) — tune the cron frequency / INGEST_PROPS to your plan.
+# Snapshots MLB odds from The Odds API through the whole game day. The last snapshot
+# before a game's commence_time is its closing line (used for CLV), so we run often and
+# let each run self-select what to capture:
+#   • Game lines (moneyline/total/spread) are one cheap bulk call — captured every run,
+#     so a skipped/delayed run (GH cron is best-effort) never loses a night's closing lines.
+#   • Player props are per-event and credit-heavy, so PROP_WINDOW_MIN gates them to games
+#     whose first pitch is within the window (default 150 min) and NOT already underway.
+#     That captures near-close, post-lineup prop lines for whatever is about to start —
+#     noon day game or west-coast nightcap — without guessing start times or pulling
+#     inflated pre-lineup longshots. Credits scale with games-near-first-pitch, not runs.
+# Crons are UTC; ET labels assume EDT (MLB regular season is entirely within DST).
 on:
   schedule:
-    - cron: "30 16 * * *"   # ~11:30 AM-12:30 PM ET  (openers / early lines)
-    - cron: "0 22 * * *"    # ~5-6 PM ET             (near close for day games)
-    - cron: "30 23 * * *"   # ~6:30-7:30 PM ET       (near close for most night games)
-    - cron: "30 0 * * *"    # ~7:30-8:30 PM ET        (late night games)
-  workflow_dispatch: {}
+    - cron: "0 14 * * *"   # ~10 AM ET  early day-game openers / lineups
+    - cron: "0 15 * * *"   # ~11 AM ET  near close for ~noon ET day games
+    - cron: "0 16 * * *"   # ~12 PM ET
+    - cron: "0 17 * * *"   # ~1 PM ET   near close for 1pm ET day games
+    - cron: "0 18 * * *"   # ~2 PM ET
+    - cron: "0 19 * * *"   # ~3 PM ET
+    - cron: "0 20 * * *"   # ~4 PM ET   near close for 4pm ET day games
+    - cron: "0 21 * * *"   # ~5 PM ET
+    - cron: "0 22 * * *"   # ~6 PM ET
+    - cron: "0 23 * * *"   # ~7 PM ET   near close for 7:05 ET night games
+    - cron: "0 0 * * *"    # ~8 PM ET   near close for 8:10 ET games
+    - cron: "0 1 * * *"    # ~9 PM ET
+    - cron: "0 2 * * *"    # ~10 PM ET  near close for west-coast games
+  workflow_dispatch:
+    inputs:
+      props:
+        description: "Capture player props too (credit-heavy)"
+        type: boolean
+        default: true
+      prop_window_min:
+        description: "Only fetch props for games starting within N min (blank = repo default; 0 = all games)"
+        required: false
+        default: ""
 
 jobs:
   odds:
@@ -27,5 +51,9 @@ jobs:
         env:
           DATABASE_URL: ${{ secrets.DATABASE_URL }}
           ODDS_API_KEY: ${{ secrets.ODDS_API_KEY }}
-          INGEST_PROPS: ${{ vars.INGEST_PROPS || 'true' }}
+          # Kill switch: set repo var INGEST_PROPS='false' to force props off everywhere.
+          # Manual dispatch can also toggle props off for a single run.
+          INGEST_PROPS: ${{ github.event.inputs.props == 'false' && 'false' || vars.INGEST_PROPS || 'true' }}
+          # Prop capture window in minutes: manual input > repo var > 150 default.
+          PROP_WINDOW_MIN: ${{ github.event.inputs.prop_window_min != '' && github.event.inputs.prop_window_min || vars.PROP_WINDOW_MIN || '150' }}
         run: uv run python scripts/ingest_odds.py

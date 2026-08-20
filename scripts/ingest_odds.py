@@ -24,6 +24,19 @@ from sportsmodel.ingest import odds
 
 INGEST_PROPS = os.getenv("INGEST_PROPS", "true").lower() != "false"
 
+# If set (minutes), fetch props only for games commencing within this window from now,
+# and never for games already underway. This captures near-close, post-lineup prop lines
+# for whatever games are about to start — day or night — instead of pulling every event
+# every run (which wastes credits and grabs inflated pre-lineup longshots). Unset/<=0
+# keeps the old behavior of fetching props for every matched event.
+def _prop_window() -> timedelta | None:
+    raw = os.getenv("PROP_WINDOW_MIN")
+    try:
+        mins = int(raw) if raw else 0
+    except ValueError:
+        mins = 0
+    return timedelta(minutes=mins) if mins > 0 else None
+
 
 def load_game_lookup() -> dict[tuple[str, str, str], int]:
     """{(home_team_name, away_team_name, game_date): game_pk} over a multi-day window.
@@ -59,10 +72,28 @@ def main() -> None:
     if INGEST_PROPS:
         markets = list(odds.PROP_MARKET_MAP.values())
         events = odds.fetch_events()
-        matched = [(e["id"], lookup.get((e.get("home_team"), e.get("away_team"),
-                                         odds.resolved_game_date(e.get("commence_time")))))
-                   for e in events]
-        matched = [(eid, gp) for eid, gp in matched if gp is not None]
+        now = datetime.now(timezone.utc)
+        window = _prop_window()
+        matched: list[tuple[str, int]] = []
+        skipped_early = skipped_started = 0
+        for e in events:
+            gp = lookup.get((e.get("home_team"), e.get("away_team"),
+                             odds.resolved_game_date(e.get("commence_time"))))
+            if gp is None:
+                continue
+            if window is not None:
+                ct = odds.parse_commence(e.get("commence_time"))
+                if ct is not None and ct < now:
+                    skipped_started += 1
+                    continue
+                if ct is not None and ct > now + window:
+                    skipped_early += 1
+                    continue
+            matched.append((e["id"], gp))
+        if window is not None:
+            mins = int(window.total_seconds() // 60)
+            print(f"prop window {mins}m: {len(matched)} games in-window, "
+                  f"{skipped_early} too early, {skipped_started} already started")
         before = len(rows)
         for eid, gp in matched:
             try:

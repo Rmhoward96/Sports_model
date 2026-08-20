@@ -72,6 +72,16 @@ def fetch_event_props(event_id: str, markets: list[str], regions: str = "us") ->
     })
 
 
+def parse_commence(commence_iso: str | None) -> datetime | None:
+    """Tz-aware UTC datetime from an ISO commence string (None if missing/unparseable)."""
+    if not commence_iso:
+        return None
+    try:
+        return datetime.fromisoformat(commence_iso.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+
+
 def resolved_game_date(commence_iso: str | None) -> str | None:
     """US game date (YYYY-MM-DD) from a UTC commence time.
 
@@ -79,11 +89,8 @@ def resolved_game_date(commence_iso: str | None) -> str | None:
     night). Shifting -10h maps every game in a US day back into that same calendar
     day, so a night game whose UTC date is the next day resolves to its true US date.
     """
-    if not commence_iso:
-        return None
-    try:
-        dt = datetime.fromisoformat(commence_iso.replace("Z", "+00:00"))
-    except ValueError:
+    dt = parse_commence(commence_iso)
+    if dt is None:
         return None
     return (dt - timedelta(hours=10)).date().isoformat()
 
