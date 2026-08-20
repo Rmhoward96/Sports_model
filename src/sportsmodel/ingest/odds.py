@@ -1,0 +1,120 @@
+"""The Odds API -> normalized odds rows (game lines + player props).
+
+Snapshots are stored with a captured_at timestamp so the closing line is derivable
+as the last snapshot before a game's commence_time. Games join to our game_pk by
+team names; props carry the player name (joined to player_id at analysis time).
+
+Requires ODDS_API_KEY. Props are per-event calls and cost credits = markets per
+event, so they add up fast — keep an eye on the plan.
+"""
+from __future__ import annotations
+
+import os
+from typing import Any
+
+import httpx
+from tenacity import retry, stop_after_attempt, wait_exponential
+
+BASE = "https://api.the-odds-api.com/v4"
+SPORT = "baseball_mlb"
+GAME_MARKETS = ["h2h", "totals", "spreads"]
+
+# our market code -> The Odds API market key
+PROP_MARKET_MAP = {
+    "hits": "batter_hits",
+    "total_bases": "batter_total_bases",
+    "home_run": "batter_home_runs",
+    "hrr": "batter_hits_runs_rbis",
+    "pitcher_ks": "pitcher_strikeouts",
+    "hits_allowed": "pitcher_hits_allowed",
+    "outs_recorded": "pitcher_outs",
+}
+_ODDS_TO_OURS = {v: k for k, v in PROP_MARKET_MAP.items()}
+
+# credits remaining, updated from the last response header (for logging)
+last_requests_remaining: str | None = None
+
+
+def _key() -> str:
+    k = os.getenv("ODDS_API_KEY")
+    if not k:
+        raise RuntimeError("ODDS_API_KEY is not set (add it to .env / repo secrets).")
+    return k
+
+
+@retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=0.5, max=8))
+def _get(path: str, params: dict[str, Any]) -> Any:
+    global last_requests_remaining
+    with httpx.Client(timeout=25) as client:
+        resp = client.get(f"{BASE}{path}", params={**params, "apiKey": _key()})
+        resp.raise_for_status()
+        last_requests_remaining = resp.headers.get("x-requests-remaining")
+        return resp.json()
+
+
+def fetch_events() -> list[dict]:
+    """Upcoming MLB events (id, home_team, away_team, commence_time)."""
+    return _get(f"/sports/{SPORT}/events", {"dateFormat": "iso"})
+
+
+def fetch_game_odds(regions: str = "us") -> list[dict]:
+    return _get(f"/sports/{SPORT}/odds", {
+        "regions": regions, "markets": ",".join(GAME_MARKETS),
+        "oddsFormat": "american", "dateFormat": "iso",
+    })
+
+
+def fetch_event_props(event_id: str, markets: list[str], regions: str = "us") -> dict:
+    return _get(f"/sports/{SPORT}/events/{event_id}/odds", {
+        "regions": regions, "markets": ",".join(markets),
+        "oddsFormat": "american", "dateFormat": "iso",
+    })
+
+
+def _row(game_pk, market, side, player_name, book, line, price, captured_at, commence):
+    return {
+        "game_pk": game_pk, "market": market, "side": side,
+        "player_name": player_name or "", "book": book, "line": line,
+        "price": price, "captured_at": captured_at, "commence_time": commence,
+    }
+
+
+def parse_game_odds(events, game_lookup, captured_at) -> list[dict]:
+    """Moneyline/total/spread rows joined to game_pk via (home, away) team names."""
+    rows: list[dict] = []
+    for ev in events:
+        gp = game_lookup.get((ev.get("home_team"), ev.get("away_team")))
+        if gp is None:
+            continue
+        home, away, commence = ev["home_team"], ev["away_team"], ev.get("commence_time")
+        for bk in ev.get("bookmakers", []):
+            book = bk["key"]
+            for m in bk.get("markets", []):
+                key = m["key"]
+                for o in m.get("outcomes", []):
+                    if key == "h2h":
+                        side = "home" if o["name"] == home else "away" if o["name"] == away else None
+                        if side:
+                            rows.append(_row(gp, "moneyline", side, None, book, None, o.get("price"), captured_at, commence))
+                    elif key == "totals":
+                        rows.append(_row(gp, "total", o["name"].lower(), None, book, o.get("point"), o.get("price"), captured_at, commence))
+                    elif key == "spreads":
+                        side = "home" if o["name"] == home else "away"
+                        rows.append(_row(gp, "spread", side, None, book, o.get("point"), o.get("price"), captured_at, commence))
+    return rows
+
+
+def parse_prop_odds(event_props, game_pk, captured_at) -> list[dict]:
+    """Player-prop rows (our market codes) with player name and over/under side."""
+    commence = event_props.get("commence_time")
+    rows: list[dict] = []
+    for bk in event_props.get("bookmakers", []):
+        book = bk["key"]
+        for m in bk.get("markets", []):
+            our = _ODDS_TO_OURS.get(m["key"])
+            if not our:
+                continue
+            for o in m.get("outcomes", []):
+                rows.append(_row(game_pk, our, o["name"].lower(), o.get("description"),
+                                 book, o.get("point"), o.get("price"), captured_at, commence))
+    return rows

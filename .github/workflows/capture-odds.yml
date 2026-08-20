@@ -1,0 +1,31 @@
+name: capture-odds
+
+# Snapshots MLB odds (game lines + player props) from The Odds API several times
+# through the game-day window, so the last snapshot before each game's commence_time
+# is captured as the closing line (used for CLV backtesting). Games are staggered, so
+# a few runs cover the afternoon/evening slate. Each run costs Odds API credits
+# (props are per-event) — tune the cron frequency / INGEST_PROPS to your plan.
+on:
+  schedule:
+    - cron: "30 16 * * *"   # ~11:30 AM-12:30 PM ET  (openers / early lines)
+    - cron: "0 22 * * *"    # ~5-6 PM ET             (near close for day games)
+    - cron: "30 23 * * *"   # ~6:30-7:30 PM ET       (near close for most night games)
+    - cron: "30 0 * * *"    # ~7:30-8:30 PM ET        (late night games)
+  workflow_dispatch: {}
+
+jobs:
+  odds:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v5
+      - name: Install uv
+        uses: astral-sh/setup-uv@v10.0.1
+      - name: Sync deps
+        run: uv sync
+      - name: Snapshot odds
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+          ODDS_API_KEY: ${{ secrets.ODDS_API_KEY }}
+          INGEST_PROPS: ${{ vars.INGEST_PROPS || 'true' }}
+        run: uv run python scripts/ingest_odds.py

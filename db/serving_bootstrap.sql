@@ -70,3 +70,22 @@ CREATE TABLE IF NOT EXISTS prop_predictions (
 );
 
 CREATE INDEX IF NOT EXISTS idx_prop_predictions_date ON prop_predictions (game_date);
+
+-- Odds snapshots from The Odds API (scripts/ingest_odds.py). captured_at is part of
+-- the key so repeated pulls accumulate line movement; the CLOSING line is the last
+-- snapshot before commence_time. Game lines have player_name = '' (empty). Props carry
+-- the player name (joined to our player_id / prop_predictions by name at analysis time).
+CREATE TABLE IF NOT EXISTS odds_snapshot (
+    game_pk       BIGINT NOT NULL,
+    market        TEXT NOT NULL,          -- moneyline | total | spread | (prop codes)
+    side          TEXT NOT NULL,          -- home | away | over | under
+    player_name   TEXT NOT NULL DEFAULT '',
+    book          TEXT NOT NULL,
+    line          REAL,                   -- total/spread/prop line (NULL for moneyline)
+    price         INTEGER,                -- American odds
+    commence_time TIMESTAMPTZ,
+    captured_at   TIMESTAMPTZ NOT NULL,
+    PRIMARY KEY (game_pk, market, side, player_name, book, captured_at)
+);
+
+CREATE INDEX IF NOT EXISTS idx_odds_snapshot_game ON odds_snapshot (game_pk, market);
