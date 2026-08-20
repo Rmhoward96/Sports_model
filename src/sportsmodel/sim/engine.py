@@ -1,0 +1,44 @@
+"""Sport-agnostic simulation result container and aggregation helpers.
+
+A kernel fills a GameSims (raw per-sim arrays); these helpers turn it into the
+stored outputs (win prob, total pmf, per-player pmfs). Nothing here is baseball-specific.
+"""
+from __future__ import annotations
+
+from dataclasses import dataclass
+
+import numpy as np
+
+
+@dataclass
+class GameSims:
+    home_score: np.ndarray
+    away_score: np.ndarray
+    batter_stats: dict[int, dict[str, np.ndarray]]
+    pitcher_stats: dict[int, dict[str, np.ndarray]]
+
+
+def home_win_prob(sims: GameSims) -> float:
+    return float(np.mean(sims.home_score > sims.away_score))
+
+
+def stat_pmf(arr: np.ndarray, max_k: int) -> list[float]:
+    n = len(arr)
+    counts = np.bincount(np.clip(arr, 0, max_k).astype(int), minlength=max_k + 1)[: max_k + 1]
+    return (counts / n).tolist()
+
+
+def total_pmf(sims: GameSims, max_total: int = 30) -> list[float]:
+    return stat_pmf(sims.home_score + sims.away_score, max_total)
+
+
+def pred_scores(sims: GameSims) -> dict:
+    h = float(np.mean(sims.home_score))
+    a = float(np.mean(sims.away_score))
+    return {
+        "pred_home_score": h,
+        "pred_away_score": a,
+        "pred_total": h + a,
+        "pred_margin": h - a,
+        "home_win_prob": home_win_prob(sims),
+    }
