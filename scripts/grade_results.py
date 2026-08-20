@@ -48,12 +48,17 @@ def _grade_ou(model_num, line, actual, price_over, price_under):
     return lean, price, ("win" if won else "loss"), (_decimal(price) - 1 if won else -1.0), edge
 
 
-def closing_lines(cur, game_pk) -> dict:
+def closing_lines(cur, game_pk, game_date) -> dict:
     """{(market, side, player_lower): [(line, price, books), ...]} closing consensus.
 
     One entry per distinct LINE (books post alternate lines; averaging across them —
     or averaging American prices — is meaningless). `price` is the median posted price
     at that line; `books` is how many books offered it (used to pick the main line).
+
+    Guard: only trust rows whose commence_time, shifted -10h (the same rule the odds
+    matcher uses to assign game_pk), lands on this game's official date. A legacy
+    date-boundary mismatch once stapled an adjacent series game's odds onto a game_pk;
+    this ensures such a stray can never contribute to a closing line.
     """
     cur.execute("""
         SELECT market, side, lower(coalesce(player_name, '')) pn, line,
@@ -62,10 +67,12 @@ def closing_lines(cur, game_pk) -> dict:
         FROM (
             SELECT DISTINCT ON (market, side, player_name, line, book)
                    market, side, player_name, line, book, price
-            FROM odds_snapshot WHERE game_pk = %s AND captured_at <= commence_time
+            FROM odds_snapshot
+            WHERE game_pk = %s AND captured_at <= commence_time
+              AND ((commence_time AT TIME ZONE 'UTC') - interval '10 hours')::date = %s
             ORDER BY market, side, player_name, line, book, captured_at DESC
         ) t GROUP BY market, side, lower(coalesce(player_name, '')), line
-    """, [game_pk])
+    """, [game_pk, game_date])
     out: dict = {}
     for m, s, pn, line, books, price in cur.fetchall():
         out.setdefault((m, s, pn), []).append(
@@ -117,7 +124,7 @@ def main() -> None:
             res = mlb_results.fetch_results(game_pk)
             if res is None:
                 continue
-            close = closing_lines(cur, game_pk)
+            close = closing_lines(cur, game_pk, gdate)
             graded_games += 1
 
             # game predictions for this game/model

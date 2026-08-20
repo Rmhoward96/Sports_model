@@ -1,12 +1,14 @@
 name: grade-results
 
 # Grades predictions against closing lines + actual results into prediction_results.
-# Runs over a rolling window so games get graded once they finalize. Morning +
-# afternoon runs catch overnight and late-finishing games. Idempotent.
+# Runs over a rolling window so games get graded once they finalize. Idempotent, and
+# costs ZERO Odds API credits (reads only MLB StatsAPI + the DB), so we run it every
+# 3h — a finished game gets its CLV within ~3h instead of waiting up to ~18h for a
+# twice-daily pass. Covers day games (finish ~evening UTC) and night/west-coast games
+# (finish ~03:00-06:00 UTC) alike.
 on:
   schedule:
-    - cron: "0 14 * * *"   # ~9 AM Central — grade last night's finished games
-    - cron: "0 20 * * *"   # afternoon catch-up for late finishers
+    - cron: "0 */3 * * *"   # every 3 hours (00,03,06,09,12,15,18,21 UTC)
   workflow_dispatch: {}
 
 jobs:
