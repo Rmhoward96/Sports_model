@@ -83,3 +83,46 @@ def test_reproducible_with_seed():
     a = K.simulate_scalar(_spec(), 30, np.random.default_rng(7))
     b = K.simulate_scalar(_spec(), 30, np.random.default_rng(7))
     assert np.array_equal(a.home_score, b.home_score)
+
+
+def test_strikeout_outs_not_double_counted():
+    """Regression test: strikeouts should count as exactly 1 out, not 2.
+
+    Before the fix, resolve_pa returned outs_added=1 for K, but the game loop
+    then added another out via the buggy term (1 if outcome == K else 0),
+    resulting in 2 outs per strikeout and half-innings ending early.
+
+    This test uses an all-strikeout pitcher (p_k=1.0) with a starter that never
+    leaves (avg_bf=999, sd_bf=0). In 9 innings each with 3 outs, exactly 27
+    strikeouts should happen (since no baserunners via strikeouts). The starter
+    should record exactly 27 outs, not 54.
+    """
+    # Create batters with p_k = 1.0 (100% strikeout rate)
+    all_k_vec = {"p_bb": 0.0, "p_k": 1.0, "p_1b": 0.0, "p_2b": 0.0,
+                 "p_3b": 0.0, "p_hr": 0.0, "p_out": 0.0}
+    bs = [K.Batter(pid, all_k_vec, all_k_vec) for pid in range(100, 109)]
+    aw = [K.Batter(pid, all_k_vec, all_k_vec) for pid in range(200, 209)]
+    # Starter with very high avg_bf (999) and sd_bf=0 ensures starter never leaves
+    spec = K.GameSpec(bs, aw, K.Pitcher(1, avg_bf=999, sd_bf=0), K.Pitcher(2, avg_bf=999, sd_bf=0))
+
+    sims = K.simulate_scalar(spec, n_sims=5, rng=np.random.default_rng(42))
+
+    # Each sim should have exactly 27 outs per starter in 9 complete innings
+    # (or more if extras, but always K == outs for an all-strikeout pitcher)
+    for i in range(5):
+        home_starter_k = sims.pitcher_stats[1]["k"][i]
+        home_starter_outs = sims.pitcher_stats[1]["outs"][i]
+        away_starter_k = sims.pitcher_stats[2]["k"][i]
+        away_starter_outs = sims.pitcher_stats[2]["outs"][i]
+        # Each strikeout should contribute exactly 1 out (not 2)
+        assert home_starter_outs == home_starter_k, \
+            f"Home starter sim {i}: outs={home_starter_outs} but k={home_starter_k} (double-count bug?)"
+        assert away_starter_outs == away_starter_k, \
+            f"Away starter sim {i}: outs={away_starter_outs} but k={away_starter_k} (double-count bug?)"
+        # In a 9-inning game with all strikeouts, each team should have exactly 27 outs
+        # (9 innings * 3 outs per inning). If there are extras, outs will be higher.
+        # The important check is that outs == k, which this assertion covers above.
+        assert home_starter_k >= 27, \
+            f"Home starter sim {i}: fewer than 27 strikeouts, expected >= 27"
+        assert away_starter_k >= 27, \
+            f"Away starter sim {i}: fewer than 27 strikeouts, expected >= 27"

@@ -201,8 +201,8 @@ def _sim_one(spec: GameSpec, adv: AdvancementTable, rng, max_extra: int) -> tupl
                     pline["k"] += 1
                 if outcome in (S, D, T, HR):
                     pline["hits"] += 1
-                pline["outs"] += outs_added + (1 if outcome == K else 0)
-            outs += outs_added + (1 if outcome == K else 0)
+                pline["outs"] += outs_added
+            outs += outs_added
             bf[defense] += 1
             idx[bat_team] += 1
 
