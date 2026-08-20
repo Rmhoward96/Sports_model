@@ -30,8 +30,10 @@ def build_game_spec(home_order, away_order, home_sp_vec, away_sp_vec,
             out.append(Batter(pid, vs_sp, vs_bp))
         return out
 
-    home = order(home_order, away_sp_vec, away_bp_vec, away_def)  # home bats vs away pitchers
-    away = order(away_order, home_sp_vec, home_bp_vec, home_def)
+    # missing bullpen vector -> fall back to the starter vector (same guard
+    # backtest_game.py's predict() applies: `vec_bp = ... if opp_bp else vec_sp`)
+    home = order(home_order, away_sp_vec, away_bp_vec or away_sp_vec, away_def)  # home bats vs away pitchers
+    away = order(away_order, home_sp_vec, home_bp_vec or home_sp_vec, home_def)
     spec = GameSpec(home, away,
                     Pitcher(home_starter_id, *workload[home_starter_id]),
                     Pitcher(away_starter_id, *workload[away_starter_id]))
