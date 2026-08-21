@@ -27,3 +27,14 @@ def test_tto_mult_worsens_for_starter():
     # times through the order 2 and 3 should raise hit/hr, lower K vs pass 1
     assert TTO_MULT["p_hr"][1] > TTO_MULT["p_hr"][0]
     assert TTO_MULT["p_k"][2] < TTO_MULT["p_k"][0]
+
+
+def test_advancement_rows_round_trip(tmp_path):
+    import polars as pl
+    rows = [{"outcome": "p_1b", "occ": 0, "outs": 0, "end_occ": 1, "runs": 0,
+             "outs_added": None, "prob": 1.0}]
+    p = tmp_path / "adv.parquet"
+    pl.DataFrame(rows).write_parquet(p)
+    back = pl.read_parquet(p).to_dicts()
+    t = AdvancementTable.from_rows(back)
+    assert t.sample(2, 0, 0.5) == (1, 0)

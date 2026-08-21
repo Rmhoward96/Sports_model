@@ -18,5 +18,9 @@ data/
 !assets/profiles/
 !assets/profiles/*.parquet
 
+# Exception: committed advancement table the simulator reads
+!assets/advancement/
+!assets/advancement/*.parquet
+
 # OS
 .DS_Store

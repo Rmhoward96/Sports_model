@@ -5,6 +5,7 @@ Shared by the props generator. Each returns plain dicts so callers stay pure.
 from __future__ import annotations
 
 import duckdb
+import polars as pl
 
 from . import config
 
@@ -111,3 +112,9 @@ def load_pitcher_workload(ids) -> dict[int, tuple]:
     ).fetchall()
     con.close()
     return {int(r[0]): (r[1], r[2], r[3], r[4]) for r in rows}
+
+
+def load_advancement_rows() -> list[dict]:
+    """Load committed advancement table rows (outcome, occ, end_occ, runs, prob) as dicts."""
+    path = config.PROJECT_ROOT / "assets" / "advancement" / "mlb_advancement.parquet"
+    return pl.read_parquet(path).to_dicts()
