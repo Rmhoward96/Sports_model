@@ -279,7 +279,7 @@ def props_board(mv, market, gdate, pks) -> tuple[pd.DataFrame, int, int]:
 
 
 def model_versions(table) -> list:
-    df = q(f"SELECT DISTINCT model_version FROM {table} ORDER BY model_version DESC")
+    df = q(f"SELECT model_version FROM {table} GROUP BY model_version ORDER BY max(generated_at) DESC")
     return df.model_version.tolist() if not df.empty else []
 
 
