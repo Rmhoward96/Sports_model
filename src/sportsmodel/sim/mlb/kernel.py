@@ -18,6 +18,23 @@ _VEC_ORDER = ("p_bb", "p_k", "p_1b", "p_2b", "p_3b", "p_hr", "p_out")
 BB, K, S, D, T, HR, OUT_INPLAY = 0, 1, 2, 3, 4, 5, 6
 _CODE = {"p_bb": BB, "p_k": K, "p_1b": S, "p_2b": D, "p_3b": T, "p_hr": HR, "p_out": OUT_INPLAY}
 
+# Performance-correlated pitcher hook: a cruising (0-run) starter is allowed
+# to go BEYOND his sampled endurance (`base`); a starter who's getting shelled
+# has his leash shortened proportional to runs allowed. See _effective_hook.
+HOOK_LEASH_BONUS = 3.0   # outs a cruising (0-run) starter is allowed beyond his sampled endurance
+HOOK_RUN_PENALTY = 1.5   # outs of leash lost per run the starter has allowed
+
+
+def _effective_hook(base, runs_allowed):
+    """Effective outs-recorded exit threshold for a starter.
+
+    `base` is the per-start sampled endurance (clip(Normal(avg_outs, sd_outs), 3, 27));
+    `runs_allowed` is the runs the batting team has scored while THIS starter has been
+    in (accumulates monotonically over the start). Works elementwise on scalars or
+    numpy arrays via np.clip.
+    """
+    return np.clip(base + HOOK_LEASH_BONUS - HOOK_RUN_PENALTY * runs_allowed, 3.0, 27.0)
+
 
 @dataclass
 class Batter:
@@ -151,22 +168,24 @@ def _sim_one(spec: GameSpec, adv: AdvancementTable, rng, max_extra: int) -> tupl
     # pitcher stat lines (starter only): K, hits allowed, outs
     hp = {"k": 0, "hits": 0, "outs": 0}
     ap = {"k": 0, "hits": 0, "outs": 0}
-    # hook is an OUTS-RECORDED threshold: the starter stays in while his own
-    # accumulated outs (pline["outs"], the same quantity that becomes his
-    # outs_recorded stat) are below this sampled value. Floor of 3 outs (1
-    # inning min); top-clamped at 27 (a full 9-inning outing) for stability.
-    hook_home = min(27.0, max(3.0, rng.normal(spec.home_starter.avg_outs, spec.home_starter.sd_outs)))
-    hook_away = min(27.0, max(3.0, rng.normal(spec.away_starter.avg_outs, spec.away_starter.sd_outs)))
+    # `base` is the per-start sampled endurance -- floor of 3 outs (1 inning
+    # min); top-clamped at 27 (a full 9-inning outing) for stability. The
+    # ACTUAL exit threshold is performance-correlated: see _effective_hook.
+    # It's recomputed each PA from `base` and the starter's own runs allowed
+    # so far (runs_allowed[defense], accumulated below only while he's in).
+    base_home = min(27.0, max(3.0, rng.normal(spec.home_starter.avg_outs, spec.home_starter.sd_outs)))
+    base_away = min(27.0, max(3.0, rng.normal(spec.away_starter.avg_outs, spec.away_starter.sd_outs)))
     scores = [0, 0]           # [away, home]
     idx = [0, 0]              # batting-order pointer [away, home]
     bf = [0, 0]               # batters faced by the [away pitcher, home pitcher] (drives TTO only)
+    runs_allowed = [0, 0]     # runs allowed by the [away pitcher, home pitcher] while he was in
 
     def half(bat_team, inning):
         # bat_team: 0 away, 1 home. Defense is the other team; its starter faces batters.
         order = spec.home_order if bat_team == 1 else spec.away_order
         box = home_box if bat_team == 1 else away_box
         defense = 0 if bat_team == 1 else 1
-        hook = hook_away if defense == 0 else hook_home
+        base = base_away if defense == 0 else base_home
         pline = ap if defense == 0 else hp
         state = BaseState()
         if inning > 9:
@@ -179,9 +198,13 @@ def _sim_one(spec: GameSpec, adv: AdvancementTable, rng, max_extra: int) -> tupl
         while outs < 3:
             b = order[idx[bat_team] % 9]
             faced = bf[defense]
-            # starter_in is governed by his own accumulated outs (pline["outs"]),
-            # not batters faced -- this IS the outs-recorded hook.
-            starter_in = pline["outs"] < hook
+            # starter_in is governed by his own accumulated outs (pline["outs"])
+            # against a runs-allowed-shrunk effective threshold, not batters
+            # faced -- this IS the performance-correlated hook. Re-evaluated
+            # every PA using runs_allowed as of BEFORE this PA (causal: this
+            # PA's own runs can't affect whether the starter throws it).
+            effective = _effective_hook(base, runs_allowed[defense])
+            starter_in = pline["outs"] < effective
             times_through = faced // 9 + 1
             vec = apply_tto(b.vec_vs_sp, times_through) if starter_in else b.vec_vs_bp
             u = rng.random()
@@ -208,6 +231,7 @@ def _sim_one(spec: GameSpec, adv: AdvancementTable, rng, max_extra: int) -> tupl
                 if outcome in (S, D, T, HR):
                     pline["hits"] += 1
                 pline["outs"] += outs_added
+                runs_allowed[defense] += runs
             outs += outs_added
             bf[defense] += 1
             idx[bat_team] += 1
@@ -377,11 +401,13 @@ def simulate(spec: GameSpec, n_sims: int, rng, max_extra: int = 11) -> GameSims:
     away_sp, away_bp = _team_tensors(away_order)
     cum_mat, end_mat, runs_mat = _build_adv_vec(adv)
 
-    # hook is an OUTS-RECORDED threshold per sim (see simulate_scalar docstring
-    # note above _sim_one's hook_home/hook_away for the rationale); same floor
-    # of 3 outs / top clamp of 27, drawn from the same rng as the scalar path.
-    hook_home = np.clip(rng.normal(spec.home_starter.avg_outs, spec.home_starter.sd_outs, size=n), 3.0, 27.0)
-    hook_away = np.clip(rng.normal(spec.away_starter.avg_outs, spec.away_starter.sd_outs, size=n), 3.0, 27.0)
+    # `base` is the per-sim sampled endurance (see simulate_scalar's base_home/
+    # base_away note); same floor of 3 outs / top clamp of 27, drawn from the
+    # same rng as the scalar path. The ACTUAL exit threshold is performance-
+    # correlated -- see _effective_hook -- and recomputed per-sim each PA from
+    # `base` and each sim's own runs_allowed accumulator.
+    base_home = np.clip(rng.normal(spec.home_starter.avg_outs, spec.home_starter.sd_outs, size=n), 3.0, 27.0)
+    base_away = np.clip(rng.normal(spec.away_starter.avg_outs, spec.away_starter.sd_outs, size=n), 3.0, 27.0)
 
     scores_home = np.zeros(n, dtype=np.int64)
     scores_away = np.zeros(n, dtype=np.int64)
@@ -390,6 +416,9 @@ def simulate(spec: GameSpec, n_sims: int, rng, max_extra: int = 11) -> GameSims:
     bf_away_pitcher = np.zeros(n, dtype=np.int64)  # batters faced by the AWAY pitcher
     bf_home_pitcher = np.zeros(n, dtype=np.int64)  # batters faced by the HOME pitcher
     bf = [bf_away_pitcher, bf_home_pitcher]  # indexed by defense: 0=away, 1=home
+    runs_allowed_away = np.zeros(n, dtype=np.int64)  # runs allowed by the AWAY starter while in
+    runs_allowed_home = np.zeros(n, dtype=np.int64)  # runs allowed by the HOME starter while in
+    runs_allowed = [runs_allowed_away, runs_allowed_home]  # indexed by defense: 0=away, 1=home
 
     home_box = {m: np.zeros((9, n), dtype=np.int64) for m in _BATTER_MARKETS if m != "hrr"}
     away_box = {m: np.zeros((9, n), dtype=np.int64) for m in _BATTER_MARKETS if m != "hrr"}
@@ -404,9 +433,10 @@ def simulate(spec: GameSpec, n_sims: int, rng, max_extra: int = 11) -> GameSims:
         box = home_box if bat_team == 1 else away_box
         idx = idx_home if bat_team == 1 else idx_away
         defense = 1 - bat_team
-        hook = hook_away if defense == 0 else hook_home
+        base = base_away if defense == 0 else base_home
         bf_def = bf[defense]
         pline = ap if defense == 0 else hp
+        ra_def = runs_allowed[defense]
         sp_tensor = home_sp if bat_team == 1 else away_sp
         bp_tensor = home_bp if bat_team == 1 else away_bp
 
@@ -421,9 +451,12 @@ def simulate(spec: GameSpec, n_sims: int, rng, max_extra: int = 11) -> GameSims:
             slot = idx % 9
             times_through = bf_def // 9 + 1
             tto_idx = np.clip(times_through, 1, 3) - 1
-            # starter_in governed by his own accumulated outs (pline["outs"]),
-            # matching the scalar kernel's outs-recorded hook exactly.
-            starter_in = pline["outs"] < hook
+            # starter_in governed by his own accumulated outs (pline["outs"])
+            # against a per-sim runs-allowed-shrunk effective threshold,
+            # matching the scalar kernel's performance-correlated hook exactly.
+            # Uses ra_def as of BEFORE this PA (causal, same as scalar).
+            effective = _effective_hook(base, ra_def)
+            starter_in = pline["outs"] < effective
 
             vec_if_sp = sp_tensor[tto_idx, slot]
             vec_if_bp = bp_tensor[slot]
@@ -460,6 +493,7 @@ def simulate(spec: GameSpec, n_sims: int, rng, max_extra: int = 11) -> GameSims:
             pline["k"][sm] += is_k[sm]
             pline["hits"][sm] += is_hit[sm]
             pline["outs"][sm] += outs_added[sm]
+            ra_def[sm] += runs[sm]
 
             outs[m] += outs_added[m]
             bf_def[m] += 1
