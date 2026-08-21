@@ -214,6 +214,18 @@ def test_grade_game_total_right_skew_leans_under_despite_high_mean():
     assert row["result"] == "win"
 
 
+def test_grade_game_total_pass_not_recorded():
+    # P(over 8.5) = 0.5 at -110/-110 -> both sides -EV (vig) -> "pass" -> no total row.
+    pmf = [0.0] * 13
+    pmf[8], pmf[9] = 0.5, 0.5
+    total_dist = {"kind": "pmf", "pmf": pmf}
+    close = _total_close(line=8.5)
+    res = _res(5, 4)
+    out = _grade_game(1, "2026-08-20", "mlb-hybrid-v1", res, close,
+                       pred_total=8.5, home_wp=0.5, pred_margin=None, total_dist=total_dist)
+    assert not [r for r in out if r["market"] == "total"]  # pass -> not graded
+
+
 def test_grade_game_total_legacy_row_without_dist_leaves_prob_ev_none():
     close = _total_close()
     res = _res(5, 4)

@@ -254,10 +254,13 @@ def _grade_game(game_pk, gdate, mv, res, close, pred_total, home_wp, pred_margin
             edge = (model_p - market_p)
         else:  # legacy fallback: no stored distribution -> mean-vs-line
             lean, price, result, profit, edge = _grade_ou(cal_total, line, actual_total, over[1], pu)
-        pname = f"{lean.title()} {line:g}"
-        out.append(_row(game_pk, "total", 0, pname, mv, gdate, cal_total, line, price, lean,
-                        actual_total, result, profit, edge,
-                        model_prob=model_p, market_prob=market_p, ev=ev))
+        # Only track a +EV pick in the CLV. A "pass" (computed EV <= 0) isn't recorded.
+        # A legacy row without a stored dist (ev is None) still records (mean-based).
+        if ev is None or ev > 0:
+            pname = f"{lean.title()} {line:g}"
+            out.append(_row(game_pk, "total", 0, pname, mv, gdate, cal_total, line, price, lean,
+                            actual_total, result, profit, edge,
+                            model_prob=model_p, market_prob=market_p, ev=ev))
     # Spread (run line) — home_line is the home team's spread point (e.g. -1.5).
     # "Home covers" iff actual_margin + home_line > 0 (equivalently: away_line is the
     # negation of home_line, and away covers iff actual_margin + away_line < 0, i.e.
@@ -297,10 +300,13 @@ def _grade_game(game_pk, gdate, mv, res, close, pred_total, home_wp, pred_margin
             won = home_covers if lean_home else (not home_covers)
             result, profit = ("win", _decimal(price) - 1) if won else ("loss", -1.0)
         edge = (pred_margin + sl) if lean_home else -(pred_margin + sl)
-        pname = f"{home_name} {sl:+g}" if lean_home else f"{away_name} {-sl:+g}"
-        out.append(_row(game_pk, "spread", 0, pname, mv, gdate, pred_margin, sl, price, lean,
-                        actual_margin, result, profit, edge,
-                        model_prob=model_p, market_prob=market_p, ev=ev))
+        # Only track a +EV run-line pick in the CLV. A "pass" (EV <= 0) isn't recorded;
+        # a legacy row without a margin dist (ev is None) still records (mean-based).
+        if ev is None or ev > 0:
+            pname = f"{home_name} {sl:+g}" if lean_home else f"{away_name} {-sl:+g}"
+            out.append(_row(game_pk, "spread", 0, pname, mv, gdate, pred_margin, sl, price, lean,
+                            actual_margin, result, profit, edge,
+                            model_prob=model_p, market_prob=market_p, ev=ev))
     return out
 
 
@@ -353,6 +359,9 @@ def _grade_prop(game_pk, gdate, mv, res, close, pid, pname, market, proj, dist) 
         lean, price, model_p, market_p, ev = "over", po, p_over, novig_over, ev_over
     else:
         lean, price, model_p, market_p, ev = "under", pu, 1 - p_over, 1 - novig_over, ev_under
+
+    if ev <= 0:
+        return None  # "pass" -- not a +EV bet, so it isn't tracked in the CLV record
 
     if stat == line:
         result, profit = "push", 0.0
