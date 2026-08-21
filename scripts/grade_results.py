@@ -225,26 +225,38 @@ def _grade_game(game_pk, gdate, mv, res, close, pred_total, home_wp, pred_margin
     if pred_total is not None and over and over[0] is not None and over[1]:
         line = over[0]
         pu = _price_at(close.get(("total", "under", "")), line) or over[1]
-        # lean on the CALIBRATED mean (pred_total + loc). The sim runs ~1 run light, so a
-        # raw-mean lean would take UNDER on nearly every game; the loc re-centers it.
         cal_total = pred_total + _TOTAL_CAL[0]
-        lean, price, result, profit, edge = _grade_ou(cal_total, line, hr_ + ar_, over[1], pu)
+        actual_total = hr_ + ar_
         model_p = market_p = ev = None
+        # Pick the side by EV from the calibrated total distribution's P(over), NOT by
+        # mean-vs-line. MLB totals are right-skewed (mean ~8.9 >> median ~8.0), so the
+        # market line sits near the median; leaning on the calibrated MEAN would take
+        # OVER on nearly every game. P(over) from the distribution prices the skew.
+        p_over_line = float("nan")
         if total_dist:
             td = json.loads(total_dist) if isinstance(total_dist, str) else total_dist
             p_over_line = prob_over_dist(_calibrated_total(td), line)
-            if p_over_line == p_over_line:  # not NaN
-                io = american_to_prob(over[1])
-                iu = american_to_prob(pu) if pu else 1 - io
-                novig_over = io / (io + iu)
-                if lean == "over":
-                    model_p, market_p, ev = p_over_line, novig_over, p_over_line * _decimal(price) - 1
-                else:
-                    model_p, market_p, ev = (1 - p_over_line, 1 - novig_over,
-                                              (1 - p_over_line) * _decimal(price) - 1)
+        if p_over_line == p_over_line:  # distribution available
+            io = american_to_prob(over[1])
+            iu = american_to_prob(pu) if pu else 1 - io
+            novig_over = io / (io + iu)
+            ev_over = p_over_line * _decimal(over[1]) - 1
+            ev_under = (1 - p_over_line) * _decimal(pu) - 1
+            if ev_over >= ev_under:
+                lean, price, model_p, market_p, ev = "over", over[1], p_over_line, novig_over, ev_over
+            else:
+                lean, price, model_p, market_p, ev = "under", pu, 1 - p_over_line, 1 - novig_over, ev_under
+            if actual_total == line:
+                result, profit = "push", 0.0
+            else:
+                won = (actual_total > line) if lean == "over" else (actual_total < line)
+                result, profit = ("win", _decimal(price) - 1) if won else ("loss", -1.0)
+            edge = (model_p - market_p)
+        else:  # legacy fallback: no stored distribution -> mean-vs-line
+            lean, price, result, profit, edge = _grade_ou(cal_total, line, actual_total, over[1], pu)
         pname = f"{lean.title()} {line:g}"
         out.append(_row(game_pk, "total", 0, pname, mv, gdate, cal_total, line, price, lean,
-                        hr_ + ar_, result, profit, edge,
+                        actual_total, result, profit, edge,
                         model_prob=model_p, market_prob=market_p, ev=ev))
     # Spread (run line) — home_line is the home team's spread point (e.g. -1.5).
     # "Home covers" iff actual_margin + home_line > 0 (equivalently: away_line is the

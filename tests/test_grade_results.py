@@ -178,20 +178,40 @@ def test_grade_game_total_over_lean_uses_dist_model_prob_and_names_pick():
 
 def test_grade_game_total_under_lean_uses_complement_and_names_pick():
     pmf = [0.0] * 13
-    pmf[8], pmf[9] = 0.4, 0.6  # same dist; P(>8.5) = 0.6, P(under) side = 1 - 0.6 = 0.4
+    pmf[8], pmf[9] = 0.6, 0.4  # P(>8.5) = 0.4 -> under is favored (P=0.6), +EV under
     total_dist = {"kind": "pmf", "pmf": pmf}
     close = _total_close()
-    res = _res(4, 4)  # actual total = 8
+    res = _res(4, 4)  # actual total = 8 -> under wins
     out = _grade_game(1, "2026-08-20", "mlb-hybrid-v1", res, close,
-                       pred_total=8.0, home_wp=0.5, pred_margin=None,
+                       pred_total=8.4, home_wp=0.5, pred_margin=None,
                        total_dist=total_dist)
     row = [r for r in out if r["market"] == "total"][0]
     assert row["lean"] == "under"
     assert row["player_name"] == "Under 8.5"
     p_over = grade_results.prob_over_dist(total_dist, 8.5)
-    assert row["model_prob"] == pytest.approx(1 - p_over)
+    assert row["model_prob"] == pytest.approx(1 - p_over)  # 0.6
     assert row["market_prob"] == pytest.approx(0.5)
-    assert row["ev"] < 0  # model (0.4) is worse than no-vig market (0.5) on the under
+    assert row["ev"] > 0  # model (0.6) beats no-vig market (0.5) on the under
+    assert row["result"] == "win"
+
+
+def test_grade_game_total_right_skew_leans_under_despite_high_mean():
+    # Right-skewed total: mean ~11.1 (> line 8.5) but P(over 8.5) = 0.45 (< 0.5).
+    # A mean-vs-line rule would lean OVER; the EV/dist rule must lean UNDER, because
+    # MLB totals are right-skewed and the market line sits near the median, not the mean.
+    pmf = [0.0] * 21
+    pmf[7], pmf[8], pmf[13], pmf[16], pmf[20] = 0.30, 0.25, 0.20, 0.15, 0.10
+    total_dist = {"kind": "pmf", "pmf": pmf}
+    close = _total_close(line=8.5)  # fair -110/-110
+    res = _res(4, 4)  # actual total 8 -> under wins
+    out = _grade_game(1, "2026-08-20", "mlb-hybrid-v1", res, close,
+                       pred_total=11.1, home_wp=0.5, pred_margin=None,
+                       total_dist=total_dist)
+    row = [r for r in out if r["market"] == "total"][0]
+    assert row["lean"] == "under"           # NOT over, despite mean 11.1 > 8.5
+    assert row["player_name"] == "Under 8.5"
+    assert row["model_prob"] == pytest.approx(0.55)  # 1 - P(over)=0.45
+    assert row["result"] == "win"
 
 
 def test_grade_game_total_legacy_row_without_dist_leaves_prob_ev_none():

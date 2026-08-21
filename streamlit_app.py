@@ -208,18 +208,22 @@ def _main_price(df) -> float:
     return float(d.iloc[0]["price"])
 
 
-def _spread_price(o, side: str, ln: float) -> float:
-    """Consensus price for a spread side at a specific line (most-booked)."""
-    d = o[(o.market == "spread") & (o.side == side) & (o.line == ln)] if not o.empty else o
+def _line_price(o, market: str, side: str, ln: float) -> float:
+    """Consensus price for a market/side at a specific line (most-booked)."""
+    d = o[(o.market == market) & (o.side == side) & (o.line == ln)] if not o.empty else o
     d = d.dropna(subset=["price"]) if not d.empty else d
     d = d[d.price != 0] if not d.empty else d
     return float(d.sort_values("books", ascending=False).iloc[0]["price"]) if not d.empty else float("nan")
 
 
+def _spread_price(o, side: str, ln: float) -> float:
+    return _line_price(o, "spread", side, ln)
+
+
 def game_board(mv, market, gdate, pks) -> tuple[pd.DataFrame, int, int]:
     preds = q("""
         SELECT game_pk, away_team_name, home_team_name, pred_away_score, pred_home_score,
-               pred_total, pred_margin, home_win_prob, margin_dist
+               pred_total, pred_margin, home_win_prob, margin_dist, total_dist
         FROM game_predictions
         WHERE model_version = %s AND game_date = %s AND game_pk = ANY(%s)
     """, (mv, gdate, list(pks)))
@@ -236,14 +240,29 @@ def game_board(mv, market, gdate, pks) -> tuple[pd.DataFrame, int, int]:
         if market == "total":
             mkt = _main_line(o[o.market == "total"]) if not o.empty else float("nan")
             has = pd.notna(mkt)
-            # location-calibrated total mean (the sim runs ~1 run light; the calibration
-            # loc re-centers it, which is what stops the board leaning UNDER on everything)
             cal_total = g.pred_total + _dist_cal("total_dist")[0]
             row["Model total"] = round(cal_total, 1)
             row["Market total"] = round(mkt, 1) if has else "—"
-            row["Edge"] = round(cal_total - mkt, 1) if has else "—"
-            row["Lean"] = ("OVER" if cal_total > mkt else "UNDER") if has else "—"
-            if has:
+            row["Model over%"] = "—"
+            row["EV"] = "—"
+            # Pick by EV from the calibrated total distribution's P(over), NOT mean-vs-line.
+            # MLB totals are right-skewed (mean ~8.9 >> median ~8.0), so the market line
+            # sits near the median; a mean-vs-line rule leans OVER on nearly every game.
+            op = _line_price(o, "total", "over", mkt) if has else float("nan")
+            up = _line_price(o, "total", "under", mkt) if has else float("nan")
+            p_over = prob_over_dist(apply_affine(g.total_dist, *_dist_cal("total_dist")),
+                                    float(mkt)) if has else float("nan")
+            if has and p_over == p_over and pd.notna(op) and pd.notna(up):
+                ev_o = p_over * decimal_odds(op) - 1
+                ev_u = (1 - p_over) * decimal_odds(up) - 1
+                if ev_o >= ev_u:
+                    side_p, ev, side_txt = p_over, ev_o, f"Over {mkt:g}"
+                else:
+                    side_p, ev, side_txt = 1 - p_over, ev_u, f"Under {mkt:g}"
+                row["Model over%"] = f"{p_over*100:.0f}%"
+                row["EV"] = f"{ev*100:+.1f}%"
+                pick = side_txt if ev > 0 else "pass"
+            elif has:  # no stored total dist / missing a price -> legacy mean rule
                 pick = f"Over {mkt:g}" if cal_total > mkt else f"Under {mkt:g}"
         elif market == "moneyline":
             hp = _main_price(o[(o.market == "moneyline") & (o.side == "home")]) if not o.empty else float("nan")
