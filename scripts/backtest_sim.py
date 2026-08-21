@@ -90,8 +90,9 @@ def month_lineups(con, season, month):
 
 
 def _load_workload(con):
+    """{player_id: (avg_outs, sd_outs)} -- feeds kernel.Pitcher's outs-recorded hook."""
     return {int(r[0]): (r[1], r[2]) for r in
-            con.execute("SELECT player_id, avg_bf, sd_bf FROM feat_pitcher_workload").fetchall()}
+            con.execute("SELECT player_id, avg_outs, sd_outs FROM feat_pitcher_workload").fetchall()}
 
 
 def run_sim_backtest(season: int, n_sims: int, seed: int = 42) -> list:

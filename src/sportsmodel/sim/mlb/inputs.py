@@ -19,6 +19,7 @@ def _matchup(batter_vec, pitcher_vec, league, *, pf, hr_mult, opp_def):
 def build_game_spec(home_order, away_order, home_sp_vec, away_sp_vec,
                     home_bp_vec, away_bp_vec, workload, context, league, adv,
                     home_starter_id, away_starter_id) -> GameSpec:
+    # workload: {player_id: (avg_outs, sd_outs)} -- feeds Pitcher's outs-recorded hook.
     pf, hr_mult = context["home_pf"], context["hr_mult"]
     home_def, away_def = context["home_def"], context["away_def"]
 

@@ -69,7 +69,7 @@ def _flat_vec(**over):
 def _spec():
     bs = [K.Batter(pid, _flat_vec(), _flat_vec()) for pid in range(100, 109)]
     aw = [K.Batter(pid, _flat_vec(), _flat_vec()) for pid in range(200, 209)]
-    return K.GameSpec(bs, aw, K.Pitcher(1, 24.0, 3.0), K.Pitcher(2, 24.0, 3.0))
+    return K.GameSpec(bs, aw, K.Pitcher(1, 16.0, 5.0), K.Pitcher(2, 16.0, 5.0))
 
 
 def test_simulate_returns_gamesims_with_right_shapes():
@@ -99,18 +99,21 @@ def test_strikeout_outs_not_double_counted():
     then added another out via the buggy term (1 if outcome == K else 0),
     resulting in 2 outs per strikeout and half-innings ending early.
 
-    This test uses an all-strikeout pitcher (p_k=1.0) with a starter that never
-    leaves (avg_bf=999, sd_bf=0). In 9 innings each with 3 outs, exactly 27
-    strikeouts should happen (since no baserunners via strikeouts). The starter
-    should record exactly 27 outs, not 54.
+    This test uses an all-strikeout pitcher (p_k=1.0) with a starter whose
+    outs-recorded hook is requested at avg_outs=999, sd_outs=0 -- the kernel's
+    top clamp (min(27.0, ...)) pins the sampled hook at exactly 27 outs, i.e.
+    a full 9-inning outing with no early exit. In 9 innings each with 3 outs,
+    exactly 27 strikeouts should happen (since no baserunners via strikeouts).
+    The starter should record exactly 27 outs, not 54.
     """
     # Create batters with p_k = 1.0 (100% strikeout rate)
     all_k_vec = {"p_bb": 0.0, "p_k": 1.0, "p_1b": 0.0, "p_2b": 0.0,
                  "p_3b": 0.0, "p_hr": 0.0, "p_out": 0.0}
     bs = [K.Batter(pid, all_k_vec, all_k_vec) for pid in range(100, 109)]
     aw = [K.Batter(pid, all_k_vec, all_k_vec) for pid in range(200, 209)]
-    # Starter with very high avg_bf (999) and sd_bf=0 ensures starter never leaves
-    spec = K.GameSpec(bs, aw, K.Pitcher(1, avg_bf=999, sd_bf=0), K.Pitcher(2, avg_bf=999, sd_bf=0))
+    # avg_outs=999, sd_outs=0 clamps to a 27-out (9-inning) hook -- starter never
+    # leaves early, matching the original avg_bf=999,sd_bf=0 "never leaves" intent.
+    spec = K.GameSpec(bs, aw, K.Pitcher(1, avg_outs=999, sd_outs=0), K.Pitcher(2, avg_outs=999, sd_outs=0))
 
     sims = K.simulate_scalar(spec, n_sims=5, rng=np.random.default_rng(42))
 

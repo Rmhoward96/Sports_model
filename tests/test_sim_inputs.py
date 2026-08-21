@@ -14,7 +14,7 @@ def test_build_game_spec_shapes_and_context():
     away = [(200 + i, _vec()) for i in range(9)]
     spec = inputs.build_game_spec(
         home, away, _vec(p_k=.28), _vec(p_k=.26), _vec(), _vec(),
-        workload={1: (24.0, 3.0), 2: (23.0, 3.5)},
+        workload={1: (16.0, 5.0), 2: (15.0, 5.5)},
         context={"home_pf": 1.05, "hr_mult": 1.0, "home_def": 1.0, "away_def": 1.0},
         league=_L, adv=AdvancementTable.from_rows([]),
         home_starter_id=1, away_starter_id=2,
@@ -25,7 +25,7 @@ def test_build_game_spec_shapes_and_context():
     b = spec.home_order[0]
     assert abs(sum(b.vec_vs_sp.values()) - 1.0) < 1e-9
     assert abs(sum(b.vec_vs_bp.values()) - 1.0) < 1e-9
-    assert spec.home_starter.avg_bf == 24.0
+    assert spec.home_starter.avg_outs == 16.0
 
 
 def test_build_game_spec_falls_back_to_starter_when_bullpen_vec_missing():
@@ -37,7 +37,7 @@ def test_build_game_spec_falls_back_to_starter_when_bullpen_vec_missing():
     away = [(200 + i, _vec()) for i in range(9)]
     spec = inputs.build_game_spec(
         home, away, _vec(p_k=.28), _vec(p_k=.26), None, None,
-        workload={1: (24.0, 3.0), 2: (23.0, 3.5)},
+        workload={1: (16.0, 5.0), 2: (15.0, 5.5)},
         context={"home_pf": 1.05, "hr_mult": 1.0, "home_def": 1.0, "away_def": 1.0},
         league=_L, adv=AdvancementTable.from_rows([]),
         home_starter_id=1, away_starter_id=2,

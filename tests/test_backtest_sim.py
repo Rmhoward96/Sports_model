@@ -36,7 +36,7 @@ def _v():
 def test_pred_scores_from_sim_have_expected_keys():
     bs = [kernel.Batter(100 + i, _v(), _v()) for i in range(9)]
     aw = [kernel.Batter(200 + i, _v(), _v()) for i in range(9)]
-    spec = kernel.GameSpec(bs, aw, kernel.Pitcher(1, 24, 3), kernel.Pitcher(2, 24, 3))
+    spec = kernel.GameSpec(bs, aw, kernel.Pitcher(1, 16, 5), kernel.Pitcher(2, 16, 5))
     sims = kernel.simulate(spec, 200, np.random.default_rng(0))
     d = pred_scores(sims)
     assert {"pred_total", "home_win_prob", "pred_margin"} <= set(d)

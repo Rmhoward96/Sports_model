@@ -29,8 +29,8 @@ class Batter:
 @dataclass
 class Pitcher:
     player_id: int
-    avg_bf: float
-    sd_bf: float
+    avg_outs: float
+    sd_outs: float
 
 
 @dataclass
@@ -151,11 +151,15 @@ def _sim_one(spec: GameSpec, adv: AdvancementTable, rng, max_extra: int) -> tupl
     # pitcher stat lines (starter only): K, hits allowed, outs
     hp = {"k": 0, "hits": 0, "outs": 0}
     ap = {"k": 0, "hits": 0, "outs": 0}
-    hook_home = max(12, rng.normal(spec.home_starter.avg_bf, spec.home_starter.sd_bf))
-    hook_away = max(12, rng.normal(spec.away_starter.avg_bf, spec.away_starter.sd_bf))
+    # hook is an OUTS-RECORDED threshold: the starter stays in while his own
+    # accumulated outs (pline["outs"], the same quantity that becomes his
+    # outs_recorded stat) are below this sampled value. Floor of 3 outs (1
+    # inning min); top-clamped at 27 (a full 9-inning outing) for stability.
+    hook_home = min(27.0, max(3.0, rng.normal(spec.home_starter.avg_outs, spec.home_starter.sd_outs)))
+    hook_away = min(27.0, max(3.0, rng.normal(spec.away_starter.avg_outs, spec.away_starter.sd_outs)))
     scores = [0, 0]           # [away, home]
     idx = [0, 0]              # batting-order pointer [away, home]
-    bf = [0, 0]               # batters faced by the [away pitcher, home pitcher]
+    bf = [0, 0]               # batters faced by the [away pitcher, home pitcher] (drives TTO only)
 
     def half(bat_team, inning):
         # bat_team: 0 away, 1 home. Defense is the other team; its starter faces batters.
@@ -175,7 +179,9 @@ def _sim_one(spec: GameSpec, adv: AdvancementTable, rng, max_extra: int) -> tupl
         while outs < 3:
             b = order[idx[bat_team] % 9]
             faced = bf[defense]
-            starter_in = faced < hook
+            # starter_in is governed by his own accumulated outs (pline["outs"]),
+            # not batters faced -- this IS the outs-recorded hook.
+            starter_in = pline["outs"] < hook
             times_through = faced // 9 + 1
             vec = apply_tto(b.vec_vs_sp, times_through) if starter_in else b.vec_vs_bp
             u = rng.random()
@@ -371,8 +377,11 @@ def simulate(spec: GameSpec, n_sims: int, rng, max_extra: int = 11) -> GameSims:
     away_sp, away_bp = _team_tensors(away_order)
     cum_mat, end_mat, runs_mat = _build_adv_vec(adv)
 
-    hook_home = np.maximum(12.0, rng.normal(spec.home_starter.avg_bf, spec.home_starter.sd_bf, size=n))
-    hook_away = np.maximum(12.0, rng.normal(spec.away_starter.avg_bf, spec.away_starter.sd_bf, size=n))
+    # hook is an OUTS-RECORDED threshold per sim (see simulate_scalar docstring
+    # note above _sim_one's hook_home/hook_away for the rationale); same floor
+    # of 3 outs / top clamp of 27, drawn from the same rng as the scalar path.
+    hook_home = np.clip(rng.normal(spec.home_starter.avg_outs, spec.home_starter.sd_outs, size=n), 3.0, 27.0)
+    hook_away = np.clip(rng.normal(spec.away_starter.avg_outs, spec.away_starter.sd_outs, size=n), 3.0, 27.0)
 
     scores_home = np.zeros(n, dtype=np.int64)
     scores_away = np.zeros(n, dtype=np.int64)
@@ -412,7 +421,9 @@ def simulate(spec: GameSpec, n_sims: int, rng, max_extra: int = 11) -> GameSims:
             slot = idx % 9
             times_through = bf_def // 9 + 1
             tto_idx = np.clip(times_through, 1, 3) - 1
-            starter_in = bf_def < hook
+            # starter_in governed by his own accumulated outs (pline["outs"]),
+            # matching the scalar kernel's outs-recorded hook exactly.
+            starter_in = pline["outs"] < hook
 
             vec_if_sp = sp_tensor[tto_idx, slot]
             vec_if_bp = bp_tensor[slot]

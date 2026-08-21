@@ -43,7 +43,7 @@ def _v():
 def test_player_prop_dists_score_without_error():
     bs = [kernel.Batter(100 + i, _v(), _v()) for i in range(9)]
     aw = [kernel.Batter(200 + i, _v(), _v()) for i in range(9)]
-    spec = kernel.GameSpec(bs, aw, kernel.Pitcher(1, 24, 3), kernel.Pitcher(2, 24, 3))
+    spec = kernel.GameSpec(bs, aw, kernel.Pitcher(1, 16, 5), kernel.Pitcher(2, 16, 5))
     sims = kernel.simulate(spec, 200, np.random.default_rng(0))
 
     market_max = {"hits": 6, "total_bases": 10, "hrr": 15,
