@@ -252,6 +252,30 @@ def test_grade_game_spread_legacy_row_without_dist_leaves_prob_ev_none():
     assert row["ev"] is None
 
 
+def test_grade_game_spread_picks_favorite_when_juiced_dog_is_negative_ev():
+    # The +1.5 dog is MORE likely to cover (58%) but is juiced to -175 (breakeven
+    # 63.6%), so it is -EV. The -1.5 favorite at +150 needs only 40% and the model
+    # gives 42%, so it is +EV. EV-based selection must take the favorite -1.5 even
+    # though a mean-margin rule (pred_margin=0.84 < 1.5) would take the +1.5 dog.
+    offset = 10
+    pmf = [0.0] * (2 * offset + 1)
+    pmf[2 + offset] = 0.42   # P(margin == 2)  -> home -1.5 covers
+    pmf[0 + offset] = 0.58   # P(margin == 0)  -> home -1.5 does NOT cover
+    margin_dist = {"kind": "margin", "offset": offset, "pmf": pmf}
+    sl = -1.5
+    close = _close(sl, home_price=150, away_price=-175)
+    res = _res(5, 2)  # actual margin +3, home -1.5 covers -> the +EV pick wins
+    out = _grade_game(1, "2026-08-20", "mlb-hybrid-v1", res, close,
+                       pred_total=None, home_wp=0.5, pred_margin=0.84,
+                       margin_dist=margin_dist, home_name="HomeTeam", away_name="AwayTeam")
+    row = [r for r in out if r["market"] == "spread"][0]
+    assert row["lean"] == "home"                     # favorite, not the likelier dog
+    assert row["player_name"] == "HomeTeam -1.5"
+    assert row["model_prob"] == pytest.approx(0.42)  # home cover prob, not the 0.58 dog
+    assert row["ev"] > 0
+    assert row["result"] == "win"
+
+
 def test_grade_game_moneyline_names_picked_team():
     close = {
         ("moneyline", "home", ""): [(-150, -150, 5)],

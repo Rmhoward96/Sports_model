@@ -99,6 +99,18 @@ def prob_over_dist(dist, line: float) -> float:
     return sum(p for k, p in enumerate(dist.get("pmf") or []) if k > line)
 
 
+def prob_cover(margin_dist, home_line: float) -> float:
+    """Model P(home covers `home_line`) from a stored margin dist. Home covers iff
+    margin > -home_line (a margin equal to -home_line is a push, so strict)."""
+    if isinstance(margin_dist, str):
+        margin_dist = json.loads(margin_dist)
+    if not margin_dist or margin_dist.get("kind") != "margin":
+        return float("nan")
+    offset = margin_dist["offset"]
+    pmf = margin_dist.get("pmf") or []
+    return sum(p for i, p in enumerate(pmf) if (i - offset) > -home_line)
+
+
 @st.cache_data(ttl=300)
 def dates_available() -> list:
     df = q("SELECT DISTINCT game_date FROM daily_schedule ORDER BY game_date DESC")
@@ -164,10 +176,18 @@ def _main_price(df) -> float:
     return float(d.iloc[0]["price"])
 
 
+def _spread_price(o, side: str, ln: float) -> float:
+    """Consensus price for a spread side at a specific line (most-booked)."""
+    d = o[(o.market == "spread") & (o.side == side) & (o.line == ln)] if not o.empty else o
+    d = d.dropna(subset=["price"]) if not d.empty else d
+    d = d[d.price != 0] if not d.empty else d
+    return float(d.sort_values("books", ascending=False).iloc[0]["price"]) if not d.empty else float("nan")
+
+
 def game_board(mv, market, gdate, pks) -> tuple[pd.DataFrame, int, int]:
     preds = q("""
         SELECT game_pk, away_team_name, home_team_name, pred_away_score, pred_home_score,
-               pred_total, pred_margin, home_win_prob
+               pred_total, pred_margin, home_win_prob, margin_dist
         FROM game_predictions
         WHERE model_version = %s AND game_date = %s AND game_pk = ANY(%s)
     """, (mv, gdate, list(pks)))
@@ -206,7 +226,25 @@ def game_board(mv, market, gdate, pks) -> tuple[pd.DataFrame, int, int]:
             has = pd.notna(mkt)
             row["Model margin (home)"] = round(g.pred_margin, 1)
             row["Market run line"] = round(mkt, 1) if has else "—"
-            if has:
+            row["Model cover%"] = "—"
+            row["EV"] = "—"
+            # Pick the run line by EV, not mean margin vs the number: a game's expected
+            # margin sits inside 1.5 runs almost always, so a mean rule takes the juiced
+            # +1.5 every time. Compare P(cover) x price on each side; +EV side wins, else pass.
+            p_home = prob_cover(g.margin_dist, float(mkt)) if has else float("nan")
+            hp = _spread_price(o, "home", mkt) if has else float("nan")
+            ap = _spread_price(o, "away", -mkt) if has else float("nan")
+            if has and p_home == p_home and pd.notna(hp) and pd.notna(ap):
+                ev_h = p_home * decimal_odds(hp) - 1
+                ev_a = (1 - p_home) * decimal_odds(ap) - 1
+                if ev_h >= ev_a:
+                    cover_p, ev, side_txt = p_home, ev_h, f"{g.home_team_name} {mkt:+g}"
+                else:
+                    cover_p, ev, side_txt = 1 - p_home, ev_a, f"{g.away_team_name} {-mkt:+g}"
+                row["Model cover%"] = f"{cover_p*100:.0f}%"
+                row["EV"] = f"{ev*100:+.1f}%"
+                pick = side_txt if ev > 0 else "pass"
+            elif has:  # no stored margin dist / missing a price -> legacy mean rule
                 pick = (f"{g.home_team_name} {mkt:+g}" if g.pred_margin + mkt > 0
                         else f"{g.away_team_name} {-mkt:+g}")
         row["Pick"] = pick

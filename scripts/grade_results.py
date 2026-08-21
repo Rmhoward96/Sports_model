@@ -239,7 +239,26 @@ def _grade_game(game_pk, gdate, mv, res, close, pred_total, home_wp, pred_margin
         actual_margin = hr_ - ar_
         home_covers = actual_margin + sl > 0
         push = actual_margin + sl == 0
-        lean_home = pred_margin + sl > 0
+        # Pick the run line by EV, not by mean margin vs the number. A game's expected
+        # margin is almost always inside 1.5 runs, so a mean-vs-line rule would take the
+        # +1.5 side nearly every time even though it's juiced (~-175). Use P(cover) from
+        # the margin distribution and the real price on each side; the +EV side wins.
+        model_p = market_p = ev = None
+        lean_home = pred_margin + sl > 0  # fallback when no distribution is stored
+        if margin_dist:
+            md = json.loads(margin_dist) if isinstance(margin_dist, str) else margin_dist
+            p_home_cover = prob_cover(md, sl)
+            if p_home_cover == p_home_cover:  # not NaN
+                io = american_to_prob(sp[1])
+                iu = american_to_prob(away_price) if away_price else 1 - io
+                novig_home = io / (io + iu)
+                ev_home = p_home_cover * _decimal(sp[1]) - 1
+                ev_away = (1 - p_home_cover) * _decimal(away_price) - 1
+                lean_home = ev_home >= ev_away
+                if lean_home:
+                    model_p, market_p, ev = p_home_cover, novig_home, ev_home
+                else:
+                    model_p, market_p, ev = 1 - p_home_cover, 1 - novig_home, ev_away
         lean = "home" if lean_home else "away"
         price = sp[1] if lean_home else away_price
         if push:
@@ -248,19 +267,6 @@ def _grade_game(game_pk, gdate, mv, res, close, pred_total, home_wp, pred_margin
             won = home_covers if lean_home else (not home_covers)
             result, profit = ("win", _decimal(price) - 1) if won else ("loss", -1.0)
         edge = (pred_margin + sl) if lean_home else -(pred_margin + sl)
-        model_p = market_p = ev = None
-        if margin_dist:
-            md = json.loads(margin_dist) if isinstance(margin_dist, str) else margin_dist
-            p_home_cover = prob_cover(md, sl)
-            if p_home_cover == p_home_cover:  # not NaN
-                io = american_to_prob(sp[1])
-                iu = american_to_prob(away_price) if away_price else 1 - io
-                novig_home = io / (io + iu)
-                if lean_home:
-                    model_p, market_p, ev = p_home_cover, novig_home, p_home_cover * _decimal(price) - 1
-                else:
-                    model_p, market_p, ev = (1 - p_home_cover, 1 - novig_home,
-                                              (1 - p_home_cover) * _decimal(price) - 1)
         pname = f"{home_name} {sl:+g}" if lean_home else f"{away_name} {-sl:+g}"
         out.append(_row(game_pk, "spread", 0, pname, mv, gdate, pred_margin, sl, price, lean,
                         actual_margin, result, profit, edge,
