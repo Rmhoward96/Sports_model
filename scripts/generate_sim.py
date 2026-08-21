@@ -40,11 +40,13 @@ from sportsmodel.model import calibration, distributions, game, props, rates
 from sportsmodel.sim import engine
 from sportsmodel.sim.mlb import kernel
 from sportsmodel.sim.mlb.advancement import AdvancementTable
+from sportsmodel.sim.mlb import config_dispersion
 from sportsmodel.sim.mlb.inputs import build_game_spec
 
 GAME_MODEL_VERSION = "mlb-hybrid-v1"
 PROP_MODEL_VERSION = "mlb-hybrid-props-v1"
 N_SIMS = 20_000
+_scoring_rates = config_dispersion.load_rates()  # {"p_roe","p_wp"} for the kernel channels
 SIM_SEED = 42
 _LINEUP_SIZE = 9
 
@@ -280,6 +282,8 @@ def main() -> None:
             bullpen.get(home_ab), bullpen.get(away_ab),
             workload=workload_spec, context=context, league=league, adv=adv,
             home_starter_id=home_pid, away_starter_id=away_pid,
+            roe_p=_scoring_rates["p_roe"], wp_p=_scoring_rates["p_wp"],
+            dispersion=config_dispersion.DISPERSION,
         )
         sims = kernel.simulate(spec, N_SIMS, rng)
 

@@ -28,6 +28,7 @@ from sportsmodel.sim.engine import pred_scores
 from sportsmodel.sim.mlb import kernel
 from sportsmodel.sim.mlb.advancement import AdvancementTable
 from sportsmodel.sim.mlb.build_advancement import build_advancement_table
+from sportsmodel.sim.mlb import config_dispersion
 from sportsmodel.sim.mlb.inputs import build_game_spec
 
 from backtest_game import (
@@ -95,8 +96,14 @@ def _load_workload(con):
             con.execute("SELECT player_id, avg_outs, sd_outs FROM feat_pitcher_workload").fetchall()}
 
 
-def run_sim_backtest(season: int, n_sims: int, seed: int = 42) -> list:
-    """Walk-forward; returns (p_home_win, home_won, pred_total, actual_total) per game."""
+def run_sim_backtest(season: int, n_sims: int, seed: int = 42, dispersion=...) -> list:
+    """Walk-forward; returns (p_home_win, home_won, pred_total, actual_total) per game.
+
+    dispersion: sentinel `...` -> use the tuned production DISPERSION; pass an explicit
+    Dispersion (or None) to override, e.g. from the tuning search."""
+    if dispersion is ...:
+        dispersion = config_dispersion.DISPERSION
+    _rates = config_dispersion.load_rates()
     rng = np.random.default_rng(seed)
     samples = []
     n_skipped_lineup = 0
@@ -150,6 +157,7 @@ def run_sim_backtest(season: int, n_sims: int, seed: int = 42) -> list:
                 home_order, away_order, h_sp_vec, a_sp_vec,
                 bp.get(home), bp.get(away), workload=wl, context=context,
                 league=league, adv=adv, home_starter_id=hsp, away_starter_id=asp,
+                roe_p=_rates["p_roe"], wp_p=_rates["p_wp"], dispersion=dispersion,
             )
             sims = kernel.simulate(spec, n_sims, rng)
             ps = pred_scores(sims)
