@@ -19,6 +19,15 @@ _spec.loader.exec_module(grade_results)
 _grade_game = grade_results._grade_game
 
 
+@pytest.fixture(autouse=True)
+def _identity_dist_cal(monkeypatch):
+    """Grading-logic tests assert against UNcalibrated total/margin probs, so pin the
+    dist calibration to identity — they shouldn't depend on the fitted calibration.json.
+    The calibration application itself is covered by test_grader_calibrated_total_*."""
+    monkeypatch.setattr(grade_results, "_TOTAL_CAL", (0.0, 1.0), raising=False)
+    monkeypatch.setattr(grade_results, "_MARGIN_CAL", (0.0, 1.0), raising=False)
+
+
 def test_grade_results_script_imports_cleanly():
     assert hasattr(grade_results, "main")
     assert hasattr(grade_results, "_grade_game")

@@ -225,7 +225,10 @@ def _grade_game(game_pk, gdate, mv, res, close, pred_total, home_wp, pred_margin
     if pred_total is not None and over and over[0] is not None and over[1]:
         line = over[0]
         pu = _price_at(close.get(("total", "under", "")), line) or over[1]
-        lean, price, result, profit, edge = _grade_ou(pred_total, line, hr_ + ar_, over[1], pu)
+        # lean on the CALIBRATED mean (pred_total + loc). The sim runs ~1 run light, so a
+        # raw-mean lean would take UNDER on nearly every game; the loc re-centers it.
+        cal_total = pred_total + _TOTAL_CAL[0]
+        lean, price, result, profit, edge = _grade_ou(cal_total, line, hr_ + ar_, over[1], pu)
         model_p = market_p = ev = None
         if total_dist:
             td = json.loads(total_dist) if isinstance(total_dist, str) else total_dist
@@ -240,7 +243,7 @@ def _grade_game(game_pk, gdate, mv, res, close, pred_total, home_wp, pred_margin
                     model_p, market_p, ev = (1 - p_over_line, 1 - novig_over,
                                               (1 - p_over_line) * _decimal(price) - 1)
         pname = f"{lean.title()} {line:g}"
-        out.append(_row(game_pk, "total", 0, pname, mv, gdate, pred_total, line, price, lean,
+        out.append(_row(game_pk, "total", 0, pname, mv, gdate, cal_total, line, price, lean,
                         hr_ + ar_, result, profit, edge,
                         model_prob=model_p, market_prob=market_p, ev=ev))
     # Spread (run line) — home_line is the home team's spread point (e.g. -1.5).

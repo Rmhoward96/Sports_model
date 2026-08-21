@@ -111,6 +111,38 @@ def prob_cover(margin_dist, home_line: float) -> float:
     return sum(p for i, p in enumerate(pmf) if (i - offset) > -home_line)
 
 
+def apply_affine(dist, loc: float, scale: float):
+    """Location+scale remap of a stored pmf/margin dist, re-binned to integer support.
+    Mirrors sportsmodel.model.distributions.apply_affine (pure-python for the app)."""
+    if isinstance(dist, str):
+        dist = json.loads(dist)
+    if not dist:
+        return dist
+    pmf = dist.get("pmf") or []
+    n = len(pmf)
+    if n == 0:
+        return dist
+    offset = dist.get("offset", 0)
+    mean = sum((i - offset) * p for i, p in enumerate(pmf))
+    out = [0.0] * n
+    for i, p in enumerate(pmf):
+        x = scale * ((i - offset) - mean) + mean + loc
+        j = min(n - 1, max(0, round(x + offset)))
+        out[j] += p
+    s = sum(out)
+    if s > 0:
+        out = [v / s for v in out]
+    res = {"kind": dist.get("kind"), "pmf": out}
+    if dist.get("kind") == "margin":
+        res["offset"] = offset
+    return res
+
+
+def _dist_cal(key: str):
+    c = _calib().get(key, {})
+    return c.get("loc", 0.0), c.get("scale", 1.0)
+
+
 @st.cache_data(ttl=300)
 def dates_available() -> list:
     df = q("SELECT DISTINCT game_date FROM daily_schedule ORDER BY game_date DESC")
@@ -204,12 +236,15 @@ def game_board(mv, market, gdate, pks) -> tuple[pd.DataFrame, int, int]:
         if market == "total":
             mkt = _main_line(o[o.market == "total"]) if not o.empty else float("nan")
             has = pd.notna(mkt)
-            row["Model total"] = round(g.pred_total, 1)
+            # location-calibrated total mean (the sim runs ~1 run light; the calibration
+            # loc re-centers it, which is what stops the board leaning UNDER on everything)
+            cal_total = g.pred_total + _dist_cal("total_dist")[0]
+            row["Model total"] = round(cal_total, 1)
             row["Market total"] = round(mkt, 1) if has else "—"
-            row["Edge"] = round(g.pred_total - mkt, 1) if has else "—"
-            row["Lean"] = ("OVER" if g.pred_total > mkt else "UNDER") if has else "—"
+            row["Edge"] = round(cal_total - mkt, 1) if has else "—"
+            row["Lean"] = ("OVER" if cal_total > mkt else "UNDER") if has else "—"
             if has:
-                pick = f"Over {mkt:g}" if g.pred_total > mkt else f"Under {mkt:g}"
+                pick = f"Over {mkt:g}" if cal_total > mkt else f"Under {mkt:g}"
         elif market == "moneyline":
             hp = _main_price(o[(o.market == "moneyline") & (o.side == "home")]) if not o.empty else float("nan")
             ap = _main_price(o[(o.market == "moneyline") & (o.side == "away")]) if not o.empty else float("nan")
@@ -231,7 +266,8 @@ def game_board(mv, market, gdate, pks) -> tuple[pd.DataFrame, int, int]:
             # Pick the run line by EV, not mean margin vs the number: a game's expected
             # margin sits inside 1.5 runs almost always, so a mean rule takes the juiced
             # +1.5 every time. Compare P(cover) x price on each side; +EV side wins, else pass.
-            p_home = prob_cover(g.margin_dist, float(mkt)) if has else float("nan")
+            p_home = prob_cover(apply_affine(g.margin_dist, *_dist_cal("margin_dist")),
+                                float(mkt)) if has else float("nan")
             hp = _spread_price(o, "home", mkt) if has else float("nan")
             ap = _spread_price(o, "away", -mkt) if has else float("nan")
             if has and p_home == p_home and pd.notna(hp) and pd.notna(ap):
