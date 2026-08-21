@@ -23,8 +23,8 @@ jobs:
         uses: astral-sh/setup-uv@v10.0.1
       - name: Sync deps
         run: uv sync
-      - name: Regenerate props (confirmed lineups)
+      - name: Regenerate predictions (confirmed lineups, Monte Carlo sim)
         env:
           DATABASE_URL: ${{ secrets.DATABASE_URL }}
           SM_DATA_DIR: ${{ github.workspace }}/data
-        run: uv run python scripts/generate_props.py
+        run: uv run python scripts/generate_sim.py
