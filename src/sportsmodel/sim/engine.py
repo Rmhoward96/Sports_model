@@ -42,3 +42,28 @@ def pred_scores(sims: GameSims) -> dict:
         "pred_margin": h - a,
         "home_win_prob": home_win_prob(sims),
     }
+
+
+_BATTER_MARKET_STAT = {"hits": "hits", "total_bases": "total_bases", "hrr": "hrr"}
+_PITCHER_MARKET_STAT = {"pitcher_ks": "k", "hits_allowed": "hits", "outs_recorded": "outs"}
+
+
+def _pmf_mean(arr: np.ndarray, max_k: int) -> dict:
+    return {"kind": "pmf", "pmf": stat_pmf(arr, max_k), "mean": float(np.mean(arr))}
+
+
+def player_prop_dists(sims: GameSims, market_max: dict) -> dict:
+    out: dict = {}
+    for pid, stats in sims.batter_stats.items():
+        d = {}
+        for market, stat in _BATTER_MARKET_STAT.items():
+            d[market] = _pmf_mean(stats[stat], market_max[market])
+        p_hr1 = float(np.mean(stats["hr"] >= 1))
+        d["home_run"] = {"kind": "pmf", "pmf": [1 - p_hr1, p_hr1], "mean": float(np.mean(stats["hr"]))}
+        out[pid] = d
+    for pid, stats in sims.pitcher_stats.items():
+        d = {}
+        for market, stat in _PITCHER_MARKET_STAT.items():
+            d[market] = _pmf_mean(stats[stat], market_max[market])
+        out[pid] = d
+    return out
