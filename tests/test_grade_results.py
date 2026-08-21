@@ -252,6 +252,15 @@ def test_grade_game_spread_legacy_row_without_dist_leaves_prob_ev_none():
     assert row["ev"] is None
 
 
+def test_grader_calibrated_total_uses_loaded_params(monkeypatch):
+    # A +2 location calibration must move total mass right, raising P(over) at a fixed line.
+    monkeypatch.setattr(grade_results, "_TOTAL_CAL", (2.0, 1.0), raising=False)
+    d = {"kind": "pmf", "pmf": [0.0] * 8 + [1.0] + [0.0] * 11}  # mass at 8, headroom
+    out = grade_results._calibrated_total(d)
+    assert grade_results.prob_over_dist(out, 9) > 0.99   # mass now at 10 (8 + 2)
+    assert grade_results.prob_over_dist(d, 9) < 0.01     # raw: mass at 8, nothing > 9
+
+
 def test_grade_game_spread_picks_favorite_when_juiced_dog_is_negative_ev():
     # The +1.5 dog is MORE likely to cover (58%) but is juiced to -175 (breakeven
     # 63.6%), so it is -EV. The -1.5 favorite at +150 needs only 40% and the model

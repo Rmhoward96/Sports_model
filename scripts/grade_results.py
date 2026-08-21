@@ -24,8 +24,23 @@ from sportsmodel import config
 from sportsmodel.db import get_postgres, upsert_prediction_results
 from sportsmodel.ingest import mlb_results
 from sportsmodel.model import calibration
-from sportsmodel.model.distributions import prob_cover, prob_over_dist
+from sportsmodel.model.distributions import apply_affine, prob_cover, prob_over_dist
 from sportsmodel.model.odds import american_to_prob
+
+# Totals/margin distribution calibration (loc, scale), fit by fit_calibration_sim.py.
+# loc re-centers the sim mean the scoring channels didn't fully close; scale finishes
+# the width. Identity (0, 1) if absent. Applied before prob_over_dist / prob_cover.
+_cal = calibration.load()
+_TOTAL_CAL = (_cal.get("total_dist", {}).get("loc", 0.0), _cal.get("total_dist", {}).get("scale", 1.0))
+_MARGIN_CAL = (_cal.get("margin_dist", {}).get("loc", 0.0), _cal.get("margin_dist", {}).get("scale", 1.0))
+
+
+def _calibrated_total(d):
+    return apply_affine(d, _TOTAL_CAL[0], _TOTAL_CAL[1]) if d else d
+
+
+def _calibrated_margin(d):
+    return apply_affine(d, _MARGIN_CAL[0], _MARGIN_CAL[1]) if d else d
 
 BATTER_MARKETS = {"hits", "total_bases", "home_run", "hrr"}
 PITCHER_MARKETS = {"pitcher_ks", "hits_allowed", "outs_recorded"}
@@ -214,7 +229,7 @@ def _grade_game(game_pk, gdate, mv, res, close, pred_total, home_wp, pred_margin
         model_p = market_p = ev = None
         if total_dist:
             td = json.loads(total_dist) if isinstance(total_dist, str) else total_dist
-            p_over_line = prob_over_dist(td, line)
+            p_over_line = prob_over_dist(_calibrated_total(td), line)
             if p_over_line == p_over_line:  # not NaN
                 io = american_to_prob(over[1])
                 iu = american_to_prob(pu) if pu else 1 - io
@@ -247,7 +262,7 @@ def _grade_game(game_pk, gdate, mv, res, close, pred_total, home_wp, pred_margin
         lean_home = pred_margin + sl > 0  # fallback when no distribution is stored
         if margin_dist:
             md = json.loads(margin_dist) if isinstance(margin_dist, str) else margin_dist
-            p_home_cover = prob_cover(md, sl)
+            p_home_cover = prob_cover(_calibrated_margin(md), sl)
             if p_home_cover == p_home_cover:  # not NaN
                 io = american_to_prob(sp[1])
                 iu = american_to_prob(away_price) if away_price else 1 - io
