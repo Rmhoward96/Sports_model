@@ -273,6 +273,8 @@ def game_board(mv, market, gdate, pks) -> tuple[pd.DataFrame, int, int]:
             row["Model home win%"] = f"{g.home_win_prob*100:.0f}%"
             row["Market home win%"] = f"{novig*100:.0f}%" if has else "—"
             row["Edge"] = f"{(g.home_win_prob - novig)*100:+.0f} pts" if has else "—"
+            # Moneyline always names the favored team (no pass) -- the model picks a side
+            # on every game here; the +EV-or-pass treatment is only for totals/spread/props.
             if has:
                 pick = g.home_team_name if g.home_win_prob > novig else g.away_team_name
         else:  # spread / run line
@@ -361,13 +363,11 @@ def props_board(mv, market, gdate, pks) -> tuple[pd.DataFrame, int, int]:
                 else:
                     side, price, mp, mkp, ev = "UNDER", pu, 1 - p_over, \
                         (1 - novig_over if novig_over is not None else None), ev_under
-                # Home runs are over-only longshots (books rarely post the "under"), so
-                # the pick above always lands on OVER. Only call it a PICK when the over
-                # is genuinely +EV; otherwise show "pass". The row's Model P / Market P /
-                # EV stay visible so the math is still there to collect and analyze.
-                display_side = side
-                if market == "home_run" and not (ev > 0):
-                    display_side = "pass"
+                # Only call a side a PICK when it's genuinely +EV; otherwise "pass".
+                # The model gives the +EV call, not a lean toward the likelier side. The
+                # row's Model P / Market P / EV stay visible so the math is still there to
+                # collect and analyze (this also handles HR, an over-only longshot market).
+                display_side = side if ev > 0 else "pass"
                 row.update({
                     "Side": display_side,
                     "Model P": f"{mp*100:.0f}%",
