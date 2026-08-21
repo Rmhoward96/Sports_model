@@ -30,6 +30,18 @@ from sportsmodel.model.odds import american_to_prob
 BATTER_MARKETS = {"hits", "total_bases", "home_run", "hrr"}
 PITCHER_MARKETS = {"pitcher_ks", "hits_allowed", "outs_recorded"}
 
+# Hard CLV fresh-start floor: games with game_date BEFORE this are NEVER graded, so the
+# track record starts clean here (excludes pre-fix HR/prop noise). ISO date strings
+# compare chronologically. Set to "" to remove the floor and grade the full rolling window.
+FRESH_START = "2026-08-21"
+
+
+def _window_start(days: int, today: date | None = None) -> str:
+    """Rolling grade-window start (today - days), floored at FRESH_START."""
+    d = today or date.today()
+    rolling = (d - timedelta(days=days)).isoformat()
+    return max(rolling, FRESH_START) if FRESH_START else rolling
+
 
 def _decimal(price) -> float:
     price = float(price)
@@ -105,8 +117,11 @@ def main() -> None:
     if not config.DATABASE_URL:
         raise SystemExit("DATABASE_URL required (grading reads/writes Supabase).")
 
-    start = (date.today() - timedelta(days=args.days)).isoformat()
+    start = _window_start(args.days)
     end = date.today().isoformat()
+    if start > end:  # fresh-start floor is still in the future — nothing to grade yet
+        print(f"No games to grade: window start {start} is after today {end} (fresh-start floor).")
+        return
     finals = mlb_results.final_game_pks(start, end)
     print(f"{len(finals)} final games in window {start}..{end}")
     rows: list[dict] = []

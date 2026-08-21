@@ -278,3 +278,15 @@ def test_grade_game_moneyline_names_away_pick_when_leaning_away():
     row = [r for r in out if r["market"] == "moneyline"][0]
     assert row["lean"] == "away"
     assert row["player_name"] == "AwayTeam"
+
+
+def test_window_start_floors_at_fresh_start():
+    """The rolling window never starts before FRESH_START (hard CLV floor)."""
+    from datetime import date
+    assert grade_results.FRESH_START == "2026-08-21"
+    # today-5 = 8/15, floored up to the fresh-start date
+    assert grade_results._window_start(5, date(2026, 8, 20)) == "2026-08-21"
+    # on 8/25, today-5 = 8/20 is still before the floor -> floored
+    assert grade_results._window_start(5, date(2026, 8, 25)) == "2026-08-21"
+    # well past the floor: the rolling window governs (9/1 - 5 = 8/27)
+    assert grade_results._window_start(5, date(2026, 9, 1)) == "2026-08-27"
