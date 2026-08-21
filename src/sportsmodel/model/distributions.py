@@ -76,6 +76,23 @@ def prob_over_dist(dist: dict, line: float) -> float:
     return sum(p for k, p in enumerate(dist.get("pmf") or []) if k > line)
 
 
+def prob_cover(margin_dist: dict, home_line: float) -> float:
+    """P(home covers a spread `home_line`, e.g. -1.5) from a serialized margin dist.
+
+    Home covers iff margin + home_line > 0, i.e. margin > -home_line. A margin
+    exactly equal to -home_line is a PUSH, not a cover, so the comparison is
+    strict. `margin_dist` is {"kind": "margin", "offset": o, "pmf": [...]} where
+    pmf[i] = P(margin == i - o) (see sim.engine.margin_pmf). Returns NaN if
+    `margin_dist` is falsy or the wrong kind.
+    """
+    if not margin_dist or margin_dist.get("kind") != "margin":
+        return float("nan")
+    offset = margin_dist["offset"]
+    pmf = margin_dist.get("pmf") or []
+    threshold = -home_line
+    return sum(p for i, p in enumerate(pmf) if (i - offset) > threshold)
+
+
 def _convolve(a: Sequence[float], b: Sequence[float]) -> list[float]:
     out = [0.0] * (len(a) + len(b) - 1)
     for i, av in enumerate(a):

@@ -43,6 +43,10 @@ CREATE TABLE IF NOT EXISTS game_predictions (
     pred_total                  REAL,
     pred_margin                 REAL,
     home_win_prob               REAL,
+    total_dist                  JSONB,       -- model's raw total-runs pmf (kind=pmf),
+                                              -- so P(over) can be evaluated at the BOOK's line
+    margin_dist                 JSONB,       -- model's raw home-away margin pmf (kind=margin),
+                                              -- so P(cover) can be evaluated at the BOOK's spread
     PRIMARY KEY (game_pk, model_version)
 );
 

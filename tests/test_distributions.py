@@ -54,3 +54,36 @@ def test_prob_over_dist_normal():
 def test_prob_over_dist_empty_is_nan():
     p = d.prob_over_dist(None, 0.5)
     assert p != p  # NaN
+
+
+def _margin_dist_concentrated_at(margin: int, offset: int = 10) -> dict:
+    """A margin_dist with all mass on a single margin value (for exact teeth tests)."""
+    pmf = [0.0] * (2 * offset + 1)
+    pmf[margin + offset] = 1.0
+    return {"kind": "margin", "offset": offset, "pmf": pmf}
+
+
+def test_prob_cover_home_favorite_covers_when_margin_beats_the_line():
+    # All mass at margin +3. Home -1.5 covers iff margin > 1.5 -> true at +3.
+    md = _margin_dist_concentrated_at(3)
+    assert d.prob_cover(md, -1.5) == pytest.approx(1.0)
+
+
+def test_prob_cover_home_favorite_fails_to_cover_a_bigger_line():
+    # Same margin +3, but home -3.5 covers iff margin > 3.5 -> false at +3.
+    md = _margin_dist_concentrated_at(3)
+    assert d.prob_cover(md, -3.5) == pytest.approx(0.0)
+
+
+def test_prob_cover_push_is_not_a_cover():
+    # All mass at margin +1 exactly. Home -1.0 covers iff margin > 1.0 -- a margin
+    # of exactly +1 is a PUSH (margin + home_line == 0), not a cover, so this must
+    # be ~0.0, not 1.0. Flipping the strict `>` to `>=` (or `<`) breaks this.
+    md = _margin_dist_concentrated_at(1)
+    assert d.prob_cover(md, -1.0) == pytest.approx(0.0)
+
+
+def test_prob_cover_wrong_kind_or_empty_is_nan():
+    assert d.prob_cover(None, -1.5) != d.prob_cover(None, -1.5)  # NaN
+    assert d.prob_cover({"kind": "pmf", "pmf": [1.0]}, -1.5) != d.prob_cover(
+        {"kind": "pmf", "pmf": [1.0]}, -1.5)  # NaN (wrong kind)

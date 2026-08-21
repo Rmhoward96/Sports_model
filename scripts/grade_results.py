@@ -13,6 +13,7 @@ Usage:
 from __future__ import annotations
 
 import argparse
+import json
 import sys
 from datetime import date, timedelta
 from pathlib import Path
@@ -23,7 +24,7 @@ from sportsmodel import config
 from sportsmodel.db import get_postgres, upsert_prediction_results
 from sportsmodel.ingest import mlb_results
 from sportsmodel.model import calibration
-from sportsmodel.model.distributions import prob_over_dist
+from sportsmodel.model.distributions import prob_cover, prob_over_dist
 from sportsmodel.model.odds import american_to_prob
 
 BATTER_MARKETS = {"hits", "total_bases", "home_run", "hrr"}
@@ -129,12 +130,14 @@ def main() -> None:
             graded_games += 1
 
             # game predictions for this game/model
-            cur.execute("""SELECT pred_total, home_win_prob, pred_margin FROM game_predictions
+            cur.execute("""SELECT pred_total, home_win_prob, pred_margin, total_dist, margin_dist
+                           FROM game_predictions
                            WHERE game_pk = %s AND model_version = %s""", [game_pk, mv])
             gp = cur.fetchone()
             if gp:
-                pred_total, home_wp, pred_margin = gp
-                rows += _grade_game(game_pk, gdate, mv, res, close, pred_total, home_wp, pred_margin)
+                pred_total, home_wp, pred_margin, total_dist, margin_dist = gp
+                rows += _grade_game(game_pk, gdate, mv, res, close, pred_total, home_wp,
+                                     pred_margin, total_dist, margin_dist, home_name, away_name)
 
             # prop predictions for this game/model. Props carry their OWN model_version
             # (e.g. mlb-props-v1), distinct from the game model_version (e.g.
@@ -167,7 +170,8 @@ def _row(game_pk, market, pid, pname, mv, gdate, model_num, line, price, lean, a
             "model_prob": model_prob, "market_prob": market_prob, "ev": ev}
 
 
-def _grade_game(game_pk, gdate, mv, res, close, pred_total, home_wp, pred_margin) -> list[dict]:
+def _grade_game(game_pk, gdate, mv, res, close, pred_total, home_wp, pred_margin,
+                 total_dist=None, margin_dist=None, home_name="", away_name="") -> list[dict]:
     out = []
     hr_, ar_ = res["home_runs"], res["away_runs"]
     # Moneyline
@@ -180,7 +184,8 @@ def _grade_game(game_pk, gdate, mv, res, close, pred_total, home_wp, pred_margin
         won = (hr_ > ar_) if lean == "home" else (ar_ > hr_)
         model_p = home_wp if lean == "home" else 1 - home_wp
         market_p = novig_home if lean == "home" else 1 - novig_home
-        out.append(_row(game_pk, "moneyline", 0, "", mv, gdate, home_wp, None, price, lean,
+        pname = home_name if lean == "home" else away_name
+        out.append(_row(game_pk, "moneyline", 0, pname, mv, gdate, home_wp, None, price, lean,
                         1.0 if hr_ > ar_ else 0.0, "win" if won else "loss",
                         _decimal(price) - 1 if won else -1.0, model_p - market_p,
                         model_prob=model_p, market_prob=market_p,
@@ -191,8 +196,23 @@ def _grade_game(game_pk, gdate, mv, res, close, pred_total, home_wp, pred_margin
         line = over[0]
         pu = _price_at(close.get(("total", "under", "")), line) or over[1]
         lean, price, result, profit, edge = _grade_ou(pred_total, line, hr_ + ar_, over[1], pu)
-        out.append(_row(game_pk, "total", 0, "", mv, gdate, pred_total, line, price, lean,
-                        hr_ + ar_, result, profit, edge))
+        model_p = market_p = ev = None
+        if total_dist:
+            td = json.loads(total_dist) if isinstance(total_dist, str) else total_dist
+            p_over_line = prob_over_dist(td, line)
+            if p_over_line == p_over_line:  # not NaN
+                io = american_to_prob(over[1])
+                iu = american_to_prob(pu) if pu else 1 - io
+                novig_over = io / (io + iu)
+                if lean == "over":
+                    model_p, market_p, ev = p_over_line, novig_over, p_over_line * _decimal(price) - 1
+                else:
+                    model_p, market_p, ev = (1 - p_over_line, 1 - novig_over,
+                                              (1 - p_over_line) * _decimal(price) - 1)
+        pname = f"{lean.title()} {line:g}"
+        out.append(_row(game_pk, "total", 0, pname, mv, gdate, pred_total, line, price, lean,
+                        hr_ + ar_, result, profit, edge,
+                        model_prob=model_p, market_prob=market_p, ev=ev))
     # Spread (run line) — home_line is the home team's spread point (e.g. -1.5).
     # "Home covers" iff actual_margin + home_line > 0 (equivalently: away_line is the
     # negation of home_line, and away covers iff actual_margin + away_line < 0, i.e.
@@ -213,8 +233,23 @@ def _grade_game(game_pk, gdate, mv, res, close, pred_total, home_wp, pred_margin
             won = home_covers if lean_home else (not home_covers)
             result, profit = ("win", _decimal(price) - 1) if won else ("loss", -1.0)
         edge = (pred_margin + sl) if lean_home else -(pred_margin + sl)
-        out.append(_row(game_pk, "spread", 0, "", mv, gdate, pred_margin, sl, price, lean,
-                        actual_margin, result, profit, edge))
+        model_p = market_p = ev = None
+        if margin_dist:
+            md = json.loads(margin_dist) if isinstance(margin_dist, str) else margin_dist
+            p_home_cover = prob_cover(md, sl)
+            if p_home_cover == p_home_cover:  # not NaN
+                io = american_to_prob(sp[1])
+                iu = american_to_prob(away_price) if away_price else 1 - io
+                novig_home = io / (io + iu)
+                if lean_home:
+                    model_p, market_p, ev = p_home_cover, novig_home, p_home_cover * _decimal(price) - 1
+                else:
+                    model_p, market_p, ev = (1 - p_home_cover, 1 - novig_home,
+                                              (1 - p_home_cover) * _decimal(price) - 1)
+        pname = f"{home_name} {sl:+g}" if lean_home else f"{away_name} {-sl:+g}"
+        out.append(_row(game_pk, "spread", 0, pname, mv, gdate, pred_margin, sl, price, lean,
+                        actual_margin, result, profit, edge,
+                        model_prob=model_p, market_prob=market_p, ev=ev))
     return out
 
 

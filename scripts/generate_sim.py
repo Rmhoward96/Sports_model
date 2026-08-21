@@ -286,6 +286,8 @@ def main() -> None:
         # --- GAME prediction (sim) ---
         res = engine.pred_scores(sims)
         res["home_win_prob"] = calibration.calibrate("win_prob", res["home_win_prob"])
+        res["total_dist"] = json.dumps({"kind": "pmf", "pmf": engine.total_pmf(sims)})
+        res["margin_dist"] = json.dumps(engine.margin_pmf(sims))
         game_rows.append({
             "game_pk": g["game_pk"], "model_version": GAME_MODEL_VERSION,
             "game_date": g["game_date"],

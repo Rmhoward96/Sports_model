@@ -1,5 +1,7 @@
 import numpy as np
-from sportsmodel.sim.engine import GameSims, home_win_prob, total_pmf, pred_scores, stat_pmf, player_prop_dists
+from sportsmodel.sim.engine import (
+    GameSims, home_win_prob, total_pmf, margin_pmf, pred_scores, stat_pmf, player_prop_dists,
+)
 
 
 def _toy():
@@ -20,6 +22,32 @@ def test_total_pmf_sums_to_one():
     p = total_pmf(_toy(), max_total=12)
     assert abs(sum(p) - 1.0) < 1e-9
     assert p[5] == 0.5  # totals: 5,10,6,5 -> total 5 appears twice of four
+
+
+def test_margin_pmf_shape_and_sums_to_one():
+    d = margin_pmf(_toy(), half_range=25)
+    assert d["kind"] == "margin"
+    assert d["offset"] == 25
+    assert len(d["pmf"]) == 51  # 2*25 + 1
+    assert abs(sum(d["pmf"]) - 1.0) < 1e-9
+
+
+def test_margin_pmf_home_heavy_scores_have_positive_mass():
+    # home wins big in 3 of 4 sims (margins +5, +3, +4), loses once (-2) -> most
+    # mass should sit at positive margins.
+    sims = GameSims(
+        home_score=np.array([6, 4, 5, 1]),
+        away_score=np.array([1, 1, 1, 3]),
+        batter_stats={}, pitcher_stats={},
+    )
+    d = margin_pmf(sims, half_range=10)
+    offset = d["offset"]
+    pmf = d["pmf"]
+    positive_mass = sum(p for i, p in enumerate(pmf) if i - offset > 0)
+    negative_mass = sum(p for i, p in enumerate(pmf) if i - offset < 0)
+    assert positive_mass == 0.75  # margins: +5, +3, +4, -2 -> 3 of 4 positive
+    assert negative_mass == 0.25
+    assert positive_mass > negative_mass
 
 
 def test_stat_pmf():

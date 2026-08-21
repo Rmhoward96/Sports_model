@@ -32,6 +32,19 @@ def total_pmf(sims: GameSims, max_total: int = 30) -> list[float]:
     return stat_pmf(sims.home_score + sims.away_score, max_total)
 
 
+def margin_pmf(sims: GameSims, half_range: int = 25) -> dict:
+    """Distribution of home_score - away_score, clipped to +-half_range.
+
+    Returned as {"kind": "margin", "offset": half_range, "pmf": [...]} where
+    pmf[i] = P(margin == i - offset). Length = 2*half_range + 1.
+    """
+    margin = sims.home_score - sims.away_score
+    n = len(margin)
+    idx = np.clip(margin + half_range, 0, 2 * half_range).astype(int)
+    counts = np.bincount(idx, minlength=2 * half_range + 1)[: 2 * half_range + 1]
+    return {"kind": "margin", "offset": half_range, "pmf": (counts / n).tolist()}
+
+
 def pred_scores(sims: GameSims) -> dict:
     h = float(np.mean(sims.home_score))
     a = float(np.mean(sims.away_score))

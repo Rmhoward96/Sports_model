@@ -142,7 +142,7 @@ def upsert_game_predictions(records: list[dict]) -> int:
         "home_team_name", "away_team_name",
         "home_probable_pitcher_name", "away_probable_pitcher_name",
         "pred_home_score", "pred_away_score", "pred_total", "pred_margin",
-        "home_win_prob",
+        "home_win_prob", "total_dist", "margin_dist",
     ]
     key = ("game_pk", "model_version")
     updates = ", ".join(f"{c} = EXCLUDED.{c}" for c in cols if c not in key)
