@@ -259,8 +259,15 @@ def props_board(mv, market, gdate, pks) -> tuple[pd.DataFrame, int, int]:
                 else:
                     side, price, mp, mkp, ev = "UNDER", pu, 1 - p_over, \
                         (1 - novig_over if novig_over is not None else None), ev_under
+                # Home runs are over-only longshots (books rarely post the "under"), so
+                # the pick above always lands on OVER. Only call it a PICK when the over
+                # is genuinely +EV; otherwise show "pass". The row's Model P / Market P /
+                # EV stay visible so the math is still there to collect and analyze.
+                display_side = side
+                if market == "home_run" and not (ev > 0):
+                    display_side = "pass"
                 row.update({
-                    "Side": side,
+                    "Side": display_side,
                     "Model P": f"{mp*100:.0f}%",
                     "Market P": f"{mkp*100:.0f}%" if mkp is not None else "—",
                     "Edge": f"{(mp - mkp)*100:+.0f} pts" if mkp is not None else "—",
