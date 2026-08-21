@@ -17,20 +17,23 @@ EMPIRICAL = {"mean_total": 8.89, "sd_total": 4.59, "p_ge11": 0.329, "p_le5": 0.2
              "p_shutout": 0.138, "p_blowout": 0.287, "sd_margin": 4.58, "mean_margin": 0.07}
 
 
+def _metrics(total, margin, shutout) -> dict:
+    return {
+        "mean_total": float(np.mean(total)),
+        "sd_total": float(np.std(total)),
+        "p_ge11": float(np.mean(total >= 11)),
+        "p_le5": float(np.mean(total <= 5)),
+        "p_shutout": float(np.mean(shutout)),
+        "p_blowout": float(np.mean(np.abs(margin) >= 5)),
+        "sd_margin": float(np.std(margin)),
+        "mean_margin": float(np.mean(margin)),
+    }
+
+
 def tail_metrics(home, away) -> dict:
     home = np.asarray(home)
     away = np.asarray(away)
-    total = home + away
-    margin = home - away
-    return {
-        "mean_total": float(total.mean()),
-        "sd_total": float(total.std()),
-        "p_ge11": float(np.mean(total >= 11)),
-        "p_le5": float(np.mean(total <= 5)),
-        "p_shutout": float(np.mean((home == 0) | (away == 0))),
-        "p_blowout": float(np.mean(np.abs(margin) >= 5)),
-        "sd_margin": float(margin.std()),
-    }
+    return _metrics(home + away, home - away, (home == 0) | (away == 0))
 
 
 def run_pooled(season: int, month: int, n_sims: int, seed: int = 42, dispersion=...):
@@ -55,18 +58,45 @@ def run_pooled(season: int, month: int, n_sims: int, seed: int = 42, dispersion=
     return np.concatenate(homes), np.concatenate(aways)
 
 
+def _load_dist_cal():
+    import json
+    from sportsmodel import config
+    p = config.PROJECT_ROOT / "assets" / "calibration.json"
+    c = json.loads(p.read_text()) if p.exists() else {}
+    t, m = c.get("total_dist", {}), c.get("margin_dist", {})
+    return (t.get("loc", 0.0), t.get("scale", 1.0)), (m.get("loc", 0.0), m.get("scale", 1.0))
+
+
+def calibrated_metrics(home, away) -> dict:
+    """Apply the stored total/margin loc+scale to pooled sim scores and measure. Total
+    and margin metrics come from the calibrated arrays directly; shutout is approximated
+    from reconstructed (rounded) home/away, which the affine doesn't preserve exactly."""
+    (lt, st), (lm, sm) = _load_dist_cal()
+    total, margin = home + away, home - away
+    ct = st * (total - total.mean()) + total.mean() + lt
+    cm = sm * (margin - margin.mean()) + margin.mean() + lm
+    ch = np.rint((ct + cm) / 2).clip(0)
+    ca = np.rint((ct - cm) / 2).clip(0)
+    return _metrics(ct, cm, (ch == 0) | (ca == 0))
+
+
 def main():
     import argparse
     ap = argparse.ArgumentParser()
     ap.add_argument("--season", type=int, default=2025)
     ap.add_argument("--month", type=int, default=6)
     ap.add_argument("--n-sims", type=int, default=2000)
+    ap.add_argument("--calibrated", action="store_true",
+                    help="apply the fitted total/margin calibration before measuring")
     a = ap.parse_args()
     home, away = run_pooled(a.season, a.month, a.n_sims)
-    m = tail_metrics(home, away)
+    m = calibrated_metrics(home, away) if a.calibrated else tail_metrics(home, away)
     print(f"\n{'metric':12} {'sim':>8} {'empirical':>10}  {'delta':>8}")
-    for k in EMPIRICAL:
-        print(f"{k:12} {m[k]:>8.3f} {EMPIRICAL[k]:>10.3f}  {m[k]-EMPIRICAL[k]:>+8.3f}")
+    for k in m:
+        emp = EMPIRICAL.get(k)
+        if emp is None:
+            continue
+        print(f"{k:12} {m[k]:>8.3f} {emp:>10.3f}  {m[k]-emp:>+8.3f}")
 
 
 if __name__ == "__main__":
