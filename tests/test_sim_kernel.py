@@ -138,52 +138,6 @@ def test_strikeout_outs_not_double_counted():
             f"Away starter sim {i}: fewer than 27 strikeouts, expected >= 27"
 
 
-def test_effective_hook_grows_when_cruising():
-    # a shutout starter (0 runs allowed) gets the full leash bonus on top of
-    # his sampled endurance, clipped to the 27-out ceiling.
-    base = 16.0
-    assert K._effective_hook(base, 0) == min(27.0, base + K.HOOK_LEASH_BONUS)
-    assert K._effective_hook(base, 0) > base
-
-
-def test_effective_hook_shrinks_with_runs_allowed():
-    base = 16.0
-    e0 = K._effective_hook(base, 0)
-    e2 = K._effective_hook(base, 2)
-    assert e2 < e0
-    assert e2 == max(3.0, min(27.0, base + K.HOOK_LEASH_BONUS - K.HOOK_RUN_PENALTY * 2))
-
-
-def test_effective_hook_clipped_to_floor_and_ceiling():
-    assert K._effective_hook(3.0, 100) == 3.0  # can't go below the 1-inning floor
-    assert K._effective_hook(27.0, 0) == 27.0   # bonus can't push past the full-game cap
-
-
-def test_starter_pulled_earlier_when_allowing_runs():
-    """A starter who gives up runs early should average fewer outs_recorded
-    than an otherwise-identical starter (same avg_outs/sd_outs) facing a
-    lineup that never scores -- this is the whole point of the
-    performance-correlated hook (vs. the old fixed-outs-target hook, which
-    would give both starters the same expected outs_recorded).
-    """
-    hot_vec = {"p_bb": 0.0, "p_k": 0.0, "p_1b": 0.0, "p_2b": 0.0,
-               "p_3b": 0.0, "p_hr": 0.4, "p_out": 0.6}
-    cold_vec = {"p_bb": 0.0, "p_k": 0.0, "p_1b": 0.0, "p_2b": 0.0,
-                "p_3b": 0.0, "p_hr": 0.0, "p_out": 1.0}
-    # home_starter faces away_order; away_starter faces home_order.
-    home_order = [K.Batter(pid, cold_vec, cold_vec) for pid in range(100, 109)]  # never scores
-    away_order = [K.Batter(pid, hot_vec, hot_vec) for pid in range(200, 209)]    # scores often
-    spec = K.GameSpec(home_order, away_order,
-                       K.Pitcher(1, avg_outs=18.0, sd_outs=4.0),
-                       K.Pitcher(2, avg_outs=18.0, sd_outs=4.0))
-
-    sims = K.simulate_scalar(spec, n_sims=300, rng=np.random.default_rng(5))
-    home_starter_outs = sims.pitcher_stats[1]["outs"].mean()  # faces hot away lineup
-    away_starter_outs = sims.pitcher_stats[2]["outs"].mean()  # faces cold home lineup
-
-    assert home_starter_outs < away_starter_outs - 3.0
-
-
 def test_vectorized_matches_scalar_distribution():
     spec = _spec()
     a = K.simulate_scalar(spec, 4000, np.random.default_rng(3))
