@@ -1,6 +1,7 @@
 import duckdb
 import pytest
-from sportsmodel.sim.mlb.build_advancement import build_advancement_table, _base_occ_expr
+from sportsmodel.sim.mlb.build_advancement import (
+    build_advancement_table, _base_occ_expr, measure_scoring_rates)
 
 
 def _mini_pbp(con):
@@ -87,3 +88,23 @@ def test_p_out_excludes_batter_reaches_base_events():
     """)
     rows = build_advancement_table(con, _table="pbp")
     assert rows == [], "field_error and plain fielders_choice should map to no outcome at all"
+
+
+def test_measure_scoring_rates_counts_reached_on_error():
+    # p_roe is measured from the structured `field_error` event. WP/PB is NOT
+    # measured here -- this Statcast backfill only carries it as unreliable free
+    # text, so it is supplied as a literature constant in config_dispersion.
+    con = duckdb.connect(":memory:")
+    con.execute("""
+        CREATE TABLE pa AS SELECT * FROM (VALUES
+          -- (game_pk, inning, inning_topbot, at_bat_number, events, on_1b, on_2b, on_3b, game_date)
+          (1,1,'Top',1,'single',      NULL,NULL,NULL, DATE '2025-05-01'),
+          (1,1,'Top',2,'field_error', 1,   NULL,NULL, DATE '2025-05-01'),
+          (1,1,'Top',3,'field_out',   1,   2,   NULL, DATE '2025-05-01'),
+          (1,1,'Top',4,'field_out',   1,   NULL,NULL, DATE '2025-05-01'),
+          (1,1,'Top',5,'strikeout',   NULL,NULL,NULL, DATE '2025-05-01')
+        ) t(game_pk,inning,inning_topbot,at_bat_number,events,on_1b,on_2b,on_3b,game_date)""")
+    r = measure_scoring_rates(con, _table="pa")
+    # 5 PA rows, 1 field_error -> p_roe = 1/5
+    assert abs(r["p_roe"] - 0.2) < 1e-9
+    assert "p_wp" not in r  # WP/PB is a config constant, not measured here

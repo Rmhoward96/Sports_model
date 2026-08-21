@@ -48,6 +48,29 @@ def _outcome_case_sql() -> str:
     return "\n".join(lines)
 
 
+def measure_scoring_rates(con: duckdb.DuckDBPyConnection, _table: str | None = None) -> dict:
+    """Reached-on-error rate from Statcast, for the kernel's ROE channel. Respects
+    the active walk-forward cutoff the same way build_advancement_table does.
+
+    p_roe = field_error PAs / all PAs. Wild-pitch/passed-ball is deliberately NOT
+    measured here: this backfill only carries WP/PB as unreliable free text (~10x
+    too few vs reality), so p_wp is supplied as a literature constant in
+    sim.mlb.config_dispersion instead.
+    """
+    src = _table or f"read_parquet('{transforms._PARQUET_GLOB}')"
+    conditions = ["events IS NOT NULL"]
+    if _table is None and transforms._CUTOFF:
+        conditions.append(f"CAST(game_date AS DATE) < DATE '{transforms._CUTOFF}'")
+    where = "WHERE " + " AND ".join(conditions)
+    n_pa, n_roe = con.execute(f"""
+        SELECT count(*) AS n_pa,
+               count(*) FILTER (WHERE events = 'field_error') AS n_roe
+        FROM {src} {where}
+    """).fetchone()
+    p_roe = (n_roe / n_pa) if n_pa else 0.0
+    return {"p_roe": float(p_roe)}
+
+
 def build_advancement_table(con: duckdb.DuckDBPyConnection, _table: str | None = None) -> list[dict]:
     """Transition rows respecting the active cutoff. `_table` overrides the source
     (tests pass a small in-memory table); production reads the Statcast parquet."""
