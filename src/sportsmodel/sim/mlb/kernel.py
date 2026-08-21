@@ -139,6 +139,16 @@ def resolve_pa(state: "BaseState", batter_idx: int, outcome: int, adv: Advanceme
 # suppresses outs) from looping forever. Set high enough to never truncate real innings.
 _MAX_PA_HALF = 50
 
+def apply_wp_advance(state: "BaseState") -> int:
+    """Wild pitch / passed ball: advance every runner one base; a runner on 3rd
+    scores. Returns runs scored. Occupancy transform new_occ = (occ & 0b011) << 1."""
+    runs = 1 if state.third >= 0 else 0
+    state.third = state.second
+    state.second = state.first
+    state.first = -1
+    return runs
+
+
 _BATTER_MARKETS = ("hits", "total_bases", "hr", "runs", "rbi", "hrr")
 
 
@@ -163,6 +173,7 @@ def _sim_one(spec: GameSpec, adv: AdvancementTable, rng, max_extra: int) -> tupl
     hook_home = min(27.0, max(3.0, rng.normal(spec.home_starter.avg_outs, spec.home_starter.sd_outs)))
     hook_away = min(27.0, max(3.0, rng.normal(spec.away_starter.avg_outs, spec.away_starter.sd_outs)))
     roe_p = getattr(spec, "roe_p", 0.0)
+    wp_p = getattr(spec, "wp_p", 0.0)
     scores = [0, 0]           # [away, home]
     idx = [0, 0]              # batting-order pointer [away, home]
     bf = [0, 0]               # batters faced by the [away pitcher, home pitcher] (drives TTO only)
@@ -226,6 +237,11 @@ def _sim_one(spec: GameSpec, adv: AdvancementTable, rng, max_extra: int) -> tupl
                 if outcome in (S, D, T, HR):
                     pline["hits"] += 1
                 pline["outs"] += outs_added
+            # wild pitch / passed ball on a K or BB with runners aboard: advance every
+            # runner one base (3rd scores). The run is unearned to the batter -- credited
+            # to the team score, NOT the batter's RBI. `wp_p > 0.0` guards the RNG draw.
+            if wp_p > 0.0 and outcome in (K, BB) and state.runners() >= 1 and rng.random() < wp_p:
+                scores[bat_team] += apply_wp_advance(state)
             outs += outs_added
             bf[defense] += 1
             idx[bat_team] += 1
@@ -401,6 +417,7 @@ def simulate(spec: GameSpec, n_sims: int, rng, max_extra: int = 11) -> GameSims:
     hook_home = np.clip(rng.normal(spec.home_starter.avg_outs, spec.home_starter.sd_outs, size=n), 3.0, 27.0)
     hook_away = np.clip(rng.normal(spec.away_starter.avg_outs, spec.away_starter.sd_outs, size=n), 3.0, 27.0)
     roe_p = getattr(spec, "roe_p", 0.0)
+    wp_p = getattr(spec, "wp_p", 0.0)
 
     scores_home = np.zeros(n, dtype=np.int64)
     scores_away = np.zeros(n, dtype=np.int64)
@@ -469,6 +486,17 @@ def simulate(spec: GameSpec, n_sims: int, rng, max_extra: int = 11) -> GameSims:
                     new_occ = np.where(m_roe, s_occ, new_occ)
                     outs_added = np.where(m_roe, 0, outs_added)
 
+            # wild pitch / passed ball on a K or BB with runners aboard: advance every
+            # runner one base (3rd scores). Scored to the TEAM only, not the batter's RBI,
+            # so wp_runs is tracked separately from the PA `runs`.
+            wp_runs = np.zeros(n, dtype=np.int64)
+            if wp_p > 0.0:
+                u_wp = rng.random(n)
+                m_wp = active & ((outcome == K) | (outcome == BB)) & (new_occ > 0) & (u_wp < wp_p)
+                if m_wp.any():
+                    wp_runs = np.where(m_wp & ((new_occ & 4) > 0), 1, 0)
+                    new_occ = np.where(m_wp, (new_occ & 3) << 1, new_occ)
+
             is_hit = (outcome == S) | (outcome == D) | (outcome == T) | (outcome == HR)
             tb = np.select([outcome == S, outcome == D, outcome == T, outcome == HR], [1, 2, 3, 4], default=0)
             is_hr = outcome == HR
@@ -484,9 +512,9 @@ def simulate(spec: GameSpec, n_sims: int, rng, max_extra: int = 11) -> GameSims:
             box["runs"][rows, cols] += is_hr[m]
 
             if bat_team == 1:
-                scores_home[m] += runs[m]
+                scores_home[m] += runs[m] + wp_runs[m]
             else:
-                scores_away[m] += runs[m]
+                scores_away[m] += runs[m] + wp_runs[m]
 
             sm = m & starter_in  # pitcher line: starter only
             pline["k"][sm] += is_k[sm]

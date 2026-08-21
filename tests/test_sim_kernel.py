@@ -176,6 +176,35 @@ def test_roe_vectorized_matches_scalar_mean():
     assert abs((a.home_score + a.away_score).mean() - (b.home_score + b.away_score).mean()) < 0.2
 
 
+def test_wp_scores_runner_from_third():
+    # A runner on 3rd: a wild pitch scores him; other runners shift up one base.
+    st = K.BaseState(first=1, second=2, third=5)
+    runs = K.apply_wp_advance(st)
+    assert runs == 1 and st.third == 2 and st.second == 1 and st.first == -1
+
+
+def test_wp_no_runner_on_third_scores_nothing():
+    st = K.BaseState(first=1, second=-1, third=-1)
+    runs = K.apply_wp_advance(st)
+    assert runs == 0 and st.second == 1 and st.first == -1
+
+
+def test_wp_off_by_default_matches_today():
+    sims = K.simulate_scalar(_spec(), n_sims=50, rng=np.random.default_rng(0))
+    ref = K.simulate_scalar(_spec(), n_sims=50, rng=np.random.default_rng(0))
+    assert np.array_equal(sims.away_score, ref.away_score)
+
+
+def test_wp_vectorized_matches_scalar_mean():
+    bs = [K.Batter(pid, _flat_vec(), _flat_vec()) for pid in range(100, 109)]
+    aw = [K.Batter(pid, _flat_vec(), _flat_vec()) for pid in range(200, 209)]
+    spec = K.GameSpec(bs, aw, K.Pitcher(1, 16, 5), K.Pitcher(2, 16, 5))
+    spec.wp_p = 0.05
+    a = K.simulate_scalar(spec, 4000, np.random.default_rng(3))
+    b = K.simulate(spec, 4000, np.random.default_rng(3))
+    assert abs((a.home_score + a.away_score).mean() - (b.home_score + b.away_score).mean()) < 0.2
+
+
 def test_vectorized_matches_scalar_distribution():
     spec = _spec()
     a = K.simulate_scalar(spec, 4000, np.random.default_rng(3))
