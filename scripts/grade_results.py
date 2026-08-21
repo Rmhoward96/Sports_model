@@ -118,6 +118,7 @@ def main() -> None:
         print(f"{len(games)} predicted games in window since {start}")
 
         graded_games = 0
+        graded_prop_games: set = set()
         for game_pk, gdate, mv, home_name, away_name in games:
             if game_pk not in finals:
                 continue  # only grade truly-final games (not live/scheduled)
@@ -128,21 +129,28 @@ def main() -> None:
             graded_games += 1
 
             # game predictions for this game/model
-            cur.execute("""SELECT pred_total, home_win_prob FROM game_predictions
+            cur.execute("""SELECT pred_total, home_win_prob, pred_margin FROM game_predictions
                            WHERE game_pk = %s AND model_version = %s""", [game_pk, mv])
             gp = cur.fetchone()
             if gp:
-                pred_total, home_wp = gp
-                rows += _grade_game(game_pk, gdate, mv, res, close, pred_total, home_wp)
+                pred_total, home_wp, pred_margin = gp
+                rows += _grade_game(game_pk, gdate, mv, res, close, pred_total, home_wp, pred_margin)
 
-            # prop predictions for this game/model
-            cur.execute("""SELECT player_id, player_name, market, projected_mean, dist
-                           FROM prop_predictions WHERE game_pk = %s AND model_version = %s""",
-                        [game_pk, mv])
-            for pid, pname, market, proj, dist in cur.fetchall():
-                r = _grade_prop(game_pk, gdate, mv, res, close, pid, pname, market, proj, dist)
-                if r:
-                    rows.append(r)
+            # prop predictions for this game/model. Props carry their OWN model_version
+            # (e.g. mlb-props-v1), distinct from the game model_version (e.g.
+            # mlb-game-v2-defense) — never filter props by the game's mv. Grade props
+            # only once per game_pk since the outer loop can revisit a game_pk once per
+            # distinct game model_version.
+            if game_pk not in graded_prop_games:
+                graded_prop_games.add(game_pk)
+                cur.execute("""SELECT player_id, player_name, market, projected_mean, dist,
+                                      model_version
+                               FROM prop_predictions WHERE game_pk = %s""", [game_pk])
+                for pid, pname, market, proj, dist, prop_mv in cur.fetchall():
+                    r = _grade_prop(game_pk, gdate, prop_mv, res, close, pid, pname, market,
+                                     proj, dist)
+                    if r:
+                        rows.append(r)
 
     print(f"graded {graded_games} final games -> {len(rows)} results")
     if rows:
@@ -159,7 +167,7 @@ def _row(game_pk, market, pid, pname, mv, gdate, model_num, line, price, lean, a
             "model_prob": model_prob, "market_prob": market_prob, "ev": ev}
 
 
-def _grade_game(game_pk, gdate, mv, res, close, pred_total, home_wp) -> list[dict]:
+def _grade_game(game_pk, gdate, mv, res, close, pred_total, home_wp, pred_margin) -> list[dict]:
     out = []
     hr_, ar_ = res["home_runs"], res["away_runs"]
     # Moneyline
@@ -179,12 +187,34 @@ def _grade_game(game_pk, gdate, mv, res, close, pred_total, home_wp) -> list[dic
                         ev=model_p * _decimal(price) - 1))
     # Total — grade at the main (most-booked) closing line.
     over = _primary(close.get(("total", "over", "")))
-    if over and over[0] is not None and over[1]:
+    if pred_total is not None and over and over[0] is not None and over[1]:
         line = over[0]
         pu = _price_at(close.get(("total", "under", "")), line) or over[1]
         lean, price, result, profit, edge = _grade_ou(pred_total, line, hr_ + ar_, over[1], pu)
         out.append(_row(game_pk, "total", 0, "", mv, gdate, pred_total, line, price, lean,
                         hr_ + ar_, result, profit, edge))
+    # Spread (run line) — home_line is the home team's spread point (e.g. -1.5).
+    # "Home covers" iff actual_margin + home_line > 0 (equivalently: away_line is the
+    # negation of home_line, and away covers iff actual_margin + away_line < 0, i.e.
+    # actual_margin - home_line < 0, i.e. actual_margin < home_line -> same boundary).
+    sp = _primary(close.get(("spread", "home", "")))
+    if pred_margin is not None and sp and sp[0] is not None and sp[1]:
+        sl = sp[0]
+        away_price = _price_at(close.get(("spread", "away", "")), -sl) or sp[1]
+        actual_margin = hr_ - ar_
+        home_covers = actual_margin + sl > 0
+        push = actual_margin + sl == 0
+        lean_home = pred_margin + sl > 0
+        lean = "home" if lean_home else "away"
+        price = sp[1] if lean_home else away_price
+        if push:
+            result, profit = "push", 0.0
+        else:
+            won = home_covers if lean_home else (not home_covers)
+            result, profit = ("win", _decimal(price) - 1) if won else ("loss", -1.0)
+        edge = (pred_margin + sl) if lean_home else -(pred_margin + sl)
+        out.append(_row(game_pk, "spread", 0, "", mv, gdate, pred_margin, sl, price, lean,
+                        actual_margin, result, profit, edge))
     return out
 
 
