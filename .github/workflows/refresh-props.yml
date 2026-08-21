@@ -8,9 +8,11 @@ name: refresh-props
 # these just need to fall across the afternoon/evening ET window).
 on:
   schedule:
-    - cron: "0 18 * * *"   # ~1-2 PM ET
-    - cron: "0 21 * * *"   # ~4-5 PM ET
-    - cron: "0 23 * * *"   # ~6-7 PM ET
+    # GitHub cron is UTC-only. Baseball season is entirely US Daylight Time
+    # (Central = UTC-5), so these map to 11 AM / 2 PM / 5 PM Central in-season.
+    - cron: "0 16 * * *"   # 11 AM Central
+    - cron: "0 19 * * *"   # 2 PM Central
+    - cron: "0 22 * * *"   # 5 PM Central
   workflow_dispatch: {}
 
 jobs:
