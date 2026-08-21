@@ -60,10 +60,10 @@ def player_prop_dists(sims: GameSims, market_max: dict) -> dict:
             d[market] = _pmf_mean(stats[stat], market_max[market])
         p_hr1 = float(np.mean(stats["hr"] >= 1))
         d["home_run"] = {"kind": "pmf", "pmf": [1 - p_hr1, p_hr1], "mean": float(np.mean(stats["hr"]))}
-        out[pid] = d
+        out.setdefault(pid, {}).update(d)
     for pid, stats in sims.pitcher_stats.items():
         d = {}
         for market, stat in _PITCHER_MARKET_STAT.items():
             d[market] = _pmf_mean(stats[stat], market_max[market])
-        out[pid] = d
+        out.setdefault(pid, {}).update(d)
     return out

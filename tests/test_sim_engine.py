@@ -42,3 +42,25 @@ def test_player_prop_dists_shapes():
     assert len(hr) == 2 and abs(sum(hr) - 1.0) < 1e-9   # [P(0), P(>=1)]
     assert out[100]["hits"]["pmf"][0] == 0.5             # one sim had 0 hits
     assert out[1]["outs_recorded"]["mean"] == 16.5
+
+
+def test_player_prop_dists_two_way_player():
+    """Test that a two-way player (batter and pitcher) has BOTH batter and pitcher markets."""
+    sims = GameSims(
+        home_score=np.array([1, 2]), away_score=np.array([0, 1]),
+        batter_stats={100: {"hits": np.array([0, 2]), "total_bases": np.array([0, 3]),
+                            "hr": np.array([0, 1]), "runs": np.array([0, 1]),
+                            "rbi": np.array([0, 2]), "hrr": np.array([0, 5])}},
+        pitcher_stats={100: {"k": np.array([5, 7]), "hits": np.array([4, 6]),
+                             "outs": np.array([15, 18])}},
+    )
+    out = player_prop_dists(sims, {"hits": 5, "total_bases": 8, "hrr": 12,
+                                   "pitcher_ks": 12, "hits_allowed": 12, "outs_recorded": 27})
+    # Assert player 100 has BOTH batter and pitcher markets (no overwrite)
+    assert "hits" in out[100], "Player 100 should have batter market 'hits'"
+    assert "home_run" in out[100], "Player 100 should have batter market 'home_run'"
+    assert "outs_recorded" in out[100], "Player 100 should have pitcher market 'outs_recorded'"
+    assert "pitcher_ks" in out[100], "Player 100 should have pitcher market 'pitcher_ks'"
+    # Verify the values are correct
+    assert out[100]["hits"]["pmf"][0] == 0.5
+    assert out[100]["outs_recorded"]["mean"] == 16.5
