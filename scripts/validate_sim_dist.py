@@ -33,8 +33,10 @@ def tail_metrics(home, away) -> dict:
     }
 
 
-def run_pooled(season: int, month: int, n_sims: int, seed: int = 42):
-    """Run the sim backtest for one month; return pooled (home, away) sim arrays."""
+def run_pooled(season: int, month: int, n_sims: int, seed: int = 42, dispersion=...):
+    """Run the sim backtest for one month; return pooled (home, away) sim arrays.
+    `dispersion` sentinel `...` uses the production config; pass a Dispersion to
+    override (the tuning search does this)."""
     import backtest_sim as bs
     homes, aways = [], []
     orig = bs.pred_scores
@@ -47,7 +49,7 @@ def run_pooled(season: int, month: int, n_sims: int, seed: int = 42):
     bs.pred_scores = wrap
     bs._MONTHS = [month]
     try:
-        bs.run_sim_backtest(season, n_sims=n_sims, seed=seed)
+        bs.run_sim_backtest(season, n_sims=n_sims, seed=seed, dispersion=dispersion)
     finally:
         bs.pred_scores = orig
     return np.concatenate(homes), np.concatenate(aways)

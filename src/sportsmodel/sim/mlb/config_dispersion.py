@@ -22,5 +22,9 @@ def load_rates() -> dict:
     return {"p_roe": 0.0, "p_wp": 0.0}
 
 
-# Tuned in scripts/tune_dispersion.py (Task 7). Zeros = no dispersion until then.
-DISPERSION = Dispersion(sigma_shared=0.0, sigma_team=0.0, sigma_pitcher=0.0)
+# Tuned to 2025 outlier rates via scripts/tune_dispersion.py (coordinate search on
+# 2025-06, n=1000): per-team + pitcher-quality variance match the total/margin SD and
+# the blowout rate; a shared-environment term (sigma_shared) only over-inflated total SD
+# without helping margins, so it tuned to 0. The mean-dependent tails (P(total>=11),
+# P(total<=5)) come into line after the calibration location shift re-centers the mean.
+DISPERSION = Dispersion(sigma_shared=0.0, sigma_team=0.16, sigma_pitcher=0.18)
