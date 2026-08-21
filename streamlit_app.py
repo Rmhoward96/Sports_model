@@ -389,4 +389,19 @@ else:  # vs Closing Line — the graded track record
         if decided < 30:
             st.warning(f"Only {decided} decided bets so far — far too small to mean anything. "
                        "Sample needs hundreds before ROI is signal, not noise.")
-        st.dataframe(df, use_container_width=True, hide_index=True)
+        # `player_name` holds the pick label the grader built (team for moneyline,
+        # "Over/Under X" for totals, covering team + line for the run line). Surface it
+        # as an explicit Pick column so a game-line report never reads as a bare win/loss.
+        show = df.rename(columns={
+            "game_date": "Date", "player_name": "Pick", "lean": "Side",
+            "model_number": "Model #", "closing_line": "Close", "closing_price": "Price",
+            "model_prob": "Model P", "market_prob": "Mkt P", "ev": "EV",
+            "actual": "Actual", "result": "Result", "profit": "Units", "edge": "Edge",
+        })
+        show["Pick"] = show["Pick"].fillna("—").replace("", "—")
+        for c in ("Model P", "Mkt P", "EV"):
+            show[c] = pd.to_numeric(show[c], errors="coerce").map(
+                lambda v: f"{v*100:+.1f}%" if pd.notna(v) else "—")
+        show["Units"] = pd.to_numeric(show["Units"], errors="coerce").map(
+            lambda v: f"{v:+.2f}u" if pd.notna(v) else "—")
+        st.dataframe(show, use_container_width=True, hide_index=True)
