@@ -205,6 +205,43 @@ def test_wp_vectorized_matches_scalar_mean():
     assert abs((a.home_score + a.away_score).mean() - (b.home_score + b.away_score).mean()) < 0.2
 
 
+def _spec_real_adv():
+    """_spec() with the real Statcast advancement table attached (skips if absent)."""
+    if not glob.glob(transforms._PARQUET_GLOB, recursive=True):
+        pytest.skip("requires local Statcast backfill (parquet not found)")
+    transforms.set_cutoff(None)
+    con = duckdb.connect(":memory:")
+    con.execute("INSTALL json; LOAD json;")
+    rows = build_advancement_table(con)
+    con.close()
+    if not rows:
+        pytest.skip("advancement table build produced no rows")
+    spec = _spec()
+    spec.adv = AdvancementTable.from_rows(rows)
+    return spec
+
+
+def test_dispersion_off_matches_today():
+    spec = _spec(); spec.dispersion = K.Dispersion()  # all zeros -> no-op, no RNG draws
+    a = K.simulate_scalar(spec, 200, np.random.default_rng(5))
+    b = K.simulate_scalar(_spec(), 200, np.random.default_rng(5))
+    assert np.array_equal(a.home_score, b.home_score)
+    assert np.array_equal(a.away_score, b.away_score)
+
+
+def test_dispersion_widens_total_distribution():
+    # The point of dispersion is fatter tails. The renormalize introduces only a
+    # small mean drift (bounded here); the totals calibration layer re-centers the
+    # residual mean, so exact mean-preservation is NOT the kernel's job.
+    base = _spec_real_adv()
+    hi = _spec_real_adv(); hi.dispersion = K.Dispersion(0.20, 0.20, 0.30)
+    a = K.simulate(base, 8000, np.random.default_rng(9))
+    b = K.simulate(hi, 8000, np.random.default_rng(9))
+    ta = (a.home_score + a.away_score); tb = (b.home_score + b.away_score)
+    assert tb.std() > ta.std() + 0.2                  # dispersion fattens the distribution
+    assert abs(ta.mean() - tb.mean()) < 1.0           # mean stays close; calibration re-centers
+
+
 def test_vectorized_matches_scalar_distribution():
     spec = _spec()
     a = K.simulate_scalar(spec, 4000, np.random.default_rng(3))

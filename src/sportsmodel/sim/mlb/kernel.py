@@ -34,6 +34,67 @@ class Pitcher:
 
 
 @dataclass
+class Dispersion:
+    """Per-game stochastic multipliers on offense, sampled once per simulated game,
+    to reproduce real MLB's outlier games (blowups, laughers, blowouts). All zeros
+    (the default) is a no-op that draws no RNG. See spec 2026-08-21 §2."""
+    sigma_shared: float = 0.0    # shared scoring-environment (both offenses move together)
+    sigma_team: float = 0.0      # per-team offense (asymmetric -> blowouts)
+    sigma_pitcher: float = 0.0   # per-start pitcher quality (opposing offense multiplier)
+
+
+# Offensive (non-out) columns of a per-PA outcome vector; K and OUT are excluded.
+_OFF_COLS = np.array([0, 2, 3, 4, 5])          # p_bb, p_1b, p_2b, p_3b, p_hr
+_OFF_KEYS = ("p_bb", "p_1b", "p_2b", "p_3b", "p_hr")
+
+
+def _lognorm(rng, sig, size=None):
+    """Log-normal multiplier with E[.]=1 (centered at -sig^2/2). sig=0 -> ones,
+    no RNG drawn (so dispersion-off leaves the stream untouched)."""
+    if sig <= 0.0:
+        return np.ones(size) if size is not None else 1.0
+    return np.exp(rng.normal(-0.5 * sig * sig, sig, size=size))
+
+
+def _sample_dispersion(disp, rng, n):
+    """(E_shared, E_home, E_away, eq_home, eq_away) mean-1 arrays of length n."""
+    if disp is None:
+        one = np.ones(n)
+        return one, one, one, one, one
+    return (_lognorm(rng, disp.sigma_shared, n), _lognorm(rng, disp.sigma_team, n),
+            _lognorm(rng, disp.sigma_team, n), _lognorm(rng, disp.sigma_pitcher, n),
+            _lognorm(rng, disp.sigma_pitcher, n))
+
+
+def _sample_dispersion_scalar(disp, rng):
+    if disp is None:
+        return 1.0, 1.0, 1.0, 1.0, 1.0
+    return (_lognorm(rng, disp.sigma_shared), _lognorm(rng, disp.sigma_team),
+            _lognorm(rng, disp.sigma_team), _lognorm(rng, disp.sigma_pitcher),
+            _lognorm(rng, disp.sigma_pitcher))
+
+
+def _apply_mult_vec(vec, mult):
+    """Scale a (n,7) vec's offensive columns by per-sim mult (n,) and renormalize.
+    The renormalization saturates offensive share as mult grows, which keeps the run
+    tail from running away; the small mean drift it introduces is re-centered by the
+    totals calibration layer (see spec 2026-08-21 §2-3)."""
+    v = vec.copy()
+    v[:, _OFF_COLS] *= mult[:, None]
+    return v / v.sum(axis=1, keepdims=True)
+
+
+def _apply_mult_dict(vec, mult):
+    if mult == 1.0:
+        return vec
+    v = dict(vec)
+    for k in _OFF_KEYS:
+        v[k] *= mult
+    tot = sum(v.values())
+    return {k: x / tot for k, x in v.items()}
+
+
+@dataclass
 class GameSpec:
     home_order: list
     away_order: list
@@ -174,6 +235,10 @@ def _sim_one(spec: GameSpec, adv: AdvancementTable, rng, max_extra: int) -> tupl
     hook_away = min(27.0, max(3.0, rng.normal(spec.away_starter.avg_outs, spec.away_starter.sd_outs)))
     roe_p = getattr(spec, "roe_p", 0.0)
     wp_p = getattr(spec, "wp_p", 0.0)
+    # per-game dispersion multipliers (mean 1). E_*: offense environment; eq_*: the
+    # defending starter's quality applied to the opposing offense while he's in.
+    E_shared, E_home, E_away, eq_home, eq_away = _sample_dispersion_scalar(
+        getattr(spec, "dispersion", None), rng)
     scores = [0, 0]           # [away, home]
     idx = [0, 0]              # batting-order pointer [away, home]
     bf = [0, 0]               # batters faced by the [away pitcher, home pitcher] (drives TTO only)
@@ -203,6 +268,10 @@ def _sim_one(spec: GameSpec, adv: AdvancementTable, rng, max_extra: int) -> tupl
             starter_in = pline["outs"] < hook
             times_through = faced // 9 + 1
             vec = apply_tto(b.vec_vs_sp, times_through) if starter_in else b.vec_vs_bp
+            # dispersion: scale this batting team's offense. defense==0 -> away pitches.
+            eq_def = eq_away if defense == 0 else eq_home
+            mult = (E_home if bat_team == 1 else E_away) * E_shared * (eq_def if starter_in else 1.0)
+            vec = _apply_mult_dict(vec, mult)
             u = rng.random()
             outcome = sample_outcome(vec, u)
             u2 = rng.random()
@@ -418,6 +487,8 @@ def simulate(spec: GameSpec, n_sims: int, rng, max_extra: int = 11) -> GameSims:
     hook_away = np.clip(rng.normal(spec.away_starter.avg_outs, spec.away_starter.sd_outs, size=n), 3.0, 27.0)
     roe_p = getattr(spec, "roe_p", 0.0)
     wp_p = getattr(spec, "wp_p", 0.0)
+    E_shared, E_home, E_away, eq_home, eq_away = _sample_dispersion(
+        getattr(spec, "dispersion", None), rng, n)
 
     scores_home = np.zeros(n, dtype=np.int64)
     scores_away = np.zeros(n, dtype=np.int64)
@@ -464,6 +535,13 @@ def simulate(spec: GameSpec, n_sims: int, rng, max_extra: int = 11) -> GameSims:
             vec_if_sp = sp_tensor[tto_idx, slot]
             vec_if_bp = bp_tensor[slot]
             vec = np.where(starter_in[:, None], vec_if_sp, vec_if_bp)
+
+            # dispersion: scale this batting team's offense per sim. defense==0 -> away
+            # pitches, so its starter's quality (eq_away) multiplies the home offense.
+            E_bat = E_home if bat_team == 1 else E_away
+            eq_def = eq_away if defense == 0 else eq_home
+            pitcher_mult = np.where(starter_in, eq_def, 1.0)
+            vec = _apply_mult_vec(vec, E_shared * E_bat * pitcher_mult)
 
             u1 = rng.random(n)
             cum = np.cumsum(vec, axis=1)
