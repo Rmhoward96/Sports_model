@@ -33,7 +33,7 @@ from sportsmodel import transforms
 from sportsmodel.model.distributions import prob_over_dist
 from sportsmodel.model.props import DEFAULT_LINE
 from sportsmodel.sim.engine import player_prop_dists
-from sportsmodel.sim.mlb import kernel
+from sportsmodel.sim.mlb import config_dispersion, kernel
 from sportsmodel.sim.mlb.advancement import AdvancementTable
 from sportsmodel.sim.mlb.build_advancement import build_advancement_table
 from sportsmodel.sim.mlb.inputs import build_game_spec
@@ -57,8 +57,14 @@ MARKET_MAX = {
 }
 
 
-def run_sim_props_backtest(season: int, n_sims: int, seed: int = 42) -> dict:
-    """Walk-forward; returns {market: Score} of sim-derived P(over) vs actual outcomes."""
+def run_sim_props_backtest(season: int, n_sims: int, seed: int = 42, dispersion=...) -> dict:
+    """Walk-forward; returns {market: Score} of sim-derived P(over) vs actual outcomes.
+    Uses the same production scoring channels + dispersion as generate_sim, so the prop
+    calibration is fit against the model that actually serves props. `dispersion` sentinel
+    `...` -> production config; pass a Dispersion (or None) to override."""
+    if dispersion is ...:
+        dispersion = config_dispersion.DISPERSION
+    _rates = config_dispersion.load_rates()
     rng = np.random.default_rng(seed)
     scores = {m: Score() for m in BATTER_MARKETS + PITCHER_MARKETS}
     n_skipped_lineup = 0
@@ -121,6 +127,7 @@ def run_sim_props_backtest(season: int, n_sims: int, seed: int = 42) -> dict:
                 home_order, away_order, h_sp_vec, a_sp_vec,
                 bp.get(home), bp.get(away), workload=wl, context=context,
                 league=league, adv=adv, home_starter_id=hsp, away_starter_id=asp,
+                roe_p=_rates["p_roe"], wp_p=_rates["p_wp"], dispersion=dispersion,
             )
             sims = kernel.simulate(spec, n_sims, rng)
             dists = player_prop_dists(sims, MARKET_MAX)
