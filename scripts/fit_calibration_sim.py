@@ -64,6 +64,19 @@ def merge_calibration(sim_params: dict, existing: dict) -> dict:
     return merged
 
 
+def fit_dist_affine(sim_pooled, emp_mean: float, emp_sd: float):
+    """Method-of-moments location+scale that maps the sim's pooled marginal
+    distribution onto the empirical moments: loc re-centers the mean, scale matches
+    the SD. Returns (loc, scale). Used to calibrate the total and margin dists."""
+    import numpy as np
+    sim_pooled = np.asarray(sim_pooled, dtype=float)
+    sim_mean = float(sim_pooled.mean())
+    sim_sd = float(sim_pooled.std())
+    loc = emp_mean - sim_mean
+    scale = (emp_sd / sim_sd) if sim_sd > 0 else 1.0
+    return loc, scale
+
+
 def _fmt(params) -> str:
     if params is None:
         return "—"
@@ -78,10 +91,37 @@ def main() -> None:
     ap.add_argument("--seed", type=int, default=42)
     args = ap.parse_args()
 
+    import numpy as np
+    import validate_sim_dist as vsd
+
     existing = json.loads(CALIB_PATH.read_text()) if CALIB_PATH.exists() else {}
 
-    game = backtest_sim.run_sim_backtest(args.season, args.n_sims, args.seed)
+    # Capture the pooled per-sim scores during the game backtest so we can fit the
+    # total/margin distribution calibration (mean + width) from the same run.
+    _homes, _aways = [], []
+    _orig_ps = backtest_sim.pred_scores
+
+    def _cap(sims):
+        _homes.append(np.asarray(sims.home_score))
+        _aways.append(np.asarray(sims.away_score))
+        return _orig_ps(sims)
+
+    backtest_sim.pred_scores = _cap
+    try:
+        game = backtest_sim.run_sim_backtest(args.season, args.n_sims, args.seed)
+    finally:
+        backtest_sim.pred_scores = _orig_ps
     props = backtest_sim_props.run_sim_props_backtest(args.season, args.n_sims, args.seed)
+
+    # Totals/margin distribution calibration: moment-match the pooled sim marginal
+    # distribution to the empirical moments. loc re-centers the mean the scoring
+    # channels didn't fully close; scale finishes the width dispersion didn't reach.
+    pooled_home = np.concatenate(_homes)
+    pooled_away = np.concatenate(_aways)
+    loc_t, scale_t = fit_dist_affine(pooled_home + pooled_away,
+                                     vsd.EMPIRICAL["mean_total"], vsd.EMPIRICAL["sd_total"])
+    loc_m, scale_m = fit_dist_affine(pooled_home - pooled_away,
+                                     vsd.EMPIRICAL["mean_margin"], vsd.EMPIRICAL["sd_margin"])
 
     targets = {"win_prob": ([s[0] for s in game], [s[1] for s in game])}
     for market in SIM_FIT_TARGETS:
@@ -92,7 +132,11 @@ def main() -> None:
 
     sim_params = {t: list(calibration.fit(p, y)) for t, (p, y) in targets.items()}
     merged = merge_calibration(sim_params, existing)
+    merged["total_dist"] = {"loc": loc_t, "scale": scale_t}
+    merged["margin_dist"] = {"loc": loc_m, "scale": scale_m}
     CALIB_PATH.write_text(json.dumps(merged, indent=2))
+    print(f"total_dist calibration: loc={loc_t:+.3f} scale={scale_t:.3f}  "
+          f"margin_dist: loc={loc_m:+.3f} scale={scale_m:.3f}")
 
     print(f"\nHYBRID calibration fit on {args.season} (sim n_sims={args.n_sims}). "
           f"Wrote {CALIB_PATH.relative_to(ROOT)}")

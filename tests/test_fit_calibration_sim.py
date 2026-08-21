@@ -107,3 +107,14 @@ def test_merge_survives_empty_existing():
         assert t in merged
     for t in _mod.ANALYTIC_KEEP_TARGETS:
         assert t not in merged
+
+
+def test_fit_dist_affine_moment_match():
+    import numpy as np
+    fcs = _load_module()
+    sim = np.random.default_rng(0).normal(7.9, 3.96, 20000)
+    loc, scale = fcs.fit_dist_affine(sim, emp_mean=8.85, emp_sd=4.60)
+    assert abs(loc - (8.85 - sim.mean())) < 1e-9
+    assert abs(scale - (4.60 / sim.std())) < 1e-9
+    # after applying, the sim marginal mean lands on the empirical mean
+    assert abs((sim.mean() + loc) - 8.85) < 1e-9

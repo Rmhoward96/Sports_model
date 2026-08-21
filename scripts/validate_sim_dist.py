@@ -14,7 +14,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 # Empirical 2025 (2367 games), from the spec's Problem table.
 EMPIRICAL = {"mean_total": 8.89, "sd_total": 4.59, "p_ge11": 0.329, "p_le5": 0.253,
-             "p_shutout": 0.138, "p_blowout": 0.287, "sd_margin": 4.58}
+             "p_shutout": 0.138, "p_blowout": 0.287, "sd_margin": 4.58, "mean_margin": 0.07}
 
 
 def tail_metrics(home, away) -> dict:
