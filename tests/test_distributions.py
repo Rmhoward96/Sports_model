@@ -87,3 +87,26 @@ def test_prob_cover_wrong_kind_or_empty_is_nan():
     assert d.prob_cover(None, -1.5) != d.prob_cover(None, -1.5)  # NaN
     assert d.prob_cover({"kind": "pmf", "pmf": [1.0]}, -1.5) != d.prob_cover(
         {"kind": "pmf", "pmf": [1.0]}, -1.5)  # NaN (wrong kind)
+
+
+def test_apply_affine_identity():
+    dist = {"kind": "pmf", "pmf": [0.1, 0.2, 0.4, 0.2, 0.1]}
+    out = d.apply_affine(dist, 0.0, 1.0)
+    assert abs(sum(out["pmf"]) - 1.0) < 1e-9
+    assert abs(d.prob_over_dist(out, 2) - d.prob_over_dist(dist, 2)) < 1e-9
+
+
+def test_apply_affine_location_shift_raises_mean():
+    pmf = [0.0] * 20
+    pmf[8] = 1.0  # all mass at 8 (with headroom so a +1 shift doesn't clip)
+    dist = {"kind": "pmf", "pmf": pmf}
+    out = d.apply_affine(dist, 1.0, 1.0)  # shift +1 -> mass at 9
+    assert d.prob_over_dist(out, 8) > 0.99
+
+
+def test_apply_affine_scale_widens_margin_cover():
+    md = {"kind": "margin", "offset": 3, "pmf": [0, 0, 0.2, 0.6, 0.2, 0, 0]}  # margins -1,0,1
+    wide = d.apply_affine(md, 0.0, 2.0)
+    assert wide["kind"] == "margin" and wide["offset"] == 3
+    assert d.prob_cover(wide, -1.5) == d.prob_cover(wide, -1.5)  # finite, not NaN
+    assert sum(wide["pmf"]) == pytest.approx(1.0)

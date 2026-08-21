@@ -93,6 +93,33 @@ def prob_cover(margin_dist: dict, home_line: float) -> float:
     return sum(p for i, p in enumerate(pmf) if (i - offset) > threshold)
 
 
+def apply_affine(dist: dict, loc: float, scale: float) -> dict:
+    """Location+scale remap of a discrete distribution, re-binned to its integer
+    support. Calibrates the sim's total (pmf) and margin distributions: each support
+    value x is mapped to scale*(x-mean)+mean+loc and its mass re-binned (nearest int,
+    clipped to range). loc=0, scale=1 is the identity. Preserves kind/offset."""
+    import numpy as np
+    if not dist:
+        return dist
+    kind = dist.get("kind")
+    pmf = np.asarray(dist.get("pmf") or [], dtype=float)
+    if pmf.size == 0:
+        return dist
+    offset = dist.get("offset", 0)
+    support = np.arange(pmf.size) - offset
+    mean = float((support * pmf).sum())
+    new_vals = scale * (support - mean) + mean + loc
+    new_idx = np.clip(np.rint(new_vals + offset).astype(int), 0, pmf.size - 1)
+    out = np.zeros_like(pmf)
+    np.add.at(out, new_idx, pmf)
+    s = out.sum()
+    out = (out / s) if s > 0 else out
+    res = {"kind": kind, "pmf": out.tolist()}
+    if kind == "margin":
+        res["offset"] = offset
+    return res
+
+
 def _convolve(a: Sequence[float], b: Sequence[float]) -> list[float]:
     out = [0.0] * (len(a) + len(b) - 1)
     for i, av in enumerate(a):
