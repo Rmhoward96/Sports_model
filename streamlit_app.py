@@ -178,7 +178,8 @@ def game_board(mv, market, gdate, pks) -> tuple[pd.DataFrame, int, int]:
     for _, g in preds.iterrows():
         o = odds[odds.game_pk == g.game_pk] if not odds.empty else pd.DataFrame()
         has = False
-        row = {"Game": f"{g.away_team_name} @ {g.home_team_name}",
+        pick = "—"
+        row = {"Game": f"{g.away_team_name} @ {g.home_team_name}", "Pick": pick,
                "Proj score": f"{g.pred_away_score:.1f}-{g.pred_home_score:.1f}"}
         if market == "total":
             mkt = _main_line(o[o.market == "total"]) if not o.empty else float("nan")
@@ -187,6 +188,8 @@ def game_board(mv, market, gdate, pks) -> tuple[pd.DataFrame, int, int]:
             row["Market total"] = round(mkt, 1) if has else "—"
             row["Edge"] = round(g.pred_total - mkt, 1) if has else "—"
             row["Lean"] = ("OVER" if g.pred_total > mkt else "UNDER") if has else "—"
+            if has:
+                pick = f"Over {mkt:g}" if g.pred_total > mkt else f"Under {mkt:g}"
         elif market == "moneyline":
             hp = _main_price(o[(o.market == "moneyline") & (o.side == "home")]) if not o.empty else float("nan")
             ap = _main_price(o[(o.market == "moneyline") & (o.side == "away")]) if not o.empty else float("nan")
@@ -196,11 +199,17 @@ def game_board(mv, market, gdate, pks) -> tuple[pd.DataFrame, int, int]:
             row["Model home win%"] = f"{g.home_win_prob*100:.0f}%"
             row["Market home win%"] = f"{novig*100:.0f}%" if has else "—"
             row["Edge"] = f"{(g.home_win_prob - novig)*100:+.0f} pts" if has else "—"
+            if has:
+                pick = g.home_team_name if g.home_win_prob > novig else g.away_team_name
         else:  # spread / run line
             mkt = _main_line(o[(o.market == "spread") & (o.side == "home")]) if not o.empty else float("nan")
             has = pd.notna(mkt)
             row["Model margin (home)"] = round(g.pred_margin, 1)
             row["Market run line"] = round(mkt, 1) if has else "—"
+            if has:
+                pick = (f"{g.home_team_name} {mkt:+g}" if g.pred_margin + mkt > 0
+                        else f"{g.away_team_name} {-mkt:+g}")
+        row["Pick"] = pick
         matched += int(has)
         rows.append(row)
     return pd.DataFrame(rows), matched, len(preds)
@@ -367,14 +376,16 @@ else:  # vs Closing Line — the graded track record
         pushes = int((df.result == "push").sum())
         decided = wins + losses
         winpct = wins / decided if decided else 0.0
-        roi = df.profit.sum() / len(df) if len(df) else 0.0
+        units = df.profit.sum()
+        roi = units / len(df) if len(df) else 0.0
         avg_ev = pd.to_numeric(df.ev, errors="coerce").mean()
-        c1, c2, c3, c4 = st.columns(4)
+        c1, c2, c3, c4, c5 = st.columns(5)
         rec = f"{wins}-{losses}" + (f"-{pushes}" if pushes else "")
         c1.metric("Record", rec)
         c2.metric("Win %", f"{winpct*100:.1f}%")
-        c3.metric("ROI at close", f"{roi*100:+.1f}%")
-        c4.metric("Avg EV at close", f"{avg_ev*100:+.1f}%" if pd.notna(avg_ev) else "—")
+        c3.metric("Net units", f"{units:+.2f}u")
+        c4.metric("ROI at close", f"{roi*100:+.1f}%")
+        c5.metric("Avg EV at close", f"{avg_ev*100:+.1f}%" if pd.notna(avg_ev) else "—")
         if decided < 30:
             st.warning(f"Only {decided} decided bets so far — far too small to mean anything. "
                        "Sample needs hundreds before ROI is signal, not noise.")
