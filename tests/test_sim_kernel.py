@@ -138,6 +138,44 @@ def test_strikeout_outs_not_double_counted():
             f"Away starter sim {i}: fewer than 27 strikeouts, expected >= 27"
 
 
+def test_roe_all_outs_never_end_inning_and_score():
+    # Batters who always make an in-play out, but roe_p=1.0 -> every "out" is
+    # actually reached-on-error: no outs are ever recorded, so a half-inning only
+    # ends at the per-half PA safety cap. Runners circulate and score; the
+    # starter records ZERO outs (every event is an error, not an out).
+    out_vec = {"p_bb": 0.0, "p_k": 0.0, "p_1b": 0.0, "p_2b": 0.0, "p_3b": 0.0, "p_hr": 0.0, "p_out": 1.0}
+    bs = [K.Batter(pid, out_vec, out_vec) for pid in range(100, 109)]
+    aw = [K.Batter(pid, out_vec, out_vec) for pid in range(200, 209)]
+    adv = AdvancementTable.from_rows([
+        {"outcome": "p_1b", "occ": 0, "end_occ": 1, "runs": 0, "prob": 1.0},
+        {"outcome": "p_1b", "occ": 1, "end_occ": 3, "runs": 0, "prob": 1.0},
+        {"outcome": "p_1b", "occ": 3, "end_occ": 7, "runs": 0, "prob": 1.0},
+        {"outcome": "p_1b", "occ": 7, "end_occ": 7, "runs": 1, "prob": 1.0},
+    ])
+    spec = K.GameSpec(bs, aw, K.Pitcher(1, 16, 5), K.Pitcher(2, 16, 5))
+    spec.adv = adv
+    spec.roe_p = 1.0
+    sims = K.simulate_scalar(spec, n_sims=3, rng=np.random.default_rng(0))
+    assert sims.pitcher_stats[1]["outs"].max() == 0
+    assert (sims.home_score + sims.away_score).min() > 0
+
+
+def test_roe_off_by_default_matches_today():
+    sims = K.simulate_scalar(_spec(), n_sims=50, rng=np.random.default_rng(0))
+    ref = K.simulate_scalar(_spec(), n_sims=50, rng=np.random.default_rng(0))
+    assert np.array_equal(sims.home_score, ref.home_score)
+
+
+def test_roe_vectorized_matches_scalar_mean():
+    bs = [K.Batter(pid, _flat_vec(), _flat_vec()) for pid in range(100, 109)]
+    aw = [K.Batter(pid, _flat_vec(), _flat_vec()) for pid in range(200, 209)]
+    spec = K.GameSpec(bs, aw, K.Pitcher(1, 16, 5), K.Pitcher(2, 16, 5))
+    spec.roe_p = 0.02
+    a = K.simulate_scalar(spec, 4000, np.random.default_rng(3))
+    b = K.simulate(spec, 4000, np.random.default_rng(3))
+    assert abs((a.home_score + a.away_score).mean() - (b.home_score + b.away_score).mean()) < 0.2
+
+
 def test_vectorized_matches_scalar_distribution():
     spec = _spec()
     a = K.simulate_scalar(spec, 4000, np.random.default_rng(3))

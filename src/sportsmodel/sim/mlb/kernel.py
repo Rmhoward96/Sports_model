@@ -134,6 +134,11 @@ def resolve_pa(state: "BaseState", batter_idx: int, outcome: int, adv: Advanceme
     return runs, outs_added
 
 
+# Safety cap on plate appearances per half-inning. Real half-innings never approach
+# this; it only prevents a pathological vector (e.g. a high reached-on-error rate that
+# suppresses outs) from looping forever. Set high enough to never truncate real innings.
+_MAX_PA_HALF = 50
+
 _BATTER_MARKETS = ("hits", "total_bases", "hr", "runs", "rbi", "hrr")
 
 
@@ -157,6 +162,7 @@ def _sim_one(spec: GameSpec, adv: AdvancementTable, rng, max_extra: int) -> tupl
     # inning min); top-clamped at 27 (a full 9-inning outing) for stability.
     hook_home = min(27.0, max(3.0, rng.normal(spec.home_starter.avg_outs, spec.home_starter.sd_outs)))
     hook_away = min(27.0, max(3.0, rng.normal(spec.away_starter.avg_outs, spec.away_starter.sd_outs)))
+    roe_p = getattr(spec, "roe_p", 0.0)
     scores = [0, 0]           # [away, home]
     idx = [0, 0]              # batting-order pointer [away, home]
     bf = [0, 0]               # batters faced by the [away pitcher, home pitcher] (drives TTO only)
@@ -176,7 +182,9 @@ def _sim_one(spec: GameSpec, adv: AdvancementTable, rng, max_extra: int) -> tupl
             # placeholder index works since only occupancy/outs/runs feed the box score.
             state.second = (idx[bat_team] - 1) % 9
         outs = 0
-        while outs < 3:
+        pa_this_half = 0
+        while outs < 3 and pa_this_half < _MAX_PA_HALF:
+            pa_this_half += 1
             b = order[idx[bat_team] % 9]
             faced = bf[defense]
             # starter_in is governed by his own accumulated outs (pline["outs"]),
@@ -187,9 +195,19 @@ def _sim_one(spec: GameSpec, adv: AdvancementTable, rng, max_extra: int) -> tupl
             u = rng.random()
             outcome = sample_outcome(vec, u)
             u2 = rng.random()
-            runs, outs_added = resolve_pa(state, idx[bat_team] % 9, outcome, adv, u2)
-            # box score
-            if outcome in (S, D, T, HR):
+            # reached-on-error: an in-play out is misplayed -> batter safe on first with
+            # NO out recorded (extends the inning) and NO hit credited; runners advance on
+            # the single table. `roe_p > 0.0` is checked before drawing so roe_p=0 leaves
+            # the RNG stream (and thus legacy behavior) untouched.
+            is_roe = outcome == OUT_INPLAY and roe_p > 0.0 and rng.random() < roe_p
+            if is_roe:
+                end_occ, runs = adv.sample(S, state.occ(), u2)
+                _fill_from_mask(state, end_occ, idx[bat_team] % 9, lead_first=True)
+                outs_added = 0
+            else:
+                runs, outs_added = resolve_pa(state, idx[bat_team] % 9, outcome, adv, u2)
+            # box score (ROE credits no hit/HR to the batter)
+            if not is_roe and outcome in (S, D, T, HR):
                 box[b.player_id]["hits"] += 1
                 box[b.player_id]["total_bases"] += _tb_for(outcome)
                 if outcome == HR:
@@ -199,10 +217,10 @@ def _sim_one(spec: GameSpec, adv: AdvancementTable, rng, max_extra: int) -> tupl
             # crude runs-scored credit: distribute `runs` to the batter's team tally only;
             # per-batter "runs" credited to the batter on his own HR, else left aggregate
             # (BaseState runner identity is approximate -- see Task 6 carried decision).
-            if outcome == HR:
+            if not is_roe and outcome == HR:
                 box[b.player_id]["runs"] += 1
-            # pitcher line (starter only)
-            if starter_in:
+            # pitcher line (starter only; ROE records no K/hit/out)
+            if starter_in and not is_roe:
                 if outcome == K:
                     pline["k"] += 1
                 if outcome in (S, D, T, HR):
@@ -382,6 +400,7 @@ def simulate(spec: GameSpec, n_sims: int, rng, max_extra: int = 11) -> GameSims:
     # of 3 outs / top clamp of 27, drawn from the same rng as the scalar path.
     hook_home = np.clip(rng.normal(spec.home_starter.avg_outs, spec.home_starter.sd_outs, size=n), 3.0, 27.0)
     hook_away = np.clip(rng.normal(spec.away_starter.avg_outs, spec.away_starter.sd_outs, size=n), 3.0, 27.0)
+    roe_p = getattr(spec, "roe_p", 0.0)
 
     scores_home = np.zeros(n, dtype=np.int64)
     scores_away = np.zeros(n, dtype=np.int64)
@@ -414,7 +433,7 @@ def simulate(spec: GameSpec, n_sims: int, rng, max_extra: int = 11) -> GameSims:
         occ = np.full(n, 2, dtype=np.int64) if inning > 9 else np.zeros(n, dtype=np.int64)
         outs = np.zeros(n, dtype=np.int64)
 
-        while True:
+        for _pa in range(_MAX_PA_HALF):  # bounded: real half-innings never approach the cap
             active = active_game & (outs < 3)
             if not active.any():
                 break
@@ -436,6 +455,19 @@ def simulate(spec: GameSpec, n_sims: int, rng, max_extra: int = 11) -> GameSims:
 
             u2 = rng.random(n)
             runs, outs_added, new_occ = _resolve_pa_vec(occ, outcome, u2, cum_mat, end_mat, runs_mat)
+
+            # reached-on-error: recompute the misplayed in-play outs as a single (code S)
+            # with NO out recorded. OUT_INPLAY is not a hit/HR/K, so is_hit/is_hr/is_k/tb
+            # are already 0 for these sims -- only runs/occ/outs need overriding.
+            if roe_p > 0.0:
+                u_roe = rng.random(n)
+                m_roe = active & (outcome == OUT_INPLAY) & (u_roe < roe_p)
+                if m_roe.any():
+                    s_runs, _s_outs, s_occ = _resolve_pa_vec(
+                        occ, np.full(n, S), u2, cum_mat, end_mat, runs_mat)
+                    runs = np.where(m_roe, s_runs, runs)
+                    new_occ = np.where(m_roe, s_occ, new_occ)
+                    outs_added = np.where(m_roe, 0, outs_added)
 
             is_hit = (outcome == S) | (outcome == D) | (outcome == T) | (outcome == HR)
             tb = np.select([outcome == S, outcome == D, outcome == T, outcome == HR], [1, 2, 3, 4], default=0)
