@@ -125,6 +125,28 @@ def _price_at(entries, line):
     return None
 
 
+def _latest_per_game(rows):
+    """From (game_pk, game_date, model_version, home, away, generated_at) rows, keep the
+    latest-generated model_version per game_pk. A game predicted under multiple versions
+    would otherwise be graded once per version -> its game-line pick double-counted."""
+    best: dict = {}
+    for r in rows:
+        gp = r[0]
+        if gp not in best or r[5] > best[gp][5]:
+            best[gp] = r
+    return list(best.values())
+
+
+def _latest_version_props(rows):
+    """From one game's prop rows (pid, pname, market, proj, dist, model_version,
+    generated_at), keep only those under the latest-generated model_version, so a stale
+    prop slate under an old version isn't graded alongside the current one."""
+    if not rows:
+        return []
+    latest_mv = max(rows, key=lambda r: r[6])[5]
+    return [r for r in rows if r[5] == latest_mv]
+
+
 def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("--days", type=int, default=5)
@@ -142,15 +164,19 @@ def main() -> None:
     rows: list[dict] = []
     with get_postgres() as conn, conn.cursor() as cur:
         cur.execute("""
-            SELECT DISTINCT game_pk, game_date, model_version, home_team_name, away_team_name
+            SELECT DISTINCT game_pk, game_date, model_version, home_team_name, away_team_name,
+                   generated_at
             FROM game_predictions WHERE game_date >= %s
         """, [start])
-        games = cur.fetchall()
+        # grade each game ONCE, under its latest-generated version -- a game predicted
+        # under multiple model_versions would otherwise be graded once per version and
+        # double-counted in the CLV (which aggregates across versions).
+        games = _latest_per_game(cur.fetchall())
         print(f"{len(games)} predicted games in window since {start}")
 
         graded_games = 0
         graded_prop_games: set = set()
-        for game_pk, gdate, mv, home_name, away_name in games:
+        for game_pk, gdate, mv, home_name, away_name, _gen in games:
             if game_pk not in finals:
                 continue  # only grade truly-final games (not live/scheduled)
             res = mlb_results.fetch_results(game_pk)
@@ -177,9 +203,12 @@ def main() -> None:
             if game_pk not in graded_prop_games:
                 graded_prop_games.add(game_pk)
                 cur.execute("""SELECT player_id, player_name, market, projected_mean, dist,
-                                      model_version
+                                      model_version, generated_at
                                FROM prop_predictions WHERE game_pk = %s""", [game_pk])
-                for pid, pname, market, proj, dist, prop_mv in cur.fetchall():
+                # grade only the latest-generated prop slate; a stale slate under an old
+                # prop model_version would otherwise be double-counted in the CLV.
+                for pid, pname, market, proj, dist, prop_mv, _pg in _latest_version_props(
+                        cur.fetchall()):
                     r = _grade_prop(game_pk, gdate, prop_mv, res, close, pid, pname, market,
                                      proj, dist)
                     if r:

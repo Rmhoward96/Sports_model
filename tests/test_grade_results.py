@@ -28,6 +28,32 @@ def _identity_dist_cal(monkeypatch):
     monkeypatch.setattr(grade_results, "_MARGIN_CAL", (0.0, 1.0), raising=False)
 
 
+def test_latest_per_game_dedups_multiple_versions():
+    # A game with predictions under two versions must be graded once, under the
+    # latest-generated version -- otherwise its game-line pick is double-counted.
+    rows = [
+        (1, "2026-08-21", "old-v1", "Home", "Away", 100),
+        (1, "2026-08-21", "mlb-hybrid-v1", "Home", "Away", 200),  # newer generated_at
+        (2, "2026-08-21", "mlb-hybrid-v1", "H2", "A2", 150),
+    ]
+    out = grade_results._latest_per_game(rows)
+    assert len(out) == 2  # one row per game_pk
+    g1 = [r for r in out if r[0] == 1][0]
+    assert g1[2] == "mlb-hybrid-v1"  # kept the newer version, dropped old-v1
+
+
+def test_latest_version_props_keeps_only_newest_slate():
+    # One game's prop rows under two versions -> grade only the newest version's slate.
+    rows = [
+        (10, "P", "hits", 1.0, {}, "old-props", 100),
+        (10, "P", "hits", 1.1, {}, "mlb-hybrid-props-v1", 200),  # newer
+        (10, "Q", "hits", 0.9, {}, "mlb-hybrid-props-v1", 200),
+    ]
+    out = grade_results._latest_version_props(rows)
+    assert len(out) == 2
+    assert all(r[5] == "mlb-hybrid-props-v1" for r in out)
+
+
 def test_grade_results_script_imports_cleanly():
     assert hasattr(grade_results, "main")
     assert hasattr(grade_results, "_grade_game")
