@@ -111,6 +111,62 @@ def upsert_prediction_results(records: list[dict]) -> int:
     return len(rows)
 
 
+_BOARD_COLS = ["sport", "game_pk", "game_date", "commence_time", "matchup",
+               "market", "market_label", "player_id", "player_name", "team",
+               "pick_label", "side", "line", "odds", "book",
+               "model_prob", "implied_prob", "ev", "is_pick"]
+_PICK_INSERT_COLS = ["game_pk", "market", "player_id", "sport", "game_date",
+                     "commence_time", "matchup", "market_label", "player_name", "team",
+                     "pick_label", "side", "line", "bet_odds", "bet_book",
+                     "model_prob", "novig_bet", "ev_bet"]
+
+
+def upsert_board_picks(records: list[dict]) -> int:
+    """Full-refresh the live `board_picks` table (upsert on game/market/player)."""
+    if not records:
+        return 0
+    key = ("game_pk", "market", "player_id")
+    updates = ", ".join(f"{c} = EXCLUDED.{c}" for c in _BOARD_COLS if c not in key)
+    ph = ", ".join(["%s"] * len(_BOARD_COLS))
+    sql = (f"INSERT INTO board_picks ({', '.join(_BOARD_COLS)}) VALUES ({ph}) "
+           f"ON CONFLICT (game_pk, market, player_id) "
+           f"DO UPDATE SET {updates}, generated_at = now()")
+    rows = [tuple(r.get(c) for c in _BOARD_COLS) for r in records]
+    with get_postgres() as conn, conn.cursor() as cur:
+        cur.executemany(sql, rows)
+        conn.commit()
+    return len(rows)
+
+
+def insert_new_picks(records: list[dict]) -> int:
+    """Insert-once into `picks` (locks the first-+EV bet; existing rows untouched)."""
+    if not records:
+        return 0
+    ph = ", ".join(["%s"] * len(_PICK_INSERT_COLS))
+    sql = (f"INSERT INTO picks ({', '.join(_PICK_INSERT_COLS)}) VALUES ({ph}) "
+           f"ON CONFLICT (game_pk, market, player_id) DO NOTHING")
+    rows = [tuple(r.get(c) for c in _PICK_INSERT_COLS) for r in records]
+    with get_postgres() as conn, conn.cursor() as cur:
+        cur.executemany(sql, rows)
+        conn.commit()
+    return len(rows)
+
+
+def update_graded_picks(records: list[dict]) -> int:
+    """Fill graded outcome + CLV on existing `picks` rows (by game/market/player)."""
+    if not records:
+        return 0
+    sql = ("UPDATE picks SET status = 'graded', actual = %s, result = %s, profit = %s, "
+           "novig_close = %s, clv = %s, graded_at = now() "
+           "WHERE game_pk = %s AND market = %s AND player_id = %s")
+    rows = [(r["actual"], r["result"], r["profit"], r["novig_close"], r["clv"],
+             r["game_pk"], r["market"], r["player_id"]) for r in records]
+    with get_postgres() as conn, conn.cursor() as cur:
+        cur.executemany(sql, rows)
+        conn.commit()
+    return len(rows)
+
+
 def upsert_odds_snapshot(records: list[dict]) -> int:
     """Insert odds snapshots into Supabase `odds_snapshot` (idempotent per capture)."""
     if not records:
