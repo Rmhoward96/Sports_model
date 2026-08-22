@@ -21,7 +21,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from sportsmodel import config
-from sportsmodel.db import get_postgres, upsert_prediction_results
+from sportsmodel.db import get_postgres, update_graded_picks, upsert_prediction_results
 from sportsmodel.ingest import mlb_results
 from sportsmodel.model import calibration
 from sportsmodel.model.distributions import apply_affine, prob_cover, prob_over_dist
@@ -74,6 +74,32 @@ def _grade_ou(model_num, line, actual, price_over, price_under):
         return lean, price, "push", 0.0, edge
     won = (actual > line) if lean == "over" else (actual < line)
     return lean, price, ("win" if won else "loss"), (_decimal(price) - 1 if won else -1.0), edge
+
+
+def grade_pick(pick, actual, novig_close):
+    """Grade one logged `picks` row at its locked bet price and compute CLV.
+
+    `actual` is the market-appropriate outcome value: margin (home-away) for moneyline
+    and spread, total runs for total, the stat for props. `novig_close` is the consensus
+    no-vig closing prob of the picked side. Profit is flat 1u at the bet price.
+    """
+    market, side, line = pick["market"], pick["side"], pick.get("line")
+    if market == "moneyline":
+        won = (actual > 0) if side == "home" else (actual < 0)
+        result = "win" if won else "loss"   # baseball games are decided; no push
+    elif market == "spread":
+        signed = actual if side == "home" else -actual   # margin from the picked side
+        m = signed + line
+        result = "push" if m == 0 else ("win" if m > 0 else "loss")
+    else:  # total + props: over/under at the line
+        if actual == line:
+            result = "push"
+        else:
+            result = "win" if ((actual > line) == (side == "over")) else "loss"
+    profit = 0.0 if result == "push" else (_decimal(pick["bet_odds"]) - 1 if result == "win" else -1.0)
+    return {"game_pk": pick["game_pk"], "market": market, "player_id": pick["player_id"],
+            "actual": float(actual), "result": result, "profit": profit,
+            "novig_close": novig_close, "clv": novig_close - pick["novig_bet"]}
 
 
 def closing_lines(cur, game_pk, game_date) -> dict:
@@ -147,6 +173,43 @@ def _latest_version_props(rows):
     return [r for r in rows if r[5] == latest_mv]
 
 
+def _actual_for(market, side, res, pid):
+    """Market-appropriate outcome value from a game result: margin (home-away) for
+    moneyline/spread, total runs for total, the stat for props. None if a prop stat
+    is missing (player DNP)."""
+    hr_, ar_ = res["home_runs"], res["away_runs"]
+    if market in ("moneyline", "spread"):
+        return float(hr_ - ar_)
+    if market == "total":
+        return float(hr_ + ar_)
+    src = res["batters"] if market in BATTER_MARKETS else res["pitchers"]
+    stat = src.get(pid, {}).get(market) if pid in src else None
+    return None if stat is None else float(stat)
+
+
+def _other(market, side, line):
+    """The opposite side + its line, for computing the consensus no-vig close."""
+    if market == "moneyline":
+        return ("away" if side == "home" else "home"), None
+    if market == "spread":
+        return ("away" if side == "home" else "home"), -line
+    return ("under" if side == "over" else "over"), line  # total + props
+
+
+def _novig_close(close, market, side, line, player_lower):
+    """Consensus no-vig closing prob of the picked side; None if no close captured.
+    Over-only markets (e.g. home_run, no under posted) fall back to the raw implied."""
+    picked = _price_at(close.get((market, side, player_lower)) or [], line)
+    if picked is None:
+        return None
+    oside, oline = _other(market, side, line)
+    other = _price_at(close.get((market, oside, player_lower)) or [], oline)
+    if other is None:
+        return american_to_prob(picked)
+    io, iu = american_to_prob(picked), american_to_prob(other)
+    return io / (io + iu)
+
+
 def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("--days", type=int, default=5)
@@ -161,63 +224,39 @@ def main() -> None:
         return
     finals = mlb_results.final_game_pks(start, end)
     print(f"{len(finals)} final games in window {start}..{end}")
-    rows: list[dict] = []
-    with get_postgres() as conn, conn.cursor() as cur:
-        cur.execute("""
-            SELECT DISTINCT game_pk, game_date, model_version, home_team_name, away_team_name,
-                   generated_at
-            FROM game_predictions WHERE game_date >= %s
-        """, [start])
-        # grade each game ONCE, under its latest-generated version -- a game predicted
-        # under multiple model_versions would otherwise be graded once per version and
-        # double-counted in the CLV (which aggregates across versions).
-        games = _latest_per_game(cur.fetchall())
-        print(f"{len(games)} predicted games in window since {start}")
 
-        graded_games = 0
-        graded_prop_games: set = set()
-        for game_pk, gdate, mv, home_name, away_name, _gen in games:
+    graded_rows: list[dict] = []
+    with get_postgres() as conn, conn.cursor() as cur:
+        cur.execute("""SELECT game_pk, market, player_id, game_date, side, line, bet_odds,
+                              novig_bet, player_name
+                       FROM picks WHERE status = 'pending' AND game_date >= %s""", [start])
+        pending = cur.fetchall()
+        res_cache: dict = {}
+        close_cache: dict = {}
+        for game_pk, market, player_id, gdate, side, line, bet_odds, novig_bet, pname in pending:
             if game_pk not in finals:
-                continue  # only grade truly-final games (not live/scheduled)
-            res = mlb_results.fetch_results(game_pk)
+                continue  # only grade truly-final games
+            if game_pk not in res_cache:
+                res_cache[game_pk] = mlb_results.fetch_results(game_pk)
+                close_cache[game_pk] = closing_lines(cur, game_pk, gdate)
+            res = res_cache[game_pk]
             if res is None:
                 continue
-            close = closing_lines(cur, game_pk, gdate)
-            graded_games += 1
+            actual = _actual_for(market, side, res, player_id)
+            if actual is None:
+                continue  # prop stat missing (player didn't play)
+            pl = (pname or "").lower().strip()
+            novig_close = _novig_close(close_cache[game_pk], market, side, line, pl)
+            if novig_close is None:
+                novig_close = novig_bet  # no closing price captured -> CLV 0
+            pick = {"game_pk": game_pk, "market": market, "player_id": player_id,
+                    "side": side, "line": line, "bet_odds": bet_odds, "novig_bet": novig_bet}
+            graded_rows.append(grade_pick(pick, actual, novig_close))
 
-            # game predictions for this game/model
-            cur.execute("""SELECT pred_total, home_win_prob, pred_margin, total_dist, margin_dist
-                           FROM game_predictions
-                           WHERE game_pk = %s AND model_version = %s""", [game_pk, mv])
-            gp = cur.fetchone()
-            if gp:
-                pred_total, home_wp, pred_margin, total_dist, margin_dist = gp
-                rows += _grade_game(game_pk, gdate, mv, res, close, pred_total, home_wp,
-                                     pred_margin, total_dist, margin_dist, home_name, away_name)
-
-            # prop predictions for this game/model. Props carry their OWN model_version
-            # (e.g. mlb-props-v1), distinct from the game model_version (e.g.
-            # mlb-game-v2-defense) — never filter props by the game's mv. Grade props
-            # only once per game_pk since the outer loop can revisit a game_pk once per
-            # distinct game model_version.
-            if game_pk not in graded_prop_games:
-                graded_prop_games.add(game_pk)
-                cur.execute("""SELECT player_id, player_name, market, projected_mean, dist,
-                                      model_version, generated_at
-                               FROM prop_predictions WHERE game_pk = %s""", [game_pk])
-                # grade only the latest-generated prop slate; a stale slate under an old
-                # prop model_version would otherwise be double-counted in the CLV.
-                for pid, pname, market, proj, dist, prop_mv, _pg in _latest_version_props(
-                        cur.fetchall()):
-                    r = _grade_prop(game_pk, gdate, prop_mv, res, close, pid, pname, market,
-                                     proj, dist)
-                    if r:
-                        rows.append(r)
-
-    print(f"graded {graded_games} final games -> {len(rows)} results")
-    if rows:
-        n = upsert_prediction_results(rows)
-        print(f"Upserted {n} rows into prediction_results.")
+    print(f"grading {len(graded_rows)} pending picks")
+    if graded_rows:
+        n = update_graded_picks(graded_rows)
+        print(f"Updated {n} graded picks with result + CLV.")
 
 
 def _row(game_pk, market, pid, pname, mv, gdate, model_num, line, price, lean, actual,
