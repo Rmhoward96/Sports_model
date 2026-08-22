@@ -77,3 +77,23 @@ def spread_row(margin_dist, margin_cal, home_line, home_entries, away_entries, h
     if ev(p_home, hb[1]) >= ev(1 - p_home, ab[1]):
         return _mkrow("spread", "home", home_line, f"{home_name} {home_line:+g}", p_home, novig_home, hb[1], hb[0])
     return _mkrow("spread", "away", -home_line, f"{away_name} {-home_line:+g}", 1 - p_home, 1 - novig_home, ab[1], ab[0])
+
+
+def prop_row(market, dist, cal_target, main_line, over_entries, under_entries):
+    """Prop pick by EV from the calibrated P(over) at the book's main line vs best-book
+    prices. Over-only markets (e.g. home_run: no under posted) get ev_under=-inf, so the
+    over is only a pick when genuinely +EV."""
+    ob = best_price(over_entries)
+    if ob is None:
+        return None
+    p_over = calibrate(cal_target, prob_over_dist(dist, main_line))
+    if p_over != p_over:  # NaN
+        return None
+    ub = best_price(under_entries)
+    ev_over = ev(p_over, ob[1])
+    ev_under = ev(1 - p_over, ub[1]) if ub else float("-inf")
+    if ev_over >= ev_under:
+        market_p = novig(ob[1], ub[1]) if ub else implied_prob(ob[1])
+        return _mkrow(market, "over", main_line, f"Over {main_line:g}", p_over, market_p, ob[1], ob[0])
+    return _mkrow(market, "under", main_line, f"Under {main_line:g}", 1 - p_over,
+                  1 - novig(ob[1], ub[1]), ub[1], ub[0])

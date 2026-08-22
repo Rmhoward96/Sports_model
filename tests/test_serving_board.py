@@ -57,3 +57,19 @@ def test_spread_row_uses_cover_prob():
     row = b.spread_row(md, (0.0, 1.0), -1.5, [("DK", -140)], [("FD", 120)], "Home", "Away")
     assert row["side"] == "home" and row["pick_label"] == "Home -1.5"
     assert row["model_prob"] == pytest.approx(1.0)
+
+
+def test_prop_row_over_only_home_run_passes_when_negative_ev():
+    # HR longshot: model 12% at +650 (dec 7.5) -> EV 0.12*7.5-1 = -0.10 -> is_pick False.
+    # cal_target "home_run" may adjust the prob slightly; the point is over-only + pass.
+    row = b.prop_row("home_run", {"kind": "pmf", "pmf": [0.88, 0.12]}, "home_run", 0.5,
+                     [("DK", 650)], [])
+    assert row["side"] == "over" and row["is_pick"] is False
+
+
+def test_prop_row_picks_over_when_plus_ev():
+    pmf = [0.0] * 7
+    pmf[2] = 1.0  # P(over 1.5) = 1.0
+    row = b.prop_row("hits", {"kind": "pmf", "pmf": pmf}, "hits", 1.5,
+                     [("FD", 120)], [("DK", -140)])
+    assert row["side"] == "over" and row["is_pick"] is True
