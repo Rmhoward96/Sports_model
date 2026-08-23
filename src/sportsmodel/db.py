@@ -166,9 +166,10 @@ def update_graded_picks(records: list[dict]) -> int:
     if not records:
         return 0
     sql = ("UPDATE picks SET status = 'graded', actual = %s, result = %s, profit = %s, "
-           "novig_close = %s, clv = %s, graded_at = now() "
+           "novig_close = %s, clv = %s, home_score = %s, away_score = %s, graded_at = now() "
            "WHERE game_pk = %s AND market = %s AND player_id = %s")
     rows = [(r["actual"], r["result"], r["profit"], r["novig_close"], r["clv"],
+             r.get("home_score"), r.get("away_score"),
              r["game_pk"], r["market"], r["player_id"]) for r in records]
     with get_postgres() as conn, conn.cursor() as cur:
         cur.executemany(sql, rows)

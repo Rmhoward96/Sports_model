@@ -153,9 +153,12 @@ CREATE TABLE IF NOT EXISTS picks (
   bet_at TIMESTAMPTZ DEFAULT now(),
   status TEXT DEFAULT 'pending',
   actual REAL, result TEXT, profit REAL,
-  novig_close REAL, clv REAL, graded_at TIMESTAMPTZ,
+  novig_close REAL, clv REAL, home_score INT, away_score INT, graded_at TIMESTAMPTZ,
   PRIMARY KEY (game_pk, market, player_id)
 );
+-- Backfill for tables created before home_score/away_score existed:
+ALTER TABLE picks ADD COLUMN IF NOT EXISTS home_score INT;
+ALTER TABLE picks ADD COLUMN IF NOT EXISTS away_score INT;
 
 -- Track-record segment summary (the "By league & market" table).
 CREATE OR REPLACE VIEW track_record_segments AS

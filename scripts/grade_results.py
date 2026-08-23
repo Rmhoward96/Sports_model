@@ -76,12 +76,14 @@ def _grade_ou(model_num, line, actual, price_over, price_under):
     return lean, price, ("win" if won else "loss"), (_decimal(price) - 1 if won else -1.0), edge
 
 
-def grade_pick(pick, actual, novig_close):
+def grade_pick(pick, actual, novig_close, home_score=None, away_score=None):
     """Grade one logged `picks` row at its locked bet price and compute CLV.
 
     `actual` is the market-appropriate outcome value: margin (home-away) for moneyline
-    and spread, total runs for total, the stat for props. `novig_close` is the consensus
-    no-vig closing prob of the picked side. Profit is flat 1u at the bet price.
+    and spread, total runs for total, the stat for props. `home_score`/`away_score` are
+    the final game runs, stored so the track record can show the score / margin / total.
+    `novig_close` is the consensus no-vig closing prob of the picked side. Profit is flat
+    1u at the bet price.
     """
     market, side, line = pick["market"], pick["side"], pick.get("line")
     if market == "moneyline":
@@ -99,7 +101,8 @@ def grade_pick(pick, actual, novig_close):
     profit = 0.0 if result == "push" else (_decimal(pick["bet_odds"]) - 1 if result == "win" else -1.0)
     return {"game_pk": pick["game_pk"], "market": market, "player_id": pick["player_id"],
             "actual": float(actual), "result": result, "profit": profit,
-            "novig_close": novig_close, "clv": novig_close - pick["novig_bet"]}
+            "novig_close": novig_close, "clv": novig_close - pick["novig_bet"],
+            "home_score": home_score, "away_score": away_score}
 
 
 def closing_lines(cur, game_pk, game_date) -> dict:
@@ -251,7 +254,8 @@ def main() -> None:
                 novig_close = novig_bet  # no closing price captured -> CLV 0
             pick = {"game_pk": game_pk, "market": market, "player_id": player_id,
                     "side": side, "line": line, "bet_odds": bet_odds, "novig_bet": novig_bet}
-            graded_rows.append(grade_pick(pick, actual, novig_close))
+            graded_rows.append(grade_pick(pick, actual, novig_close,
+                                          res["home_runs"], res["away_runs"]))
 
     print(f"grading {len(graded_rows)} pending picks")
     if graded_rows:
