@@ -26,7 +26,9 @@ MARKET_LABEL = {
     "hrr": "Hits + Runs + RBIs", "pitcher_ks": "Strikeouts",
     "hits_allowed": "Hits Allowed", "outs_recorded": "Outs Recorded",
 }
-PROP_MARKETS = ("hits", "total_bases", "home_run", "hrr",
+# home_run is deliberately excluded: an over-only longshot that manufactures inflated
+# EV and skews the board/record. Add it back here if that ever changes.
+PROP_MARKETS = ("hits", "total_bases", "hrr",
                 "pitcher_ks", "hits_allowed", "outs_recorded")
 
 

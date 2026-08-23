@@ -22,9 +22,24 @@ def novig(price_side: int, price_other: int) -> float:
     return io / (io + iu)
 
 
+# Mainstream US books only. Offshore/sharp books (bovada, lowvig, mybookieag, betus,
+# betonlineag, …) post stale/soft lines that manufacture fake "edges" and skew the
+# record, so they are excluded from best-book selection. Values are display names.
+MAJOR_BOOKS = {
+    "fanduel": "FanDuel", "draftkings": "DraftKings", "betmgm": "BetMGM",
+    "williamhill_us": "Caesars", "caesars": "Caesars", "pinnacle": "Pinnacle",
+    "betrivers": "BetRivers", "espnbet": "ESPN BET", "fanatics": "Fanatics",
+    "hardrockbet": "Hard Rock Bet", "ballybet": "Bally Bet",
+}
+# Plays above this EV are almost always stale-line artifacts, not real value -- excluded
+# so they never make the board or skew the CLV track record.
+EV_CEILING = 0.25
+
+
 def best_price(entries):
-    """(book, american) with the highest decimal odds (best for the bettor); None if empty."""
-    entries = [(bk, p) for bk, p in (entries or []) if p]
+    """(book_slug, american) at the highest decimal odds among MAJOR_BOOKS; None if none
+    of the offered books are mainstream."""
+    entries = [(bk, p) for bk, p in (entries or []) if p and bk in MAJOR_BOOKS]
     if not entries:
         return None
     return max(entries, key=lambda e: decimal_odds(e[1]))
@@ -38,7 +53,8 @@ def _mkrow(market, side, line, label, model_p, market_p, price, book):
     e = ev(model_p, price)
     return {"market": market, "side": side, "line": line, "pick_label": label,
             "model_prob": model_p, "implied_prob": market_p, "ev": e,
-            "odds": price, "book": book, "is_pick": e > 0}
+            "odds": price, "book": MAJOR_BOOKS.get(book, book),
+            "is_pick": 0 < e <= EV_CEILING}
 
 
 def moneyline_row(home_wp, home_entries, away_entries, home_name, away_name):
