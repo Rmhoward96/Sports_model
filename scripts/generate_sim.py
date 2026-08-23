@@ -50,7 +50,10 @@ _scoring_rates = config_dispersion.load_rates()  # {"p_roe","p_wp"} for the kern
 SIM_SEED = 42
 _LINEUP_SIZE = 9
 
-SIM_BATTER_MARKETS = ["hits", "total_bases", "home_run", "hrr"]
+# home_run removed on purpose: a HR is too random to model reliably, so it's dropped
+# from predictions entirely (and from the serving board/picks). The kernel still
+# simulates HRs for run scoring; we just don't publish a home-run prop.
+SIM_BATTER_MARKETS = ["hits", "total_bases", "hrr"]
 ANALYTIC_PITCHER_MARKETS = ["pitcher_ks", "hits_allowed"]
 
 # player_prop_dists (src/sportsmodel/sim/engine.py) computes EVERY pitcher market
@@ -92,7 +95,7 @@ def load_schedule() -> list[dict]:
 
 
 def sim_batter_rows(order, dists, lineup, lineup_source, team_name, g) -> list[dict]:
-    """SIM prop rows (hits/total_bases/home_run/hrr) for one team's lineup.
+    """SIM prop rows (hits/total_bases/hrr) for one team's lineup.
 
     `order` is the (player_id, vec) list actually fed to the kernel (== the
     lineup, filtered to the 9 batters we had profiles for); `lineup` is the

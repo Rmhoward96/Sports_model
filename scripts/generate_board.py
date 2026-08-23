@@ -16,7 +16,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
 
 from sportsmodel import config
-from sportsmodel.db import get_postgres, insert_new_picks, upsert_board_picks
+from sportsmodel.db import clear_board_picks, get_postgres, insert_new_picks, upsert_board_picks
 from sportsmodel.model import calibration
 from sportsmodel.serving import board
 
@@ -170,6 +170,8 @@ def main() -> None:
                     "margin_dist": mdist, "home_win_prob": hwp}
             all_rows += build_rows(game, props, odds, (total_cal, margin_cal))
 
+    if all_rows:
+        clear_board_picks()  # full refresh: drop orphaned rows before writing the current slate
     n_board = upsert_board_picks(all_rows)
     picks = [_to_pick(r) for r in all_rows if r["is_pick"]]
     n_picks = insert_new_picks(picks)

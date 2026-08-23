@@ -121,6 +121,15 @@ _PICK_INSERT_COLS = ["game_pk", "market", "player_id", "sport", "game_date",
                      "model_prob", "novig_bet", "ev_bet"]
 
 
+def clear_board_picks() -> None:
+    """Empty `board_picks` so a regeneration is a true full refresh -- an upsert alone
+    leaves orphaned rows for picks the current run no longer produces (e.g. a market
+    that got excluded, or a line that dropped off the slate)."""
+    with get_postgres() as conn, conn.cursor() as cur:
+        cur.execute("DELETE FROM board_picks")
+        conn.commit()
+
+
 def upsert_board_picks(records: list[dict]) -> int:
     """Full-refresh the live `board_picks` table (upsert on game/market/player)."""
     if not records:
