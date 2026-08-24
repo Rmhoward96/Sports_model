@@ -27,6 +27,11 @@ from sportsmodel.model import calibration
 from sportsmodel.model.distributions import apply_affine, prob_cover, prob_over_dist
 from sportsmodel.model.odds import american_to_prob
 
+# Results-provider seam: sport key -> module exposing final_game_pks(start,end) and
+# fetch_results(game_pk). NFL provider is registered in a later plan (P1); MLB is the
+# only entry here, so the default --sport (mlb) path is byte-for-byte unchanged.
+RESULTS_PROVIDERS = {"mlb": mlb_results}
+
 # Totals/margin distribution calibration (loc, scale), fit by fit_calibration_sim.py.
 # loc re-centers the sim mean the scoring channels didn't fully close; scale finishes
 # the width. Identity (0, 1) if absent. Applied before prob_over_dist / prob_cover.
@@ -216,23 +221,26 @@ def _novig_close(close, market, side, line, player_lower):
 def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("--days", type=int, default=5)
+    ap.add_argument("--sport", default="mlb")
     args = ap.parse_args()
     if not config.DATABASE_URL:
         raise SystemExit("DATABASE_URL required (grading reads/writes Supabase).")
 
+    prov = RESULTS_PROVIDERS[args.sport]
     start = _window_start(args.days)
     end = date.today().isoformat()
     if start > end:  # fresh-start floor is still in the future — nothing to grade yet
         print(f"No games to grade: window start {start} is after today {end} (fresh-start floor).")
         return
-    finals = mlb_results.final_game_pks(start, end)
+    finals = prov.final_game_pks(start, end)
     print(f"{len(finals)} final games in window {start}..{end}")
 
     graded_rows: list[dict] = []
     with get_postgres() as conn, conn.cursor() as cur:
         cur.execute("""SELECT game_pk, market, player_id, game_date, side, line, bet_odds,
                               novig_bet, player_name
-                       FROM picks WHERE status = 'pending' AND game_date >= %s""", [start])
+                       FROM picks WHERE status = 'pending' AND game_date >= %s AND sport = %s""",
+                    [start, args.sport])
         pending = cur.fetchall()
         res_cache: dict = {}
         close_cache: dict = {}
@@ -240,7 +248,7 @@ def main() -> None:
             if game_pk not in finals:
                 continue  # only grade truly-final games
             if game_pk not in res_cache:
-                res_cache[game_pk] = mlb_results.fetch_results(game_pk)
+                res_cache[game_pk] = prov.fetch_results(game_pk)
                 close_cache[game_pk] = closing_lines(cur, game_pk, gdate)
             res = res_cache[game_pk]
             if res is None:

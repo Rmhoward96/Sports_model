@@ -16,6 +16,12 @@ def test_board_and_picks_helpers_exist():
         assert hasattr(db, fn), f"db.{fn} missing"
 
 
+def test_results_provider_registry_has_mlb():
+    assert "mlb" in gr.RESULTS_PROVIDERS
+    prov = gr.RESULTS_PROVIDERS["mlb"]
+    assert hasattr(prov, "final_game_pks") and hasattr(prov, "fetch_results")
+
+
 def test_grade_pick_total_under_win_profit_and_clv():
     pick = {"game_pk": 1, "market": "total", "player_id": 0, "side": "under", "line": 8.5,
             "bet_odds": -105, "novig_bet": 0.50}

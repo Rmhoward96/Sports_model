@@ -11,10 +11,13 @@ from __future__ import annotations
 
 import os
 from datetime import datetime, timedelta
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import httpx
 from tenacity import retry, stop_after_attempt, wait_exponential
+
+if TYPE_CHECKING:
+    from sportsmodel.sports import SportConfig
 
 BASE = "https://api.the-odds-api.com/v4"
 SPORT = "baseball_mlb"
@@ -53,20 +56,23 @@ def _get(path: str, params: dict[str, Any]) -> Any:
         return resp.json()
 
 
-def fetch_events() -> list[dict]:
-    """Upcoming MLB events (id, home_team, away_team, commence_time)."""
-    return _get(f"/sports/{SPORT}/events", {"dateFormat": "iso"})
+def fetch_events(cfg: "SportConfig | None" = None) -> list[dict]:
+    """Upcoming events for the sport (id, home_team, away_team, commence_time)."""
+    cfg = cfg or _mlb()
+    return _get(f"/sports/{cfg.odds_sport}/events", {"dateFormat": "iso"})
 
 
-def fetch_game_odds(regions: str = "us") -> list[dict]:
-    return _get(f"/sports/{SPORT}/odds", {
-        "regions": regions, "markets": ",".join(GAME_MARKETS),
+def fetch_game_odds(cfg: "SportConfig | None" = None, regions: str = "us") -> list[dict]:
+    cfg = cfg or _mlb()
+    return _get(f"/sports/{cfg.odds_sport}/odds", {
+        "regions": regions, "markets": ",".join(cfg.game_markets),
         "oddsFormat": "american", "dateFormat": "iso",
     })
 
 
-def fetch_event_props(event_id: str, markets: list[str], regions: str = "us") -> dict:
-    return _get(f"/sports/{SPORT}/events/{event_id}/odds", {
+def fetch_event_props(event_id: str, markets: list[str], cfg: "SportConfig | None" = None, regions: str = "us") -> dict:
+    cfg = cfg or _mlb()
+    return _get(f"/sports/{cfg.odds_sport}/events/{event_id}/odds", {
         "regions": regions, "markets": ",".join(markets),
         "oddsFormat": "american", "dateFormat": "iso",
     })
@@ -147,3 +153,22 @@ def parse_prop_odds(event_props, game_pk, captured_at) -> list[dict]:
                 rows.append(_row(game_pk, our, o["name"].lower(), o.get("description"),
                                  book, o.get("point"), o.get("price"), captured_at, commence))
     return rows
+
+
+# sports.py imports GAME_MARKETS/PROP_MARKET_MAP from this module, and this module
+# needs sports.get() for the MLB default config -- a cycle. Resolving `get("mlb")`
+# lazily (on first fetch_* call, cached) rather than at import time sidesteps it
+# regardless of which module happens to be imported first: a module-level
+# `from sportsmodel.sports import get` here breaks when *sports.py* is imported
+# first (e.g. via a test module doing `from sportsmodel.sports import get`), since
+# that import re-enters this module before sports.py has finished defining
+# SportConfig.
+_MLB: "SportConfig | None" = None
+
+
+def _mlb() -> "SportConfig":
+    global _MLB
+    if _MLB is None:
+        from sportsmodel.sports import get
+        _MLB = get("mlb")
+    return _MLB
