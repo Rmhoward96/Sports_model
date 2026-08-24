@@ -70,7 +70,7 @@ def fetch_game_odds(cfg: "SportConfig | None" = None, regions: str = "us") -> li
     })
 
 
-def fetch_event_props(cfg: "SportConfig | None" = None, *, event_id: str, markets: list[str], regions: str = "us") -> dict:
+def fetch_event_props(event_id: str, markets: list[str], cfg: "SportConfig | None" = None, regions: str = "us") -> dict:
     cfg = cfg or _mlb()
     return _get(f"/sports/{cfg.odds_sport}/events/{event_id}/odds", {
         "regions": regions, "markets": ",".join(markets),
