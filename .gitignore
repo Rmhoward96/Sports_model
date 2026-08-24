@@ -22,5 +22,9 @@ data/
 !assets/advancement/
 !assets/advancement/*.parquet
 
+# Exception: committed nflverse snapshots (schedules/weekly/rosters/injuries)
+!assets/nfl/
+!assets/nfl/*.parquet
+
 # OS
 .DS_Store
