@@ -151,6 +151,9 @@ def main() -> None:
     if not config.DATABASE_URL:
         raise SystemExit("DATABASE_URL required (generate_board reads/writes Supabase).")
     cal = calibration.load()
+    # Calibration keys are MLB-shaped (generic market names, single assets/calibration.json).
+    # Per-sport calibration is deferred to P4, when NFL calibration exists; NFL boards no
+    # predictions in P0 so there is nothing to key by sport yet.
     total_cal = (cal.get("total_dist", {}).get("loc", 0.0), cal.get("total_dist", {}).get("scale", 1.0))
     margin_cal = (cal.get("margin_dist", {}).get("loc", 0.0), cal.get("margin_dist", {}).get("scale", 1.0))
     today = date.today().isoformat()
