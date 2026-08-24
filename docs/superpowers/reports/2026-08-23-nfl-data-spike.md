@@ -1,7 +1,7 @@
 # NFL Data Spike — External Source Verification
 
 **Date:** 2026-08-24
-**Purpose:** Confirm exact data shapes from `nfl_data_py` (nflverse), ESPN's scoreboard endpoint, and The Odds API's NFL prop markets, so P1 (NFL ingestion) implementation isn't guessing at schemas. Investigation only — no production code from this spike is kept.
+**Purpose:** Confirm exact data shapes from `nfl_data_py` (nflverse), ESPN's scoreboard endpoint, and The Odds API's NFL prop markets, so P1 (NFL ingestion) implementation isn't guessing at schemas. Investigation only — no throwaway probe code from this spike is kept. The only lasting artifacts are (a) this findings doc and (b) the `nfl-data-py` dependency added to `pyproject.toml`/`uv.lock`, intended for P1's ingestion code to use.
 
 **Environment note:** `ODDS_API_KEY` is not available in this environment (it lives only as a GitHub Actions secret). Step 3 below (The Odds API) was **not run live** — see the Deferred section. Steps 1 and 2 were run live and all output below is real captured output, not fabricated.
 

@@ -1,6 +1,8 @@
 import importlib.util
 import pathlib
 
+import pytest
+
 _p = pathlib.Path(__file__).resolve().parents[1] / "scripts" / "generate_board.py"
 _s = importlib.util.spec_from_file_location("generate_board", _p)
 gb = importlib.util.module_from_spec(_s)
@@ -60,3 +62,13 @@ def test_build_rows_tags_sport():
         ("moneyline", "away", ""): {None: [("fanduel", 110)]},
     }, ((0.0, 1.0), (0.0, 1.0)), sport="nfl")
     assert rows and all(r["sport"] == "nfl" for r in rows)
+
+
+def test_main_rejects_unboardable_sport_before_db_access(monkeypatch):
+    """--sport nfl must fail fast on the boardable-sports gate, not fall through to
+    a DATABASE_URL SystemExit (which would mean the gate never ran) or -- worse --
+    reach the database and read/write MLB predictions under an nfl tag."""
+    monkeypatch.setattr("sys.argv", ["generate_board", "--sport", "nfl"])
+    with pytest.raises(SystemExit) as exc_info:
+        gb.main()
+    assert "no wired prediction source" in str(exc_info.value)

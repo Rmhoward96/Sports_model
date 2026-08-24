@@ -37,6 +37,11 @@ PROP_MARKETS_BY_SPORT = {
     "mlb": PROP_MARKETS,
     "nfl": tuple(sports.get("nfl").prop_market_map.keys()),
 }
+# P0: only MLB has a wired prediction source (game_predictions/prop_predictions are
+# read with no sport filter and have no sport column until P4). --sport nfl would
+# silently read MLB predictions and tag them sport="nfl" -- gate it out until P4
+# wires up real NFL predictions.
+BOARDABLE_SPORTS = {"mlb"}
 
 
 def _load(dist):
@@ -146,6 +151,10 @@ def main() -> None:
     parser.add_argument("--sport", default="mlb", help="Sport key (default: mlb)")
     args = parser.parse_args()
     sport = args.sport
+    if sport not in BOARDABLE_SPORTS:
+        raise SystemExit(
+            f"--sport {sport!r} has no wired prediction source yet "
+            f"(boardable: {sorted(BOARDABLE_SPORTS)})")
     prop_markets = PROP_MARKETS_BY_SPORT[sport]
 
     if not config.DATABASE_URL:
