@@ -42,6 +42,14 @@ def run_backtest(schedule_df: pd.DataFrame, elo_cfg: EloConfig,
             "margin_mae": abs_err / n, "margin_rmse": (sq_err / n) ** 0.5, "n": n}
 
 def tune(train_df, valid_df, grid) -> tuple:
+    """Select by TRAIN-span margin MAE, not Brier. Brier/win_acc are computed
+    from e_home (run_backtest uses g["e_home"] straight from run_elo), which
+    is pure-Elo and never touched by blend_cfg/w_sos -- Brier is therefore
+    identical across every w_sos at a fixed (k, hfa_elo, carryover) and can't
+    discriminate the SoS blend. margin_mae (fed by ratings.expected_margin,
+    which the blend does move) is the metric that can actually select
+    w_sos/srs_min_games. Selecting on train_df (rather than valid_df) also
+    keeps the tuning step from peeking at the validation span."""
     combos = list(itertools.product(
         grid["k"], grid["hfa_elo"], grid["carryover"],
         grid["w_sos"], grid["srs_min_games"]))
@@ -49,33 +57,42 @@ def tune(train_df, valid_df, grid) -> tuple:
     for k, hfa, carry, w, mg in combos:
         ec = EloConfig(k=k, hfa_elo=hfa, carryover=carry)
         bc = BlendConfig(w_sos=w, srs_min_games=mg)
+        tm = run_backtest(train_df, ec, bc)
         vm = run_backtest(valid_df, ec, bc)
-        results.append({"elo": ec, "blend": bc, "valid": vm})
-    best = min(results, key=lambda r: r["valid"]["brier"])
+        results.append({"elo": ec, "blend": bc, "train": tm, "valid": vm})
+    best = min(results, key=lambda r: r["train"]["margin_mae"])
     return (best["elo"], best["blend"]), results
 
-def _coordinate_search(train_df, valid_df, grid: dict) -> tuple:
+def _coordinate_search(train_df, grid: dict) -> tuple:
     """Tune one parameter at a time over its listed values, holding the
-    others at a sensible center, for a few passes. Full Cartesian product
-    over the brief's grid (768 combos) was measured too slow given that
-    run_backtest recomputes SRS after every game; coordinate search visits
+    others at a sensible center, for a few passes, SELECTING ON TRAIN-SPAN
+    MARGIN MAE (not Brier -- see the note on tune() above: Brier/win_acc are
+    blend-invariant by construction, so only margin_mae can actually surface
+    whether w_sos/srs_min_games help). Full Cartesian product over the
+    brief's grid (768 combos) was measured too slow given that run_backtest
+    recomputes SRS after every game; coordinate search visits
     O(passes * sum(len(values))) configs instead while still covering the
-    same per-parameter search space the spec calls for."""
+    same per-parameter search space the spec calls for.
+
+    Returns ((best_elo, best_blend), (best_pure_elo, best_pure_blend), all_results)
+    where "pure" is the best w_sos=0 combo found among the same explored
+    results (i.e. selected the same way -- via the same coordinate search
+    over train margin_mae -- just restricted to the blend being off)."""
     order = ["k", "hfa_elo", "carryover", "w_sos", "srs_min_games"]
     # sensible center: middle-ish value of each parameter's list
     current = {p: grid[p][len(grid[p]) // 2] for p in order}
     all_results = []
-    seen = set()
+    seen: dict = {}
 
     def _eval(params: dict) -> dict:
         key = tuple(params[p] for p in order)
         if key in seen:
-            return None
-        seen.add(key)
+            return seen[key]
         ec = EloConfig(k=params["k"], hfa_elo=params["hfa_elo"], carryover=params["carryover"])
         bc = BlendConfig(w_sos=params["w_sos"], srs_min_games=params["srs_min_games"])
-        vm = run_backtest(valid_df, ec, bc)
-        r = {"elo": ec, "blend": bc, "valid": vm}
+        tm = run_backtest(train_df, ec, bc)
+        r = {"elo": ec, "blend": bc, "train": tm}
+        seen[key] = r
         all_results.append(r)
         return r
 
@@ -84,21 +101,13 @@ def _coordinate_search(train_df, valid_df, grid: dict) -> tuple:
         improved = False
         for p in order:
             best_val = current[p]
-            best_brier = None
+            best_mae = None
             for v in grid[p]:
                 trial = dict(current); trial[p] = v
                 r = _eval(trial)
-                if r is None:
-                    # already evaluated this exact combo; re-look-up its brier
-                    ec = EloConfig(k=trial["k"], hfa_elo=trial["hfa_elo"], carryover=trial["carryover"])
-                    bc = BlendConfig(w_sos=trial["w_sos"], srs_min_games=trial["srs_min_games"])
-                    matches = [x for x in all_results
-                               if x["elo"] == ec and x["blend"] == bc]
-                    brier = matches[0]["valid"]["brier"] if matches else None
-                else:
-                    brier = r["valid"]["brier"]
-                if brier is not None and (best_brier is None or brier < best_brier):
-                    best_brier = brier
+                mae = r["train"]["margin_mae"]
+                if best_mae is None or mae < best_mae:
+                    best_mae = mae
                     best_val = v
             if best_val != current[p]:
                 improved = True
@@ -106,8 +115,11 @@ def _coordinate_search(train_df, valid_df, grid: dict) -> tuple:
         if not improved:
             break
 
-    best = min(all_results, key=lambda r: r["valid"]["brier"])
-    return (best["elo"], best["blend"]), all_results
+    best = min(all_results, key=lambda r: r["train"]["margin_mae"])
+    pure_candidates = [r for r in all_results if r["blend"].w_sos == 0.0]
+    best_pure = (min(pure_candidates, key=lambda r: r["train"]["margin_mae"])
+                 if pure_candidates else best)
+    return (best["elo"], best["blend"]), (best_pure["elo"], best_pure["blend"]), all_results
 
 def main() -> None:
     sched = pd.read_parquet("assets/nfl/schedules.parquet")
@@ -117,16 +129,36 @@ def main() -> None:
     grid = {"k": [12, 16, 20, 24], "hfa_elo": [40, 55, 65, 80],
             "carryover": [0.6, 0.7, 0.75, 0.85],
             "w_sos": [0.0, 0.15, 0.3, 0.45], "srs_min_games": [3, 4, 6]}
-    (best_elo, best_blend), results = _coordinate_search(train, valid, grid)
-    pure = min((r for r in results if r["blend"].w_sos == 0.0),
-               key=lambda r: r["valid"]["brier"])
-    out = {"k": best_elo.k, "hfa_elo": best_elo.hfa_elo,
-           "carryover": best_elo.carryover, "base": best_elo.base,
-           "w_sos": best_blend.w_sos, "srs_min_games": best_blend.srs_min_games}
+
+    (best_elo, best_blend), (pure_elo, pure_blend), results = _coordinate_search(train, grid)
+
+    # OOS verdict: does the SoS blend beat pure Elo on VALIDATION-span margin
+    # MAE? (Brier can't answer this -- it's blend-invariant, see tune()'s note.)
+    blend_valid = run_backtest(valid, best_elo, best_blend)
+    pure_valid = run_backtest(valid, pure_elo, pure_blend)
+    blend_wins = blend_valid["margin_mae"] <= pure_valid["margin_mae"]
+
+    if blend_wins:
+        final_elo, final_blend, final_valid = best_elo, best_blend, blend_valid
+    else:
+        final_elo = pure_elo
+        final_blend = BlendConfig(w_sos=0.0, srs_min_games=pure_blend.srs_min_games)
+        final_valid = pure_valid
+
+    out = {"k": final_elo.k, "hfa_elo": final_elo.hfa_elo,
+           "carryover": final_elo.carryover, "base": final_elo.base,
+           "w_sos": final_blend.w_sos, "srs_min_games": final_blend.srs_min_games}
     pathlib.Path("assets/nfl/rating.json").write_text(json.dumps(out, indent=2))
-    print("best:", out)
-    print("best pure-Elo brier:", pure["valid"]["brier"],
-          "| best blended brier:", min(r["valid"]["brier"] for r in results))
+
+    print("best blended (train-selected, margin_mae):", {
+        "k": best_elo.k, "hfa_elo": best_elo.hfa_elo, "carryover": best_elo.carryover,
+        "w_sos": best_blend.w_sos, "srs_min_games": best_blend.srs_min_games})
+    print("best pure-Elo (train-selected, margin_mae):", {
+        "k": pure_elo.k, "hfa_elo": pure_elo.hfa_elo, "carryover": pure_elo.carryover})
+    print("VALIDATION blended:", blend_valid)
+    print("VALIDATION pure-Elo:", pure_valid)
+    print("SoS blend beat pure Elo OOS on margin MAE?", blend_wins)
+    print("written rating.json:", out, "| final valid metrics:", final_valid)
 
 if __name__ == "__main__":
     main()

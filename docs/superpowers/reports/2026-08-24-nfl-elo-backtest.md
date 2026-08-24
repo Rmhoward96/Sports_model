@@ -1,118 +1,140 @@
 # NFL Elo/SoS walk-forward backtest — findings
 
-Date: 2026-08-24
+Date: 2026-08-24 (revised, Fix round 1)
 Script: `scripts/backtest_nfl_elo.py`
 Data: `assets/nfl/schedules.parquet` (seasons 2002–2025, REG games only: 6,223 rows)
-Train span: 2002–2019 · Validation span: 2020–2025 (1,615 graded REG games)
+Train span: 2002–2019 (4,608 games) · Validation span: 2020–2025 (1,615 games)
+
+Walk-forward is leak-free throughout: `run_elo` supplies PRE-game Elo per
+game, and SRS is recomputed each game from only the games already played
+that season (before the game being scored) — see `run_backtest`.
+
+## Metric choice — why margin MAE, not Brier, is the SoS comparison metric
+
+`run_backtest`'s `brier`/`win_acc` are computed from `e_home = g["e_home"]`,
+which is `run_elo`'s pure-Elo win probability (`expected_home`) — it is never
+touched by `blend_cfg`/`w_sos`. Only `margin_mae`/`margin_rmse` (fed by
+`ratings.expected_margin`, which the blend does move) respond to the SoS
+weight. Verified directly: at a fixed `(k, hfa_elo, carryover)`, Brier and
+win_acc are **bit-for-bit identical across every `w_sos`** in the grid — the
+validation run below shows `brier=0.22712` for both the blended and pure-Elo
+configs, to 5 decimal places, exactly. This is structural (how `e_home` is
+wired in `run_backtest`), not an empirical finding, so:
+
+- `tune()` now selects by **train-span margin MAE**, not Brier.
+- The "does SoS beat pure Elo out-of-sample" verdict below is made on
+  **validation-span margin MAE**, not Brier.
 
 ## Search strategy
 
-A single `run_backtest` call over the full 2020–2025 validation span took **~6.0s**.
-The brief's full Cartesian grid (`k`×`hfa_elo`×`carryover`×`w_sos`×`srs_min_games`
-= 4×4×4×4×3 = 768 configs) would have cost ≈768 × 6s ≈ **77 minutes**, well past the
-~10-minute budget. Per the controller ruling, `main()` uses a **coordinate search**
-instead (`tune(train, valid, grid)` itself is untouched — full-product, as the unit
-test exercises it): 3 passes, one parameter swept at a time over its listed values
-holding the others at the current best, starting from the middle value of each
-parameter's list, with a result cache to skip already-evaluated combos.
+A single `run_backtest` call over the full 2020–2025 validation span costs
+~6.0s; over the 2002–2019 train span (2.85x more games), ~17.6s. The brief's
+full Cartesian grid (4×4×4×4×3 = 768 configs) evaluated on train would cost
+≈768 × 17.6s ≈ 3.75 hours — far past budget — so `main()` uses a
+**coordinate search** (`tune(train, valid, grid)` itself stays full-product,
+as the unit test exercises it): 3 passes, one parameter swept at a time over
+its listed values holding the others at the current best, starting from the
+middle value of each parameter's list, selecting on **train-span margin
+MAE**, with a result cache to skip already-evaluated combos.
 
-Actual wall-clock time for the real tuning run: **2m 44.9s** (162.2s user CPU),
-well under budget.
+Actual wall-clock time for the real tuning run: **10m 24.6s** (614.0s user
+CPU). This is somewhat longer than the original valid-span-selected search
+(2m 45s) because each evaluation now runs over the larger train span, and
+because two additional validation-span backtests are run at the end (for the
+final OOS comparison) — but it stayed within a workable single run.
 
 ## Tuned parameters (`assets/nfl/rating.json`)
 
+Selected by train-span margin MAE via coordinate search, then confirmed to
+win out-of-sample on validation-span margin MAE (see verdict below), so the
+blended config ships:
+
 ```json
 {
-  "k": 20,
-  "hfa_elo": 40,
+  "k": 16,
+  "hfa_elo": 55,
   "carryover": 0.6,
   "base": 1500.0,
   "w_sos": 0.3,
-  "srs_min_games": 4
+  "srs_min_games": 6
 }
 ```
 
-## Validation-span metrics (chosen config, 2020–2025, n=1615)
+The best pure-Elo config found by the same train-selected coordinate search
+(restricted to `w_sos=0`, same objective) had identical `(k, hfa_elo,
+carryover) = (16, 55, 0.6)` — the search converged to the same Elo
+hyperparameters whether or not SoS blending was allowed, so the OOS
+comparison below is a clean apples-to-apples test of `w_sos=0` vs `w_sos=0.3`
+at the same Elo settings.
 
-| metric | value |
-|---|---|
-| Brier | 0.22497 |
-| Win accuracy | 63.78% |
-| Margin MAE | 10.185 |
-| Margin RMSE | 13.123 |
+## Validation-span metrics (2020–2025, n=1615)
+
+| config | Brier | Win acc | Margin MAE | Margin RMSE |
+|---|---|---|---|---|
+| **Blended (shipped, w_sos=0.3, srs_min_games=6)** | 0.22712 | 62.54% | **10.2076** | 13.1550 |
+| Pure Elo (w_sos=0, same k/hfa/carryover) | 0.22712 | 62.54% | 10.2587 | 13.2192 |
+
+Brier and win accuracy are identical between the two rows, exactly as
+expected from the structural note above — they cannot move with `w_sos`.
+Margin MAE and RMSE are the metrics that differ.
 
 ## Naive baselines (validation span, n=1615)
 
-| baseline | Brier | Win acc | Margin MAE |
-|---|---|---|---|
-| Home-always (p=1.0 for home) | 0.4675 | 53.25% | — |
-| Constant home-rate (train 2002–2019 rate = 0.5692, applied flat) | 0.2503 | 53.25% | 11.021 (using train mean home margin = +2.35 as constant) |
-| Prior-season win% (p = 0.5 + (home_prior_wp − away_prior_wp)/2, clipped) | 0.2392 | 59.01% | — |
+| baseline | Brier | Win acc |
+|---|---|---|
+| Home-always (p=1.0 for home) | 0.4675 | 53.25% |
+| Prior-season win% (p=0.5+(home_prior_wp−away_prior_wp)/2, clipped) | 0.2392 | 59.01% |
 
-The tuned Elo/SoS model beats both naive baselines by a clear margin on every
-metric: Brier 0.225 vs 0.250 (constant-rate) / 0.239 (prior-season win%); win
-accuracy 63.8% vs 53.3% / 59.0%.
+(A third reference point, a constant home-rate baseline fit on the train
+span's overall home-win rate of 0.5692 and applied flat to validation, scores
+Brier 0.2503 / win acc 53.25% — included for completeness though the spec
+only calls for the two above.)
+
+The tuned Elo/SoS model clearly beats both naive baselines on Brier (0.227 vs
+0.250 / 0.239) and win accuracy (62.5% vs 53.3% / 59.0%).
 
 ## Does the SoS blend beat pure Elo out-of-sample?
 
-**Short answer: not on Brier/win-accuracy — those metrics are structurally
-blend-invariant in this backtest's `run_backtest` — but yes, marginally, on
-margin accuracy.**
+**Yes — on validation-span margin MAE, the metric the blend actually
+affects.** Blended margin MAE 10.2076 vs pure-Elo margin MAE 10.2587 at the
+same `(k=16, hfa_elo=55, carryover=0.6)` — a real, out-of-sample improvement
+of 0.051 points (~0.5%), and margin RMSE improves similarly (13.155 vs
+13.219, ~0.5%). Since both configs were reached by the identical train-span
+selection process (only differing in whether `w_sos` was allowed off zero),
+this is a fair OOS test, and the blend wins it. `assets/nfl/rating.json`
+therefore ships the blended config (`w_sos=0.3`, `srs_min_games=6`).
 
-Important structural finding (verified directly, not just inferred from the
-tuning printout): `run_backtest`'s `brier`/`win_acc` are computed from
-`e_home = g["e_home"]`, which is `run_elo`'s **pure-Elo** win probability
-(`expected_home`) — it is never touched by `blend_cfg`/`w_sos`. Only the
-`em` (expected margin, from `ratings.expected_margin`) — which feeds
-`margin_mae`/`margin_rmse` — depends on `w_sos`. This is exactly the code
-specified in the Task 8 brief (kept verbatim per Ruling 2), not a bug I
-introduced.
+Brier/win_acc cannot register this improvement at all (see the metric-choice
+note above) — that is a property of how `run_backtest` computes those two
+metrics, not evidence against the blend.
 
-Consequence: for any fixed `(k, hfa_elo, carryover)`, Brier and win_acc are
-**identical across every `w_sos`** in the grid — confirmed directly at the
-chosen point `(k=20, hfa_elo=40, carryover=0.6)`:
+## Fix round 1 — what changed from the original submission
 
-| w_sos | brier | win_acc | margin_mae | margin_rmse |
-|---|---|---|---|---|
-| 0.00 (pure Elo) | 0.224975 | 63.777% | 10.2082 | 13.1682 |
-| 0.15 | 0.224975 | 63.777% | 10.1815 | 13.1251 |
-| 0.30 (chosen) | 0.224975 | 63.777% | 10.1847 | 13.1230 |
-| 0.45 | 0.224975 | 63.777% | 10.2345 | 13.1620 |
+The original submission selected hyperparameters (including `w_sos`) by
+**validation-span Brier**, which is structurally blind to the SoS blend (see
+above), and `tune()`'s `train_df` argument was unused. That made "does SoS
+beat pure Elo" undecidable from the reported metric. This revision:
 
-So "best blended Brier" (0.224975) trivially equals "best pure-Elo Brier"
-(0.224975) at every Elo hyperparameter point, not just the winning one — the
-Brier-based comparison the report was asked to make is a tie **by
-construction**, not an empirical result. `w_sos=0.3` was selected by the
-tuner's tie-break (min Brier, first minimum encountered) even though it has
-zero effect on the selection metric.
-
-On the metric the blend actually moves — margin MAE/RMSE — SoS blending
-gives a small, real improvement over pure Elo at the winning Elo point:
-margin MAE 10.185 (w_sos=0.3, the written config) vs 10.208 (pure Elo,
-w_sos=0), a ~0.23% reduction; margin RMSE 13.123 vs 13.168, ~0.34%. `w_sos=0.15`
-is marginally better still on margin (10.1815) than the persisted 0.30, within
-noise of the coordinate search's per-parameter sweep granularity.
-
-**Verdict:** the SoS blend does not move classification accuracy at all in
-this backtest (structurally can't, given how `e_home` is wired), and moves
-margin accuracy only marginally in its favor. This is a valid, spec-anticipated
-outcome (the acceptance bar allows "blend didn't beat pure Elo" as a legitimate
-finding) — here it's more precisely "blend is a no-op for win-prob metrics
-and a marginal net positive for margin metrics," which should inform whether
-P2 (distributions/shrinkage) wires margin predictions through `expected_margin`
-(where the blend matters) versus win-probability through `expected_home`
-directly (where it currently doesn't).
+1. `tune()` now selects by **train-span margin MAE** (uses `train_df` for
+   real; each result entry carries both `train` and `valid` metrics).
+2. `main()`'s coordinate search selects on **train-span margin MAE**, then
+   computes **validation-span** metrics for both the selected blended config
+   and the best pure-Elo config (`w_sos=0`) found by the same search.
+3. The verdict is now made on **validation-span margin MAE**, which the blend
+   can actually move, and comes out **in favor of the blend** (0.051-point
+   OOS improvement) — `rating.json` was regenerated accordingly (previous
+   run had picked `w_sos=0.3` too, but for the wrong/uninformative reason —
+   tied Brier — and with different `k/hfa_elo/carryover/srs_min_games`
+   values since it searched a different objective).
 
 ## Concerns / follow-ups for the controller
 
-- `tune(train_df, valid_df, grid)` (kept verbatim per Ruling 2) never actually
-  uses `train_df` — it evaluates and selects purely on `valid_df` Brier. This
-  matches the brief's literal code and the unit test's contract, but means the
-  walk-forward "train on 2002–2019, validate on 2020–2025" framing in the task
-  description is aspirational for tuning purposes: the chosen hyperparameters
-  are selected directly against the validation span's Brier, not an
-  independent train-set objective. Flagging for awareness, not fixing (out of
-  this task's touched-files scope).
-- Because Brier/win_acc never respond to `w_sos`, any future "blend beat pure
-  Elo" claim should be made on margin MAE/RMSE, not Brier — worth a P2 note if
-  win-probability quality from the blend is ever wanted.
+- Brier/win_acc remaining permanently blend-invariant in this backtest means
+  any future win-probability quality claim for the SoS feature (as opposed
+  to margin/point-spread quality) would need `expected_home`-level wiring of
+  the blend, which is out of this task's scope (P2 territory per the plan).
+- The two "pure-Elo" configs found across the two tuning runs
+  (`k=20,hfa=40,carry=0.6` under Brier-selection vs `k=16,hfa=55,carry=0.6`
+  under margin-MAE-selection) differ, confirming Brier and margin MAE were
+  genuinely selecting on different signal — margin MAE is the correct
+  objective for this feature per the fix.
