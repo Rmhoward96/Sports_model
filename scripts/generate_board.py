@@ -3,10 +3,11 @@
 Reads the latest game/prop predictions + latest per-book odds from Supabase, builds
 best-book board rows via sportsmodel.serving.board, upserts the live `board_picks`
 table, and locks any newly-+EV pick into the `picks` bet log (first-+EV price). Run
-after each odds capture. MLB only.
+after each odds capture. Sport is selected via --sport (default: mlb).
 """
 from __future__ import annotations
 
+import argparse
 import json
 import sys
 from datetime import date, datetime, timezone
@@ -15,7 +16,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
 
-from sportsmodel import config
+from sportsmodel import config, sports
 from sportsmodel.db import clear_board_picks, get_postgres, insert_new_picks, upsert_board_picks
 from sportsmodel.model import calibration
 from sportsmodel.serving import board
@@ -30,6 +31,12 @@ MARKET_LABEL = {
 # EV and skews the board/record. Add it back here if that ever changes.
 PROP_MARKETS = ("hits", "total_bases", "hrr",
                 "pitcher_ks", "hits_allowed", "outs_recorded")
+# NFL prop-market names are placeholders wired up in P4, once NFL prop predictions
+# exist to board; keyed off the sport's odds prop_market_map for now.
+PROP_MARKETS_BY_SPORT = {
+    "mlb": PROP_MARKETS,
+    "nfl": tuple(sports.get("nfl").prop_market_map.keys()),
+}
 
 
 def _load(dist):
@@ -47,12 +54,12 @@ def _main_line(by_line):
     return sorted(by_line.items(), key=lambda kv: (-len(kv[1]), kv[0]))[0][0]
 
 
-def _enrich(row, game, market, player_id=0, player_name=None, team=None):
+def _enrich(row, game, market, player_id=0, player_name=None, team=None, sport="mlb"):
     if row is None:
         return None
     row = dict(row)
     row.update({
-        "sport": "mlb", "game_pk": game["game_pk"], "game_date": game["game_date"],
+        "sport": sport, "game_pk": game["game_pk"], "game_date": game["game_date"],
         "commence_time": game.get("commence_time"), "matchup": game["matchup"],
         "market_label": MARKET_LABEL[market], "player_id": player_id,
         "player_name": player_name, "team": team,
@@ -60,7 +67,7 @@ def _enrich(row, game, market, player_id=0, player_name=None, team=None):
     return row
 
 
-def build_rows(game, prop_preds, odds, cals):
+def build_rows(game, prop_preds, odds, cals, sport="mlb"):
     """Assemble board_picks rows for one game across all markets. `odds` is
     {(market, side, player_lower): {line: [(book, american), ...]}}. `cals` is
     (total_cal, margin_cal). Returns a list of enriched row dicts (drops Nones)."""
@@ -72,20 +79,20 @@ def build_rows(game, prop_preds, odds, cals):
         _flatten(odds.get(("moneyline", "home", ""), {})),
         _flatten(odds.get(("moneyline", "away", ""), {})),
         game["home_name"], game["away_name"])
-    rows.append(_enrich(r, game, "moneyline"))
+    rows.append(_enrich(r, game, "moneyline", sport=sport))
 
     over, under = odds.get(("total", "over", ""), {}), odds.get(("total", "under", ""), {})
     tl = _main_line(over)
     if tl is not None:
         r = board.total_row(_load(game["total_dist"]), total_cal, tl, over.get(tl, []), under.get(tl, []))
-        rows.append(_enrich(r, game, "total"))
+        rows.append(_enrich(r, game, "total", sport=sport))
 
     sh, sa = odds.get(("spread", "home", ""), {}), odds.get(("spread", "away", ""), {})
     hl = _main_line(sh)
     if hl is not None:
         r = board.spread_row(_load(game["margin_dist"]), margin_cal, hl,
                              sh.get(hl, []), sa.get(-hl, []), game["home_name"], game["away_name"])
-        rows.append(_enrich(r, game, "spread"))
+        rows.append(_enrich(r, game, "spread", sport=sport))
 
     for p in prop_preds:
         m, pl = p["market"], str(p["player_name"]).lower().strip()
@@ -95,7 +102,7 @@ def build_rows(game, prop_preds, odds, cals):
         if ln is None:
             continue
         r = board.prop_row(m, _load(p["dist"]), m, ln, over.get(ln, []), under.get(ln, []))
-        rows.append(_enrich(r, game, m, p["player_id"], p["player_name"], p.get("team")))
+        rows.append(_enrich(r, game, m, p["player_id"], p["player_name"], p.get("team"), sport=sport))
 
     return [r for r in rows if r]
 
@@ -135,6 +142,12 @@ def _load_odds(cur, game_pk):
 
 
 def main() -> None:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--sport", default="mlb", help="Sport key (default: mlb)")
+    args = parser.parse_args()
+    sport = args.sport
+    prop_markets = PROP_MARKETS_BY_SPORT[sport]
+
     if not config.DATABASE_URL:
         raise SystemExit("DATABASE_URL required (generate_board reads/writes Supabase).")
     cal = calibration.load()
@@ -163,12 +176,12 @@ def main() -> None:
                     ORDER BY generated_at DESC LIMIT 1)
             """, [gp, gp])
             props = [{"player_id": pid, "player_name": pn, "team": tm, "market": mk, "dist": d}
-                     for pid, pn, tm, mk, d in cur.fetchall() if mk in PROP_MARKETS]
+                     for pid, pn, tm, mk, d in cur.fetchall() if mk in prop_markets]
             game = {"game_pk": gp, "game_date": gdate, "commence_time": commence,
                     "home_name": home, "away_name": away, "matchup": f"{away} @ {home}",
                     "pred_total": ptotal, "total_dist": tdist, "pred_margin": pmargin,
                     "margin_dist": mdist, "home_win_prob": hwp}
-            all_rows += build_rows(game, props, odds, (total_cal, margin_cal))
+            all_rows += build_rows(game, props, odds, (total_cal, margin_cal), sport=sport)
 
     if all_rows:
         clear_board_picks()  # full refresh: drop orphaned rows before writing the current slate

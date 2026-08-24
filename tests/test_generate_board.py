@@ -51,3 +51,12 @@ def test_main_line_prefers_most_booked_then_lowest():
     assert gb._main_line(by_line) == 9.0   # 9.0 has 2 books
     tie = {8.5: [("A", -110)], 9.0: [("B", -110)]}
     assert gb._main_line(tie) == 8.5       # tie -> lowest
+
+
+def test_build_rows_tags_sport():
+    game = _game()
+    rows = gb.build_rows(game, [], {
+        ("moneyline", "home", ""): {None: [("draftkings", -120)]},
+        ("moneyline", "away", ""): {None: [("fanduel", 110)]},
+    }, ((0.0, 1.0), (0.0, 1.0)), sport="nfl")
+    assert rows and all(r["sport"] == "nfl" for r in rows)
