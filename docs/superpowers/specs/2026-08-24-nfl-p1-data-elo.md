@@ -27,6 +27,9 @@ parameters; P2 adds the market-shrinkage blend and the distributions that make i
 - Team-abbreviation normalization (single source of truth).
 - Margin-adjusted Elo engine: ratings history, final ratings, preseason carryover, expected
   margin. Tunable `K`, `HFA`, `carryover`.
+- **Explicit strength-of-schedule rating** (SRS/Massey retrodictive, opponent-adjusted) blended
+  with Elo, so beating strong opponents is rewarded beyond Elo's per-game adjustment; blend
+  weight + cold-start threshold tuned in the backtest.
 - ESPN public-API adapters: weekly schedule (upcoming games + kickoff + event id), final
   scores, game-day inactives — parsing the exact fields the P0 spike verified.
 - NFL `game_pk` matcher: `game_pk` = ESPN event id; reconcile nflverse (`schedules.espn`) and
@@ -54,7 +57,11 @@ New package `src/sportsmodel/nfl/`:
 - `teams.py` — `normalize_team(abbr) -> str` and the canonical 32-team set. Known
   normalizations from the spike: `LAR→LA`, `WSH→WAS`. This is the single source of truth used
   by data ingest, the ESPN adapter, and the matcher.
-- `elo.py` — the rating engine (see **Elo model**).
+- `elo.py` — the sequential Elo rating engine (see **Elo model**).
+- `srs.py` — the retrodictive strength-of-schedule rating (see **Strength-of-schedule rating &
+  blend**).
+- `ratings.py` — the combiner: blends the Elo and SRS expected margins into the single
+  `expected_margin` the backtest / P2 / producer consume.
 - `espn.py` — live adapters (see **ESPN adapters**).
 - `matcher.py` — the `game_pk` matcher (see **Matcher**).
 
@@ -87,8 +94,9 @@ initial point; the tuning step (see **Backtest**) sets the shipped values.
 - **Preseason carryover:** at each new season start,
   `elo_start = 1500 + carryover * (elo_prev_final − 1500)` (regress toward the mean; `carryover
   ≈ 0.75` ⇒ 25% reversion). New/relocated franchises with no prior season start at 1500.
-- **Expected margin (points), for P2/producer consumption:**
-  `expected_margin = (elo_home + HFA_elo − elo_away) / 25` (25 Elo ≈ 1 point).
+- **Elo expected margin (points):**
+  `elo_expected_margin = (elo_home + HFA_elo − elo_away) / 25` (25 Elo ≈ 1 point). This is
+  Elo's contribution to the final blended margin (see the SoS section).
 - **Starting params (tuned by the backtest):** `K ≈ 20`, `HFA_elo ≈ 65` (~+2.5 pts),
   `carryover ≈ 0.75`.
 - **API:**
@@ -96,9 +104,37 @@ initial point; the tuning step (see **Backtest**) sets the shipped values.
   - `run_elo(schedule_df, config) -> EloResult` where `EloResult` exposes the **pre-game**
     home/away ratings and `E_home` for every game (for backtesting) and the **final** ratings
     per team (for carryover / live prediction).
-  - `expected_margin(elo_home, elo_away, config) -> float`.
-  - Distributions and win-prob-at-a-line are **NOT** in P1 (P2 wraps `expected_margin` in a
-    Normal and discretizes it).
+  - `elo_expected_margin(elo_home, elo_away, config) -> float`.
+  - Distributions and win-prob-at-a-line are **NOT** in P1 (P2 wraps the blended
+    `expected_margin` in a Normal and discretizes it).
+
+## Strength-of-schedule rating & blend (`srs.py`, `ratings.py`)
+
+Elo already rewards beating stronger opponents per game (the `result − E_home` term is large
+when a low-`E` underdog wins, tiny when a favorite beats a weak team; the MOV multiplier's
+autocorrelation term reinforces this). The explicit SoS rating adds a **retrodictive, whole-
+schedule** view that Elo's sequential update reflects only slowly — so a team that beat a
+murderers'-row schedule is rated above a same-record team that beat cupcakes.
+
+- **SRS (Simple Rating System / Massey-style), `srs.py`:** over the games played so far in the
+  season, solve `rating_i = avg_point_margin_i + avg_opponent_rating_i` to a fixed point
+  (iterate to convergence; ratings are zero-mean, in **points**). A team's rating rises for
+  beating high-rated opponents and barely moves for beating low-rated ones — SoS is baked into
+  the solve. `compute_srs(games_so_far) -> dict[team, points]`.
+  - `srs_expected_margin = srs_home − srs_away + HFA_points` (`HFA_points = HFA_elo / 25`).
+- **Blend (`ratings.py`):** the single margin the rest of the pipeline consumes is
+  `expected_margin = (1 − w) * elo_expected_margin + w * srs_expected_margin`.
+  - **Cold-start fallback:** SRS needs a minimum sample. When either team has played fewer than
+    `srs_min_games` games this season, `w = 0` (pure Elo, which carries prior-season signal via
+    carryover). This keeps **Week 1 sane** — Elo's carryover drives it; SRS phases in only once
+    there is enough current-season schedule to measure.
+  - **Blend weight `w`:** tuned in the backtest (see below). Hypothesis to test: `w` is
+    meaningful in the early-to-mid season where records diverge but Elo hasn't converged, and
+    can decay later as Elo catches up; the backtest decides whether a flat `w` or a
+    week-decaying `w(week)` scores better, and its magnitude. Bounded (e.g. `w ≤ ~0.5`) so Elo
+    stays the backbone.
+  - `expected_margin(elo_result, srs_ratings, home, away, week, config) -> float` is the P1
+    engine's single output for a game (what P2 will wrap in a distribution).
 
 ## ESPN adapters (`espn.py`)
 
@@ -135,33 +171,45 @@ by the P0 spike.
   not a P1 metric): straight-up **win accuracy**, **Brier score**, and **margin MAE/RMSE** vs.
   actual, plus a **calibration/reliability** check on `E_home`.
 - **Baselines** to beat: home-team-always, and prior-season win% pick.
-- **Tuning:** coordinate/grid search over `(K, HFA_elo, carryover)` on a **train span**
-  (2002–2019), **validated out-of-sample** on a **held-out span** (2020–2025). The shipped
-  params are the ones that win on the validation span (guarding against in-sample overfit — the
-  same discipline documented for the MLB model).
-- **Output:** the tuned `EloConfig` values recorded (committed as an `assets/nfl/elo.json` or
-  as documented constants in `elo.py`) + a short findings report under
-  `docs/superpowers/reports/`.
+- **Tuning:** coordinate/grid search over `(K, HFA_elo, carryover, w_sos, srs_min_games)` on a
+  **train span** (2002–2019), **validated out-of-sample** on a **held-out span** (2020–2025).
+  The shipped params are the ones that win on the validation span (guarding against in-sample
+  overfit — the same discipline documented for the MLB model). The search **must compare the
+  blend against pure Elo** (`w_sos = 0`) so the SoS component only ships if it demonstrably
+  improves the validation metrics; if it doesn't, `w_sos` tunes to 0 and Elo stands alone.
+- **Output:** the tuned rating parameters recorded (committed as `assets/nfl/rating.json`
+  holding the `EloConfig` fields + the blend `w_sos`/`srs_min_games`, or as documented
+  constants) + a short findings report under `docs/superpowers/reports/` stating whether the
+  SoS blend beat pure Elo out-of-sample and by how much.
 
 ## Acceptance / done bar (P1)
 
 - Committed nflverse snapshots exist and load with the expected columns; team names normalized.
 - `run_elo` reproduces a hand-computed rating sequence in tests; carryover regresses toward
-  1500; expected margin sign/scale is correct.
+  1500; Elo expected margin sign/scale is correct.
+- SRS ranks a team that beat strong opponents above a same-record team that beat weak ones; the
+  blend falls back to pure Elo below `srs_min_games` (Week-1 sanity), and `ratings.expected_margin`
+  returns Elo's margin when SRS is unavailable.
 - ESPN adapters parse **recorded JSON fixtures** into the documented shapes (no live calls in
   the test suite).
 - The matcher keys on ESPN event id and resolves an Odds-API event by normalized names + date,
   including a relocation case (`LAR/LA`).
-- The Elo backtest **beats both naive baselines** on Brier + margin MAE and **generalizes
-  out-of-sample** (validation span ≈ train span). Beating the market/CLV is a season-long,
-  post-launch judge, not a P1 gate.
+- The rating backtest **beats both naive baselines** on Brier + margin MAE and **generalizes
+  out-of-sample** (validation span ≈ train span). The SoS blend is shipped only if it beats
+  pure Elo (`w_sos = 0`) out-of-sample; otherwise `w_sos` tunes to 0. Beating the market/CLV is
+  a season-long, post-launch judge, not a P1 gate.
 - **No regression to MLB** — the full existing suite stays green; NFL is additive.
 
 ## Testing approach (TDD)
 
 - `elo.py`: deterministic unit tests — a two-game hand-computed sequence → known ratings;
   MOV-multiplier monotonicity in `|margin|`; carryover pulls a 1700 team toward 1500 by the
-  configured fraction; `expected_margin` sign and ~1pt/25-Elo scale.
+  configured fraction; `elo_expected_margin` sign and ~1pt/25-Elo scale.
+- `srs.py`: a small hand-built round-robin where the retrodictive solve converges to known
+  ratings; a team beating strong opponents outranks a same-record team beating weak ones;
+  ratings are zero-mean.
+- `ratings.py`: the blend equals `(1−w)·elo + w·srs` when SRS is available; falls back to pure
+  Elo below `srs_min_games`; `w=0` reproduces Elo exactly.
 - `teams.py`: normalization map (`LAR→LA`, `WSH→WAS`), idempotence, the 32-team set.
 - `matcher.py`: ESPN event id as `game_pk`; Odds-API event resolves by normalized names+date; a
   relocation/abbr case; a no-match returns `None`.
@@ -184,3 +232,7 @@ by the P0 spike.
   stable for the 32-team set.
 - **ESPN endpoint shape changes** → adapters isolated in `espn.py` with fixture tests; a change
   is contained to one module.
+- **SoS blend could overfit or add noise** → the backtest tunes it against pure Elo (`w_sos=0`)
+  on a held-out span and ships it only if it beats Elo out-of-sample; the weight is bounded and
+  falls back to pure Elo before `srs_min_games`, so a weak SoS signal degrades gracefully to the
+  Elo baseline rather than hurting it.
