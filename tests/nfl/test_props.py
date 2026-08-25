@@ -1,6 +1,12 @@
+import json
 import math
+import pathlib
 from sportsmodel.nfl.props import PropConfig, build_prop
 from sportsmodel.model.distributions import prob_over_dist, normal_sf
+
+ALL_SEVEN_MARKETS = ("pass_yds", "reception_yds", "rush_yds", "rush_reception_yds",
+                    "receptions", "pass_tds", "anytime_td")
+PROPS_JSON_PATH = pathlib.Path(__file__).resolve().parents[2] / "assets" / "nfl" / "props.json"
 
 CFG = PropConfig()
 VOL = {"pass_att": 34.0, "carries": 15.0, "targets": 8.0}
@@ -87,3 +93,26 @@ def test_mean_mult_scales_anytime_td_lambda_and_prob_identity():
     calibrated_lam = raw_lam * 1.4
     assert math.isclose(p["projected_mean"], calibrated_lam)
     assert abs(prob_over_dist(p["dist"], 0.5) - (1 - math.exp(-calibrated_lam))) < 1e-6
+
+def test_props_json_round_trips_into_propconfig_for_all_seven_markets():
+    # Final-review fix: locks the assets/nfl/props.json <-> PropConfig contract
+    # that P4's producer is expected to rely on -- loading the COMMITTED
+    # calibration file the natural way (sigma/nb_var_mult/mean_mult passed
+    # straight through) must build a valid prop for every market, with no
+    # KeyError/TypeError from a schema mismatch (e.g. nb_var_mult shipped as a
+    # bare float instead of a dict indexed by market, which is what broke
+    # `build_prop("receptions", ...)`'s `cfg.nb_var_mult["receptions"]` lookup
+    # before this fix).
+    j = json.loads(PROPS_JSON_PATH.read_text())
+    cfg = PropConfig(sigma=j["sigma"], nb_var_mult=j["nb_var_mult"], mean_mult=j["mean_mult"])
+
+    for market in ALL_SEVEN_MARKETS:
+        p = build_prop(market, VOL, EFF, cfg)
+        assert "projected_mean" in p and isinstance(p["projected_mean"], float)
+        assert p["projected_mean"] >= 0.0
+        dist = p["dist"]
+        assert dist["kind"] in ("normal", "pmf")
+        if dist["kind"] == "normal":
+            assert dist["sd"] > 0
+        else:
+            assert abs(sum(dist["pmf"]) - 1.0) < 1e-6

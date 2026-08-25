@@ -5,7 +5,9 @@
     "rush_yds": 24.677067044644406,
     "rush_reception_yds": 35.566767261871
   },
-  "nb_var_mult": 2.1515394899238456,
+  "nb_var_mult": {
+    "receptions": 2.1515394899238456
+  },
   "mean_mult": {
     "pass_yds": 1.57797974466974,
     "reception_yds": 1.5054835244509903,

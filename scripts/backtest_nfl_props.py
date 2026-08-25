@@ -377,7 +377,12 @@ def main() -> None:
     k_eff = 4.0
     out = {
         "sigma": cal["sigma"],
-        "nb_var_mult": cal["nb_var_mult"],
+        "nb_var_mult": {"receptions": cal["nb_var_mult"]},  # dict-shaped to match
+                                    # PropConfig.nb_var_mult (indexed by market,
+                                    # e.g. cfg.nb_var_mult["receptions"] in
+                                    # props.build_prop) -- was a bare float here,
+                                    # which broke PropConfig(nb_var_mult=j["nb_var_mult"])
+                                    # round-tripping from props.json (final-review fix).
         "mean_mult": cal["mean_mult"],  # Fix rounds 1+2: population-level mean
                                           # de-bias multiplier for ALL 7 markets
                                           # (pass_yds, reception_yds, rush_yds,
@@ -631,10 +636,15 @@ def main() -> None:
                  "yardage market across all 2016-2024 walk-forward player-games -- "
                  "i.e. fit on the CORRECTED (de-biased) prediction, not the raw one -- "
                  "the Normal sigma `props.build_prop` uses for that market.")
-    lines.append("- `nb_var_mult`: empirical `var(actual receptions)/mean(actual "
-                 "receptions)` across all scored receptions player-games (clamped "
-                 ">1 for a well-defined Negative Binomial) -- purely a function of the "
-                 "ACTUAL outcome distribution, so unaffected by `mean_mult`.")
+    lines.append("- `nb_var_mult` (dict, e.g. `{\"receptions\": 2.15}`, matching "
+                 "`PropConfig.nb_var_mult`'s market-indexed shape -- final-review fix: "
+                 "this used to be written as a bare float, which broke "
+                 "`PropConfig(nb_var_mult=j[\"nb_var_mult\"])` round-tripping since "
+                 "`build_prop` indexes it as `cfg.nb_var_mult[\"receptions\"]`): "
+                 "empirical `var(actual receptions)/mean(actual receptions)` across "
+                 "all scored receptions player-games (clamped >1 for a well-defined "
+                 "Negative Binomial) -- purely a function of the ACTUAL outcome "
+                 "distribution, so unaffected by `mean_mult`.")
     lines.append("- `loc[market]` (report only, not written to `props.json` / not "
                  "applied to projections): mean `(actual - RAW pred_mean)` per market, "
                  "i.e. the PRE-correction bias -- a positive value means the raw model "

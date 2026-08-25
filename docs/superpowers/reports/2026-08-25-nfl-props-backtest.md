@@ -66,7 +66,9 @@ Note: this table's `mae`/`coverage` are computed on the RAW, UNCORRECTED `pred_m
     "rush_yds": 24.677067044644406,
     "rush_reception_yds": 35.566767261871
   },
-  "nb_var_mult": 2.1515394899238456,
+  "nb_var_mult": {
+    "receptions": 2.1515394899238456
+  },
   "mean_mult": {
     "pass_yds": 1.57797974466974,
     "reception_yds": 1.5054835244509903,
@@ -103,7 +105,7 @@ Note: this table's `mae`/`coverage` are computed on the RAW, UNCORRECTED `pred_m
 
 - `mean_mult[market]`: population-level de-bias multiplier for ALL 7 markets (`mean(actual)/mean(RAW pred_mean)` for the 5 yardage/receptions markets, `mean(actual TD count)/mean(predicted lambda)` for `pass_tds`/`anytime_td`) -- `props.build_prop` applies it to `projected_mean` (or the Poisson lambda, for the TD markets) before building that market's distribution, uniformly via `PropConfig.mean_mult` (see "Fix round 1" and "Fix round 2" above).
 - `sigma[market]`: RMSE of `(pred_mean * mean_mult - actual)` per yardage market across all 2016-2024 walk-forward player-games -- i.e. fit on the CORRECTED (de-biased) prediction, not the raw one -- the Normal sigma `props.build_prop` uses for that market.
-- `nb_var_mult`: empirical `var(actual receptions)/mean(actual receptions)` across all scored receptions player-games (clamped >1 for a well-defined Negative Binomial) -- purely a function of the ACTUAL outcome distribution, so unaffected by `mean_mult`.
+- `nb_var_mult` (dict, e.g. `{"receptions": 2.15}`, matching `PropConfig.nb_var_mult`'s market-indexed shape -- final-review fix: this used to be written as a bare float, which broke `PropConfig(nb_var_mult=j["nb_var_mult"])` round-tripping since `build_prop` indexes it as `cfg.nb_var_mult["receptions"]`): empirical `var(actual receptions)/mean(actual receptions)` across all scored receptions player-games (clamped >1 for a well-defined Negative Binomial) -- purely a function of the ACTUAL outcome distribution, so unaffected by `mean_mult`.
 - `loc[market]` (report only, not written to `props.json` / not applied to projections): mean `(actual - RAW pred_mean)` per market, i.e. the PRE-correction bias -- a positive value means the raw model under-projects that market on average. Roughly `loc ~= mean(pred_mean) * (mean_mult - 1)`; kept here purely for comparison against `mean_mult`, since `mean_mult` is the multiplier actually applied.
 
 ### Mean de-bias (`mean_mult`) vs pre-correction bias (`loc`)
