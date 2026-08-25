@@ -11,6 +11,7 @@ Requires ODDS_API_KEY.
 """
 from __future__ import annotations
 
+import argparse
 import os
 import sys
 from datetime import date, datetime, timedelta, timezone
@@ -18,7 +19,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
-from sportsmodel import config
+from sportsmodel import config, sports
 from sportsmodel.db import get_duckdb, upsert_odds_snapshot
 from sportsmodel.ingest import odds
 
@@ -61,8 +62,81 @@ def load_game_lookup() -> dict[tuple[str, str, str], int]:
     return {(home, away, str(gd)): pk for pk, home, away, gd in rows}
 
 
+def _nfl_current_season_week(now: datetime) -> tuple[int, int]:
+    """Rough (season, week) for `now`, used to pick the ESPN scoreboard window.
+
+    NFL seasons are labeled by their starting year (games from Sept 2024 through
+    Feb 2025 are season=2024); week 1 kicks off roughly the first Thursday after
+    Labor Day. This only needs to land within a week or two of the truth -- it
+    picks which ESPN scoreboard weeks to pull, and we pull the week before/after
+    too, so exact boundaries don't matter for matching odds events to games.
+    """
+    season = now.year if now.month >= 3 else now.year - 1
+    season_start = datetime(season, 9, 1, tzinfo=timezone.utc)
+    week = max(1, min(18, (now - season_start).days // 7 + 1))
+    return season, week
+
+
+def _fetch_espn_games_nfl() -> list[dict]:
+    """ESPN NFL games (game_pk/home_name/away_name/commence_time) for the current window."""
+    from sportsmodel.nfl import espn
+
+    season, week = _nfl_current_season_week(datetime.now(timezone.utc))
+    games: list[dict] = []
+    for wk in sorted({max(1, week - 1), week, min(18, week + 1)}):
+        games.extend(espn.fetch_schedule(season, wk))
+    return games
+
+
+def _run_nfl(captured_at: str) -> list[dict]:
+    """NFL odds -> game_pk via the ESPN schedule + matcher.
+
+    The Odds API has no game_pk of its own (unlike MLB, where our schedule table
+    already carries the Odds-API team names), so each NFL event is resolved
+    against the ESPN scoreboard by home/away display name + date.
+    """
+    from sportsmodel.nfl import matcher
+
+    cfg = sports.get("nfl")
+    espn_games = _fetch_espn_games_nfl()
+    print(f"{len(espn_games)} ESPN games in window")
+
+    events = odds.fetch_game_odds(cfg)
+    game_lookup: dict[tuple[str, str, str], int] = {}
+    matched = skipped = 0
+    for ev in events:
+        gp = matcher.match_odds_event(ev, espn_games)
+        if gp is None:
+            skipped += 1
+            print(f"  no ESPN match for NFL event {ev.get('id')}: "
+                  f"{ev.get('home_team')} vs {ev.get('away_team')}")
+            continue
+        matched += 1
+        key = (ev.get("home_team"), ev.get("away_team"), odds.resolved_game_date(ev.get("commence_time")))
+        game_lookup[key] = gp
+    print(f"NFL events: {matched} matched to game_pk, {skipped} unmatched")
+
+    rows = odds.parse_game_odds(events, game_lookup, captured_at)
+    print(f"game-line rows: {len(rows)}")
+    return rows
+
+
 def main() -> None:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--sport", default="mlb", help="Sport key (default: mlb)")
+    args = parser.parse_args()
+
     captured_at = datetime.now(timezone.utc).isoformat()
+
+    if args.sport == "nfl":
+        rows = _run_nfl(captured_at)
+        print(f"credits remaining: {odds.last_requests_remaining}")
+        if not rows:
+            print("No odds rows; nothing to store.")
+            return
+        write_rows(rows)
+        return
+
     lookup = load_game_lookup()
     print(f"{len(lookup)} games on today's slate")
 

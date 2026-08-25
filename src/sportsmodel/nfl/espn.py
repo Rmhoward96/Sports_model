@@ -17,6 +17,8 @@ def parse_schedule(payload) -> list[dict]:
             "commence_time": ev["date"],
             "home_team": normalize_team(c["home"]["team"]["abbreviation"]),
             "away_team": normalize_team(c["away"]["team"]["abbreviation"]),
+            "home_name": c["home"]["team"].get("displayName"),
+            "away_name": c["away"]["team"].get("displayName"),
             "status": ev["status"]["type"]["name"],
         })
     return out

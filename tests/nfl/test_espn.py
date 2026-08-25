@@ -17,3 +17,8 @@ def test_parse_schedule_normalizes_and_types():
 def test_parse_final_gates_on_status():
     assert parse_final(FIX["events"][0]) == {"home_score": 27, "away_score": 20, "final": True}
     assert parse_final(FIX["events"][1]) is None   # not STATUS_FINAL
+
+def test_parse_schedule_emits_display_names():
+    g = parse_schedule(FIX)[0]
+    assert g["home_name"] and g["away_name"]        # full display names present
+    assert g["game_pk"] == 401671789
