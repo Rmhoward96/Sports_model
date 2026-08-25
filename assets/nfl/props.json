@@ -1,11 +1,18 @@
 {
   "sigma": {
-    "pass_yds": 106.8668289407906,
-    "reception_yds": 29.401329489987145,
-    "rush_yds": 24.7410436641191,
-    "rush_reception_yds": 35.40522880088011
+    "pass_yds": 106.29426777523592,
+    "reception_yds": 29.7459083109448,
+    "rush_yds": 24.677067044644406,
+    "rush_reception_yds": 35.566767261871
   },
   "nb_var_mult": 2.1515394899238456,
+  "mean_mult": {
+    "pass_yds": 1.57797974466974,
+    "reception_yds": 1.5054835244509903,
+    "rush_yds": 1.63242559734058,
+    "rush_reception_yds": 1.548571458941316,
+    "receptions": 1.5433564104358664
+  },
   "k_usage": 4.0,
   "k_eff": 4.0,
   "td_calibration": {
@@ -20,7 +27,8 @@
       "rate_pred": 0.14163552854865172,
       "rate_actual": 0.21580179162295215,
       "rate_mult": 1.523641658518077,
-      "brier": 0.1684028765585768
+      "brier": 0.1684028765585768,
+      "baseline_brier": 0.16923137835527607
     }
   }
 }

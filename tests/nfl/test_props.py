@@ -38,3 +38,31 @@ def test_pass_tds_poisson_mean():
                    {"pass_td_rate":0.05,"catch_rate":0,"ypr":0,"ypc":0,"ypa":0,
                     "rec_td_rate":0,"rush_td_rate":0}, CFG)
     assert abs(p["projected_mean"] - 34.0*0.05) < 1e-9
+
+def test_default_mean_mult_is_unity_for_all_yardage_markets():
+    # CFG = PropConfig() must default mean_mult to 1.0 everywhere: the backtest's
+    # walk-forward fits mean_mult FROM predictions made with these defaults, so a
+    # non-unity default would make the fit circular.
+    for market in ("pass_yds", "reception_yds", "rush_yds", "rush_reception_yds", "receptions"):
+        assert CFG.mean_mult[market] == 1.0
+
+def test_mean_mult_scales_pass_yds_projected_mean():
+    cfg = PropConfig(mean_mult={**CFG.mean_mult, "pass_yds": 1.5})
+    p = build_prop("pass_yds", VOL, EFF, cfg)
+    expected = 34.0 * 7.5 * 1.5
+    assert math.isclose(p["projected_mean"], expected)
+    assert p["dist"]["kind"] == "normal" and math.isclose(p["dist"]["mean"], expected)
+
+def test_mean_mult_scales_rush_reception_yds_combined_total():
+    # mean_mult is applied to the COMBINED total, not to each component
+    # separately -- this is the "just scale the result" contract.
+    cfg = PropConfig(mean_mult={**CFG.mean_mult, "rush_reception_yds": 1.2})
+    p = build_prop("rush_reception_yds", VOL, EFF, cfg)
+    raw = 15.0 * 4.3 + (8.0 * 0.65) * 11.0
+    assert math.isclose(p["projected_mean"], raw * 1.2)
+
+def test_mean_mult_scales_receptions_negbin_mean():
+    cfg = PropConfig(mean_mult={**CFG.mean_mult, "receptions": 1.3})
+    p = build_prop("receptions", VOL, EFF, cfg)
+    raw_mean = 8.0 * 0.65
+    assert math.isclose(p["projected_mean"], raw_mean * 1.3)
