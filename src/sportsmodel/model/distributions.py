@@ -164,6 +164,16 @@ def normal_to_pmf(mean: float, sd: float, xmax: int) -> list[float]:
     return [p / s for p in pmf] if s > 0 else pmf
 
 
+def poisson_pmf(mean: float, xmax: int = 12) -> list[float]:
+    """PMF of Poisson(mean) on 0..xmax, normalized. For TD-count props."""
+    from math import exp, factorial
+    if mean <= 0:
+        out = [0.0] * (xmax + 1); out[0] = 1.0; return out
+    pmf = [exp(-mean) * mean ** k / factorial(k) for k in range(xmax + 1)]
+    s = sum(pmf)
+    return [p / s for p in pmf] if s > 0 else pmf
+
+
 def normal_to_margin_pmf(mean: float, sd: float, offset: int) -> dict:
     """Discretize Normal(mean, sd) onto integer margins -offset..+offset into the
     serving margin-dist format {"kind":"margin","offset":o,"pmf":[...]}, pmf[i]=P(margin==i-o)."""

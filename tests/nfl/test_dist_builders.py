@@ -1,6 +1,7 @@
 import math
 from sportsmodel.model.distributions import (
     normal_to_pmf, normal_to_margin_pmf, prob_cover, prob_over_dist, normal_sf,
+    poisson_pmf,
 )
 
 def test_normal_to_pmf_sums_and_centers():
@@ -31,3 +32,8 @@ def test_margin_pmf_symmetric_at_zero_mean():
     p_zero = d["pmf"][d["offset"]]         # P(margin == 0)
     p_under = 1.0 - p_over - p_zero        # P(margin < 0)
     assert math.isclose(p_over, p_under, abs_tol=1e-9)   # true symmetry, exact
+
+def test_poisson_pmf_sums_and_mean():
+    pmf = poisson_pmf(1.5, xmax=20)
+    assert math.isclose(sum(pmf), 1.0, abs_tol=1e-9)
+    assert abs(sum(k*p for k,p in enumerate(pmf)) - 1.5) < 1e-3

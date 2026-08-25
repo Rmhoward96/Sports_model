@@ -1,0 +1,42 @@
+{
+  "sigma": {
+    "pass_yds": 106.29426777523592,
+    "reception_yds": 29.7459083109448,
+    "rush_yds": 24.677067044644406,
+    "rush_reception_yds": 35.566767261871
+  },
+  "nb_var_mult": {
+    "receptions": 2.1515394899238456
+  },
+  "mean_mult": {
+    "pass_yds": 1.57797974466974,
+    "reception_yds": 1.5054835244509903,
+    "rush_yds": 1.63242559734058,
+    "rush_reception_yds": 1.548571458941316,
+    "receptions": 1.5433564104358664,
+    "pass_tds": 1.5169012625841893,
+    "anytime_td": 1.5487446041789215
+  },
+  "k_usage": 4.0,
+  "k_eff": 4.0,
+  "td_calibration": {
+    "pass_tds": {
+      "n": 6676,
+      "mean_lambda_pred": 0.621122132280092,
+      "mean_actual_count": 0.9421809466746555,
+      "mult": 1.5169012625841893
+    },
+    "anytime_td": {
+      "n": 37173,
+      "mean_lambda_pred": 0.16596758453479132,
+      "mean_actual_count": 0.25704140101686707,
+      "mult": 1.5487446041789215,
+      "rate_actual_binary": 0.21580179162295215,
+      "mean_p_raw": 0.14163552854865172,
+      "mean_p_corrected": 0.20275268197182422,
+      "brier_raw": 0.1684028765585768,
+      "brier_corrected": 0.16909325610171608,
+      "baseline_brier": 0.16923137835527607
+    }
+  }
+}
