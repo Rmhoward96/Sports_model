@@ -27,3 +27,14 @@ def test_receptions_negbin_mean():
     assert p["dist"]["kind"] == "pmf"
     got = sum(k * v for k, v in enumerate(p["dist"]["pmf"]))
     assert abs(got - mean) < 0.2   # NB pmf mean ~ input mean
+
+def test_anytime_td_prob_at_least_one():
+    p = build_prop("anytime_td", VOL, EFF, CFG)
+    lam = 15.0*0.03 + 8.0*0.06
+    assert abs(prob_over_dist(p["dist"], 0.5) - (1 - math.exp(-lam))) < 1e-6
+
+def test_pass_tds_poisson_mean():
+    p = build_prop("pass_tds", {"pass_att":34.0,"carries":0,"targets":0},
+                   {"pass_td_rate":0.05,"catch_rate":0,"ypr":0,"ypc":0,"ypa":0,
+                    "rec_td_rate":0,"rush_td_rate":0}, CFG)
+    assert abs(p["projected_mean"] - 34.0*0.05) < 1e-9

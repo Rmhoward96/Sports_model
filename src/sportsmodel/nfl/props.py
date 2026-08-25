@@ -1,6 +1,6 @@
 from __future__ import annotations
 from dataclasses import dataclass, field
-from ..model.distributions import nb_pmf
+from ..model.distributions import nb_pmf, poisson_pmf
 
 def _sigma_defaults():
     return {"pass_yds": 65.0, "reception_yds": 30.0, "rush_yds": 28.0, "rush_reception_yds": 35.0}
@@ -34,4 +34,10 @@ def build_prop(market: str, volume: dict, eff: dict, cfg: PropConfig) -> dict:
         m = rec_mean
         var = max(m * cfg.nb_var_mult["receptions"], m + 1e-6)  # var > mean for NB
         return {"projected_mean": m, "dist": {"kind": "pmf", "pmf": nb_pmf(m, var)}}
-    raise ValueError(f"unknown/yardage-phase market: {market}")
+    if market == "pass_tds":
+        m = volume["pass_att"] * eff["pass_td_rate"]
+        return {"projected_mean": m, "dist": {"kind": "pmf", "pmf": poisson_pmf(m)}}
+    if market == "anytime_td":
+        lam = volume["carries"] * eff["rush_td_rate"] + volume["targets"] * eff["rec_td_rate"]
+        return {"projected_mean": lam, "dist": {"kind": "pmf", "pmf": poisson_pmf(lam)}}
+    raise ValueError(f"unknown market: {market}")

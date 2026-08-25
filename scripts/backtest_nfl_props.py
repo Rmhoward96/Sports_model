@@ -22,9 +22,18 @@ multiplier. There is no market line to beat here; season-long CLV against
 whatever props book lines are shopped live is the only real judge of this
 model's value, once it is actually serving lines against a market.
 
-TD markets (pass_tds, anytime_td) are deferred to Task 7 -- this backtest
-covers yardage markets (pass_yds, reception_yds, rush_yds,
-rush_reception_yds) and receptions only.
+TD markets (pass_tds, anytime_td) are added in Task 7 on top of the same
+leak-free walk-forward: pass_tds is a Poisson count market (like receptions,
+but with far fewer events per game -- 0, 1, or 2 TD passes is the entire
+support in practice), and anytime_td is a Yes/No market (P(>=1 rushing or
+receiving TD), evaluated at the 0.5 line via `prob_over_dist`). Both are
+LOW-COUNT, HIGH-VARIANCE markets: a single game's outcome is dominated by
+red-zone randomness that a season-level rate cannot resolve, so their
+calibration is intentionally looser than the yardage markets' fitted sigma --
+there is no free variance parameter for a Poisson rate (mean *is* the
+variance), so "calibration" here is a rate-bias CHECK (report-only rate
+multiplier + Brier score for anytime_td's P(>=1)), not a fitted sigma. See
+`fit_td_calibration` and the report's TD section for the honesty framing.
 """
 from __future__ import annotations
 
@@ -45,7 +54,8 @@ from sportsmodel.nfl.efficiency import compute_efficiency
 from sportsmodel.nfl.props import PropConfig, build_prop
 
 YARDAGE_MARKETS = ["pass_yds", "reception_yds", "rush_yds", "rush_reception_yds"]
-ALL_MARKETS = YARDAGE_MARKETS + ["receptions"]
+TD_MARKETS = ["pass_tds", "anytime_td"]
+ALL_MARKETS = YARDAGE_MARKETS + ["receptions"] + TD_MARKETS
 
 _CFG = PropConfig()  # projected_mean is sigma/nb_var_mult-independent; defaults are fine here
 
@@ -61,6 +71,11 @@ def _actual_value(market: str, row: pd.Series) -> float:
         return float(row["rushing_yards"]) + float(row["receiving_yards"])
     if market == "receptions":
         return float(row["receptions"])
+    if market == "pass_tds":
+        return float(row["passing_tds"])
+    if market == "anytime_td":
+        # Yes/No market: 1 if the player scored ANY rushing or receiving TD.
+        return 1.0 if (float(row["rushing_tds"]) + float(row["receiving_tds"])) >= 1 else 0.0
     raise ValueError(f"unknown market: {market}")
 
 
@@ -84,6 +99,10 @@ def _markets_for_volume(volume: dict) -> list[str]:
         markets.append("rush_yds")
     if volume["carries"] > 0 or volume["targets"] > 0:
         markets.append("rush_reception_yds")
+    if volume["pass_att"] > 0:
+        markets.append("pass_tds")
+    if volume["carries"] > 0 or volume["targets"] > 0:
+        markets.append("anytime_td")
     return markets
 
 
@@ -216,6 +235,51 @@ def fit_calibration(preds: list[dict]) -> dict:
     return {"sigma": sigma, "nb_var_mult": nb_var_mult, "loc": loc}
 
 
+def fit_td_calibration(preds: list[dict]) -> dict:
+    """Rate-bias CHECK for the TD markets, report-only (no free variance
+    parameter to fit -- a Poisson's mean IS its variance, so there is no
+    sigma to solve for here the way there is for the yardage markets).
+
+    pass_tds: rate_mult = mean(actual passing TDs) / mean(projected mean) --
+    if this drifts far from 1.0 it signals the pass_td_rate efficiency input
+    is systematically biased; a follow-up could scale pass_td_rate by this
+    multiplier, but it is NOT applied here (documented, not force-fit).
+
+    anytime_td: this is a Yes/No market (P(>=1) at the 0.5 line), so its
+    honest calibration check is a Brier score on P(>=1) = 1 - exp(-lambda)
+    against the binary actual outcome, plus the same rate_mult idea applied
+    to the average predicted P(>=1) vs the empirical scoring rate.
+    """
+    by_market: dict[str, list[dict]] = {}
+    for p in preds:
+        by_market.setdefault(p["market"], []).append(p)
+
+    out = {}
+
+    pt_rows = by_market.get("pass_tds", [])
+    if pt_rows:
+        n = len(pt_rows)
+        rate_pred = sum(r["pred_mean"] for r in pt_rows) / n
+        rate_actual = sum(r["actual"] for r in pt_rows) / n
+        rate_mult = (rate_actual / rate_pred) if rate_pred > 0 else 1.0
+        out["pass_tds"] = {"n": n, "rate_pred": rate_pred, "rate_actual": rate_actual,
+                            "rate_mult": rate_mult}
+
+    at_rows = by_market.get("anytime_td", [])
+    if at_rows:
+        n = len(at_rows)
+        p_preds = [1.0 - math.exp(-r["pred_mean"]) for r in at_rows]
+        actuals = [r["actual"] for r in at_rows]
+        rate_pred = sum(p_preds) / n
+        rate_actual = sum(actuals) / n
+        rate_mult = (rate_actual / rate_pred) if rate_pred > 0 else 1.0
+        brier = sum((pp - a) ** 2 for pp, a in zip(p_preds, actuals)) / n
+        out["anytime_td"] = {"n": n, "rate_pred": rate_pred, "rate_actual": rate_actual,
+                              "rate_mult": rate_mult, "brier": brier}
+
+    return out
+
+
 def main() -> None:
     t0 = time.time()
     weekly = pd.read_parquet("assets/nfl/weekly.parquet")
@@ -229,6 +293,7 @@ def main() -> None:
     preds = per_player_predictions(weekly, schedules, seasons)
     metrics = run_backtest(weekly, schedules, seasons)
     cal = fit_calibration(preds)
+    td_cal = fit_td_calibration(preds)
 
     k_usage = 4.0
     k_eff = 4.0
@@ -237,12 +302,15 @@ def main() -> None:
         "nb_var_mult": cal["nb_var_mult"],
         "k_usage": k_usage,
         "k_eff": k_eff,
+        "td_calibration": td_cal,  # report-only rate check (see docstring); not
+                                    # consumed by props.build_prop, which has no
+                                    # free variance/rate parameter for a Poisson.
     }
     pathlib.Path("assets/nfl/props.json").write_text(json.dumps(out, indent=2) + "\n")
 
     lines = []
-    lines.append("# NFL P3 Task 6: Player-props walk-forward backtest -- "
-                 "fitted yardage sigmas + receptions dispersion")
+    lines.append("# NFL P3 Task 6-7: Player-props walk-forward backtest -- "
+                 "fitted yardage sigmas + receptions dispersion + TD rate calibration")
     lines.append("")
     lines.append("Script: `scripts/backtest_nfl_props.py`")
     lines.append("Test: `tests/nfl/test_backtest_nfl_props.py`")
@@ -260,8 +328,16 @@ def main() -> None:
                  "of receptions across all scored player-games. There is no market line "
                  "to \"beat\" here -- season-long CLV against whatever props book lines "
                  "are shopped once this model is actually serving lines is the real "
-                 "judge, not this backtest. TD markets (`pass_tds`, `anytime_td`) are "
-                 "deferred to Task 7; this backtest covers yardage + receptions only.")
+                 "judge, not this backtest. The two TD markets (`pass_tds`, "
+                 "`anytime_td`) are Poisson-distributed and have NO free variance "
+                 "parameter to fit -- a Poisson's variance IS its mean, so there is no "
+                 "sigma to solve for the way there is for the yardage markets. Their "
+                 "calibration section below is therefore a rate-bias CHECK (report-only "
+                 "rate multiplier + a Brier score on `anytime_td`'s P(>=1)), not a fitted "
+                 "parameter, and their per-market diagnostics should be read as "
+                 "meaningfully LOOSER than the yardage/receptions markets: single-game TD "
+                 "counts are dominated by red-zone randomness that a season-level rate "
+                 "cannot resolve (see the TD section for the honest framing).")
     lines.append("")
     lines.append("## Leak-free walk-forward")
     lines.append("")
@@ -318,20 +394,75 @@ def main() -> None:
         if market in cal["loc"]:
             lines.append(f"| {market} | {cal['loc'][market]:.3f} |")
     lines.append("")
+    lines.append("## TD markets (`pass_tds`, `anytime_td`): honest, looser calibration")
+    lines.append("")
+    lines.append("These are the two lowest-count, highest-variance markets in this "
+                 "model. `pass_tds` is Poisson(`pass_att * pass_td_rate`); "
+                 "`anytime_td` is P(>=1 rushing-or-receiving TD) = `1 - exp(-lambda)` "
+                 "with `lambda = carries*rush_td_rate + targets*rec_td_rate`, evaluated "
+                 "at the 0.5 line like MLB's HR Y/N. A Poisson rate has no free sigma to "
+                 "fit, so `fit_td_calibration` reports a rate-bias CHECK instead: "
+                 "`rate_pred` (mean model-implied rate) vs `rate_actual` (empirical "
+                 "rate) and their ratio `rate_mult`, plus a Brier score on "
+                 "`anytime_td`'s P(>=1) against the binary actual outcome. Per the "
+                 "brief, this multiplier is a documented calibration KNOB, not "
+                 "force-fit into `props.json` / `props.build_prop` -- there is no "
+                 "multiplier parameter in `build_prop`'s TD branches (Step 3), so a "
+                 "large, persistent `rate_mult` would be a signal to scale the "
+                 "underlying `pass_td_rate`/`rush_td_rate`/`rec_td_rate` efficiency "
+                 "inputs in a follow-up, not something this backtest applies itself.")
+    lines.append("")
+    lines.append("| market | n | rate_pred | rate_actual | rate_mult | brier |")
+    lines.append("|---|---|---|---|---|---|")
+    for market in TD_MARKETS:
+        t = td_cal.get(market)
+        if not t:
+            continue
+        brier_s = f"{t['brier']:.4f}" if "brier" in t else "n/a"
+        lines.append(f"| {market} | {t['n']} | {t['rate_pred']:.4f} | "
+                     f"{t['rate_actual']:.4f} | {t['rate_mult']:.3f} | {brier_s} |")
+    lines.append("")
+    lines.append("`rate_mult` near 1.0 means the model's implied TD rate roughly "
+                 "matches observed outcomes over the full 2016-2024 walk-forward; it "
+                 "does NOT mean any single player-game prediction is precise -- TD "
+                 "scoring is a low-probability, high-variance event per game, and this "
+                 "is a population-level average check, not a per-player-game accuracy "
+                 "claim the way yardage sigma is. `anytime_td`'s Brier score is on a "
+                 "roughly `rate_actual`-base-rate binary outcome; compare it to the "
+                 "trivial \"always predict the base rate\" Brier of "
+                 "`rate_actual*(1-rate_actual)` to judge whether the per-player lambda "
+                 "is adding real signal over a flat rate.")
+    lines.append("")
     lines.append("## TDD: red -> green")
     lines.append("")
-    lines.append("Step 2 (red), before `scripts/backtest_nfl_props.py` existed:")
+    lines.append("Task 6 (yardage + receptions) Step 2 (red), before "
+                 "`scripts/backtest_nfl_props.py` existed:")
     lines.append("```")
     lines.append("FileNotFoundError: [Errno 2] No such file or directory: "
                  "'.../scripts/backtest_nfl_props.py'")
     lines.append("```")
     lines.append("")
-    lines.append("Step 4 (green), after implementation:")
+    lines.append("Task 6 Step 4 (green), after implementation:")
     lines.append("```")
     lines.append("tests/nfl/test_backtest_nfl_props.py::test_run_backtest_returns_per_market_metrics PASSED")
     lines.append("tests/nfl/test_backtest_nfl_props.py::test_fit_calibration_returns_sigmas PASSED")
     lines.append("tests/nfl/test_backtest_nfl_props.py::test_no_leak_uses_prior_season_only PASSED")
     lines.append("3 passed")
+    lines.append("```")
+    lines.append("")
+    lines.append("Task 7 (TD markets) Step 2 (red), before `poisson_pmf`/`pass_tds`/"
+                 "`anytime_td` existed:")
+    lines.append("```")
+    lines.append("ImportError: cannot import name 'poisson_pmf' from "
+                 "'sportsmodel.model.distributions'")
+    lines.append("```")
+    lines.append("")
+    lines.append("Task 7 Step 4 (green), after implementation:")
+    lines.append("```")
+    lines.append("tests/nfl/test_props.py::test_anytime_td_prob_at_least_one PASSED")
+    lines.append("tests/nfl/test_props.py::test_pass_tds_poisson_mean PASSED")
+    lines.append("tests/nfl/test_dist_builders.py::test_poisson_pmf_sums_and_mean PASSED")
+    lines.append("9 passed")
     lines.append("```")
     lines.append("")
     lines.append("## Concerns")
@@ -370,6 +501,37 @@ def main() -> None:
                  "receiving volume (extremely rare) would be scored on reception_yds "
                  "too; this is correct behavior, not a bug, but worth knowing the gate "
                  "is volume-based rather than position-based.")
+    pt = td_cal.get("pass_tds", {})
+    at = td_cal.get("anytime_td", {})
+    lines.append("5. **TD markets (`pass_tds`, `anytime_td`) are structurally looser "
+                 "than the yardage/receptions markets, and the fitted `rate_mult` "
+                 "shows a real, sizeable, CONSISTENT underprediction that this report "
+                 "does not paper over.** Across all 2016-2024 walk-forward "
+                 f"player-games, `pass_tds.rate_mult` = {pt.get('rate_mult', float('nan')):.3f} "
+                 f"(model rate {pt.get('rate_pred', float('nan')):.3f} TD/game vs actual "
+                 f"{pt.get('rate_actual', float('nan')):.3f}) and `anytime_td.rate_mult` = "
+                 f"{at.get('rate_mult', float('nan')):.3f} (model P(>=1) "
+                 f"{at.get('rate_pred', float('nan')):.3f} vs actual "
+                 f"{at.get('rate_actual', float('nan')):.3f}) -- both markets underproject "
+                 "by ~50%, and the fact that BOTH independent TD rates (pass, and "
+                 "rush+rec combined) show nearly the SAME ~1.52x multiplier suggests a "
+                 "common structural cause rather than two unrelated market-specific "
+                 "quirks: most likely the position-baseline shrinkage in "
+                 "`efficiency.compute_efficiency` (`k_eff`=4.0, tuned for yardage rates "
+                 "in Task 3) over-shrinks TD rates specifically, because TD/attempt and "
+                 "TD/target are much rarer, noisier per-player rates than yards/attempt "
+                 "-- shrinking a rare-event rate toward a position-wide baseline pulls "
+                 "it down harder in relative terms than it does a yardage rate. Per the "
+                 "brief, this backtest reports the multiplier as a documented "
+                 "calibration KNOB rather than force-fitting it into `build_prop` "
+                 "(which per Step 3 has no multiplier parameter for the TD branches) "
+                 "-- but a `rate_mult` this large and this consistent is a genuine "
+                 "finding, not a rounding error, and a follow-up should very likely "
+                 "either scale `pass_td_rate`/`rush_td_rate`/`rec_td_rate` by ~1.5x or "
+                 "re-tune `k_eff` specifically for TD rates before this market is "
+                 "served live. Red-zone TD scoring is also inherently high-variance "
+                 "per game regardless of rate bias, so even a rate-corrected model "
+                 "should be marketed as looser than the yardage lines.")
     lines.append("")
     lines.append("## Commands used")
     lines.append("")
@@ -386,6 +548,7 @@ def main() -> None:
     print("fitted nb_var_mult:", cal["nb_var_mult"])
     print("per-market metrics:", metrics)
     print("loc (report-only bias):", cal["loc"])
+    print("td calibration (report-only rate check):", td_cal)
     print("written props.json:", out)
     print("written report:", report_path)
     print("total wall-clock (s):", round(time.time() - t0, 1))
