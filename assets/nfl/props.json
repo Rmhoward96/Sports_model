@@ -11,23 +11,29 @@
     "reception_yds": 1.5054835244509903,
     "rush_yds": 1.63242559734058,
     "rush_reception_yds": 1.548571458941316,
-    "receptions": 1.5433564104358664
+    "receptions": 1.5433564104358664,
+    "pass_tds": 1.5169012625841893,
+    "anytime_td": 1.5487446041789215
   },
   "k_usage": 4.0,
   "k_eff": 4.0,
   "td_calibration": {
     "pass_tds": {
       "n": 6676,
-      "rate_pred": 0.621122132280092,
-      "rate_actual": 0.9421809466746555,
-      "rate_mult": 1.5169012625841893
+      "mean_lambda_pred": 0.621122132280092,
+      "mean_actual_count": 0.9421809466746555,
+      "mult": 1.5169012625841893
     },
     "anytime_td": {
       "n": 37173,
-      "rate_pred": 0.14163552854865172,
-      "rate_actual": 0.21580179162295215,
-      "rate_mult": 1.523641658518077,
-      "brier": 0.1684028765585768,
+      "mean_lambda_pred": 0.16596758453479132,
+      "mean_actual_count": 0.25704140101686707,
+      "mult": 1.5487446041789215,
+      "rate_actual_binary": 0.21580179162295215,
+      "mean_p_raw": 0.14163552854865172,
+      "mean_p_corrected": 0.20275268197182422,
+      "brier_raw": 0.1684028765585768,
+      "brier_corrected": 0.16909325610171608,
       "baseline_brier": 0.16923137835527607
     }
   }

@@ -10,12 +10,18 @@ def _nb_defaults():
 
 def _mean_mult_defaults():
     # Population-level mean de-bias multiplier per market, fit in the backtest as
-    # mean(actual)/mean(pred_mean). Defaults to 1.0 (no correction) -- the
-    # walk-forward that FITS this multiplier must itself run with mean_mult=1.0
-    # (i.e. these defaults), or the fit would be circular. See
-    # scripts/backtest_nfl_props.py fit_calibration.
+    # mean(actual)/mean(pred_mean) -- for pass_tds/anytime_td this is a
+    # multiplier on the Poisson mean (lambda), fit as mean(actual TD
+    # count)/mean(predicted lambda), the same principled basis as the
+    # yardage/receptions markets (Fix round 2: all 7 markets share this one
+    # dict so a single PropConfig(mean_mult=props_json["mean_mult"]) applies
+    # every market's calibration uniformly). Defaults to 1.0 (no correction)
+    # -- the walk-forward that FITS this multiplier must itself run with
+    # mean_mult=1.0 (i.e. these defaults), or the fit would be circular. See
+    # scripts/backtest_nfl_props.py fit_calibration / fit_td_calibration.
     return {"pass_yds": 1.0, "reception_yds": 1.0, "rush_yds": 1.0,
-            "rush_reception_yds": 1.0, "receptions": 1.0}
+            "rush_reception_yds": 1.0, "receptions": 1.0,
+            "pass_tds": 1.0, "anytime_td": 1.0}
 
 @dataclass(frozen=True)
 class PropConfig:
@@ -45,9 +51,10 @@ def build_prop(market: str, volume: dict, eff: dict, cfg: PropConfig) -> dict:
         var = max(m * cfg.nb_var_mult["receptions"], m + 1e-6)  # var > mean for NB
         return {"projected_mean": m, "dist": {"kind": "pmf", "pmf": nb_pmf(m, var)}}
     if market == "pass_tds":
-        m = volume["pass_att"] * eff["pass_td_rate"]
+        m = volume["pass_att"] * eff["pass_td_rate"] * cfg.mean_mult["pass_tds"]
         return {"projected_mean": m, "dist": {"kind": "pmf", "pmf": poisson_pmf(m)}}
     if market == "anytime_td":
-        lam = volume["carries"] * eff["rush_td_rate"] + volume["targets"] * eff["rec_td_rate"]
+        lam = (volume["carries"] * eff["rush_td_rate"] + volume["targets"] * eff["rec_td_rate"]) \
+            * cfg.mean_mult["anytime_td"]
         return {"projected_mean": lam, "dist": {"kind": "pmf", "pmf": poisson_pmf(lam)}}
     raise ValueError(f"unknown market: {market}")

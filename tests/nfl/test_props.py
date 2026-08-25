@@ -39,11 +39,13 @@ def test_pass_tds_poisson_mean():
                     "rec_td_rate":0,"rush_td_rate":0}, CFG)
     assert abs(p["projected_mean"] - 34.0*0.05) < 1e-9
 
-def test_default_mean_mult_is_unity_for_all_yardage_markets():
-    # CFG = PropConfig() must default mean_mult to 1.0 everywhere: the backtest's
-    # walk-forward fits mean_mult FROM predictions made with these defaults, so a
-    # non-unity default would make the fit circular.
-    for market in ("pass_yds", "reception_yds", "rush_yds", "rush_reception_yds", "receptions"):
+def test_default_mean_mult_is_unity_for_all_seven_markets():
+    # CFG = PropConfig() must default mean_mult to 1.0 everywhere, TD markets
+    # included: the backtest's walk-forward fits mean_mult FROM predictions
+    # made with these defaults, so a non-unity default would make the fit
+    # circular.
+    for market in ("pass_yds", "reception_yds", "rush_yds", "rush_reception_yds",
+                   "receptions", "pass_tds", "anytime_td"):
         assert CFG.mean_mult[market] == 1.0
 
 def test_mean_mult_scales_pass_yds_projected_mean():
@@ -66,3 +68,22 @@ def test_mean_mult_scales_receptions_negbin_mean():
     p = build_prop("receptions", VOL, EFF, cfg)
     raw_mean = 8.0 * 0.65
     assert math.isclose(p["projected_mean"], raw_mean * 1.3)
+
+def test_mean_mult_scales_pass_tds_lambda():
+    # Fix round 2: pass_tds gets the same mean_mult treatment as the yardage
+    # markets, applied to the Poisson lambda before poisson_pmf.
+    cfg = PropConfig(mean_mult={**CFG.mean_mult, "pass_tds": 1.6})
+    p = build_prop("pass_tds", VOL, EFF, cfg)
+    raw_lambda = 34.0 * 0.05
+    assert math.isclose(p["projected_mean"], raw_lambda * 1.6)
+
+def test_mean_mult_scales_anytime_td_lambda_and_prob_identity():
+    # With a non-unity mult applied, prob_over_dist(dist, 0.5) must still
+    # equal 1 - exp(-(lambda * mult)) -- the P(>=1) identity is preserved
+    # against the CALIBRATED lambda, not the raw one.
+    cfg = PropConfig(mean_mult={**CFG.mean_mult, "anytime_td": 1.4})
+    p = build_prop("anytime_td", VOL, EFF, cfg)
+    raw_lam = 15.0 * 0.03 + 8.0 * 0.06
+    calibrated_lam = raw_lam * 1.4
+    assert math.isclose(p["projected_mean"], calibrated_lam)
+    assert abs(prob_over_dist(p["dist"], 0.5) - (1 - math.exp(-calibrated_lam))) < 1e-6
