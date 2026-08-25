@@ -74,10 +74,11 @@ def _coordinate_search(train_df, grid: dict) -> tuple:
     O(passes * sum(len(values))) configs instead while still covering the
     same per-parameter search space the spec calls for.
 
-    Returns ((best_elo, best_blend), (best_pure_elo, best_pure_blend), all_results)
-    where "pure" is the best w_sos=0 combo found among the same explored
-    results (i.e. selected the same way -- via the same coordinate search
-    over train margin_mae -- just restricted to the blend being off)."""
+    Returns ((best_elo, best_blend), all_results). The pure-Elo counterfactual
+    is NOT independently selected here -- main() constructs it by holding
+    best_elo's (k, hfa_elo, carryover) fixed and only zeroing w_sos, so the
+    "does SoS help" comparison is causal (same Elo params) rather than two
+    independently-optimized configs that happen (or don't) to share params."""
     order = ["k", "hfa_elo", "carryover", "w_sos", "srs_min_games"]
     # sensible center: middle-ish value of each parameter's list
     current = {p: grid[p][len(grid[p]) // 2] for p in order}
@@ -116,10 +117,81 @@ def _coordinate_search(train_df, grid: dict) -> tuple:
             break
 
     best = min(all_results, key=lambda r: r["train"]["margin_mae"])
-    pure_candidates = [r for r in all_results if r["blend"].w_sos == 0.0]
-    best_pure = (min(pure_candidates, key=lambda r: r["train"]["margin_mae"])
-                 if pure_candidates else best)
-    return (best["elo"], best["blend"]), (best_pure["elo"], best_pure["blend"]), all_results
+    return (best["elo"], best["blend"]), all_results
+
+def _team_win_pct_by_season(games_df: pd.DataFrame) -> dict:
+    """{(season, team): win_pct}, ties counted as 0.5 wins, over graded games."""
+    out: dict = {}
+    for season, sdf in games_df.groupby("season"):
+        wins: dict = {}; totals: dict = {}
+        for _, g in sdf.iterrows():
+            hs, as_ = g["home_score"], g["away_score"]
+            if pd.isna(hs) or pd.isna(as_):
+                continue
+            h, a = g["home_team"], g["away_team"]
+            totals[h] = totals.get(h, 0) + 1
+            totals[a] = totals.get(a, 0) + 1
+            if hs > as_:
+                wins[h] = wins.get(h, 0) + 1
+            elif hs < as_:
+                wins[a] = wins.get(a, 0) + 1
+            else:
+                wins[h] = wins.get(h, 0) + 0.5
+                wins[a] = wins.get(a, 0) + 0.5
+        for t, tot in totals.items():
+            out[(season, t)] = wins.get(t, 0) / tot
+    return out
+
+def naive_baselines(reg_df: pd.DataFrame, train_df: pd.DataFrame,
+                     valid_df: pd.DataFrame) -> dict:
+    """Three naive baselines evaluated on the VALIDATION span, computed in
+    code (rather than by hand) so the report's numbers are reproducible from
+    committed code:
+      1. home-always: predict home wins every time (win_acc + Brier at p=1.0)
+      2. prior-season win%: p_home = 0.5 + (home_prior_wp - away_prior_wp)/2,
+         clipped to [0.01, 0.99]; teams with no prior-season record default
+         to 0.5
+      3. naive margin: always predict a constant margin equal to the mean
+         home margin over the TRAIN span (2002-2019) -- gives a margin MAE
+         baseline to compare the model's margin_mae against, since the
+         acceptance bar is "beat baselines on Brier AND margin MAE."
+    """
+    v = valid_df.dropna(subset=["home_score", "away_score"]).copy()
+    n = len(v)
+    home_win = (v["home_score"] > v["away_score"]).astype(float)
+
+    home_always = {
+        "win_acc": float(home_win.mean()),
+        "brier": float(((1.0 - home_win) ** 2).mean()),
+        "n": n,
+    }
+
+    wp = _team_win_pct_by_season(reg_df)
+    p_home_vals = []
+    for _, g in v.iterrows():
+        season = g["season"]; h, a = g["home_team"], g["away_team"]
+        ph = wp.get((season - 1, h), 0.5)
+        pa = wp.get((season - 1, a), 0.5)
+        p = 0.5 + (ph - pa) / 2.0
+        p_home_vals.append(min(max(p, 0.01), 0.99))
+    p_home = pd.Series(p_home_vals, index=v.index)
+    prior_season_win_pct = {
+        "win_acc": float(((p_home >= 0.5) == (home_win == 1.0)).mean()),
+        "brier": float(((p_home - home_win) ** 2).mean()),
+        "n": n,
+    }
+
+    mean_margin = float((train_df["home_score"] - train_df["away_score"]).mean())
+    actual_margin = v["home_score"] - v["away_score"]
+    naive_margin = {
+        "constant_margin": mean_margin,
+        "margin_mae": float((actual_margin - mean_margin).abs().mean()),
+        "margin_rmse": float(((actual_margin - mean_margin) ** 2).mean() ** 0.5),
+        "n": n,
+    }
+
+    return {"home_always": home_always, "prior_season_win_pct": prior_season_win_pct,
+            "naive_margin": naive_margin}
 
 def main() -> None:
     sched = pd.read_parquet("assets/nfl/schedules.parquet")
@@ -130,34 +202,40 @@ def main() -> None:
             "carryover": [0.6, 0.7, 0.75, 0.85],
             "w_sos": [0.0, 0.15, 0.3, 0.45], "srs_min_games": [3, 4, 6]}
 
-    (best_elo, best_blend), (pure_elo, pure_blend), results = _coordinate_search(train, grid)
+    (best_elo, best_blend), results = _coordinate_search(train, grid)
 
-    # OOS verdict: does the SoS blend beat pure Elo on VALIDATION-span margin
-    # MAE? (Brier can't answer this -- it's blend-invariant, see tune()'s note.)
+    # Enforced-fair OOS verdict: the pure-Elo counterfactual reuses best_elo's
+    # (k, hfa_elo, carryover) exactly -- only w_sos is zeroed -- so "does SoS
+    # help" is a causal, same-Elo-params comparison, not two independently
+    # selected configs that happen to share (or not share) hyperparameters.
+    pure_elo = best_elo
+    pure_blend = BlendConfig(w_sos=0.0, srs_min_games=best_blend.srs_min_games)
+
     blend_valid = run_backtest(valid, best_elo, best_blend)
     pure_valid = run_backtest(valid, pure_elo, pure_blend)
-    blend_wins = blend_valid["margin_mae"] <= pure_valid["margin_mae"]
+    blend_wins = blend_valid["margin_mae"] < pure_valid["margin_mae"]   # strict: a tie does not ship the blend
 
     if blend_wins:
         final_elo, final_blend, final_valid = best_elo, best_blend, blend_valid
     else:
-        final_elo = pure_elo
-        final_blend = BlendConfig(w_sos=0.0, srs_min_games=pure_blend.srs_min_games)
-        final_valid = pure_valid
+        final_elo, final_blend, final_valid = pure_elo, pure_blend, pure_valid
 
     out = {"k": final_elo.k, "hfa_elo": final_elo.hfa_elo,
            "carryover": final_elo.carryover, "base": final_elo.base,
            "w_sos": final_blend.w_sos, "srs_min_games": final_blend.srs_min_games}
-    pathlib.Path("assets/nfl/rating.json").write_text(json.dumps(out, indent=2))
+    pathlib.Path("assets/nfl/rating.json").write_text(json.dumps(out, indent=2) + "\n")
+
+    baselines = naive_baselines(reg, train, valid)
 
     print("best blended (train-selected, margin_mae):", {
         "k": best_elo.k, "hfa_elo": best_elo.hfa_elo, "carryover": best_elo.carryover,
         "w_sos": best_blend.w_sos, "srs_min_games": best_blend.srs_min_games})
-    print("best pure-Elo (train-selected, margin_mae):", {
+    print("pure-Elo counterfactual (SAME k/hfa/carryover, w_sos=0):", {
         "k": pure_elo.k, "hfa_elo": pure_elo.hfa_elo, "carryover": pure_elo.carryover})
     print("VALIDATION blended:", blend_valid)
     print("VALIDATION pure-Elo:", pure_valid)
-    print("SoS blend beat pure Elo OOS on margin MAE?", blend_wins)
+    print("SoS blend beat pure Elo OOS on margin MAE (strict <)?", blend_wins)
+    print("naive baselines (validation span):", baselines)
     print("written rating.json:", out, "| final valid metrics:", final_valid)
 
 if __name__ == "__main__":

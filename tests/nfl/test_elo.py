@@ -43,5 +43,4 @@ def test_carryover_regresses_toward_1500():
     res = run_elo(pd.concat([s2023, s2024], ignore_index=True), cfg)
     kc_end_2023 = 1500 + 20 * math.log(31) * 0.5
     kc_start_2024 = 1500 + 0.75 * (kc_end_2023 - 1500)
-    e = expected_home(kc_start_2024, 1500 + 0.75 * ((1500 - 20 * math.log(31) * 0.5) - 1500), cfg)
     assert res.games.iloc[1]["elo_home"] == kc_start_2024
