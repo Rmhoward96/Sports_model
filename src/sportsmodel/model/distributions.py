@@ -149,3 +149,33 @@ def hits_pmf(vectors: Sequence[dict]) -> list[float]:
     """PMF of hits across per-PA vectors (Poisson-binomial on p_hit)."""
     hit_probs = [v["p_1b"] + v["p_2b"] + v["p_3b"] + v["p_hr"] for v in vectors]
     return poisson_binomial_pmf(hit_probs)
+
+
+def normal_to_pmf(mean: float, sd: float, xmax: int) -> list[float]:
+    """Discretize Normal(mean, sd) onto integer support 0..xmax via CDF differences
+    (P(X==k) ~ CDF(k+0.5)-CDF(k-0.5)), normalized to sum 1. For NFL totals."""
+    from math import erf, sqrt
+    def cdf(x: float) -> float:
+        if sd <= 0:
+            return 1.0 if x >= mean else 0.0
+        return 0.5 * (1.0 + erf((x - mean) / (sd * sqrt(2))))
+    pmf = [max(0.0, cdf(k + 0.5) - cdf(k - 0.5)) for k in range(xmax + 1)]
+    s = sum(pmf)
+    return [p / s for p in pmf] if s > 0 else pmf
+
+
+def normal_to_margin_pmf(mean: float, sd: float, offset: int) -> dict:
+    """Discretize Normal(mean, sd) onto integer margins -offset..+offset into the
+    serving margin-dist format {"kind":"margin","offset":o,"pmf":[...]}, pmf[i]=P(margin==i-o)."""
+    from math import erf, sqrt
+    def cdf(x: float) -> float:
+        if sd <= 0:
+            return 1.0 if x >= mean else 0.0
+        return 0.5 * (1.0 + erf((x - mean) / (sd * sqrt(2))))
+    pmf = []
+    for i in range(2 * offset + 1):
+        m = i - offset
+        pmf.append(max(0.0, cdf(m + 0.5) - cdf(m - 0.5)))
+    s = sum(pmf)
+    pmf = [p / s for p in pmf] if s > 0 else pmf
+    return {"kind": "margin", "offset": offset, "pmf": pmf}

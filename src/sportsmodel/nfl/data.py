@@ -3,7 +3,9 @@ import pandas as pd
 from .teams import normalize_team
 
 _SCHED_COLS = ["game_id", "season", "week", "game_type", "gameday", "gametime",
-               "home_team", "away_team", "home_score", "away_score", "espn"]
+               "home_team", "away_team", "home_score", "away_score", "espn",
+               "result", "total", "spread_line", "total_line",
+               "away_moneyline", "home_moneyline"]
 
 
 def normalize_team_col(df: pd.DataFrame, col: str) -> pd.DataFrame:
