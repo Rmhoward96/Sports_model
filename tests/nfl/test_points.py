@@ -29,3 +29,31 @@ def test_early_season_shrinkage_pulls_toward_zero():
     # n=1 -> factor 1/5; shrunk magnitude strictly smaller
     assert abs(r4["A"]["off"]) < abs(r0["A"]["off"])
     assert math.isclose(r4["A"]["off"], r0["A"]["off"] * (1 / 5), rel_tol=1e-9)
+
+def test_off_rewards_scoring_against_strong_defenses():
+    # A and D score the SAME raw points (24 ppg over 2 games each), so any
+    # gap in their "off" rating must come purely from opponent defensive
+    # strength, not from one team simply outscoring the other. Same design
+    # discipline as P1 SRS's strength-of-schedule test.
+    #
+    # S is a demonstrably strong defense: it held F to just 3 points.
+    # W is a demonstrably weak defense: it allowed F 30 points.
+    # A's only opponents are S and F; D's only opponents are W and F -- F is
+    # common to both, so it contributes equally to each side's average
+    # opponent strength and cancels out, leaving S vs. W as the only source
+    # of any "off" gap between A and D.
+    games = pd.DataFrame([
+        _g("S", "F", 30, 3),    # S: strong defense, allowed only 3
+        _g("W", "F", 3, 30),    # W: weak defense, allowed 30
+        _g("S", "W", 20, 20),   # closes the S/F/W triangle (neutral tie)
+        _g("A", "S", 24, 20),   # A scores 24 against strong-D team S
+        _g("A", "F", 24, 20),   # A scores 24 against common opponent F
+        _g("D", "W", 24, 20),   # D scores 24 against weak-D team W
+        _g("D", "F", 24, 20),   # D scores 24 against common opponent F
+    ])
+    ratings, lg = compute_points_ratings(games, k_points=0.0)
+    offs = [r["off"] for r in ratings.values()]
+    defs = [r["def"] for r in ratings.values()]
+    assert abs(sum(offs)) < 1e-6 and abs(sum(defs)) < 1e-6
+    # equal raw points-for: A and D each scored 24 in both of their games
+    assert ratings["A"]["off"] > ratings["D"]["off"]
