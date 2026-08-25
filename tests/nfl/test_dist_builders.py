@@ -22,7 +22,12 @@ def test_margin_pmf_symmetric_at_zero_mean():
     d = normal_to_margin_pmf(0.0, 13.2, 75)
     # NOTE: prob_cover excludes an exact push (margin==0) per its own strict->
     # comparison contract, and the discretized bin at margin=0 carries real
-    # mass for a symmetric zero-mean distribution, so the true value is
-    # (1 - mass_at_0)/2, not exactly 0.5. Tolerance widened from the brief's
-    # 1e-6 (mathematically unreachable here) to match test 2's 0.02.
-    assert abs(prob_cover(d, 0.0) - 0.5) < 0.02   # symmetric -> ~0.5
+    # mass for a symmetric zero-mean distribution, so P(margin>0) is
+    # (1 - mass_at_0)/2, not exactly 0.5 (the brief's 1e-6 tolerance against
+    # 0.5 is mathematically unreachable here). What IS exactly true for a
+    # zero-mean symmetric distribution is P(margin>0) == P(margin<0), so
+    # assert that symmetry directly and tightly instead.
+    p_over = prob_cover(d, 0.0)            # P(margin > 0)
+    p_zero = d["pmf"][d["offset"]]         # P(margin == 0)
+    p_under = 1.0 - p_over - p_zero        # P(margin < 0)
+    assert math.isclose(p_over, p_under, abs_tol=1e-9)   # true symmetry, exact
