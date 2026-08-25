@@ -57,3 +57,27 @@ def test_off_rewards_scoring_against_strong_defenses():
     assert abs(sum(offs)) < 1e-6 and abs(sum(defs)) < 1e-6
     # equal raw points-for: A and D each scored 24 in both of their games
     assert ratings["A"]["off"] > ratings["D"]["off"]
+
+def test_sparse_schedule_falls_back_to_finite_ratings():
+    # A simple chain (tree, no cycles) -- each team plays exactly one game,
+    # like disjoint components stitched into a path. Verified this diverges
+    # under the raw Gauss-Seidel solve: max_delta plateaus at a nonzero
+    # constant and off/def values grow without bound every pass instead of
+    # converging (the coupled off/def system has an extra, unpinned degree
+    # of freedom on tree/sparse schedules -- this is exactly the shape of
+    # Week 1 of an NFL season, all disjoint single-game components). The
+    # convergence guard must catch this and fall back to finite, sane
+    # unadjusted PF/PA instead of returning the unbounded drift.
+    games = pd.DataFrame([
+        _g("A", "B", 24, 17),
+        _g("B", "C", 20, 13),
+        _g("C", "D", 27, 10),
+    ])
+    ratings, lg = compute_points_ratings(games, k_points=0.0)
+    assert all(math.isfinite(r["off"]) and math.isfinite(r["def"])
+               for r in ratings.values())
+    assert all(abs(r["off"]) < 1000 and abs(r["def"]) < 1000
+               for r in ratings.values())
+    offs = [r["off"] for r in ratings.values()]
+    defs = [r["def"] for r in ratings.values()]
+    assert abs(sum(offs)) < 1e-6 and abs(sum(defs)) < 1e-6
