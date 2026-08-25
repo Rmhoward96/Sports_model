@@ -1,9 +1,13 @@
 name: daily-ingest
 
-# Target: 08:30 America/Chicago year-round. GitHub cron is UTC-only and does not
-# follow DST, so we fire at BOTH 13:30 UTC (= 08:30 CDT, summer) and 14:30 UTC
-# (= 08:30 CST, winter); the `gate` job lets only the one that is actually 08:30
-# in Chicago proceed. Manual runs (workflow_dispatch) always proceed.
+# Target: refresh the slate + probable pitchers each morning Central. GitHub cron is
+# UTC-only AND best-effort (firings are routinely delayed 10-60 min), so we fire at
+# BOTH 13:30 UTC (~08:30 CDT) and 14:30 UTC (~08:30 CST). daily_ingest.py and
+# generate_sim.py are both idempotent (upsert on keys), so running on BOTH firings is
+# harmless and makes the morning refresh robust to a delayed cron. (A previous
+# exact-hour gate — run only when Central hour == "08" — silently skipped any firing
+# that GitHub delayed past 09:00 Central, which left the slate/probables stale and
+# froze predictions/board; removed.) Manual runs (workflow_dispatch) also proceed.
 on:
   schedule:
     - cron: "30 13 * * *"   # 08:30 Central during Daylight Time (UTC-5)
@@ -11,24 +15,7 @@ on:
   workflow_dispatch: {}
 
 jobs:
-  gate:
-    runs-on: ubuntu-latest
-    outputs:
-      run: ${{ steps.check.outputs.run }}
-    steps:
-      - id: check
-        run: |
-          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
-            echo "run=true" >> "$GITHUB_OUTPUT"          # manual runs always go
-          elif [ "$(TZ=America/Chicago date +%H)" = "08" ]; then
-            echo "run=true" >> "$GITHUB_OUTPUT"          # it's the 08:xx Central firing
-          else
-            echo "run=false" >> "$GITHUB_OUTPUT"         # the off-season duplicate; skip
-          fi
-
   ingest:
-    needs: gate
-    if: needs.gate.outputs.run == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
