@@ -9,6 +9,15 @@ def compute_usage_shares(weekly: pd.DataFrame, k_usage: float = 4.0) -> dict:
            .agg(targets=("targets", "sum"), carries=("carries", "sum"),
                 att=("attempts", "sum"), games=("week", "nunique")))
     m = ply.merge(team, on="recent_team")
+    # A player may have rows for multiple teams within the window (mid-season
+    # trade). Keep only their PRIMARY team: the one with the most games,
+    # tie-broken deterministically by total volume, then by team name.
+    m["_vol"] = m["targets"] + m["carries"] + m["att"]
+    m = m.sort_values(
+        by=["games", "_vol", "recent_team"],
+        ascending=[False, False, True],
+    )
+    m = m.drop_duplicates(subset="player_id", keep="first")
     out = {}
     for _, r in m.iterrows():
         f = r["games"] / (r["games"] + k_usage) if (r["games"] + k_usage) > 0 else 0.0

@@ -27,3 +27,45 @@ def test_shrinkage_reduces_low_sample_share():
     s4 = compute_usage_shares(weekly, k_usage=4.0)
     assert s4["wr"]["target_share"] < s0["wr"]["target_share"]   # shrunk toward 0
     assert math.isclose(s4["wr"]["target_share"], s0["wr"]["target_share"] * (1/(1+4)))
+
+def test_traded_player_uses_primary_team_deterministically():
+    # Player "x" plays 3 games for team A (heavy usage) then 1 game for team B
+    # after a trade. Their primary team is A (most games), and the result
+    # must be stable across repeated calls (no groupby-order dependence).
+    weekly = pd.DataFrame([
+        _wk("x","X","A","WR",1,targets=8),
+        _wk("x","X","A","WR",2,targets=8),
+        _wk("x","X","A","WR",3,targets=8),
+        _wk("x","X","B","WR",4,targets=2),
+    ])
+    s = compute_usage_shares(weekly, k_usage=0.0)
+    assert s["x"]["team"] == "A"
+    assert math.isclose(s["x"]["target_share"], 1.0)  # sole target-getter on team A
+
+    s_again = compute_usage_shares(weekly, k_usage=0.0)
+    assert s_again["x"] == s["x"]
+
+def test_multi_team_shares_isolated_by_team_denominator():
+    # Team B has a much larger target total than team A; team A's shares must
+    # be computed against team A's own totals only, not diluted by team B.
+    weekly = pd.DataFrame([
+        _wk("a1","A1","A","WR",1,targets=5), _wk("a1","A1","A","WR",2,targets=5),
+        _wk("a2","A2","A","WR",1,targets=5), _wk("a2","A2","A","WR",2,targets=5),
+        _wk("b1","B1","B","WR",1,targets=100), _wk("b1","B1","B","WR",2,targets=100),
+    ])
+    s = compute_usage_shares(weekly, k_usage=0.0)
+    assert math.isclose(s["a1"]["target_share"], 0.5)  # 10 / (10+10) on team A
+    assert math.isclose(s["a2"]["target_share"], 0.5)
+
+def test_zero_team_targets_gives_zero_share_not_nan():
+    # Team A has only rushing volume (0 targets, 0 pass attempts); target_share
+    # and pass_att_share must be 0.0, not NaN or a crash from dividing by zero.
+    weekly = pd.DataFrame([
+        _wk("rb1","RB1","A","RB",1,carries=10),
+        _wk("rb1","RB1","A","RB",2,carries=10),
+    ])
+    s = compute_usage_shares(weekly, k_usage=0.0)
+    assert s["rb1"]["target_share"] == 0.0
+    assert s["rb1"]["pass_att_share"] == 0.0
+    assert not math.isnan(s["rb1"]["target_share"])
+    assert math.isclose(s["rb1"]["carry_share"], 1.0)
