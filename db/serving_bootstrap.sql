@@ -52,6 +52,9 @@ CREATE TABLE IF NOT EXISTS game_predictions (
 
 CREATE INDEX IF NOT EXISTS idx_game_predictions_date ON game_predictions (game_date);
 
+-- NFL P4 backfill for tables created before `sport` existed (see db/migration_nfl_sport.sql):
+ALTER TABLE game_predictions ADD COLUMN IF NOT EXISTS sport TEXT DEFAULT 'mlb';
+
 -- Player-prop projections written by scripts/generate_props.py. One row per
 -- (game, player, market). projected_mean is the number to compare to the book line;
 -- prob_over is P(over the standard line). lineup_source = confirmed|projected.
@@ -76,6 +79,9 @@ CREATE TABLE IF NOT EXISTS prop_predictions (
 );
 
 CREATE INDEX IF NOT EXISTS idx_prop_predictions_date ON prop_predictions (game_date);
+
+-- NFL P4 backfill for tables created before `sport` existed (see db/migration_nfl_sport.sql):
+ALTER TABLE prop_predictions ADD COLUMN IF NOT EXISTS sport TEXT DEFAULT 'mlb';
 
 -- Odds snapshots from The Odds API (scripts/ingest_odds.py). captured_at is part of
 -- the key so repeated pulls accumulate line movement; the CLOSING line is the last
