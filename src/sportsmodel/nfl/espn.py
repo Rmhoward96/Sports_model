@@ -65,6 +65,26 @@ def fetch_current_week() -> dict:
     r.raise_for_status()
     return parse_current_week(r.json())
 
+def target_week(cur: dict) -> dict:
+    """The (season, week, season_type) the NFL pipeline should PRICE, given the
+    live current week `cur` (from parse/fetch_current_week).
+
+    Regular season (2) and postseason (3): price the live current week as-is.
+    Preseason (1) or offseason (4): look ahead to regular-season Week 1 -- the
+    games the odds market actually prices. Preseason games are not in the
+    `americanfootball_nfl` odds feed, so pricing the current preseason week would
+    match no odds; Week-1 lines are already posted, so we target those instead.
+    Once real Week 1 arrives ESPN reports season_type 2 / week 1 and this returns
+    the live week again, tracking the season forward with no look-ahead.
+    """
+    st = int(cur["season_type"])
+    if st in (2, 3):
+        return {"season": int(cur["season"]), "week": int(cur["week"]), "season_type": st}
+    return {"season": int(cur["season"]), "week": 1, "season_type": 2}
+
+def resolve_target_week() -> dict:
+    return target_week(fetch_current_week())
+
 def fetch_final(event_id: int) -> dict | None:
     r = httpx.get(f"{_BASE}/summary", params={"event": event_id}, timeout=20)
     r.raise_for_status()

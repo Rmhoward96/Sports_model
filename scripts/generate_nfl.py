@@ -315,13 +315,13 @@ def _latest_market_line(game_pk: int) -> dict:
     return {"spread_line": spread_line, "total_line": total_line}
 
 
-def _resolve_season_week() -> tuple[int, int]:
-    wk = espn.fetch_current_week()
-    return int(wk["season"]), int(wk["week"])
+def _resolve_season_week() -> tuple[int, int, int]:
+    tw = espn.resolve_target_week()
+    return int(tw["season"]), int(tw["week"]), int(tw["season_type"])
 
 
 def main() -> None:
-    season, week = _resolve_season_week()
+    season, week, season_type = _resolve_season_week()
 
     elo_cfg, blend_cfg = nfl_config.load_rating()
     gl_cfg = nfl_config.load_gameline()
@@ -363,7 +363,7 @@ def main() -> None:
     injuries_all = _load_committed("injuries.parquet")
     gsis_to_espn = _gsis_to_espn_crosswalk(rosters_all)
 
-    espn_games = espn.fetch_schedule(season, week)
+    espn_games = espn.fetch_schedule(season, week, season_type=season_type)
 
     game_rows, prop_rows = [], []
     for g in espn_games:
