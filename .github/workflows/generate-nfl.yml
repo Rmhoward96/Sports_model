@@ -1,0 +1,44 @@
+name: generate-nfl
+
+# Runs the NFL producer (game + prop predictions from the P1/P2/P3 assets +
+# live ESPN schedule/inactives). Schedule:
+#   - Tuesday 14:00 UTC: weekly full refresh once Monday Night Football has
+#     finished and box scores/injury data have settled.
+#   - Sunday 16:30 UTC / 20:00 UTC: pre-kickoff refreshes as inactives are
+#     announced (~90 min before kickoff) and market lines firm up ahead of
+#     the early (1 PM ET / 18:00 UTC) and late-afternoon (4:05/4:25 PM ET /
+#     21:05/21:25 UTC) windows.
+# generate_nfl.py is idempotent (upsert on game/player/market keys), so —
+# following the daily-ingest fix — there is NO exact-hour/day gate here.
+# GitHub cron is UTC-only and best-effort (firings are routinely delayed);
+# gating on an exact hour previously caused daily-ingest to silently skip
+# delayed firings and freeze downstream predictions. Every firing of this
+# workflow simply runs the producer; a duplicate or slightly-late run is
+# harmless because it just re-upserts the same rows. Manual runs
+# (workflow_dispatch) also proceed unconditionally.
+on:
+  schedule:
+    - cron: "0 14 * * 2"    # Tuesday 14:00 UTC - weekly refresh after MNF
+    - cron: "30 16 * * 0"   # Sunday 16:30 UTC - pre-kickoff (early slate)
+    - cron: "0 20 * * 0"    # Sunday 20:00 UTC - pre-kickoff (late slate)
+  workflow_dispatch: {}
+
+jobs:
+  generate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v10.0.1
+
+      - name: Set up Python + sync deps
+        run: uv sync
+
+      - name: Generate NFL predictions (game + props)
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+          ODDS_API_KEY: ${{ secrets.ODDS_API_KEY }}
+          SM_DATA_DIR: ${{ github.workspace }}/data
+        run: uv run python scripts/generate_nfl.py
