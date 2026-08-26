@@ -1,8 +1,10 @@
 import json, pathlib
-from sportsmodel.nfl.espn import parse_schedule, parse_final
+from sportsmodel.nfl.espn import parse_schedule, parse_final, parse_current_week
 
 FIX = json.loads((pathlib.Path(__file__).parent.parent
                   / "fixtures/nfl/espn_scoreboard.json").read_text())
+CURRENT_WEEK_FIX = json.loads((pathlib.Path(__file__).parent.parent
+                               / "fixtures/nfl/espn_current_week.json").read_text())
 
 def test_parse_schedule_normalizes_and_types():
     games = parse_schedule(FIX)
@@ -22,3 +24,6 @@ def test_parse_schedule_emits_display_names():
     g = parse_schedule(FIX)[0]
     assert g["home_name"] and g["away_name"]        # full display names present
     assert g["game_pk"] == 401671789
+
+def test_parse_current_week():
+    assert parse_current_week(CURRENT_WEEK_FIX) == {"season": 2024, "week": 3, "season_type": 2}
