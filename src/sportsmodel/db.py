@@ -122,12 +122,20 @@ _PICK_INSERT_COLS = ["game_pk", "market", "player_id", "sport", "game_date",
                      "model_prob", "novig_bet", "ev_bet"]
 
 
-def clear_board_picks() -> None:
+def clear_board_picks(sport: str | None = None) -> None:
     """Empty `board_picks` so a regeneration is a true full refresh -- an upsert alone
     leaves orphaned rows for picks the current run no longer produces (e.g. a market
-    that got excluded, or a line that dropped off the slate)."""
+    that got excluded, or a line that dropped off the slate).
+
+    Scope the delete to `sport` when given: generate_board runs once per sport, so a
+    global delete would let each sport's run wipe the others' rows (the last sport to
+    run would be the only one left on the board). Passing the sport keeps the refresh
+    confined to the slate being regenerated. `None` clears every sport (legacy behavior)."""
     with get_postgres() as conn, conn.cursor() as cur:
-        cur.execute("DELETE FROM board_picks")
+        if sport is None:
+            cur.execute("DELETE FROM board_picks")
+        else:
+            cur.execute("DELETE FROM board_picks WHERE sport = %s", [sport])
         conn.commit()
 
 
