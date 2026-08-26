@@ -155,6 +155,7 @@ def build_prop_rows(game: dict, universe_list: list[dict], usage_shares: dict,
                 "sport": "nfl",
                 "model_version": PROP_MODEL_VERSION,
                 "game_pk": game["game_pk"],
+                "game_date": game["game_date"],
                 "player_id": pid,
                 "player_name": player_name,
                 "team_name": team,
@@ -192,44 +193,67 @@ def _out_player_ids(rosters_df: pd.DataFrame, injuries_df: pd.DataFrame,
 
 def redistribute_out_shares(usage_shares: dict, out_ids: set,
                             universe_list: list[dict]) -> dict:
-    """Real backup-bump: give an OUT starter's usage share to the next
-    same-team/same-position player still in `universe_list`, instead of
-    letting it evaporate. `universe.bump_backup` only REMOVES the OUT player
-    from the roster list (a marker); this is the parked share-transfer seam
-    it leaves for the producer to implement.
+    """Real backup-bump: give an OUT starter's usage share to the remaining
+    same-team/same-position ACTIVE players, split PROPORTIONALLY to each
+    survivor's OWN existing share -- not by depth-chart rank. The committed
+    `assets/nfl/rosters.parquet`'s `depth_chart_position` column stores the
+    position CODE (e.g. every KC WR row reads `"WR"`, not a numeric depth
+    rank), so a depth-rank sort ties every same-position player and its pick
+    is arbitrary row order -- not a real depth chart. `universe.bump_backup`
+    only REMOVES the OUT player from the roster list (a marker); this is the
+    parked share-transfer seam it leaves for the producer to implement.
 
-    Backup choice: the lowest `depth_chart_position` among same-team/
-    same-position survivors (missing depth data sorts last). Ties/absence of
-    any backup leave the share unclaimed (no player to route it to).
+    Redistribution is done independently PER SHARE DIMENSION
+    (target_share/carry_share/pass_att_share), so e.g. a receiving-back
+    specialist backup picks up proportionally more of an OUT bruiser's
+    TARGET share than a pure between-the-tackles backup would, and vice
+    versa for CARRY share. If no same-team/same-position survivor has ANY
+    existing share in a given dimension, that dimension of the OUT player's
+    share is DROPPED (conservative -- no legitimate player to route it to)
+    rather than guessed at.
     """
     shares = {pid: dict(s) for pid, s in usage_shares.items()}
-    by_slot: dict[tuple, list[dict]] = {}
+    by_slot: dict[tuple, list[str]] = {}
     for p in universe_list:
-        by_slot.setdefault((p["team"], p["position"]), []).append(p)
-    for players in by_slot.values():
-        players.sort(key=lambda p: (p.get("depth_chart_position") is None,
-                                    p.get("depth_chart_position") or ""))
+        by_slot.setdefault((p["team"], p["position"]), []).append(p["player_id"])
+
+    fields = ("target_share", "carry_share", "pass_att_share")
     for pid in out_ids:
         s = shares.get(pid)
         if s is None:
             continue
-        candidates = [p for p in by_slot.get((s.get("team"), s.get("position")), [])
-                     if p["player_id"] != pid]
-        if not candidates:
+        survivors = [sid for sid in by_slot.get((s.get("team"), s.get("position")), [])
+                    if sid != pid and sid in shares]
+        if not survivors:
             continue
-        backup_id = candidates[0]["player_id"]
-        backup_share = shares.get(backup_id)
-        if backup_share is None:
-            continue
-        for f in ("target_share", "carry_share", "pass_att_share"):
-            backup_share[f] = backup_share.get(f, 0.0) + s.get(f, 0.0)
+        for f in fields:
+            out_val = s.get(f, 0.0)
+            if out_val <= 0:
+                continue
+            weights = {sid: shares[sid].get(f, 0.0) for sid in survivors}
+            total = sum(weights.values())
+            if total <= 0:
+                continue  # no survivor has any existing share in this dimension -> drop it
+            for sid, w in weights.items():
+                shares[sid][f] = shares[sid].get(f, 0.0) + out_val * (w / total)
     return shares
 
 
 def _latest_market_line(game_pk: int) -> dict:
     """Latest captured spread/total line for `game_pk` from `odds_snapshot`,
     or `{"spread_line": None, "total_line": None}` if nothing has been
-    captured yet -- `build_gameline` treats `None` as model-only."""
+    captured yet -- `build_gameline` treats `None` as model-only.
+
+    SIGN CONVENTION: `odds_snapshot` stores the raw sportsbook (Odds API)
+    convention -- side='home' `line` is NEGATIVE when the home team is
+    favored (e.g. -1.5; see grade_results.py's own "home_line is the home
+    team's spread point" comment). `build_gameline`/`shrink` and the whole
+    P1/P2 pipeline instead use nflverse's `spread_line` convention --
+    POSITIVE `spread_line` = home favored, i.e. the SAME sign as
+    `model_margin` (positive = home favored). These are opposite, so the
+    raw sportsbook home line must be negated before it's usable as
+    `market["spread_line"]` here. Totals have no such sign ambiguity.
+    """
     from sportsmodel.db import get_postgres
     with get_postgres() as conn, conn.cursor() as cur:
         cur.execute(
@@ -244,7 +268,7 @@ def _latest_market_line(game_pk: int) -> dict:
         if line is None:
             continue
         if market == "spread" and side == "home" and spread_line is None:
-            spread_line = float(line)
+            spread_line = -float(line)   # sportsbook home-favored-negative -> nflverse home-favored-positive
         elif market == "total" and total_line is None:
             total_line = float(line)
     return {"spread_line": spread_line, "total_line": total_line}

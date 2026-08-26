@@ -1,5 +1,6 @@
 import importlib.util, pathlib
 import pytest
+import sportsmodel.db as db_module
 _p = pathlib.Path(__file__).resolve().parents[2] / "scripts" / "generate_nfl.py"
 _s = importlib.util.spec_from_file_location("generate_nfl", _p)
 gn = importlib.util.module_from_spec(_s); _s.loader.exec_module(gn)
@@ -28,36 +29,91 @@ def test_build_prop_rows_excludes_inactive_and_tags_sport():
     assert rows and all(r["sport"] == "nfl" for r in rows)
     assert any(r["market"] == "reception_yds" for r in rows)
     assert all(r["player_id"] == "wr1" for r in rows)   # only the active WR
+    assert all(r["game_date"] == "2026-09-10" for r in rows)  # game_date must round-trip onto every prop row
 
 
-def test_redistribute_out_shares_bumps_backup():
-    # rb1 (depth 1) is OUT this week; universe (already OUT-filtered) only
-    # has the backup rb2 (depth 2) left at RB/KC -- rb1's share should land
-    # entirely on rb2, not evaporate.
+def test_redistribute_out_shares_splits_proportionally_to_existing_share():
+    # wr1 (the starter) is OUT; wr2 and wr3 survive with EXISTING target
+    # shares 0.2 and 0.1 -- wr1's 0.3 target_share should split 2:1 between
+    # them, IN PROPORTION TO THEIR OWN EXISTING SHARE -- not by depth-chart
+    # rank. The committed assets/nfl/rosters.parquet's depth_chart_position
+    # column is just the position CODE ("WR") for every same-position
+    # player on a team, so a rank-based pick would tie and be arbitrary;
+    # depth_chart_position is included below (as the real data shapes it)
+    # to prove the function no longer relies on it.
     universe = [
-        {"player_id": "rb2", "player_name": "RB Two", "team": "KC", "position": "RB",
-         "depth_chart_position": 2},
-        {"player_id": "wr1", "player_name": "WR One", "team": "KC", "position": "WR",
-         "depth_chart_position": 1},
+        {"player_id": "wr2", "player_name": "WR Two", "team": "KC", "position": "WR",
+         "depth_chart_position": "WR"},
+        {"player_id": "wr3", "player_name": "WR Three", "team": "KC", "position": "WR",
+         "depth_chart_position": "WR"},
     ]
+    shares = {
+        "wr1": {"target_share": 0.3, "carry_share": 0.0, "pass_att_share": 0.0,
+                "position": "WR", "team": "KC", "player_name": "WR One"},
+        "wr2": {"target_share": 0.2, "carry_share": 0.0, "pass_att_share": 0.0,
+                "position": "WR", "team": "KC", "player_name": "WR Two"},
+        "wr3": {"target_share": 0.1, "carry_share": 0.0, "pass_att_share": 0.0,
+                "position": "WR", "team": "KC", "player_name": "WR Three"},
+    }
+    adj = gn.redistribute_out_shares(shares, {"wr1"}, universe)
+    assert adj["wr2"]["target_share"] == pytest.approx(0.2 + 0.3 * (0.2 / 0.3))  # +0.2
+    assert adj["wr3"]["target_share"] == pytest.approx(0.1 + 0.3 * (0.1 / 0.3))  # +0.1
+    assert shares["wr2"]["target_share"] == pytest.approx(0.2)   # input not mutated
+
+
+def test_redistribute_out_shares_drops_dimension_with_no_survivor_share():
+    # Sole RB survivor has ZERO existing carry_share (e.g. a pure receiving
+    # back) -- the OUT starter's carry_share has no legitimate weight to
+    # split by and must be DROPPED, not handed whole to a 0-carry player.
+    # Their target_share, however, has a real (sole) survivor to land on.
+    universe = [{"player_id": "rb2", "player_name": "RB Two", "team": "KC", "position": "RB",
+                "depth_chart_position": "RB"}]
     shares = {
         "rb1": {"target_share": 0.05, "carry_share": 0.6, "pass_att_share": 0.0,
                 "position": "RB", "team": "KC", "player_name": "RB One"},
-        "rb2": {"target_share": 0.02, "carry_share": 0.1, "pass_att_share": 0.0,
+        "rb2": {"target_share": 0.3, "carry_share": 0.0, "pass_att_share": 0.0,
                 "position": "RB", "team": "KC", "player_name": "RB Two"},
-        "wr1": {"target_share": 0.25, "carry_share": 0.0, "pass_att_share": 0.0,
-                "position": "WR", "team": "KC", "player_name": "WR One"},
     }
     adj = gn.redistribute_out_shares(shares, {"rb1"}, universe)
-    assert adj["rb2"]["carry_share"] == pytest.approx(0.7)
-    assert adj["rb2"]["target_share"] == pytest.approx(0.07)
-    assert adj["wr1"]["target_share"] == pytest.approx(0.25)     # untouched
-    assert shares["rb2"]["carry_share"] == pytest.approx(0.1)    # input not mutated
+    assert adj["rb2"]["carry_share"] == pytest.approx(0.0)         # dropped, not guessed
+    assert adj["rb2"]["target_share"] == pytest.approx(0.3 + 0.05)  # sole survivor gets all of it
 
 
-def test_redistribute_out_shares_no_backup_leaves_shares_untouched():
-    universe = [{"player_id": "wr1", "player_name": "WR One", "team": "KC", "position": "WR"}]
+def test_redistribute_out_shares_no_same_position_survivor_leaves_share_unclaimed():
+    universe = [{"player_id": "wr1", "player_name": "WR One", "team": "KC", "position": "WR",
+                "depth_chart_position": "WR"}]
     shares = {"rb1": {"target_share": 0.05, "carry_share": 0.6, "pass_att_share": 0.0,
                       "position": "RB", "team": "KC", "player_name": "RB One"}}
     adj = gn.redistribute_out_shares(shares, {"rb1"}, universe)
-    assert adj["rb1"]["carry_share"] == pytest.approx(0.6)   # no RB backup to route it to
+    assert adj["rb1"]["carry_share"] == pytest.approx(0.6)   # no RB survivor at all -> unclaimed
+
+
+def test_latest_market_line_flips_home_spread_sign_to_nflverse_convention(monkeypatch):
+    # odds_snapshot stores the raw sportsbook convention: side='home' `line`
+    # is NEGATIVE when home is favored (e.g. -3.5). build_gameline/shrink use
+    # nflverse's convention instead -- POSITIVE spread_line = home favored,
+    # matching model_margin's sign. A -3.5 home line must come out as +3.5.
+    rows = [("spread", "home", -3.5), ("total", "over", 45.5)]
+
+    class FakeCursor:
+        def execute(self, *a, **k):
+            pass
+        def fetchall(self):
+            return rows
+        def __enter__(self):
+            return self
+        def __exit__(self, *a):
+            return False
+
+    class FakeConn:
+        def cursor(self):
+            return FakeCursor()
+        def __enter__(self):
+            return self
+        def __exit__(self, *a):
+            return False
+
+    monkeypatch.setattr(db_module, "get_postgres", lambda: FakeConn())
+    market = gn._latest_market_line(401)
+    assert market["spread_line"] == pytest.approx(3.5)    # sign flipped: home favored by 3.5
+    assert market["total_line"] == pytest.approx(45.5)    # totals pass through unchanged
