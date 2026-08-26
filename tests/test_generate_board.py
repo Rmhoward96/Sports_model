@@ -65,10 +65,17 @@ def test_build_rows_tags_sport():
 
 
 def test_main_rejects_unboardable_sport_before_db_access(monkeypatch):
-    """--sport nfl must fail fast on the boardable-sports gate, not fall through to
+    """--sport nhl must fail fast on the boardable-sports gate, not fall through to
     a DATABASE_URL SystemExit (which would mean the gate never ran) or -- worse --
-    reach the database and read/write MLB predictions under an nfl tag."""
-    monkeypatch.setattr("sys.argv", ["generate_board", "--sport", "nfl"])
+    reach the database and read/write predictions under an unwired sport's tag."""
+    monkeypatch.setattr("sys.argv", ["generate_board", "--sport", "nhl"])
     with pytest.raises(SystemExit) as exc_info:
         gb.main()
     assert "no wired prediction source" in str(exc_info.value)
+
+
+def test_nfl_is_boardable_with_seven_markets():
+    assert "nfl" in gb.BOARDABLE_SPORTS
+    assert set(gb.PROP_MARKETS_BY_SPORT["nfl"]) == {
+        "pass_yds", "pass_tds", "reception_yds", "receptions",
+        "rush_yds", "rush_reception_yds", "anytime_td"}
