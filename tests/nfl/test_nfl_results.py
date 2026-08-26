@@ -44,3 +44,26 @@ def test_parse_results_not_final_gates_false():
     not_final["header"]["competitions"][0]["status"]["type"]["name"] = "STATUS_IN_PROGRESS"
     res = parse_results(not_final)
     assert res["final"] is False
+
+
+def test_parse_results_remaps_to_gsis_ids_via_id_map():
+    # Mahomes + Pacheco crosswalked to gsis ids; Kelce and BAL's Lamar Jackson /
+    # Zay Flowers deliberately left OUT of the map to exercise the fallback.
+    id_map = {"3139477": "00-0033873", "4241389": "00-0036389"}
+    res = parse_results(FIX, id_map=id_map)
+    # mapped athletes now keyed by gsis id, with stats intact
+    assert res["players"]["00-0033873"]["pass_yds"] == 291
+    assert res["players"]["00-0036389"]["rush_yds"] == 93
+    assert res["players"]["00-0036389"]["reception_yds"] == 11
+    # mapped ids replace the raw ESPN ids -- they're gone from the dict
+    assert "3139477" not in res["players"]
+    assert "4241389" not in res["players"]
+    # unmapped athletes fall back to keeping their raw ESPN id (not dropped)
+    assert res["players"]["15847"]["reception_yds"] == 97
+    assert res["players"]["3916387"]["pass_tds"] == 1
+    assert res["players"]["4243167"]["anytime_td"] == 0
+
+
+def test_parse_results_default_id_map_none_keeps_espn_ids():
+    res = parse_results(FIX)
+    assert "3139477" in res["players"]  # untouched when id_map is not given
