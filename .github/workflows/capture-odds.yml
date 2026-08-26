@@ -61,3 +61,17 @@ jobs:
         env:
           DATABASE_URL: ${{ secrets.DATABASE_URL }}
         run: uv run python scripts/generate_board.py
+      - name: Snapshot odds (NFL)
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+          ODDS_API_KEY: ${{ secrets.ODDS_API_KEY }}
+          # Kill switch: set repo var INGEST_PROPS='false' to force props off everywhere.
+          # Manual dispatch can also toggle props off for a single run.
+          INGEST_PROPS: ${{ github.event.inputs.props == 'false' && 'false' || vars.INGEST_PROPS || 'true' }}
+          # Prop capture window in minutes: manual input > repo var > 150 default.
+          PROP_WINDOW_MIN: ${{ github.event.inputs.prop_window_min != '' && github.event.inputs.prop_window_min || vars.PROP_WINDOW_MIN || '150' }}
+        run: uv run python scripts/ingest_odds.py --sport nfl
+      - name: Regenerate serving board (NFL)
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+        run: uv run python scripts/generate_board.py --sport nfl

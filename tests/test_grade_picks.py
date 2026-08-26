@@ -22,6 +22,37 @@ def test_results_provider_registry_has_mlb():
     assert hasattr(prov, "final_game_pks") and hasattr(prov, "fetch_results")
 
 
+def test_nfl_provider_registered():
+    assert "nfl" in gr.RESULTS_PROVIDERS
+    prov = gr.RESULTS_PROVIDERS["nfl"]
+    assert hasattr(prov, "final_game_pks") and hasattr(prov, "fetch_results")
+
+
+def test_actual_for_nfl_prop_resolves_from_players_dict():
+    # NFL fetch_results() shape: gsis-keyed players dict, one dict per player for
+    # all 7 prop markets (no batters/pitchers split like MLB).
+    res = {"home_score": 27, "away_score": 20, "players": {"p1": {"reception_yds": 85}}}
+    assert gr._actual_for("reception_yds", "over", res, "p1") == 85.0
+    # Player not in the dict (DNP / no target) -> no actual, pick gets skipped.
+    assert gr._actual_for("reception_yds", "over", res, "p2") is None
+
+
+def test_actual_for_nfl_game_lines_use_home_score_away_score():
+    res = {"home_score": 27, "away_score": 20, "players": {}}
+    assert gr._actual_for("moneyline", "home", res, None) == 7.0
+    assert gr._actual_for("spread", "home", res, None) == 7.0
+    assert gr._actual_for("total", None, res, None) == 47.0
+
+
+def test_actual_for_mlb_still_uses_home_runs_away_runs():
+    # MLB shape has no home_score/players keys -> _scores() falls back to the
+    # runs keys and prop lookup falls back to the batters/pitchers split.
+    res = {"home_runs": 5, "away_runs": 2, "batters": {"b1": {"hits": 3}}, "pitchers": {}}
+    assert gr._actual_for("moneyline", "home", res, None) == 3.0
+    assert gr._actual_for("total", None, res, None) == 7.0
+    assert gr._actual_for("hits", "over", res, "b1") == 3.0
+
+
 def test_grade_pick_total_under_win_profit_and_clv():
     pick = {"game_pk": 1, "market": "total", "player_id": 0, "side": "under", "line": 8.5,
             "bet_odds": -105, "novig_bet": 0.50}

@@ -21,3 +21,13 @@ def test_no_match_returns_none():
     ev = {"home_team": "Dallas Cowboys", "away_team": "New York Giants",
           "commence_time": "2024-09-06T00:20:00Z"}
     assert match_odds_event(ev, ESPN) is None
+
+def test_match_over_parse_schedule_output():
+    import json, pathlib
+    from sportsmodel.nfl.espn import parse_schedule
+    fix = json.loads((pathlib.Path(__file__).parent.parent
+                      / "fixtures/nfl/espn_scoreboard.json").read_text())
+    espn_games = parse_schedule(fix)
+    ev = {"home_team": "Kansas City Chiefs", "away_team": "Baltimore Ravens",
+          "commence_time": "2024-09-06T00:20:00Z"}
+    assert match_odds_event(ev, espn_games) == 401671789

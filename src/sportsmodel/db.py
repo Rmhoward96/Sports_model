@@ -72,6 +72,7 @@ def upsert_prop_predictions(records: list[dict]) -> int:
         "game_pk", "player_id", "market", "model_version", "game_date",
         "player_name", "team_name", "batting_slot", "projected_pa",
         "lineup_source", "projected_mean", "line", "prob_over", "dist",
+        "sport",
     ]
     key = ("game_pk", "player_id", "market", "model_version")
     updates = ", ".join(f"{c} = EXCLUDED.{c}" for c in cols if c not in key)
@@ -81,7 +82,7 @@ def upsert_prop_predictions(records: list[dict]) -> int:
         f"ON CONFLICT (game_pk, player_id, market, model_version) "
         f"DO UPDATE SET {updates}, generated_at = now()"
     )
-    rows = [tuple(r.get(c) for c in cols) for r in records]
+    rows = [tuple(r.get(c, "mlb") if c == "sport" else r.get(c) for c in cols) for r in records]
     with get_postgres() as conn, conn.cursor() as cur:
         cur.executemany(sql, rows)
         conn.commit()
@@ -209,6 +210,7 @@ def upsert_game_predictions(records: list[dict]) -> int:
         "home_probable_pitcher_name", "away_probable_pitcher_name",
         "pred_home_score", "pred_away_score", "pred_total", "pred_margin",
         "home_win_prob", "total_dist", "margin_dist",
+        "sport",
     ]
     key = ("game_pk", "model_version")
     updates = ", ".join(f"{c} = EXCLUDED.{c}" for c in cols if c not in key)
@@ -217,7 +219,7 @@ def upsert_game_predictions(records: list[dict]) -> int:
         f"INSERT INTO game_predictions ({', '.join(cols)}) VALUES ({placeholders}) "
         f"ON CONFLICT (game_pk, model_version) DO UPDATE SET {updates}, generated_at = now()"
     )
-    rows = [tuple(r.get(c) for c in cols) for r in records]
+    rows = [tuple(r.get(c, "mlb") if c == "sport" else r.get(c) for c in cols) for r in records]
     with get_postgres() as conn, conn.cursor() as cur:
         cur.executemany(sql, rows)
         conn.commit()

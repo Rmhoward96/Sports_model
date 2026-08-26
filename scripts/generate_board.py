@@ -16,7 +16,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
 
-from sportsmodel import config, sports
+from sportsmodel import config
 from sportsmodel.db import clear_board_picks, get_postgres, insert_new_picks, upsert_board_picks
 from sportsmodel.model import calibration
 from sportsmodel.serving import board
@@ -31,17 +31,15 @@ MARKET_LABEL = {
 # EV and skews the board/record. Add it back here if that ever changes.
 PROP_MARKETS = ("hits", "total_bases", "hrr",
                 "pitcher_ks", "hits_allowed", "outs_recorded")
-# NFL prop-market names are placeholders wired up in P4, once NFL prop predictions
-# exist to board; keyed off the sport's odds prop_market_map for now.
 PROP_MARKETS_BY_SPORT = {
     "mlb": PROP_MARKETS,
-    "nfl": tuple(sports.get("nfl").prop_market_map.keys()),
+    "nfl": ("pass_yds", "pass_tds", "reception_yds", "receptions",
+             "rush_yds", "rush_reception_yds", "anytime_td"),
 }
-# P0: only MLB has a wired prediction source (game_predictions/prop_predictions are
-# read with no sport filter and have no sport column until P4). --sport nfl would
-# silently read MLB predictions and tag them sport="nfl" -- gate it out until P4
-# wires up real NFL predictions.
-BOARDABLE_SPORTS = {"mlb"}
+# P4: game_predictions/prop_predictions are read with a `sport` filter (added by the
+# P4 migration, which also backfills existing rows to sport='mlb'). NFL now has a
+# wired prediction source, so both mlb and nfl are boardable.
+BOARDABLE_SPORTS = {"mlb", "nfl"}
 
 
 def _load(dist):
@@ -172,9 +170,9 @@ def main() -> None:
         cur.execute("""
             SELECT DISTINCT ON (game_pk) game_pk, game_date, home_team_name, away_team_name,
                    total_dist, pred_margin, margin_dist, home_win_prob, pred_total
-            FROM game_predictions WHERE game_date >= %s
+            FROM game_predictions WHERE game_date >= %s AND sport = %s
             ORDER BY game_pk, generated_at DESC
-        """, [today])
+        """, [today, sport])
         games = cur.fetchall()
         for gp, gdate, home, away, tdist, pmargin, mdist, hwp, ptotal in games:
             odds, commence = _load_odds(cur, gp)
@@ -183,10 +181,11 @@ def main() -> None:
             # latest prop-prediction version's slate for this game
             cur.execute("""
                 SELECT player_id, player_name, team_name, market, dist FROM prop_predictions
-                WHERE game_pk = %s AND model_version = (
-                    SELECT model_version FROM prop_predictions WHERE game_pk = %s
+                WHERE game_pk = %s AND sport = %s AND model_version = (
+                    SELECT model_version FROM prop_predictions
+                    WHERE game_pk = %s AND sport = %s
                     ORDER BY generated_at DESC LIMIT 1)
-            """, [gp, gp])
+            """, [gp, sport, gp, sport])
             props = [{"player_id": pid, "player_name": pn, "team": tm, "market": mk, "dist": d}
                      for pid, pn, tm, mk, d in cur.fetchall() if mk in prop_markets]
             game = {"game_pk": gp, "game_date": gdate, "commence_time": commence,

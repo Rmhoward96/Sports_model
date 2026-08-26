@@ -2,11 +2,11 @@
   {"id": "401671789", "date": "2024-09-06T00:20Z",
    "status": {"type": {"name": "STATUS_FINAL"}},
    "competitions": [{"competitors": [
-     {"homeAway": "home", "team": {"abbreviation": "KC"}, "score": "27"},
-     {"homeAway": "away", "team": {"abbreviation": "BAL"}, "score": "20"}]}]},
+     {"homeAway": "home", "team": {"abbreviation": "KC", "displayName": "Kansas City Chiefs"}, "score": "27"},
+     {"homeAway": "away", "team": {"abbreviation": "BAL", "displayName": "Baltimore Ravens"}, "score": "20"}]}]},
   {"id": "401671790", "date": "2024-09-08T17:00Z",
    "status": {"type": {"name": "STATUS_SCHEDULED"}},
    "competitions": [{"competitors": [
-     {"homeAway": "home", "team": {"abbreviation": "WSH"}, "score": "0"},
-     {"homeAway": "away", "team": {"abbreviation": "LAR"}, "score": "0"}]}]}
+     {"homeAway": "home", "team": {"abbreviation": "WSH", "displayName": "Washington Commanders"}, "score": "0"},
+     {"homeAway": "away", "team": {"abbreviation": "LAR", "displayName": "Los Angeles Rams"}, "score": "0"}]}]}
 ]}

@@ -11,6 +11,7 @@ Requires ODDS_API_KEY.
 """
 from __future__ import annotations
 
+import argparse
 import os
 import sys
 from datetime import date, datetime, timedelta, timezone
@@ -18,7 +19,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
-from sportsmodel import config
+from sportsmodel import config, sports
 from sportsmodel.db import get_duckdb, upsert_odds_snapshot
 from sportsmodel.ingest import odds
 
@@ -61,8 +62,110 @@ def load_game_lookup() -> dict[tuple[str, str, str], int]:
     return {(home, away, str(gd)): pk for pk, home, away, gd in rows}
 
 
+def _fetch_espn_games_nfl() -> list[dict]:
+    """ESPN NFL games (game_pk/home_name/away_name/commence_time) for the current window.
+
+    The current (season, week, season_type) comes straight from ESPN's scoreboard
+    (a bare call with no week param returns the live current week), not date math --
+    this keeps matching correct across the regular-season -> postseason transition
+    (season_type flips 2 -> 3, week resets to 1) since the cron runs year-round.
+    """
+    from sportsmodel.nfl import espn
+
+    cur = espn.fetch_current_week()
+    season, week, season_type = cur["season"], cur["week"], cur["season_type"]
+    games: list[dict] = []
+    for wk in sorted({w for w in (week - 1, week, week + 1) if w >= 1}):
+        games.extend(espn.fetch_schedule(season, wk, season_type=season_type))
+    return games
+
+
+def _run_nfl(captured_at: str) -> list[dict]:
+    """NFL odds (game lines + player props) -> game_pk via the ESPN schedule + matcher.
+
+    The Odds API has no game_pk of its own (unlike MLB, where our schedule table
+    already carries the Odds-API team names), so each event is resolved against the
+    ESPN scoreboard by home/away display name + date. Mirrors the MLB game-line/prop
+    split in main() below: game lines from fetch_game_odds, and (kill-switch/window
+    permitting) player props from fetch_event_props per event near kickoff.
+    """
+    from sportsmodel.nfl import matcher
+
+    cfg = sports.get("nfl")
+    espn_games = _fetch_espn_games_nfl()
+    print(f"{len(espn_games)} ESPN games in window")
+
+    game_events = odds.fetch_game_odds(cfg)
+    game_lookup: dict[tuple[str, str, str], int] = {}
+    matched = skipped = 0
+    for ev in game_events:
+        gp = matcher.match_odds_event(ev, espn_games)
+        if gp is None:
+            skipped += 1
+            print(f"  no ESPN match for NFL event {ev.get('id')}: "
+                  f"{ev.get('home_team')} vs {ev.get('away_team')}")
+            continue
+        matched += 1
+        key = (ev.get("home_team"), ev.get("away_team"), odds.resolved_game_date(ev.get("commence_time")))
+        game_lookup[key] = gp
+    print(f"NFL events: {matched} matched to game_pk, {skipped} unmatched")
+
+    rows = odds.parse_game_odds(game_events, game_lookup, captured_at)
+    print(f"game-line rows: {len(rows)}")
+
+    if INGEST_PROPS:
+        markets = list(cfg.prop_market_map.values())
+        events = odds.fetch_events(cfg)
+        now = datetime.now(timezone.utc)
+        window = _prop_window()
+        prop_matched: list[tuple[str, int]] = []
+        skipped_early = skipped_started = 0
+        for e in events:
+            gp = game_lookup.get((e.get("home_team"), e.get("away_team"),
+                                  odds.resolved_game_date(e.get("commence_time"))))
+            if gp is None:
+                continue
+            if window is not None:
+                ct = odds.parse_commence(e.get("commence_time"))
+                if ct is not None and ct < now:
+                    skipped_started += 1
+                    continue
+                if ct is not None and ct > now + window:
+                    skipped_early += 1
+                    continue
+            prop_matched.append((e["id"], gp))
+        if window is not None:
+            mins = int(window.total_seconds() // 60)
+            print(f"NFL prop window {mins}m: {len(prop_matched)} games in-window, "
+                  f"{skipped_early} too early, {skipped_started} already started")
+        before = len(rows)
+        for eid, gp in prop_matched:
+            try:
+                ep = odds.fetch_event_props(eid, markets, cfg=cfg)
+                rows += odds.parse_prop_odds(ep, gp, captured_at, cfg=cfg)
+            except Exception as e:  # one bad event shouldn't kill the run
+                print(f"  NFL prop fetch failed for event {eid}: {e}")
+        print(f"NFL prop rows: {len(rows) - before} (from {len(prop_matched)} events)")
+
+    return rows
+
+
 def main() -> None:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--sport", default="mlb", help="Sport key (default: mlb)")
+    args = parser.parse_args()
+
     captured_at = datetime.now(timezone.utc).isoformat()
+
+    if args.sport == "nfl":
+        rows = _run_nfl(captured_at)
+        print(f"credits remaining: {odds.last_requests_remaining}")
+        if not rows:
+            print("No odds rows; nothing to store.")
+            return
+        write_rows(rows)
+        return
+
     lookup = load_game_lookup()
     print(f"{len(lookup)} games on today's slate")
 
