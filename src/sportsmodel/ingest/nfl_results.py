@@ -9,27 +9,20 @@ Key mapping for grade_results (Task 7):
   - props: res["players"][player_id][market] for market in
     {"pass_yds", "pass_tds", "rush_yds", "reception_yds", "receptions",
      "rush_reception_yds", "anytime_td"}
-  - player_id is the nflverse/GSIS id (e.g. "00-0034473") -- the SAME id space as
-    `rosters.parquet.player_id`, and therefore the same id
-    `prop_predictions.player_id` carries (the odds matcher / universe resolve
-    prop picks off that roster column, not ESPN's athlete id). This keeps
-    grade_results sport-agnostic: `res["players"].get(pick.player_id)` works
-    unchanged for both MLB and NFL.
+  - player_id is the int ESPN athlete id (e.g. 3139477) -- NOT the nflverse/GSIS
+    id. `prop_predictions`/`board_picks`/`picks`/`prediction_results.player_id`
+    are all BIGINT columns, which can't hold the gsis string ("00-0034473"), so
+    the NFL producer (`scripts/generate_nfl.py`) writes the int ESPN athlete id
+    instead (mapped from its internal gsis id via the rosters gsis->espn_id
+    crosswalk at write time). Keying `players` here by that same int ESPN id
+    means grading looks it up directly with no remap needed on this side --
+    `res["players"].get(pick.player_id)` works unchanged for both MLB (int
+    player_id already) and NFL.
 
-    ESPN's `/summary` boxscore only carries its OWN athlete id per player
-    (e.g. "3139477"), not the gsis id -- so `fetch_results` reconciles the two
-    via `rosters.parquet`'s `espn_id` column (a committed nflverse/GSIS <->
-    ESPN crosswalk) before returning. `parse_results` itself stays pure/ESPN-id
-    keyed unless given an explicit `id_map` (see below), so it remains
-    fixture-testable without touching the parquet.
-
-  - `parse_results(summary, id_map=None)`: when `id_map` (a dict
-    `espn_athlete_id (str) -> gsis_player_id (str)`) is given, the returned
-    `players` dict is re-keyed from ESPN id to gsis id via `id_map`. An ESPN id
-    with no crosswalk hit keeps its raw ESPN id as the key (never dropped) --
-    defensive, so an unmapped athlete doesn't silently vanish from grading.
-    With `id_map=None` (the default), `players` stays keyed by raw ESPN ids --
-    used by the fixture test, which doesn't need real roster data.
+    ESPN's `/summary` boxscore is naturally keyed by its own athlete id, so
+    this is also the parser's native id space -- `parse_results` just casts it
+    to int, no crosswalk lookup or roster data needed to stay pure/fixture-
+    tested.
 
 CAVEAT (flagged for Task 9 validation): this parser's box-score shape (boxscore
 -> players[] -> statistics[] keyed by category name "passing"/"rushing"/
@@ -45,12 +38,8 @@ from __future__ import annotations
 from typing import Any
 
 import httpx
-import pandas as pd
-
-from .. import config
 
 _BASE = "https://site.api.espn.com/apis/site/v2/sports/football/nfl"
-_ROSTERS_PATH = config.PROJECT_ROOT / "assets" / "nfl" / "rosters.parquet"
 
 
 def _to_int(x, default: int = 0) -> int:
@@ -75,18 +64,7 @@ def _category_stats(category: dict) -> dict[str, dict[str, str]]:
     return out
 
 
-def _remap_players(
-    players: dict[str, dict[str, int]], id_map: dict[str, str]
-) -> dict[str, dict[str, int]]:
-    """Re-key a `players` dict from ESPN athlete id -> gsis player_id via
-    `id_map`. An ESPN id absent from `id_map` keeps its original ESPN id as the
-    key rather than being dropped, so an unmapped athlete still grades under
-    *some* id instead of vanishing silently.
-    """
-    return {id_map.get(pid, pid): stats for pid, stats in players.items()}
-
-
-def parse_results(summary: dict, id_map: dict[str, str] | None = None) -> dict[str, Any]:
+def parse_results(summary: dict) -> dict[str, Any]:
     """Final scores + per-player prop actuals from an ESPN game-summary payload.
 
     Returns {"home_score": int, "away_score": int, "final": bool,
@@ -95,9 +73,8 @@ def parse_results(summary: dict, id_map: dict[str, str] | None = None) -> dict[s
     caller can still inspect in-progress box scores if it chooses), but callers
     grading picks should check `final` first.
 
-    `players` is keyed by raw ESPN athlete id unless `id_map` (ESPN id -> gsis
-    id, e.g. from rosters.parquet's espn_id column) is provided, in which case
-    the keys are remapped to gsis ids -- see module docstring.
+    `players` is keyed by the int ESPN athlete id -- see module docstring for
+    why (matches the int id the NFL producer writes as `player_id`).
     """
     header = summary.get("header", {})
     comp = header.get("competitions", [{}])[0]
@@ -106,7 +83,7 @@ def parse_results(summary: dict, id_map: dict[str, str] | None = None) -> dict[s
     home_score = _to_int(competitors.get("home", {}).get("score"))
     away_score = _to_int(competitors.get("away", {}).get("score"))
 
-    players: dict[str, dict[str, int]] = {}
+    players: dict[int, dict[str, int]] = {}
     for team_block in summary.get("boxscore", {}).get("players", []):
         by_category = {
             cat.get("name"): _category_stats(cat)
@@ -124,7 +101,7 @@ def parse_results(summary: dict, id_map: dict[str, str] | None = None) -> dict[s
             rec_yds = _to_int(re_stats.get("receivingYards"))
             rush_tds = _to_int(ru_stats.get("rushingTouchdowns"))
             rec_tds = _to_int(re_stats.get("receivingTouchdowns"))
-            players[pid] = {
+            players[int(pid)] = {
                 "pass_yds": _to_int(p_stats.get("passingYards")),
                 "pass_tds": _to_int(p_stats.get("passingTouchdowns")),
                 "rush_yds": rush_yds,
@@ -134,9 +111,6 @@ def parse_results(summary: dict, id_map: dict[str, str] | None = None) -> dict[s
                 "anytime_td": 1 if (rush_tds + rec_tds) >= 1 else 0,
             }
 
-    if id_map:
-        players = _remap_players(players, id_map)
-
     return {
         "home_score": home_score,
         "away_score": away_score,
@@ -145,31 +119,15 @@ def parse_results(summary: dict, id_map: dict[str, str] | None = None) -> dict[s
     }
 
 
-def _espn_id_crosswalk() -> dict[str, str]:
-    """{espn_id (str) -> gsis player_id (str)} from the committed rosters
-    snapshot, one entry per espn_id (dedup keeping the LATEST season a given
-    espn_id appears in -- a player can recur across seasons; the newest row is
-    the freshest link). Rows with a missing/NaN espn_id are skipped.
-    """
-    rosters = pd.read_parquet(_ROSTERS_PATH, columns=["season", "player_id", "espn_id"])
-    rosters = rosters.dropna(subset=["espn_id"])
-    rosters = rosters.sort_values("season").drop_duplicates("espn_id", keep="last")
-    return {
-        str(espn_id): str(pid)
-        for espn_id, pid in zip(rosters["espn_id"], rosters["player_id"])
-    }
-
-
 def fetch_results(game_pk: int) -> dict[str, Any] | None:
     """Final scores + per-player actuals for one ESPN event id, or None if the
-    game isn't final yet. `players` is keyed by gsis player_id (reconciled from
-    ESPN's athlete id via the rosters.parquet espn_id crosswalk) so it lines up
-    directly with `prop_predictions.player_id` for grading.
+    game isn't final yet. `players` is keyed by the int ESPN athlete id (see
+    `parse_results`/module docstring), matching the int `player_id` the NFL
+    producer writes to `prop_predictions` -- no crosswalk needed here.
     """
     r = httpx.get(f"{_BASE}/summary", params={"event": game_pk}, timeout=20)
     r.raise_for_status()
-    id_map = _espn_id_crosswalk()
-    res = parse_results(r.json(), id_map=id_map)
+    res = parse_results(r.json())
     return res if res["final"] else None
 
 

@@ -14,18 +14,31 @@ Do this on a **completed 2025 (or preseason) NFL week** first — never on Week 
 
 ---
 
-## Step 0 — migration (must run before any NFL producer/board activity)
+## Step 0 — migration (HARD PRECONDITION: must run before the merged code deploys — MLB included, not just NFL)
+
+**This is not just an NFL setup step — it gates the existing MLB path too.** The shared
+`db.upsert_game_predictions`/`upsert_prop_predictions` helpers (used by BOTH the MLB and
+NFL producers) now write the `sport` column unconditionally as of this branch's merge. If
+the merged code reaches Actions (i.e. the branch merges and a scheduled/dispatched
+`generate_sim.py`/`generate_board.py`/`grade_results.py` run fires) **before**
+`db/migration_nfl_sport.sql` has been run in Supabase, every write — including the
+existing, already-live MLB producer — fails with `column "sport" does not exist`. This
+must be run BEFORE the merge lands in a branch that Actions runs from, or coordinated
+tightly enough with the merge that no Actions run (scheduled or manual) can execute the
+new code against the old schema. Do not treat this as "run it sometime before flipping
+NFL on" — treat it as a merge-blocking precondition for MLB continuity.
 
 1. Open Supabase → SQL Editor.
-2. Run `db/migration_nfl_sport.sql` in full. It is idempotent (`ADD COLUMN IF NOT
-   EXISTS`, `UPDATE ... WHERE sport IS NULL`) — safe to re-run if unsure whether it
-   already ran.
+2. Run `db/migration_nfl_sport.sql` in full — **before** merging this branch to whatever
+   Actions runs from (or immediately upon merge, with Actions paused/no runs in flight
+   until it's confirmed done). It is idempotent (`ADD COLUMN IF NOT EXISTS`, `UPDATE ...
+   WHERE sport IS NULL`) — safe to re-run if unsure whether it already ran.
 3. Confirm: `game_predictions` and `prop_predictions` both have a `sport TEXT` column
    (default `'mlb'`), and existing rows show `sport = 'mlb'` (no NULLs). `board_picks`/
    `picks` already carry `sport` from the serving layer — no change needed there.
 
 **Pass condition:** both `ALTER TABLE` statements succeed (or no-op on rerun), no rows
-have `sport IS NULL` in either table.
+have `sport IS NULL` in either table, confirmed BEFORE any post-merge Actions run.
 
 ---
 
@@ -111,13 +124,20 @@ live" — this step is that verification. Fix in `matcher.py`, not in the DB.
      `site.api.espn.com/.../summary` payload against the fixture and adjust
      `_category_stats`/`parse_results` — the contract `_actual_for` expects
      (`home_score`/`away_score` + per-player-per-market actuals) should not change.
-   - **ESPN-athlete-id → gsis crosswalk.** `nfl_results.fetch_results` re-keys ESPN's
-     `players` dict (keyed by ESPN athlete id) to gsis `player_id` via
-     `_espn_id_crosswalk()` (built from the committed `rosters.parquet` `espn_id`
-     column). If this crosswalk misses a player (no `espn_id` row, or a stale/traded
-     player), that player's props silently fail to resolve. **"0 props graded" for a
-     game that had NFL props on the board is the signature of a crosswalk miss** —
-     don't mistake it for "nothing to grade."
+   - **gsis → ESPN-athlete-id crosswalk (now resolved at the PRODUCER, not at grade
+     time).** `nfl_results.fetch_results`/`parse_results` key `players` by the int ESPN
+     athlete id directly (no remap on this side). The reconciliation instead happens in
+     `scripts/generate_nfl.py::build_prop_rows`, which maps its internal gsis
+     `player_id` to the int ESPN athlete id (via `_gsis_to_espn_crosswalk()`, built from
+     the committed `rosters.parquet` `espn_id` column) BEFORE writing
+     `prop_predictions.player_id` — that column is BIGINT and can't hold the gsis
+     string. If a player is missing an `espn_id` in the committed roster snapshot (no
+     row, or a stale/traded player), `build_prop_rows` SKIPS that player's props
+     entirely at generation time rather than writing something ungradeable. **That
+     player having zero prop rows on the board in Step 1, for a player who should
+     clearly have props, is the signature of a crosswalk miss** — check
+     `assets/nfl/rosters.parquet`'s `espn_id` column for that player, not the grading
+     step.
 4. Confirm in Supabase:
    ```sql
    select result, count(*) from picks where sport = 'nfl' and status = 'graded' group by 1;
@@ -165,15 +185,18 @@ logos with no gaps for any of the 32 teams that appear in this week's data.
 
 ## Go-live checklist (before flipping Week 1 on)
 
-- [ ] Step 0 migration run in Supabase (idempotent; confirm no `sport IS NULL` rows).
+- [ ] Step 0 migration run in Supabase **before** the merged code can reach Actions
+      (hard precondition — protects the existing MLB producer, not just NFL; idempotent,
+      confirm no `sport IS NULL` rows).
 - [ ] Step 1: `generate-nfl.yml` run produces the expected game/prop counts, tagged
       `sport='nfl'`, `nfl-elo-v1`/`nfl-props-v1`.
 - [ ] Step 2: `capture-odds.yml` NFL leg matches 100% of Odds-API events to `game_pk`
       (or any misses are fixed in `matcher.py` and re-verified); `board_picks` shows
       both game-line and prop rows.
 - [ ] Step 3: `grade-results.yml` NFL leg grades finals + props with CLV populated; no
-      "0 props graded" surprises; box-score parser and id-crosswalk hold up against a
-      live game.
+      "0 props graded" surprises; box-score parser holds up against a live game.
+- [ ] Prop player-name join and roster team-code convention (watch-list items 4/5)
+      spot-checked — no team or player silently missing props on the board.
 - [ ] Step 4: `app.js` redeployed; NFL logos render on `nfl.html` and Track Record.
 - [ ] Sane-check pass (below) on at least one full validation week.
 - [ ] `generate-nfl.yml`, and the NFL legs of `capture-odds.yml`/`grade-results.yml`,
@@ -193,8 +216,28 @@ elsewhere:
 2. **ESPN box-score shape** for prop actuals (Step 3) — the parser is fixture-tested,
    not live-tested; a live shape difference shows as wrong/empty prop actuals for a
    specific game, not a crash.
-3. **ESPN-athlete-id → gsis crosswalk** (Step 3) — a missing/stale roster row shows as
-   "0 props graded" for a game that clearly had props on the board.
+3. **gsis → ESPN-athlete-id crosswalk** (Step 1, at generation time) — a player missing
+   an `espn_id` in the committed `rosters.parquet` snapshot gets SKIPPED by
+   `build_prop_rows` (no numeric id to write) — shows as that player having zero prop
+   rows on the board despite clearly warranting props, not as a grading failure.
+4. **Prop player-NAME join** (Step 2/3, board assembly) — the board joins
+   `odds_snapshot.player_name` (the Odds-API outcome `description`, e.g. "Patrick
+   Mahomes") to `prop_predictions.player_name` (the nflverse roster name) by lowercased
+   string equality. This is a live-data seam exactly like the Step 2 team-name match:
+   any naming difference (suffix like "Jr."/"II", a nickname, diacritics, a
+   Odds-API-vs-nflverse spelling mismatch) silently drops that player's prop from the
+   board with no error — check for it the same way as an unmatched team name, by
+   diffing the two name strings directly rather than assuming "no props" means "no
+   market offered."
+5. **Roster `team`/`recent_team` vs ESPN-normalized-abbr key convention** — the NFL
+   pipeline keys team volume/usage by the roster snapshot's team code, while
+   ESPN-sourced data (schedule, inactives) is matched via `teams.py`'s
+   ESPN-normalized abbreviation. If a team's code differs between the two conventions
+   for any team (e.g. a franchise-code edge case not covered by the existing alias
+   table), every player on that team silently loses their props for that game
+   (`team_volume.get(team)` returns `None` and `build_prop_rows` skips them) — this
+   surfaces as one team's players having zero props while their opponent's have full
+   coverage, not as an exception.
 
 ## Sane-check list (run against the validation week's output)
 

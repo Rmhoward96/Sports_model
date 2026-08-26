@@ -122,8 +122,40 @@ def _markets_for(position: str, volume: dict) -> list[str]:
     return markets
 
 
+def _gsis_to_espn_crosswalk(rosters_df: pd.DataFrame) -> dict[str, int]:
+    """{gsis player_id (str) -> int ESPN athlete id} from the committed
+    rosters snapshot, deduped to the LATEST season a given gsis id appears in
+    (a player can recur across seasons; the newest row is the freshest link).
+
+    `prop_predictions`/`board_picks`/`picks`/`prediction_results` all store
+    `player_id` as BIGINT, but the internal player id used everywhere else in
+    the NFL pipeline (usage shares, efficiency, universe) is the nflverse/GSIS
+    id -- a string like "00-0034473" that can't be written to a BIGINT column.
+    The ESPN athlete id is numeric and fits BIGINT, so it's what actually gets
+    served; this crosswalk is how a gsis-keyed player picks up the int id it
+    needs to be written. `nfl_results.fetch_results` keys its graded results
+    by that same int ESPN id directly (no crosswalk needed on that side), so
+    the written `player_id` and the graded lookup agree without any
+    remapping at grade time.
+
+    Rows with a missing/non-numeric espn_id are dropped from the map -- a
+    player with no numeric ESPN id has no valid BIGINT to write, so
+    `build_prop_rows` skips them entirely rather than crash or write garbage.
+    """
+    df = rosters_df.dropna(subset=["espn_id"])
+    df = df.sort_values("season").drop_duplicates("player_id", keep="last")
+    out: dict[str, int] = {}
+    for pid, espn_id in zip(df["player_id"], df["espn_id"]):
+        try:
+            out[str(pid)] = int(espn_id)
+        except (TypeError, ValueError):
+            continue
+    return out
+
+
 def build_prop_rows(game: dict, universe_list: list[dict], usage_shares: dict,
-                    eff: dict, team_volume: dict, props_cfg) -> list[dict]:
+                    eff: dict, team_volume: dict, props_cfg,
+                    gsis_to_espn: dict) -> list[dict]:
     """Pure: for each ACTIVE player in `universe_list` with a usage share and
     efficiency rates, allocate their share of their team's projected volume
     and build every applicable market's distribution.
@@ -132,6 +164,12 @@ def build_prop_rows(game: dict, universe_list: list[dict], usage_shares: dict,
     `universe.active_universe`) never get a row here -- this is the only
     place that decides which players get served, and it only ever iterates
     the given universe.
+
+    `gsis_to_espn` (from `_gsis_to_espn_crosswalk`) maps the internal gsis
+    `player_id` to the int ESPN athlete id that actually gets WRITTEN as each
+    row's `player_id` -- the serving columns are BIGINT and can't hold the
+    gsis string. A player missing from the crosswalk (no numeric espn_id) is
+    SKIPPED entirely: there's no numeric id to write for them.
     """
     rows = []
     for player in universe_list:
@@ -141,6 +179,9 @@ def build_prop_rows(game: dict, universe_list: list[dict], usage_shares: dict,
             continue
         e = eff.get(pid)
         if e is None:
+            continue
+        espn_id = gsis_to_espn.get(pid)
+        if espn_id is None:
             continue
         team = share.get("team") or player.get("team")
         tv = team_volume.get(team)
@@ -156,7 +197,7 @@ def build_prop_rows(game: dict, universe_list: list[dict], usage_shares: dict,
                 "model_version": PROP_MODEL_VERSION,
                 "game_pk": game["game_pk"],
                 "game_date": game["game_date"],
-                "player_id": pid,
+                "player_id": espn_id,
                 "player_name": player_name,
                 "team_name": team,
                 "market": market,
@@ -320,6 +361,7 @@ def main() -> None:
         latest_week = roster_now.groupby("team")["week"].transform("max")
         roster_now = roster_now[roster_now["week"] == latest_week]
     injuries_all = _load_committed("injuries.parquet")
+    gsis_to_espn = _gsis_to_espn_crosswalk(rosters_all)
 
     espn_games = espn.fetch_schedule(season, week)
 
@@ -355,7 +397,8 @@ def main() -> None:
             "total_dist": json.dumps(row["total_dist"]),
         })
 
-        game_prop_rows = build_prop_rows(game_for_row, uni, adj_shares, eff, team_volume, props_cfg)
+        game_prop_rows = build_prop_rows(game_for_row, uni, adj_shares, eff, team_volume,
+                                         props_cfg, gsis_to_espn)
         for r in game_prop_rows:
             r["dist"] = json.dumps(r["dist"])
         prop_rows.extend(game_prop_rows)

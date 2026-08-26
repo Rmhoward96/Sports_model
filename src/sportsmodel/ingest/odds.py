@@ -139,14 +139,22 @@ def parse_game_odds(events, game_lookup, captured_at) -> list[dict]:
     return rows
 
 
-def parse_prop_odds(event_props, game_pk, captured_at) -> list[dict]:
-    """Player-prop rows (our market codes) with player name and over/under side."""
+def parse_prop_odds(event_props, game_pk, captured_at, cfg: "SportConfig | None" = None) -> list[dict]:
+    """Player-prop rows (our market codes) with player name and over/under side.
+
+    The odds-api-key -> our-market-name map defaults to MLB's `_ODDS_TO_OURS`
+    (unchanged behavior when `cfg` is omitted). Pass a sport's `SportConfig`
+    as `cfg` to map that sport's own odds-api keys instead -- e.g. NFL's
+    `player_pass_yds`/`player_anytime_td`/etc, which aren't in the MLB map and
+    would otherwise all resolve to None and get silently dropped.
+    """
+    odds_to_ours = {v: k for k, v in cfg.prop_market_map.items()} if cfg is not None else _ODDS_TO_OURS
     commence = event_props.get("commence_time")
     rows: list[dict] = []
     for bk in event_props.get("bookmakers", []):
         book = bk["key"]
         for m in bk.get("markets", []):
-            our = _ODDS_TO_OURS.get(m["key"])
+            our = odds_to_ours.get(m["key"])
             if not our:
                 continue
             for o in m.get("outcomes", []):

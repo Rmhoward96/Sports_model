@@ -25,11 +25,40 @@ def test_build_prop_rows_excludes_inactive_and_tags_sport():
                       "position": "WR", "team": "KC", "player_name": "WR One"}}
     eff = {"wr1": {"ypa":0,"pass_td_rate":0,"catch_rate":0.65,"ypr":11.0,"rec_td_rate":0.06,"ypc":0,"rush_td_rate":0}}
     tv = {"KC": {"pass_att": 34.0, "rush_att": 24.0, "plays": 58.0}}
-    rows = gn.build_prop_rows(game, universe, shares, eff, tv, PropConfig())
+    gsis_to_espn = {"wr1": 123456}
+    rows = gn.build_prop_rows(game, universe, shares, eff, tv, PropConfig(), gsis_to_espn)
     assert rows and all(r["sport"] == "nfl" for r in rows)
     assert any(r["market"] == "reception_yds" for r in rows)
-    assert all(r["player_id"] == "wr1" for r in rows)   # only the active WR
+    # player_id served is the int ESPN athlete id (BIGINT-compatible), not the gsis string
+    assert all(r["player_id"] == 123456 for r in rows)
+    assert all(isinstance(r["player_id"], int) for r in rows)
     assert all(r["game_date"] == "2026-09-10" for r in rows)  # game_date must round-trip onto every prop row
+
+
+def test_build_prop_rows_skips_player_missing_from_espn_crosswalk():
+    # A player with no (or non-numeric) espn_id in the rosters crosswalk can't
+    # be written to the BIGINT player_id column -- must be skipped, not crash.
+    game = {"game_pk": 401, "game_date": "2026-09-10", "home_team": "KC", "away_team": "BAL"}
+    universe = [{"player_id": "wr1", "player_name": "WR One", "team": "KC", "position": "WR"}]
+    shares = {"wr1": {"target_share": 0.25, "carry_share": 0.0, "pass_att_share": 0.0,
+                      "position": "WR", "team": "KC", "player_name": "WR One"}}
+    eff = {"wr1": {"ypa":0,"pass_td_rate":0,"catch_rate":0.65,"ypr":11.0,"rec_td_rate":0.06,"ypc":0,"rush_td_rate":0}}
+    tv = {"KC": {"pass_att": 34.0, "rush_att": 24.0, "plays": 58.0}}
+    rows = gn.build_prop_rows(game, universe, shares, eff, tv, PropConfig(), {})  # wr1 not in crosswalk
+    assert rows == []
+
+
+def test_gsis_to_espn_crosswalk_dedups_to_latest_season_and_casts_int():
+    import pandas as pd
+    rosters = pd.DataFrame([
+        {"season": 2023, "player_id": "wr1", "espn_id": "111"},
+        {"season": 2024, "player_id": "wr1", "espn_id": "222"},   # latest season wins
+        {"season": 2024, "player_id": "wr2", "espn_id": None},    # no espn_id -> dropped
+        {"season": 2024, "player_id": "wr3", "espn_id": "not-a-number"},  # non-numeric -> dropped
+    ])
+    cw = gn._gsis_to_espn_crosswalk(rosters)
+    assert cw == {"wr1": 222}
+    assert isinstance(cw["wr1"], int)
 
 
 def test_redistribute_out_shares_splits_proportionally_to_existing_share():

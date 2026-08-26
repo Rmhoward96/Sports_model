@@ -142,7 +142,7 @@ def _run_nfl(captured_at: str) -> list[dict]:
         for eid, gp in prop_matched:
             try:
                 ep = odds.fetch_event_props(eid, markets, cfg=cfg)
-                rows += odds.parse_prop_odds(ep, gp, captured_at)
+                rows += odds.parse_prop_odds(ep, gp, captured_at, cfg=cfg)
             except Exception as e:  # one bad event shouldn't kill the run
                 print(f"  NFL prop fetch failed for event {eid}: {e}")
         print(f"NFL prop rows: {len(rows) - before} (from {len(prop_matched)} events)")
