@@ -1,0 +1,140 @@
+{
+  "header": {
+    "id": "401671789",
+    "competitions": [
+      {
+        "status": {"type": {"id": "3", "name": "STATUS_FINAL", "completed": true}},
+        "competitors": [
+          {
+            "id": "12",
+            "homeAway": "home",
+            "team": {"id": "12", "abbreviation": "KC"},
+            "score": "27"
+          },
+          {
+            "id": "33",
+            "homeAway": "away",
+            "team": {"id": "33", "abbreviation": "BAL"},
+            "score": "20"
+          }
+        ]
+      }
+    ]
+  },
+  "boxscore": {
+    "players": [
+      {
+        "team": {"id": "12", "abbreviation": "KC"},
+        "statistics": [
+          {
+            "name": "passing",
+            "keys": [
+              "completions/passingAttempts",
+              "passingYards",
+              "yardsPerPassAttempt",
+              "passingTouchdowns",
+              "interceptions"
+            ],
+            "athletes": [
+              {
+                "athlete": {"id": "3139477", "displayName": "Patrick Mahomes"},
+                "stats": ["21/32", "291", "9.1", "2", "0"]
+              }
+            ]
+          },
+          {
+            "name": "rushing",
+            "keys": [
+              "rushingAttempts",
+              "rushingYards",
+              "yardsPerRushAttempt",
+              "rushingTouchdowns",
+              "longRushing"
+            ],
+            "athletes": [
+              {
+                "athlete": {"id": "4241389", "displayName": "Isiah Pacheco"},
+                "stats": ["18", "93", "5.2", "1", "22"]
+              }
+            ]
+          },
+          {
+            "name": "receiving",
+            "keys": [
+              "receptions",
+              "receivingYards",
+              "yardsPerReception",
+              "receivingTouchdowns",
+              "longReception",
+              "receivingTargets"
+            ],
+            "athletes": [
+              {
+                "athlete": {"id": "15847", "displayName": "Travis Kelce"},
+                "stats": ["8", "97", "12.1", "1", "24", "10"]
+              },
+              {
+                "athlete": {"id": "4241389", "displayName": "Isiah Pacheco"},
+                "stats": ["2", "11", "5.5", "0", "8", "3"]
+              }
+            ]
+          }
+        ]
+      },
+      {
+        "team": {"id": "33", "abbreviation": "BAL"},
+        "statistics": [
+          {
+            "name": "passing",
+            "keys": [
+              "completions/passingAttempts",
+              "passingYards",
+              "yardsPerPassAttempt",
+              "passingTouchdowns",
+              "interceptions"
+            ],
+            "athletes": [
+              {
+                "athlete": {"id": "3916387", "displayName": "Lamar Jackson"},
+                "stats": ["18/27", "222", "8.2", "1", "1"]
+              }
+            ]
+          },
+          {
+            "name": "rushing",
+            "keys": [
+              "rushingAttempts",
+              "rushingYards",
+              "yardsPerRushAttempt",
+              "rushingTouchdowns",
+              "longRushing"
+            ],
+            "athletes": [
+              {
+                "athlete": {"id": "3916387", "displayName": "Lamar Jackson"},
+                "stats": ["9", "54", "6.0", "1", "18"]
+              }
+            ]
+          },
+          {
+            "name": "receiving",
+            "keys": [
+              "receptions",
+              "receivingYards",
+              "yardsPerReception",
+              "receivingTouchdowns",
+              "longReception",
+              "receivingTargets"
+            ],
+            "athletes": [
+              {
+                "athlete": {"id": "4243167", "displayName": "Zay Flowers"},
+                "stats": ["6", "78", "13.0", "0", "22", "9"]
+              }
+            ]
+          }
+        ]
+      }
+    ]
+  }
+}
