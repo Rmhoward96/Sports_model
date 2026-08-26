@@ -195,7 +195,7 @@ def main() -> None:
             all_rows += build_rows(game, props, odds, (total_cal, margin_cal), sport=sport)
 
     if all_rows:
-        clear_board_picks()  # full refresh: drop orphaned rows before writing the current slate
+        clear_board_picks(sport)  # full refresh of THIS sport's rows (never wipe other sports)
     n_board = upsert_board_picks(all_rows)
     picks = [_to_pick(r) for r in all_rows if r["is_pick"]]
     n_picks = insert_new_picks(picks)
