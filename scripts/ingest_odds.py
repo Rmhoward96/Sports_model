@@ -65,14 +65,15 @@ def load_game_lookup() -> dict[tuple[str, str, str], int]:
 def _fetch_espn_games_nfl() -> list[dict]:
     """ESPN NFL games (game_pk/home_name/away_name/commence_time) for the current window.
 
-    The current (season, week, season_type) comes straight from ESPN's scoreboard
-    (a bare call with no week param returns the live current week), not date math --
-    this keeps matching correct across the regular-season -> postseason transition
-    (season_type flips 2 -> 3, week resets to 1) since the cron runs year-round.
+    The target (season, week, season_type) comes from espn.resolve_target_week:
+    the live current week during the regular season / postseason, or a look-ahead
+    to regular-season Week 1 during pre-/off-season (the games the odds market
+    actually prices). This keeps matching correct across the season boundaries
+    without date math, since the cron runs year-round.
     """
     from sportsmodel.nfl import espn
 
-    cur = espn.fetch_current_week()
+    cur = espn.resolve_target_week()
     season, week, season_type = cur["season"], cur["week"], cur["season_type"]
     games: list[dict] = []
     for wk in sorted({w for w in (week - 1, week, week + 1) if w >= 1}):

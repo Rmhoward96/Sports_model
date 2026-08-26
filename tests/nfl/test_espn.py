@@ -1,5 +1,5 @@
 import json, pathlib
-from sportsmodel.nfl.espn import parse_schedule, parse_final, parse_current_week
+from sportsmodel.nfl.espn import parse_schedule, parse_final, parse_current_week, target_week
 
 FIX = json.loads((pathlib.Path(__file__).parent.parent
                   / "fixtures/nfl/espn_scoreboard.json").read_text())
@@ -27,3 +27,20 @@ def test_parse_schedule_emits_display_names():
 
 def test_parse_current_week():
     assert parse_current_week(CURRENT_WEEK_FIX) == {"season": 2024, "week": 3, "season_type": 2}
+
+def test_target_week_regular_season_passthrough():
+    assert target_week({"season": 2026, "week": 3, "season_type": 2}) == \
+        {"season": 2026, "week": 3, "season_type": 2}
+
+def test_target_week_postseason_passthrough():
+    assert target_week({"season": 2026, "week": 2, "season_type": 3}) == \
+        {"season": 2026, "week": 2, "season_type": 3}
+
+def test_target_week_preseason_looks_ahead_to_regular_week1():
+    # preseason (type 1) -> regular-season (type 2) Week 1, the games the market prices
+    assert target_week({"season": 2026, "week": 3, "season_type": 1}) == \
+        {"season": 2026, "week": 1, "season_type": 2}
+
+def test_target_week_offseason_targets_regular_week1():
+    assert target_week({"season": 2026, "week": 1, "season_type": 4}) == \
+        {"season": 2026, "week": 1, "season_type": 2}
