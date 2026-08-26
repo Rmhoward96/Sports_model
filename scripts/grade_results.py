@@ -22,15 +22,16 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from sportsmodel import config
 from sportsmodel.db import get_postgres, update_graded_picks, upsert_prediction_results
-from sportsmodel.ingest import mlb_results
+from sportsmodel.ingest import mlb_results, nfl_results
 from sportsmodel.model import calibration
 from sportsmodel.model.distributions import apply_affine, prob_cover, prob_over_dist
 from sportsmodel.model.odds import american_to_prob
 
 # Results-provider seam: sport key -> module exposing final_game_pks(start,end) and
-# fetch_results(game_pk). NFL provider is registered in a later plan (P1); MLB is the
-# only entry here, so the default --sport (mlb) path is byte-for-byte unchanged.
-RESULTS_PROVIDERS = {"mlb": mlb_results}
+# fetch_results(game_pk). Both providers' fetch_results() return a shared
+# home/away-score contract (see _scores below) plus a sport-specific per-player
+# stats shape; _actual_for reads either without branching on --sport.
+RESULTS_PROVIDERS = {"mlb": mlb_results, "nfl": nfl_results}
 
 # Totals/margin distribution calibration (loc, scale), fit by fit_calibration_sim.py.
 # loc re-centers the sim mean the scoring channels didn't fully close; scale finishes
@@ -181,16 +182,33 @@ def _latest_version_props(rows):
     return [r for r in rows if r[5] == latest_mv]
 
 
+def _scores(res) -> tuple:
+    """(home, away) final score, provider-agnostic: MLB's fetch_results() returns
+    home_runs/away_runs, NFL's returns home_score/away_score. Falls back to the
+    runs keys when the score keys are absent, so MLB behavior is untouched."""
+    return (res.get("home_score", res.get("home_runs")),
+            res.get("away_score", res.get("away_runs")))
+
+
 def _actual_for(market, side, res, pid):
     """Market-appropriate outcome value from a game result: margin (home-away) for
-    moneyline/spread, total runs for total, the stat for props. None if a prop stat
-    is missing (player DNP)."""
-    hr_, ar_ = res["home_runs"], res["away_runs"]
+    moneyline/spread, total runs/points for total, the stat for props. None if a
+    prop stat is missing (player DNP / no target that game).
+
+    Prop lookup is provider-agnostic: NFL's fetch_results() puts every player's
+    stats under res["players"][gsis_id][market] (one shape for all 7 prop
+    markets); MLB splits batters vs pitchers into separate dicts keyed by market
+    membership. Route by whichever shape `res` actually carries.
+    """
+    home, away = _scores(res)
     if market in ("moneyline", "spread"):
-        return float(hr_ - ar_)
+        return float(home - away)
     if market == "total":
-        return float(hr_ + ar_)
-    src = res["batters"] if market in BATTER_MARKETS else res["pitchers"]
+        return float(home + away)
+    if "players" in res:  # NFL shape: one per-player dict for all prop markets
+        src = res["players"]
+    else:  # MLB shape: batters/pitchers split by market
+        src = res["batters"] if market in BATTER_MARKETS else res["pitchers"]
     stat = src.get(pid, {}).get(market) if pid in src else None
     return None if stat is None else float(stat)
 
@@ -262,8 +280,8 @@ def main() -> None:
                 novig_close = novig_bet  # no closing price captured -> CLV 0
             pick = {"game_pk": game_pk, "market": market, "player_id": player_id,
                     "side": side, "line": line, "bet_odds": bet_odds, "novig_bet": novig_bet}
-            graded_rows.append(grade_pick(pick, actual, novig_close,
-                                          res["home_runs"], res["away_runs"]))
+            home, away = _scores(res)
+            graded_rows.append(grade_pick(pick, actual, novig_close, home, away))
 
     print(f"grading {len(graded_rows)} pending picks")
     if graded_rows:
