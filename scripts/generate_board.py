@@ -29,7 +29,11 @@ MARKET_LABEL = {
 }
 # home_run is deliberately excluded: an over-only longshot that manufactures inflated
 # EV and skews the board/record. Add it back here if that ever changes.
-PROP_MARKETS = ("hits", "total_bases", "hrr",
+# hits + hrr are excluded too: over ~1,970 live graded picks they were the two worst
+# markets (hits -32U at 45% win; hrr -35U and ~38% of all volume) -- hrr is a crude
+# marginal (R/RBI aren't in Statcast) and hits ran a genuine losing hit-rate. Together
+# they were -67U of -79U. Re-add only if a rebuilt model earns positive CLV on them.
+PROP_MARKETS = ("total_bases",
                 "pitcher_ks", "hits_allowed", "outs_recorded")
 PROP_MARKETS_BY_SPORT = {
     "mlb": PROP_MARKETS,

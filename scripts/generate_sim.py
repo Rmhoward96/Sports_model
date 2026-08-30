@@ -53,7 +53,10 @@ _LINEUP_SIZE = 9
 # home_run removed on purpose: a HR is too random to model reliably, so it's dropped
 # from predictions entirely (and from the serving board/picks). The kernel still
 # simulates HRs for run scoring; we just don't publish a home-run prop.
-SIM_BATTER_MARKETS = ["hits", "total_bases", "hrr"]
+# hits + hrr dropped: worst two markets over ~1,970 live graded picks (see generate_board
+# PROP_MARKETS note). The kernel still simulates hits/HRs for run scoring; we just no
+# longer publish them as props. total_bases is the one batter counting-stat we keep.
+SIM_BATTER_MARKETS = ["total_bases"]
 ANALYTIC_PITCHER_MARKETS = ["pitcher_ks", "hits_allowed"]
 
 # player_prop_dists (src/sportsmodel/sim/engine.py) computes EVERY pitcher market
