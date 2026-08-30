@@ -43,7 +43,8 @@ PROP_MARKETS_BY_SPORT = {
 # P4: game_predictions/prop_predictions are read with a `sport` filter (added by the
 # P4 migration, which also backfills existing rows to sport='mlb'). NFL now has a
 # wired prediction source, so both mlb and nfl are boardable.
-BOARDABLE_SPORTS = {"mlb", "nfl"}
+# MLB dropped 2026-08-30: scrapped (sharp market, no accessible edge). Add "mlb" back to revive.
+BOARDABLE_SPORTS = {"nfl"}
 
 
 def _load(dist):
