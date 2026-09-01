@@ -26,5 +26,9 @@ data/
 !assets/nfl/
 !assets/nfl/*.parquet
 
+# Exception: committed CFB schedule snapshot (ESPN, used by elo/srs ratings)
+!assets/cfb/
+!assets/cfb/*.parquet
+
 # OS
 .DS_Store
