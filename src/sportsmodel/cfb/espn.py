@@ -64,3 +64,20 @@ def fetch_schedule(season: int, week: int, season_type: int = 2) -> list[dict]:
                   timeout=20)
     r.raise_for_status()
     return parse_schedule(r.json())
+
+
+def parse_current_week(payload) -> dict:
+    """(season, week, season_type) from a scoreboard payload fetched with no
+    week/season params -- ESPN returns the live current week for such a call,
+    same as nfl.espn.parse_current_week (identical payload shape)."""
+    return {
+        "season": int(payload["season"]["year"]),
+        "week": int(payload["week"]["number"]),
+        "season_type": int(payload["season"]["type"]),
+    }
+
+
+def fetch_current_week() -> dict:
+    r = httpx.get(f"{_BASE}/scoreboard", timeout=20)
+    r.raise_for_status()
+    return parse_current_week(r.json())
