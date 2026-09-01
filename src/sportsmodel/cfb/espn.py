@@ -81,3 +81,22 @@ def fetch_current_week() -> dict:
     r = httpx.get(f"{_BASE}/scoreboard", timeout=20)
     r.raise_for_status()
     return parse_current_week(r.json())
+
+
+def fetch_final(event_id: int) -> dict | None:
+    """Final score for one event via the summary endpoint, or None if not final yet.
+
+    Mirrors nfl.espn.fetch_final: the summary payload's shape differs from the
+    scoreboard's, so adapt via header.competitions[0] rather than parse_final
+    (which expects a scoreboard-shaped event).
+    """
+    r = httpx.get(f"{_BASE}/summary", params={"event": event_id}, timeout=20)
+    r.raise_for_status()
+    data = r.json()
+    ev = data.get("header", {}).get("competitions", [{}])[0]
+    status = ev.get("status", {}).get("type", {}).get("name")
+    if status != "STATUS_FINAL":
+        return None
+    comp = {c["homeAway"]: c for c in ev.get("competitors", [])}
+    return {"home_score": int(comp["home"]["score"]),
+            "away_score": int(comp["away"]["score"]), "final": True}
