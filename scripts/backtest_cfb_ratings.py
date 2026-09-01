@@ -215,12 +215,15 @@ def main() -> None:
     # 55 (search ~55-110), carryover lower than NFL's 0.6 (search ~0.2-0.6)
     # for transfer-portal/roster-turnover effects, k around NFL's 16
     # (search ~12-28).
+    # Widened after an initial pass pinned k/carryover/w_sos at their maxima and
+    # srs_min_games at its min (program strength turned out MORE persistent than
+    # roster turnover suggested -> carryover wants to go up, not down).
     grid = {
-        "k": [12, 16, 20, 24, 28],
+        "k": [12, 16, 20, 24, 28, 32, 36, 40],
         "hfa_elo": [55, 70, 85, 100, 110],
-        "carryover": [0.2, 0.3, 0.4, 0.5, 0.6],
-        "w_sos": [0.0, 0.15, 0.3, 0.45],
-        "srs_min_games": [3, 4, 6],
+        "carryover": [0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9],
+        "w_sos": [0.0, 0.15, 0.3, 0.45, 0.6, 0.75],
+        "srs_min_games": [1, 2, 3, 4, 6],
     }
 
     (best_elo, best_blend), results = _coordinate_search(train, grid)

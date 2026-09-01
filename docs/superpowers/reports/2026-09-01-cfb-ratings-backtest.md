@@ -126,3 +126,13 @@ learning" competitor to the tuned in-season-updating blend.
   one rating/SRS identity, by design of the upstream team registry (P1 Task
   1). This is a known simplification carried through unmodified from the
   data-layer tasks, not something this backtest addresses.
+
+## Update — widened grid sweep (controller, post-Task-4)
+
+The initial grid pinned `k`, `carryover`, `w_sos` at their maxima. Widening (`k`→40, `carryover`→0.9, `w_sos`→0.75, `srs_min_games`→1) improved OOS (2023–2024, n=1,741) margin MAE **13.76 → 13.21**.
+
+Final params (`assets/cfb/rating.json`): `k=40, hfa_elo=70, carryover=0.9, w_sos=0.45, srs_min_games=3`.
+
+OOS margin MAE: **tuned 13.21** vs prior-season 14.29 vs home-always 17.61 vs naive 18.29. win_acc 0.738; SoS blend beats pure Elo OOS (13.21 < 13.34).
+
+**Key finding:** `carryover=0.9` — CFB program strength is highly persistent season-to-season (far more than roster turnover suggested; the opposite of the pre-build hypothesis). `k` (40) and `carryover` (0.9) still sit at the widened boundary, but further widening was declined to avoid overfitting the 2-season OOS span; 0.9 is already near the physical ceiling (1.0 = no between-season regression).
