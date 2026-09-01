@@ -18,6 +18,7 @@ import argparse
 import os
 import statistics
 import sys
+import time
 from pathlib import Path
 
 import httpx
@@ -36,10 +37,24 @@ def _median(vals):
 
 
 def fetch_year(year: int, key: str) -> list:
-    r = httpx.get(_API, params={"year": year, "seasonType": "regular"},
-                  headers={"Authorization": f"Bearer {key}"}, timeout=60)
-    r.raise_for_status()
-    return r.json()
+    """CFBD lines for a season, retrying transient 5xx / network errors."""
+    last: Exception | None = None
+    for attempt in range(4):
+        try:
+            r = httpx.get(_API, params={"year": year, "seasonType": "regular"},
+                          headers={"Authorization": f"Bearer {key}"}, timeout=60)
+            r.raise_for_status()
+            return r.json()
+        except httpx.HTTPStatusError as e:
+            last = e
+            if e.response.status_code >= 500:
+                time.sleep(3 * (attempt + 1))
+                continue
+            raise
+        except httpx.RequestError as e:
+            last = e
+            time.sleep(3 * (attempt + 1))
+    raise last  # type: ignore[misc]
 
 
 def main() -> None:
@@ -75,6 +90,8 @@ def main() -> None:
         print(f"{y}: {len(games)} games", flush=True)
 
     df = pd.DataFrame(rows)
+    if len(df):  # CFBD can return a game more than once; keep one row per matchup
+        df = df.drop_duplicates(subset=["season", "week", "home_team", "away_team"], keep="first")
     _OUT.parent.mkdir(parents=True, exist_ok=True)
     df.to_parquet(_OUT)
     print(f"wrote {len(df)} line rows ({dropped} dropped: unmatched/FCS/no-line) -> "
