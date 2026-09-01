@@ -1,0 +1,8 @@
+{
+  "k": 28,
+  "hfa_elo": 85,
+  "carryover": 0.6,
+  "base": 1500.0,
+  "w_sos": 0.45,
+  "srs_min_games": 3
+}
