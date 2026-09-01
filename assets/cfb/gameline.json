@@ -1,0 +1,16 @@
+{
+  "sigma_margin": 16.66542295054464,
+  "sigma_total": 16.888587131137964,
+  "offset": 110,
+  "total_max": 150,
+  "w_margin": {
+    "start": 0.95,
+    "floor": 0.3,
+    "decay": 0.1
+  },
+  "w_total": {
+    "start": 0.95,
+    "floor": 0.3,
+    "decay": 0.1
+  }
+}
