@@ -205,6 +205,38 @@ def upsert_odds_snapshot(records: list[dict]) -> int:
     return len(rows)
 
 
+_PREDICTION_ACCURACY_COLS = [
+    "sport", "game_pk", "game_date", "home_team_name", "away_team_name",
+    "win_prob", "predicted_winner", "actual_winner", "winner_correct",
+    "pred_margin", "actual_margin", "margin_error",
+    "pred_total", "actual_total", "total_error",
+]
+
+
+def upsert_prediction_accuracy(records: list[dict]) -> int:
+    """Upsert graded prediction-accuracy rows into Supabase `prediction_accuracy`.
+
+    Idempotent on (sport, game_pk) -- re-grading a game overwrites in place.
+    Requires DATABASE_URL and the prediction_accuracy table
+    (db/migration_prediction_tool.sql).
+    """
+    if not records:
+        return 0
+    key = ("sport", "game_pk")
+    updates = ", ".join(f"{c} = EXCLUDED.{c}" for c in _PREDICTION_ACCURACY_COLS if c not in key)
+    placeholders = ", ".join(["%s"] * len(_PREDICTION_ACCURACY_COLS))
+    sql = (
+        f"INSERT INTO prediction_accuracy ({', '.join(_PREDICTION_ACCURACY_COLS)}) "
+        f"VALUES ({placeholders}) "
+        f"ON CONFLICT (sport, game_pk) DO UPDATE SET {updates}, graded_at = now()"
+    )
+    rows = [tuple(r.get(c) for c in _PREDICTION_ACCURACY_COLS) for r in records]
+    with get_postgres() as conn, conn.cursor() as cur:
+        cur.executemany(sql, rows)
+        conn.commit()
+    return len(rows)
+
+
 def upsert_game_predictions(records: list[dict]) -> int:
     """Upsert game-level predictions into Supabase `game_predictions`.
 
