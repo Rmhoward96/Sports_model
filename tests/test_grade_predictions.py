@@ -47,6 +47,10 @@ def test_correct_winner_home_favored_and_home_wins():
     assert row["pred_total"] == 47.0
     assert row["actual_total"] == 41
     assert row["total_error"] == 6.0
+    # home favored by 7, won by exactly 7 -> favorite covered the model spread
+    assert row["spread_covered"] is True
+    # actual total 41 < model total 47 -> did NOT go over
+    assert row["total_over"] is False
     assert row["sport"] == "nfl"
     assert row["game_pk"] == 401671789
     assert row["win_prob"] == 0.62
@@ -65,6 +69,20 @@ def test_wrong_winner_home_favored_but_away_wins():
     # pred_margin=7, actual_margin=-7 -> margin_error = 14
     assert row["margin_error"] == 14.0
     assert row["actual_total"] == 35
+    # home favored by 7 but LOST by 7 -> favorite did not cover
+    assert row["spread_covered"] is False
+    # total 35 < model total 47 -> not over
+    assert row["total_over"] is False
+
+
+def test_spread_cover_and_total_over_away_favored():
+    # away favored by 7 (pred 24-17), away wins by 10 (27-17) and total 44 > 41
+    prediction = _prediction(home_win_prob=0.35, pred_home_score=17.0, pred_away_score=24.0)
+    final = {"home_score": 17, "away_score": 27, "final": True}
+    row = _accuracy_row(prediction, final)
+    # away favored: pred_margin=-7, actual_margin=-10 <= -7 -> favorite covered
+    assert row["spread_covered"] is True
+    assert row["total_over"] is True   # actual 44 > model 41
 
 
 def test_away_favored_and_away_wins_is_correct():
@@ -102,6 +120,8 @@ def test_missing_predicted_scores_leave_margin_and_total_fields_none():
     assert row["margin_error"] is None
     assert row["pred_total"] is None
     assert row["total_error"] is None
+    assert row["spread_covered"] is None
+    assert row["total_over"] is None
 
 
 def test_grade_predictions_script_imports_cleanly():

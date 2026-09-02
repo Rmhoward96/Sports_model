@@ -67,6 +67,21 @@ def _accuracy_row(prediction: dict, final: dict) -> dict:
     actual_total = home_score + away_score
     total_error = abs(pred_total - actual_total) if pred_total is not None else None
 
+    # Market-style grading vs the model's OWN number (home perspective):
+    #   moneyline -> winner_correct (predicted winner won)
+    #   spread    -> did the model's FAVORITE cover its predicted margin?
+    #                (home favored: actual >= pred; away favored: actual <= pred)
+    #   total     -> did the game go OVER the model's predicted total?
+    # spread_covered/total_over sit ~50% for a calibrated model (they measure bias);
+    # winner_correct + the *_error fields are the real accuracy signal.
+    if pred_margin is None:
+        spread_covered = None
+    elif pred_margin >= 0:
+        spread_covered = actual_margin >= pred_margin
+    else:
+        spread_covered = actual_margin <= pred_margin
+    total_over = (actual_total > pred_total) if pred_total is not None else None
+
     return {
         "sport": prediction.get("sport"),
         "game_pk": prediction.get("game_pk"),
@@ -76,13 +91,15 @@ def _accuracy_row(prediction: dict, final: dict) -> dict:
         "win_prob": home_wp,
         "predicted_winner": predicted_winner,
         "actual_winner": actual_winner,
-        "winner_correct": winner_correct,
+        "winner_correct": winner_correct,   # moneyline
         "pred_margin": pred_margin,
         "actual_margin": actual_margin,
         "margin_error": margin_error,
+        "spread_covered": spread_covered,    # spread (favorite vs model line)
         "pred_total": pred_total,
         "actual_total": actual_total,
         "total_error": total_error,
+        "total_over": total_over,            # total (vs model number)
     }
 
 
