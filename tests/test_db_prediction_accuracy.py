@@ -66,9 +66,11 @@ def test_tuple_built_in_column_order_with_all_fields(monkeypatch):
         "pred_margin": 1.4,
         "actual_margin": 3.0,
         "margin_error": 1.6,
+        "spread_covered": True,
         "pred_total": 8.7,
         "actual_total": 9.0,
         "total_error": 0.3,
+        "total_over": False,
     }
     n = db.upsert_prediction_accuracy([row])
 
@@ -76,8 +78,8 @@ def test_tuple_built_in_column_order_with_all_fields(monkeypatch):
     assert sink["rows"] == [(
         "mlb", 12345, "2026-09-01", "Yankees", "Red Sox",
         0.62, "Yankees", "Yankees", True,
-        1.4, 3.0, 1.6,
-        8.7, 9.0, 0.3,
+        1.4, 3.0, 1.6, True,
+        8.7, 9.0, 0.3, False,
     )]
     # column list, table name, and conflict target all present in the emitted SQL
     assert "INSERT INTO prediction_accuracy" in sink["sql"]

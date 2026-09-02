@@ -208,8 +208,8 @@ def upsert_odds_snapshot(records: list[dict]) -> int:
 _PREDICTION_ACCURACY_COLS = [
     "sport", "game_pk", "game_date", "home_team_name", "away_team_name",
     "win_prob", "predicted_winner", "actual_winner", "winner_correct",
-    "pred_margin", "actual_margin", "margin_error",
-    "pred_total", "actual_total", "total_error",
+    "pred_margin", "actual_margin", "margin_error", "spread_covered",
+    "pred_total", "actual_total", "total_error", "total_over",
 ]
 
 

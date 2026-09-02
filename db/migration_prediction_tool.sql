@@ -23,11 +23,17 @@ CREATE TABLE IF NOT EXISTS prediction_accuracy (
     pred_total        DOUBLE PRECISION,
     actual_total      DOUBLE PRECISION,
     total_error       DOUBLE PRECISION,  -- abs(pred_total - actual_total)
+    spread_covered    BOOLEAN,           -- model favorite covered its predicted spread
+    total_over        BOOLEAN,           -- actual total went over the model's total
     graded_at         TIMESTAMPTZ NOT NULL DEFAULT now(),
     PRIMARY KEY (sport, game_pk)
 );
 
 CREATE INDEX IF NOT EXISTS idx_prediction_accuracy_date ON prediction_accuracy (sport, game_date);
+
+-- Added after the initial deploy (safe to re-run): market-style grade columns.
+ALTER TABLE prediction_accuracy ADD COLUMN IF NOT EXISTS spread_covered BOOLEAN;
+ALTER TABLE prediction_accuracy ADD COLUMN IF NOT EXISTS total_over BOOLEAN;
 
 -- Calibration check: among games where the model was X% confident, was it
 -- actually right X% of the time? win_prob is the HOME win prob, so confidence
@@ -42,8 +48,11 @@ CREATE OR REPLACE VIEW accuracy_by_confidence AS
       ELSE '50-60'
     END AS conf_tier,
     count(*) AS games,
-    round((avg(winner_correct::int) * 100)::numeric, 1) AS winner_pct,
-    round(avg(margin_error)::numeric, 1) AS avg_margin_error
+    round((avg(winner_correct::int) * 100)::numeric, 1) AS winner_pct,       -- moneyline accuracy
+    round(avg(margin_error)::numeric, 1) AS avg_margin_error,
+    round((avg(spread_covered::int) * 100)::numeric, 1) AS spread_cover_pct,  -- favorite covered model spread
+    round(avg(total_error)::numeric, 1) AS avg_total_error,
+    round((avg(total_over::int) * 100)::numeric, 1) AS total_over_pct         -- went over model total
   FROM prediction_accuracy
   WHERE win_prob IS NOT NULL AND winner_correct IS NOT NULL
   GROUP BY sport, conf_tier
