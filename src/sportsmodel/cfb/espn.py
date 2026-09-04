@@ -6,11 +6,27 @@ cfb.teams.normalize (FBS ESPN team id passthrough, everything else -> "FCS").
 """
 from __future__ import annotations
 
+from typing import Any
+
 import httpx
+from tenacity import retry, stop_after_attempt, wait_exponential
 
 from .teams import normalize
 
 _BASE = "https://site.api.espn.com/apis/site/v2/sports/football/college-football"
+
+
+@retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=0.5, max=8))
+def _get(path: str, params: dict | None = None) -> Any:
+    """GET {_BASE}{path} and return parsed JSON, retrying transient failures.
+
+    ESPN's edge occasionally drops a TLS handshake or returns a 5xx; a single
+    blip used to fail the whole grading batch. tenacity retries any raised
+    exception (connect/read timeouts and raise_for_status errors) 3 times with
+    exponential backoff -- same policy as nfl.espn._get / ingest.odds._get."""
+    r = httpx.get(f"{_BASE}{path}", params=params, timeout=20)
+    r.raise_for_status()
+    return r.json()
 
 
 def _competitors(event) -> dict:
@@ -58,12 +74,9 @@ def parse_final(event) -> dict | None:
 
 
 def fetch_schedule(season: int, week: int, season_type: int = 2) -> list[dict]:
-    r = httpx.get(f"{_BASE}/scoreboard",
-                  params={"dates": season, "seasontype": season_type,
-                          "week": week, "groups": 80},
-                  timeout=20)
-    r.raise_for_status()
-    return parse_schedule(r.json())
+    return parse_schedule(_get("/scoreboard",
+                               {"dates": season, "seasontype": season_type,
+                                "week": week, "groups": 80}))
 
 
 def parse_current_week(payload) -> dict:
@@ -78,9 +91,7 @@ def parse_current_week(payload) -> dict:
 
 
 def fetch_current_week() -> dict:
-    r = httpx.get(f"{_BASE}/scoreboard", timeout=20)
-    r.raise_for_status()
-    return parse_current_week(r.json())
+    return parse_current_week(_get("/scoreboard"))
 
 
 def fetch_final(event_id: int) -> dict | None:
@@ -90,9 +101,7 @@ def fetch_final(event_id: int) -> dict | None:
     scoreboard's, so adapt via header.competitions[0] rather than parse_final
     (which expects a scoreboard-shaped event).
     """
-    r = httpx.get(f"{_BASE}/summary", params={"event": event_id}, timeout=20)
-    r.raise_for_status()
-    data = r.json()
+    data = _get("/summary", {"event": event_id})
     ev = data.get("header", {}).get("competitions", [{}])[0]
     status = ev.get("status", {}).get("type", {}).get("name")
     if status != "STATUS_FINAL":

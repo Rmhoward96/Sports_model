@@ -1,8 +1,25 @@
 from __future__ import annotations
+from typing import Any
+
 import httpx
+from tenacity import retry, stop_after_attempt, wait_exponential
+
 from .teams import normalize_team
 
 _BASE = "https://site.api.espn.com/apis/site/v2/sports/football/nfl"
+
+
+@retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=0.5, max=8))
+def _get(path: str, params: dict | None = None) -> Any:
+    """GET {_BASE}{path} and return parsed JSON, retrying transient failures.
+
+    ESPN's edge occasionally drops a TLS handshake or returns a 5xx; a single
+    blip used to fail the whole grading batch. tenacity retries any raised
+    exception (connect/read timeouts and raise_for_status errors) 3 times with
+    exponential backoff -- same policy as ingest.odds._get."""
+    r = httpx.get(f"{_BASE}{path}", params=params, timeout=20)
+    r.raise_for_status()
+    return r.json()
 
 def _competitors(event) -> dict:
     comp = event["competitions"][0]["competitors"]
@@ -42,11 +59,8 @@ def parse_inactives(payload) -> list[str]:
     return names
 
 def fetch_schedule(season: int, week: int, season_type: int = 2) -> list[dict]:
-    r = httpx.get(f"{_BASE}/scoreboard",
-                  params={"dates": season, "seasontype": season_type, "week": week},
-                  timeout=20)
-    r.raise_for_status()
-    return parse_schedule(r.json())
+    return parse_schedule(_get("/scoreboard",
+                               {"dates": season, "seasontype": season_type, "week": week}))
 
 def parse_current_week(payload) -> dict:
     """(season, week, season_type) from a scoreboard payload fetched with no
@@ -61,9 +75,7 @@ def parse_current_week(payload) -> dict:
     }
 
 def fetch_current_week() -> dict:
-    r = httpx.get(f"{_BASE}/scoreboard", timeout=20)
-    r.raise_for_status()
-    return parse_current_week(r.json())
+    return parse_current_week(_get("/scoreboard"))
 
 def target_week(cur: dict) -> dict:
     """The (season, week, season_type) the NFL pipeline should PRICE, given the
@@ -86,9 +98,7 @@ def resolve_target_week() -> dict:
     return target_week(fetch_current_week())
 
 def fetch_final(event_id: int) -> dict | None:
-    r = httpx.get(f"{_BASE}/summary", params={"event": event_id}, timeout=20)
-    r.raise_for_status()
-    data = r.json()
+    data = _get("/summary", {"event": event_id})
     ev = data.get("header", {}).get("competitions", [{}])[0]
     # summary shape differs from scoreboard; adapt via the header competition
     status = ev.get("status", {}).get("type", {}).get("name")
@@ -99,6 +109,4 @@ def fetch_final(event_id: int) -> dict | None:
             "away_score": int(comp["away"]["score"]), "final": True}
 
 def fetch_inactives(event_id: int) -> list[str]:
-    r = httpx.get(f"{_BASE}/summary", params={"event": event_id}, timeout=20)
-    r.raise_for_status()
-    return parse_inactives(r.json())
+    return parse_inactives(_get("/summary", {"event": event_id}))
