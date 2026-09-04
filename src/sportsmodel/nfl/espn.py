@@ -47,6 +47,22 @@ def parse_final(event) -> dict | None:
     return {"home_score": int(c["home"]["score"]),
             "away_score": int(c["away"]["score"]), "final": True}
 
+def parse_market(summary) -> dict:
+    """Closing market line from a /summary payload's `pickcenter` block.
+
+    ESPN's `spread` is the HOME team's line (home favored -> negative, e.g.
+    'TB -3' -> -3.0; home underdog -> positive, e.g. away 'SF -5.5' -> +5.5),
+    and `overUnder` is the total. Books are listed per provider; take the first
+    provider that carries each number (they agree within a point at close).
+    Either can be missing -- a stale game has an empty pickcenter, and some
+    games post a spread but no total -- so both fields are independently
+    nullable. Returns {"market_spread": float|None, "market_total": float|None}."""
+    pc = summary.get("pickcenter") or []
+    spread = next((p.get("spread") for p in pc if p.get("spread") is not None), None)
+    total = next((p.get("overUnder") for p in pc if p.get("overUnder") is not None), None)
+    return {"market_spread": float(spread) if spread is not None else None,
+            "market_total": float(total) if total is not None else None}
+
 def parse_inactives(payload) -> list[str]:
     names = []
     for ev in payload.get("events", []):
@@ -105,8 +121,11 @@ def fetch_final(event_id: int) -> dict | None:
     if status != "STATUS_FINAL":
         return None
     comp = {c["homeAway"]: c for c in ev.get("competitors", [])}
+    # Same payload also carries the closing line (pickcenter), so grade the
+    # model's spread/total picks against the market with no extra request.
     return {"home_score": int(comp["home"]["score"]),
-            "away_score": int(comp["away"]["score"]), "final": True}
+            "away_score": int(comp["away"]["score"]), "final": True,
+            **parse_market(data)}
 
 def fetch_inactives(event_id: int) -> list[str]:
     return parse_inactives(_get("/summary", {"event": event_id}))

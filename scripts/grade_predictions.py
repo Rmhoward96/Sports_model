@@ -67,13 +67,10 @@ def _accuracy_row(prediction: dict, final: dict) -> dict:
     actual_total = home_score + away_score
     total_error = abs(pred_total - actual_total) if pred_total is not None else None
 
-    # Market-style grading vs the model's OWN number (home perspective):
-    #   moneyline -> winner_correct (predicted winner won)
-    #   spread    -> did the model's FAVORITE cover its predicted margin?
-    #                (home favored: actual >= pred; away favored: actual <= pred)
-    #   total     -> did the game go OVER the model's predicted total?
-    # spread_covered/total_over sit ~50% for a calibrated model (they measure bias);
-    # winner_correct + the *_error fields are the real accuracy signal.
+    # Diagnostic grading vs the model's OWN number (home perspective) -- kept for
+    # continuity; these sit ~50% for a calibrated model (they measure bias):
+    #   spread_covered -> did the model's favorite cover its predicted margin?
+    #   total_over     -> did the game go OVER the model's predicted total?
     if pred_margin is None:
         spread_covered = None
     elif pred_margin >= 0:
@@ -81,6 +78,31 @@ def _accuracy_row(prediction: dict, final: dict) -> dict:
     else:
         spread_covered = actual_margin <= pred_margin
     total_over = (actual_total > pred_total) if pred_total is not None else None
+
+    # Real bet grading vs the closing MARKET line (from ESPN pickcenter). This is
+    # the "was the pick right" signal: the model leans a side, and we check
+    # whether that side won against the line.
+    #   market_spread is the HOME line (home favored -> negative). Cover margin =
+    #   margin + market_spread: >0 home covers, <0 away covers, ==0 push. The
+    #   model leans whichever side its projected margin covers; correct iff the
+    #   actual result covers the same side. A push on either side -> None.
+    market_spread = final.get("market_spread")  # home line, may be None
+    market_total = final.get("market_total")
+    if pred_margin is None or market_spread is None:
+        spread_pick_correct = None
+    else:
+        model_cover = pred_margin + market_spread
+        actual_cover = actual_margin + market_spread
+        spread_pick_correct = None if (model_cover == 0 or actual_cover == 0) \
+            else (model_cover > 0) == (actual_cover > 0)
+    #   total: model leans Over iff its projected total exceeds the market total;
+    #   correct iff the actual total lands on that same side. A push -> None.
+    if pred_total is None or market_total is None:
+        total_pick_correct = None
+    elif pred_total == market_total or actual_total == market_total:
+        total_pick_correct = None
+    else:
+        total_pick_correct = (pred_total > market_total) == (actual_total > market_total)
 
     return {
         "sport": prediction.get("sport"),
@@ -95,34 +117,44 @@ def _accuracy_row(prediction: dict, final: dict) -> dict:
         "pred_margin": pred_margin,
         "actual_margin": actual_margin,
         "margin_error": margin_error,
-        "spread_covered": spread_covered,    # spread (favorite vs model line)
+        "spread_covered": spread_covered,    # diagnostic: favorite vs model's own line
         "pred_total": pred_total,
         "actual_total": actual_total,
         "total_error": total_error,
-        "total_over": total_over,            # total (vs model number)
+        "total_over": total_over,            # diagnostic: over the model's own number
+        # Real bet grading vs the closing market line:
+        "market_spread": market_spread,      # ESPN home spread (may be None)
+        "market_total": market_total,        # ESPN over/under (may be None)
+        "spread_pick_correct": spread_pick_correct,
+        "total_pick_correct": total_pick_correct,
     }
 
 
-def _pending_predictions(cur, sport: str, start: str) -> list[dict]:
-    """Ungraded game_predictions rows for `sport` with game_date >= `start`.
+def _pending_predictions(cur, sport: str, start: str, regrade: bool = False) -> list[dict]:
+    """game_predictions rows for `sport` with game_date >= `start` to grade.
 
     DISTINCT ON (game_pk) keeps only the latest-generated model_version per
     game (a game re-predicted under a newer version shouldn't be graded once
-    per version). NOT EXISTS against prediction_accuracy skips games already
-    graded -- makes the whole script idempotent.
+    per version). By default a NOT EXISTS against prediction_accuracy skips
+    games already graded -- making the script idempotent and cheap. Pass
+    regrade=True to drop that filter and re-grade every game in the window
+    (e.g. to backfill new columns onto already-graded rows); the upsert then
+    overwrites them in place. Regrade still only reaches games recent enough
+    that ESPN keeps their pickcenter line.
     """
-    cur.execute("""
+    skip_graded = "" if regrade else """
+          AND NOT EXISTS (
+              SELECT 1 FROM prediction_accuracy pa
+              WHERE pa.sport = %(sport)s AND pa.game_pk = gp.game_pk
+          )"""
+    cur.execute(f"""
         SELECT DISTINCT ON (gp.game_pk)
                gp.game_pk, gp.game_date, gp.home_team_name, gp.away_team_name,
                gp.home_win_prob, gp.pred_home_score, gp.pred_away_score
         FROM game_predictions gp
-        WHERE gp.sport = %s AND gp.game_date >= %s
-          AND NOT EXISTS (
-              SELECT 1 FROM prediction_accuracy pa
-              WHERE pa.sport = %s AND pa.game_pk = gp.game_pk
-          )
+        WHERE gp.sport = %(sport)s AND gp.game_date >= %(start)s{skip_graded}
         ORDER BY gp.game_pk, gp.generated_at DESC
-    """, [sport, start, sport])
+    """, {"sport": sport, "start": start})
     cols = ["game_pk", "game_date", "home_team_name", "away_team_name",
             "home_win_prob", "pred_home_score", "pred_away_score"]
     return [dict(zip(cols, row), sport=sport) for row in cur.fetchall()]
@@ -131,6 +163,8 @@ def _pending_predictions(cur, sport: str, start: str) -> list[dict]:
 def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("--days", type=int, default=7)
+    ap.add_argument("--regrade", action="store_true",
+                    help="re-grade games already in prediction_accuracy (backfill new columns)")
     args = ap.parse_args()
     if not config.DATABASE_URL:
         raise SystemExit("DATABASE_URL required (grading reads/writes Supabase).")
@@ -141,7 +175,7 @@ def main() -> None:
 
     with get_postgres() as conn, conn.cursor() as cur:
         for sport, provider in FINAL_PROVIDERS.items():
-            pending = _pending_predictions(cur, sport, start)
+            pending = _pending_predictions(cur, sport, start, regrade=args.regrade)
             n = 0
             for pred in pending:
                 try:
