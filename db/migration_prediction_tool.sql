@@ -48,7 +48,10 @@ ALTER TABLE prediction_accuracy ADD COLUMN IF NOT EXISTS total_pick_correct BOOL
 -- Calibration check: among games where the model was X% confident, was it
 -- actually right X% of the time? win_prob is the HOME win prob, so confidence
 -- is whichever side the model favored -- greatest(win_prob, 1 - win_prob).
-CREATE OR REPLACE VIEW accuracy_by_confidence AS
+-- DROP first: CREATE OR REPLACE cannot rename existing view columns
+-- (spread_cover_pct -> spread_ats_pct), so it errors 42P16 on an existing view.
+DROP VIEW IF EXISTS accuracy_by_confidence;
+CREATE VIEW accuracy_by_confidence AS
   SELECT
     sport,
     CASE
