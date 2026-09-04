@@ -210,6 +210,7 @@ _PREDICTION_ACCURACY_COLS = [
     "win_prob", "predicted_winner", "actual_winner", "winner_correct",
     "pred_margin", "actual_margin", "margin_error", "spread_covered",
     "pred_total", "actual_total", "total_error", "total_over",
+    "market_spread", "market_total", "spread_pick_correct", "total_pick_correct",
 ]
 
 

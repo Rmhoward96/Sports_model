@@ -7,7 +7,16 @@ name: grade-predictions
 on:
   schedule:
     - cron: "0 */6 * * *"   # every 6h - a finished game gets graded within hours
-  workflow_dispatch: {}
+  workflow_dispatch:
+    inputs:
+      regrade:
+        description: "Re-grade already-graded games (backfill new columns onto recent games)"
+        type: boolean
+        default: false
+      days:
+        description: "Rolling window in days"
+        type: string
+        default: "7"
 
 jobs:
   grade:
@@ -25,4 +34,7 @@ jobs:
       - name: Grade predictions (accuracy)
         env:
           DATABASE_URL: ${{ secrets.DATABASE_URL }}
-        run: uv run python scripts/grade_predictions.py
+        run: |
+          uv run python scripts/grade_predictions.py \
+            --days "${{ github.event.inputs.days || '7' }}" \
+            ${{ github.event.inputs.regrade == 'true' && '--regrade' || '' }}

@@ -122,6 +122,64 @@ def test_missing_predicted_scores_leave_margin_and_total_fields_none():
     assert row["total_error"] is None
     assert row["spread_covered"] is None
     assert row["total_over"] is None
+    assert row["spread_pick_correct"] is None
+    assert row["total_pick_correct"] is None
+
+
+def test_no_market_line_leaves_pick_grades_none():
+    # final without market_spread/market_total -> vs-market grades are None,
+    # even though the diagnostic (vs model's own number) grades still compute.
+    prediction = _prediction(pred_home_score=27.0, pred_away_score=20.0)
+    final = {"home_score": 24, "away_score": 17, "final": True}
+    row = _accuracy_row(prediction, final)
+    assert row["market_spread"] is None and row["market_total"] is None
+    assert row["spread_pick_correct"] is None
+    assert row["total_pick_correct"] is None
+    assert row["spread_covered"] is True  # diagnostic still computed
+
+
+def test_market_spread_pick_home_covers():
+    # model projects home -7 (27-20); market home line -3. model_cover = -7? no:
+    # pred_margin=+7 (home by 7), market_spread=-3 -> model_cover=+4>0 -> likes home.
+    # home wins by 10 (31-21): actual_cover = 10 + (-3) = +7 > 0 -> home covered. correct.
+    prediction = _prediction(pred_home_score=27.0, pred_away_score=20.0)
+    final = {"home_score": 31, "away_score": 21, "final": True,
+             "market_spread": -3.0, "market_total": 48.0}
+    row = _accuracy_row(prediction, final)
+    assert row["market_spread"] == -3.0
+    assert row["spread_pick_correct"] is True
+
+
+def test_market_spread_pick_home_fails_to_cover():
+    # model likes home (pred +7 vs -3 line). home wins by only 1 (24-23):
+    # actual_cover = 1 + (-3) = -2 < 0 -> away covered -> model wrong.
+    prediction = _prediction(pred_home_score=27.0, pred_away_score=20.0)
+    final = {"home_score": 24, "away_score": 23, "final": True,
+             "market_spread": -3.0, "market_total": 48.0}
+    row = _accuracy_row(prediction, final)
+    assert row["spread_pick_correct"] is False
+
+
+def test_market_total_over_pick_hits_and_misses():
+    # model total 47 (27+20). Over the 45 line -> leans Over.
+    prediction = _prediction(pred_home_score=27.0, pred_away_score=20.0)
+    over = _accuracy_row(prediction, {"home_score": 30, "away_score": 24, "final": True,
+                                      "market_spread": -3.0, "market_total": 45.0})
+    assert over["total_pick_correct"] is True   # actual 54 > 45, model said over
+    under = _accuracy_row(prediction, {"home_score": 14, "away_score": 13, "final": True,
+                                       "market_spread": -3.0, "market_total": 45.0})
+    assert under["total_pick_correct"] is False  # actual 27 < 45, model said over -> wrong
+
+
+def test_market_push_grades_none():
+    # model likes home (pred +7 vs -3). home wins by exactly 3 (24-21):
+    # actual_cover = 3 + (-3) = 0 -> spread push -> None. total lands on 47 line -> push.
+    prediction = _prediction(pred_home_score=27.0, pred_away_score=20.0)
+    final = {"home_score": 24, "away_score": 21, "final": True,
+             "market_spread": -3.0, "market_total": 45.0}
+    row = _accuracy_row(prediction, final)
+    assert row["spread_pick_correct"] is None   # actual pushed on the spread
+    assert row["total_pick_correct"] is None     # actual total 45 == line -> push
 
 
 def test_grade_predictions_script_imports_cleanly():

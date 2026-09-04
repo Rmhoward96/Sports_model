@@ -31,14 +31,27 @@ CREATE TABLE IF NOT EXISTS prediction_accuracy (
 
 CREATE INDEX IF NOT EXISTS idx_prediction_accuracy_date ON prediction_accuracy (sport, game_date);
 
--- Added after the initial deploy (safe to re-run): market-style grade columns.
+-- Added after the initial deploy (safe to re-run): diagnostic grade columns
+-- (the game vs the model's OWN number -- a ~50% calibration/bias check).
 ALTER TABLE prediction_accuracy ADD COLUMN IF NOT EXISTS spread_covered BOOLEAN;
 ALTER TABLE prediction_accuracy ADD COLUMN IF NOT EXISTS total_over BOOLEAN;
+
+-- Real bet grading vs the closing MARKET line (ESPN pickcenter). market_spread
+-- is the HOME line (home favored -> negative); *_pick_correct is whether the
+-- model's lean beat the line. NULL when the line was unavailable (stale game)
+-- or the result pushed. These are the true "was the pick right" columns.
+ALTER TABLE prediction_accuracy ADD COLUMN IF NOT EXISTS market_spread DOUBLE PRECISION;
+ALTER TABLE prediction_accuracy ADD COLUMN IF NOT EXISTS market_total DOUBLE PRECISION;
+ALTER TABLE prediction_accuracy ADD COLUMN IF NOT EXISTS spread_pick_correct BOOLEAN;
+ALTER TABLE prediction_accuracy ADD COLUMN IF NOT EXISTS total_pick_correct BOOLEAN;
 
 -- Calibration check: among games where the model was X% confident, was it
 -- actually right X% of the time? win_prob is the HOME win prob, so confidence
 -- is whichever side the model favored -- greatest(win_prob, 1 - win_prob).
-CREATE OR REPLACE VIEW accuracy_by_confidence AS
+-- DROP first: CREATE OR REPLACE cannot rename existing view columns
+-- (spread_cover_pct -> spread_ats_pct), so it errors 42P16 on an existing view.
+DROP VIEW IF EXISTS accuracy_by_confidence;
+CREATE VIEW accuracy_by_confidence AS
   SELECT
     sport,
     CASE
@@ -48,11 +61,12 @@ CREATE OR REPLACE VIEW accuracy_by_confidence AS
       ELSE '50-60'
     END AS conf_tier,
     count(*) AS games,
-    round((avg(winner_correct::int) * 100)::numeric, 1) AS winner_pct,       -- moneyline accuracy
+    round((avg(winner_correct::int) * 100)::numeric, 1) AS winner_pct,           -- moneyline accuracy
     round(avg(margin_error)::numeric, 1) AS avg_margin_error,
-    round((avg(spread_covered::int) * 100)::numeric, 1) AS spread_cover_pct,  -- favorite covered model spread
+    -- Real vs-market bet grades (avg ignores NULLs, so pushes/no-line drop out):
+    round((avg(spread_pick_correct::int) * 100)::numeric, 1) AS spread_ats_pct,   -- model spread pick beat the line
     round(avg(total_error)::numeric, 1) AS avg_total_error,
-    round((avg(total_over::int) * 100)::numeric, 1) AS total_over_pct         -- went over model total
+    round((avg(total_pick_correct::int) * 100)::numeric, 1) AS total_pick_pct     -- model total pick beat the line
   FROM prediction_accuracy
   WHERE win_prob IS NOT NULL AND winner_correct IS NOT NULL
   GROUP BY sport, conf_tier

@@ -73,6 +73,20 @@ def parse_final(event) -> dict | None:
             "away_score": int(c["away"]["score"]), "final": True}
 
 
+def parse_market(summary) -> dict:
+    """Closing market line from a /summary payload's `pickcenter` block.
+
+    Identical shape to nfl.espn.parse_market: `spread` is the HOME team's line
+    (home favored -> negative), `overUnder` is the total. Take the first
+    provider carrying each; both are independently nullable (stale games have
+    an empty pickcenter). Returns {"market_spread": float|None, "market_total": float|None}."""
+    pc = summary.get("pickcenter") or []
+    spread = next((p.get("spread") for p in pc if p.get("spread") is not None), None)
+    total = next((p.get("overUnder") for p in pc if p.get("overUnder") is not None), None)
+    return {"market_spread": float(spread) if spread is not None else None,
+            "market_total": float(total) if total is not None else None}
+
+
 def fetch_schedule(season: int, week: int, season_type: int = 2) -> list[dict]:
     return parse_schedule(_get("/scoreboard",
                                {"dates": season, "seasontype": season_type,
@@ -107,5 +121,8 @@ def fetch_final(event_id: int) -> dict | None:
     if status != "STATUS_FINAL":
         return None
     comp = {c["homeAway"]: c for c in ev.get("competitors", [])}
+    # Same payload also carries the closing line (pickcenter), so grade the
+    # model's spread/total picks against the market with no extra request.
     return {"home_score": int(comp["home"]["score"]),
-            "away_score": int(comp["away"]["score"]), "final": True}
+            "away_score": int(comp["away"]["score"]), "final": True,
+            **parse_market(data)}
