@@ -144,7 +144,14 @@ def main() -> None:
             pending = _pending_predictions(cur, sport, start)
             n = 0
             for pred in pending:
-                final = provider.fetch_final(pred["game_pk"])
+                try:
+                    final = provider.fetch_final(pred["game_pk"])
+                except Exception as exc:  # noqa: BLE001 -- one bad game must not abort the batch
+                    # fetch_final already retries transient blips; if it still
+                    # fails, skip just this game and let a later run pick it up
+                    # (idempotent), rather than failing every other game's grade.
+                    print(f"  {sport} {pred['game_pk']}: fetch_final failed ({exc}); skipping")
+                    continue
                 if final is None:
                     continue  # not final yet -- skip until a later run
                 graded_rows.append(_accuracy_row(pred, final))
