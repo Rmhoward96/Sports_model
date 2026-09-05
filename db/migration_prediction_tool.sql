@@ -90,6 +90,13 @@ CREATE VIEW accuracy_by_confidence AS
 -- games in an arbitrary order.
 ALTER TABLE game_predictions ADD COLUMN IF NOT EXISTS commence_time TIMESTAMPTZ;
 
+-- market_spread (HOME line) + market_total (over/under) from ESPN's pre-game
+-- line, so the front-end can show the model's LEAN vs the Vegas number on
+-- upcoming games (e.g. model has home -26 but the line is -29 -> lean the away
+-- side +29). Nullable: some games have no line posted yet.
+ALTER TABLE game_predictions ADD COLUMN IF NOT EXISTS market_spread DOUBLE PRECISION;
+ALTER TABLE game_predictions ADD COLUMN IF NOT EXISTS market_total DOUBLE PRECISION;
+
 CREATE OR REPLACE VIEW predictions_current AS
   SELECT DISTINCT ON (sport, game_pk)
     sport,
@@ -100,7 +107,9 @@ CREATE OR REPLACE VIEW predictions_current AS
     home_win_prob,
     pred_home_score,
     pred_away_score,
-    commence_time
+    commence_time,
+    market_spread,
+    market_total
   FROM game_predictions
   WHERE game_date >= (now() - interval '8 hours')::date
   ORDER BY sport, game_pk, generated_at DESC;

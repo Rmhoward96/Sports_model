@@ -25,6 +25,17 @@ def _competitors(event) -> dict:
     comp = event["competitions"][0]["competitors"]
     return {c["homeAway"]: c for c in comp}
 
+def _market_from_odds(odds: list | None) -> dict:
+    """Home spread + total from an ESPN odds list (scoreboard competitions[].odds
+    or summary pickcenter -- same element shape). `spread` is the HOME line (home
+    favored -> negative), `overUnder` is the total. First provider carrying each;
+    both independently nullable."""
+    odds = odds or []
+    spread = next((o.get("spread") for o in odds if o.get("spread") is not None), None)
+    total = next((o.get("overUnder") for o in odds if o.get("overUnder") is not None), None)
+    return {"market_spread": float(spread) if spread is not None else None,
+            "market_total": float(total) if total is not None else None}
+
 def parse_schedule(payload) -> list[dict]:
     out = []
     for ev in payload.get("events", []):
@@ -37,6 +48,7 @@ def parse_schedule(payload) -> list[dict]:
             "home_name": c["home"]["team"].get("displayName"),
             "away_name": c["away"]["team"].get("displayName"),
             "status": ev["status"]["type"]["name"],
+            **_market_from_odds(ev["competitions"][0].get("odds")),
         })
     return out
 
@@ -57,11 +69,7 @@ def parse_market(summary) -> dict:
     Either can be missing -- a stale game has an empty pickcenter, and some
     games post a spread but no total -- so both fields are independently
     nullable. Returns {"market_spread": float|None, "market_total": float|None}."""
-    pc = summary.get("pickcenter") or []
-    spread = next((p.get("spread") for p in pc if p.get("spread") is not None), None)
-    total = next((p.get("overUnder") for p in pc if p.get("overUnder") is not None), None)
-    return {"market_spread": float(spread) if spread is not None else None,
-            "market_total": float(total) if total is not None else None}
+    return _market_from_odds(summary.get("pickcenter"))
 
 def parse_inactives(payload) -> list[str]:
     names = []

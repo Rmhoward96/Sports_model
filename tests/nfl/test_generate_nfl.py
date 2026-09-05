@@ -11,10 +11,12 @@ from sportsmodel.nfl.gameline import GameLineConfig
 
 def test_build_game_row_is_serving_shaped():
     game = {"game_pk": 401, "game_date": "2026-09-10", "commence_time": "2026-09-11T00:20Z",
+            "market_spread": -2.5, "market_total": 47.5,
             "home_team": "KC", "away_team": "BAL", "home_name": "Kansas City Chiefs",
             "away_name": "Baltimore Ravens"}
     ctx = {"model_margin": 3.0, "model_total": 45.0, "week": 1}
     row = gn.build_game_row(game, ctx, GameLineConfig())
+    assert row["market_spread"] == -2.5 and row["market_total"] == 47.5  # Vegas line for the lean
     assert row["sport"] == "nfl" and row["model_version"] == "nfl-elo-v1"
     assert row["game_pk"] == 401 and row["margin_dist"]["kind"] == "margin"
     assert row["total_dist"]["kind"] == "pmf" and 0 <= row["home_win_prob"] <= 1

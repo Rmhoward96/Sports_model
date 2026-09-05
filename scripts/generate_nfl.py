@@ -86,6 +86,8 @@ def build_game_row(game: dict, ctx: dict, gl_cfg: "gameline.GameLineConfig") -> 
         "game_pk": game["game_pk"],
         "game_date": game["game_date"],
         "commence_time": game.get("commence_time"),
+        "market_spread": game.get("market_spread"),
+        "market_total": game.get("market_total"),
         "home_team_name": game["home_name"],
         "away_team_name": game["away_name"],
     }

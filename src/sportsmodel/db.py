@@ -135,6 +135,7 @@ def upsert_game_predictions(records: list[dict]) -> int:
         "home_probable_pitcher_name", "away_probable_pitcher_name",
         "pred_home_score", "pred_away_score", "pred_total", "pred_margin",
         "home_win_prob", "total_dist", "margin_dist",
+        "market_spread", "market_total",
         "sport",
     ]
     key = ("game_pk", "model_version")
