@@ -7,8 +7,12 @@ name: generate-cfb
 # re-upserts the same rows.
 on:
   schedule:
-    - cron: "0 15 * * 2"    # Tuesday 15:00 UTC - weekly refresh after the weekend settles
-    - cron: "0 14 * * 6"    # Saturday 14:00 UTC - pre-kickoff, before the noon-ET slate
+    # Daily 12:00 UTC (~7-8am ET). CFB plays Thu-Sat (plus the odd weekday game),
+    # and ESPN adds/reschedules games midweek, so a Tue+Sat cadence left the
+    # Thursday/Friday slate unpredicted until Saturday -- after some had kicked
+    # off. Daily is cheap (ESPN-only, ~20s, idempotent upsert) and guarantees the
+    # current day's games are always present.
+    - cron: "0 12 * * *"
   workflow_dispatch: {}
 
 jobs:
