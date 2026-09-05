@@ -41,6 +41,18 @@ def _score(competitor: dict) -> int | None:
     return int(raw)
 
 
+def _market_from_odds(odds: list | None) -> dict:
+    """Home spread + total from an ESPN odds list (scoreboard competitions[].odds
+    or summary pickcenter -- same element shape). `spread` is the HOME line (home
+    favored -> negative), `overUnder` is the total. Take the first provider that
+    carries each; both independently nullable."""
+    odds = odds or []
+    spread = next((o.get("spread") for o in odds if o.get("spread") is not None), None)
+    total = next((o.get("overUnder") for o in odds if o.get("overUnder") is not None), None)
+    return {"market_spread": float(spread) if spread is not None else None,
+            "market_total": float(total) if total is not None else None}
+
+
 def parse_schedule(payload) -> list[dict]:
     default_season = payload.get("season", {}).get("year")
     default_week = payload.get("week", {}).get("number")
@@ -61,6 +73,7 @@ def parse_schedule(payload) -> list[dict]:
             "status": ev["status"]["type"]["name"],
             "week": week,
             "season": season,
+            **_market_from_odds(ev["competitions"][0].get("odds")),
         })
     return out
 
@@ -80,11 +93,7 @@ def parse_market(summary) -> dict:
     (home favored -> negative), `overUnder` is the total. Take the first
     provider carrying each; both are independently nullable (stale games have
     an empty pickcenter). Returns {"market_spread": float|None, "market_total": float|None}."""
-    pc = summary.get("pickcenter") or []
-    spread = next((p.get("spread") for p in pc if p.get("spread") is not None), None)
-    total = next((p.get("overUnder") for p in pc if p.get("overUnder") is not None), None)
-    return {"market_spread": float(spread) if spread is not None else None,
-            "market_total": float(total) if total is not None else None}
+    return _market_from_odds(summary.get("pickcenter"))
 
 
 def fetch_schedule(season: int, week: int, season_type: int = 2) -> list[dict]:

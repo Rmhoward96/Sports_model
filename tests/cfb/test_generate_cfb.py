@@ -30,14 +30,18 @@ def _ratings(elo_final=None, srs_now=None, points_ratings=None, lg_avg=55.0,
 
 def test_build_game_row_is_serving_shaped():
     game = {"game_pk": 401628354, "game_date": "2026-09-05",
+            "commence_time": "2026-09-05T23:30Z",
+            "market_spread": -3.5, "market_total": 55.5,
             "home_team": "96", "away_team": "61",
             "home_name": "Kentucky Wildcats", "away_name": "Georgia Bulldogs"}
     ctx = {"model_margin": -7.0, "model_total": 58.0, "week": 3}
     row = gc.build_game_row(game, ctx, GL_CFG)
+    assert row["market_spread"] == -3.5 and row["market_total"] == 55.5  # Vegas line for the lean
     assert row["sport"] == "cfb"
     assert row["model_version"] == "cfb-ratings-v1"
     assert row["game_pk"] == 401628354
     assert row["game_date"] == "2026-09-05"
+    assert row["commence_time"] == "2026-09-05T23:30Z"  # kickoff carried through for time sort
     assert row["home_team_name"] == "Kentucky Wildcats"
     assert row["away_team_name"] == "Georgia Bulldogs"
     assert 0 < row["home_win_prob"] < 1
