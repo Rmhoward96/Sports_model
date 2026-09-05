@@ -1,26 +1,16 @@
 name: generate-nfl
 
-# Runs the NFL producer (game + prop predictions from the P1/P2/P3 assets +
-# live ESPN schedule/inactives). Schedule:
-#   - Tuesday 14:00 UTC: weekly full refresh once Monday Night Football has
-#     finished and box scores/injury data have settled.
-#   - Sunday 16:30 UTC / 20:00 UTC: pre-kickoff refreshes as inactives are
-#     announced (~90 min before kickoff) and market lines firm up ahead of
-#     the early (1 PM ET / 18:00 UTC) and late-afternoon (4:05/4:25 PM ET /
-#     21:05/21:25 UTC) windows.
-# generate_nfl.py is idempotent (upsert on game/player/market keys), so —
-# following the daily-ingest fix — there is NO exact-hour/day gate here.
-# GitHub cron is UTC-only and best-effort (firings are routinely delayed);
-# gating on an exact hour previously caused daily-ingest to silently skip
-# delayed firings and freeze downstream predictions. Every firing of this
-# workflow simply runs the producer; a duplicate or slightly-late run is
-# harmless because it just re-upserts the same rows. Manual runs
-# (workflow_dispatch) also proceed unconditionally.
+# Runs the NFL producer (model-only game-line predictions from the P1/P2 assets
+# + live ESPN schedule). Daily 12:00 UTC (~7-8am ET): NFL plays Thu/Sun/Mon (and
+# the odd Sat), and a game must be visible in predictions_current on its own game
+# day, so a daily refresh keeps the current day's slate present regardless of
+# GitHub cron flakiness. generate_nfl.py is idempotent (upsert on game keys), so
+# there is NO exact-hour/day gate here -- GitHub cron is UTC-only and best-effort
+# (firings are routinely delayed), and a duplicate or slightly-late run just
+# re-upserts the same rows. Manual runs (workflow_dispatch) proceed the same way.
 on:
   schedule:
-    - cron: "0 14 * * 2"    # Tuesday 14:00 UTC - weekly refresh after MNF
-    - cron: "30 16 * * 0"   # Sunday 16:30 UTC - pre-kickoff (early slate)
-    - cron: "0 20 * * 0"    # Sunday 20:00 UTC - pre-kickoff (late slate)
+    - cron: "0 12 * * *"    # daily 12:00 UTC (~7-8am ET)
   workflow_dispatch: {}
 
 jobs:

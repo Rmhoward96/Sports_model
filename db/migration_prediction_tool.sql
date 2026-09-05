@@ -76,6 +76,15 @@ CREATE VIEW accuracy_by_confidence AS
 -- predictions" view. game_predictions carries one row per (game_pk,
 -- model_version); DISTINCT ON picks the most-recently-generated version per
 -- game so a re-run doesn't produce duplicate rows for the same matchup.
+--
+-- The date floor uses the SAME 8h shift the producers use to assign game_date
+-- (generate_nfl/generate_cfb._game_date_from_commence): game_date is a US game
+-- DAY, but now()/current_date is UTC. Comparing a US-day game_date to the UTC
+-- current_date silently dropped the whole current-day slate every evening --
+-- once UTC rolls past midnight (7pm ET / 4pm PT, exactly when the night games
+-- start) current_date became "tomorrow" while the games were still stored under
+-- "today". Shifting now() back 8h before taking ::date reproduces the producer's
+-- own game-day boundary, so a game stays visible through the end of its US day.
 CREATE OR REPLACE VIEW predictions_current AS
   SELECT DISTINCT ON (sport, game_pk)
     sport,
@@ -87,7 +96,7 @@ CREATE OR REPLACE VIEW predictions_current AS
     pred_home_score,
     pred_away_score
   FROM game_predictions
-  WHERE game_date >= current_date
+  WHERE game_date >= (now() - interval '8 hours')::date
   ORDER BY sport, game_pk, generated_at DESC;
 
 -- Public read-only access for the browser (anon key), mirroring board_picks/picks.
