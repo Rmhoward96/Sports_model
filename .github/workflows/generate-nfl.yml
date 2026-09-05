@@ -36,9 +36,8 @@ jobs:
       - name: Set up Python + sync deps
         run: uv sync
 
-      - name: Generate NFL predictions (game + props)
+      - name: Generate NFL predictions (model-only game lines)
         env:
           DATABASE_URL: ${{ secrets.DATABASE_URL }}
-          ODDS_API_KEY: ${{ secrets.ODDS_API_KEY }}
           SM_DATA_DIR: ${{ github.workspace }}/data
         run: uv run python scripts/generate_nfl.py

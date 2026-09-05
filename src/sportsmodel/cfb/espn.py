@@ -23,7 +23,7 @@ def _get(path: str, params: dict | None = None) -> Any:
     ESPN's edge occasionally drops a TLS handshake or returns a 5xx; a single
     blip used to fail the whole grading batch. tenacity retries any raised
     exception (connect/read timeouts and raise_for_status errors) 3 times with
-    exponential backoff -- same policy as nfl.espn._get / ingest.odds._get."""
+    exponential backoff -- same retry policy as nfl.espn._get."""
     r = httpx.get(f"{_BASE}{path}", params=params, timeout=20)
     r.raise_for_status()
     return r.json()
