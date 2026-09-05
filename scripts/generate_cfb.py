@@ -119,6 +119,7 @@ def build_game_row(game: dict, ctx: dict, gl_cfg: GameLineConfig) -> dict:
         "model_version": GAME_MODEL_VERSION,
         "game_pk": game["game_pk"],
         "game_date": game["game_date"],
+        "commence_time": game.get("commence_time"),
         "home_team_name": game["home_name"],
         "away_team_name": game["away_name"],
     }

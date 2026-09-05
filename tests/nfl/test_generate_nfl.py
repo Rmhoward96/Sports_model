@@ -20,6 +20,7 @@ def test_build_game_row_is_serving_shaped():
     assert row["total_dist"]["kind"] == "pmf" and 0 <= row["home_win_prob"] <= 1
     assert row["home_team_name"] == "Kansas City Chiefs"
     assert row["away_team_name"] == "Baltimore Ravens"
+    assert row["commence_time"] == "2026-09-11T00:20Z"  # kickoff carried through for time sort
 
 
 def test_build_game_row_is_model_only():

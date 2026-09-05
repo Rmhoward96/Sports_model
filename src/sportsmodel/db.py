@@ -130,7 +130,7 @@ def upsert_game_predictions(records: list[dict]) -> int:
     if not records:
         return 0
     cols = [
-        "game_pk", "model_version", "game_date",
+        "game_pk", "model_version", "game_date", "commence_time",
         "home_team_name", "away_team_name",
         "home_probable_pitcher_name", "away_probable_pitcher_name",
         "pred_home_score", "pred_away_score", "pred_total", "pred_margin",

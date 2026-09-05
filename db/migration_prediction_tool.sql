@@ -85,6 +85,11 @@ CREATE VIEW accuracy_by_confidence AS
 -- start) current_date became "tomorrow" while the games were still stored under
 -- "today". Shifting now() back 8h before taking ::date reproduces the producer's
 -- own game-day boundary, so a game stays visible through the end of its US day.
+-- commence_time (exact UTC kickoff) so the front-end can sort the slate by
+-- date AND time; game_date alone only orders to the day, leaving same-day
+-- games in an arbitrary order.
+ALTER TABLE game_predictions ADD COLUMN IF NOT EXISTS commence_time TIMESTAMPTZ;
+
 CREATE OR REPLACE VIEW predictions_current AS
   SELECT DISTINCT ON (sport, game_pk)
     sport,
@@ -94,7 +99,8 @@ CREATE OR REPLACE VIEW predictions_current AS
     away_team_name,
     home_win_prob,
     pred_home_score,
-    pred_away_score
+    pred_away_score,
+    commence_time
   FROM game_predictions
   WHERE game_date >= (now() - interval '8 hours')::date
   ORDER BY sport, game_pk, generated_at DESC;
