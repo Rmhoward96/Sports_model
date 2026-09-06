@@ -12,10 +12,14 @@ returns). Mapping those names to ESPN team ids happens later, in
 later ingest step's main() -- never by the parse_* functions above. It
 mirrors `cfb.espn._get` / `nfl.espn._get`'s retry policy (tenacity: 3
 attempts, exponential backoff) but adds the CFBD Bearer-token auth header.
+
+`_get` takes the API key as a parameter rather than reading `CFBD_API_KEY`
+itself -- the env lookup (and fail-fast if unset) is the ingest script's
+main()'s job, mirroring `build_cfb_lines.py`'s `fetch_year(year, key)`. This
+keeps `_get` pure of env access, same as the parse_* functions above.
 """
 from __future__ import annotations
 
-import os
 from typing import Any
 
 import httpx
@@ -33,16 +37,16 @@ QB_RETURNING_THRESHOLD = 0.5
 
 
 @retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=0.5, max=8))
-def _get(path: str, params: dict | None = None) -> Any:
+def _get(path: str, api_key: str, params: dict | None = None) -> Any:
     """GET {_BASE}{path} with CFBD Bearer auth and return parsed JSON, retrying
     transient failures.
 
-    Reads the API key from `CFBD_API_KEY` on every call (not cached at import
-    time) so tests can monkeypatch the environment. tenacity retries any
-    raised exception (connect/read timeouts and raise_for_status errors) 3
-    times with exponential backoff -- same retry policy as cfb.espn._get /
-    nfl.espn._get."""
-    headers = {"Authorization": f"Bearer {os.environ['CFBD_API_KEY']}"}
+    `api_key` is passed in by the caller (the ingest script's main(), which
+    reads `CFBD_API_KEY` once and fails fast if it's unset) rather than read
+    from the environment here. tenacity retries any raised exception
+    (connect/read timeouts and raise_for_status errors) 3 times with
+    exponential backoff -- same retry policy as cfb.espn._get / nfl.espn._get."""
+    headers = {"Authorization": f"Bearer {api_key}"}
     r = httpx.get(f"{_BASE}{path}", params=params, headers=headers, timeout=20)
     r.raise_for_status()
     return r.json()
