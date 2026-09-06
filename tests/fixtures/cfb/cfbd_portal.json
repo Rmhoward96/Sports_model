@@ -1,0 +1,38 @@
+[
+  {
+    "season": 2024,
+    "firstName": "John",
+    "lastName": "Doe",
+    "position": "QB",
+    "origin": "Alabama",
+    "destination": "Ole Miss",
+    "transferDate": "2024-01-05",
+    "rating": 0.95,
+    "stars": 4,
+    "eligibility": "Immediate"
+  },
+  {
+    "season": 2024,
+    "firstName": "Jane",
+    "lastName": "Roe",
+    "position": "WR",
+    "origin": "Ole Miss",
+    "destination": "Miami",
+    "transferDate": "2024-01-08",
+    "rating": 0.40,
+    "stars": 3,
+    "eligibility": "Immediate"
+  },
+  {
+    "season": 2024,
+    "firstName": "Sam",
+    "lastName": "Lee",
+    "position": "OL",
+    "origin": "Kent State",
+    "destination": "Ole Miss",
+    "transferDate": "2024-01-10",
+    "rating": 0.55,
+    "stars": 3,
+    "eligibility": "Immediate"
+  }
+]
