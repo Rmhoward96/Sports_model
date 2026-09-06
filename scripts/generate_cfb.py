@@ -46,6 +46,16 @@ import pandas as pd
 
 from sportsmodel import config
 from sportsmodel.cfb import espn
+from sportsmodel.cfb.priors import (
+    DEFAULT_HALF_LIFE_GAMES,
+    DecayConfig,
+    PriorWeights,
+    blend_rating,
+    load_decay_config,
+    load_weights,
+    preseason_rating,
+    season_features_z,
+)
 from sportsmodel.cfb.teams import FCS
 from sportsmodel.db import upsert_game_predictions
 from sportsmodel.nfl.elo import EloConfig, run_elo
@@ -83,6 +93,28 @@ def load_gameline() -> GameLineConfig:
                           offset=j["offset"], total_max=j["total_max"],
                           w_margin=ShrinkParams(**j["w_margin"]),
                           w_total=ShrinkParams(**j["w_total"]))
+
+
+def load_priors_for_season(season: int, weights: PriorWeights) -> dict[str, float]:
+    """{team_espn_id: R_pre} for `season`, from `assets/cfb/priors.parquet`.
+
+    GRACEFUL FALLBACK: `assets/cfb/priors.parquet` is produced later by the
+    CFBD-backed ingest workflow (Task 7) and does not exist in every
+    environment yet. If the file is missing, or has no rows for `season`,
+    this returns {} -- `build_game_rows` treats an absent team-id in this
+    dict as prior_weight=0 (today's in-season-only behavior, unchanged). No
+    odds/market data is ever read here (market-independent).
+    """
+    path = _ASSETS / "priors.parquet"
+    if not path.exists():
+        return {}
+    df = pd.read_parquet(path)
+    season_rows = df[df["season"] == season].to_dict("records")
+    if not season_rows:
+        return {}
+    z = season_features_z(season_rows)
+    return {row["team_espn_id"]: preseason_rating(row, z[row["team_espn_id"]], weights)
+            for row in season_rows}
 
 
 def _game_date_from_commence(commence_iso: str) -> str:
@@ -140,9 +172,30 @@ def build_game_rows(games: list[dict], ratings: dict, week: int,
     represents, so no game-line prediction is served for those games.
 
     `ratings` = {"elo_final", "srs_now", "points_ratings", "lg_avg",
-    "games_played", "elo_cfg", "blend_cfg"} -- the season-to-date state
-    `main()` computes once (via run_elo/compute_srs/compute_points_ratings
-    over `assets/cfb/schedules.parquet`) before this is called.
+    "games_played", "elo_cfg", "blend_cfg", "r_pre", "decay_cfg"} -- the
+    season-to-date state `main()` computes once (via
+    run_elo/compute_srs/compute_points_ratings over
+    `assets/cfb/schedules.parquet`, plus `load_priors_for_season`) before
+    this is called.
+
+    Forward-looking priors (Task 6): for each side with a `team_espn_id` key
+    in `r_pre` (empty dict if `assets/cfb/priors.parquet` is missing or has
+    no row for that team -- see `load_priors_for_season`'s graceful
+    fallback), the team's pre-game Elo rating is blended with its R_pre via
+    `blend_rating(r_pre, elo, games_played, decay_cfg)` BEFORE being fed into
+    `expected_margin` -- this is the integration point chosen (rather than
+    blending the final `model_margin`) because R_pre lives on the same Elo
+    scale as `elo_final`/`elo_cfg.base` (see `preseason_rating`'s docstring),
+    so blending upstream of `expected_margin` lets the existing SRS/HFA
+    machinery in `expected_margin` operate on the blended rating exactly
+    like it would a normal in-season Elo value. At games_played=0 the decay
+    weight is 1.0, so the blended rating equals R_pre outright, which is
+    the intended "prior dominates preseason" behavior; as games_played
+    grows the weight decays toward `decay_cfg.prior_floor`, converging back
+    to plain in-season Elo -- today's behavior. `srs_now`/`points_ratings`
+    (and thus `model_total`) are untouched by the prior, mirroring
+    backtest_cfb_priors.py's design decision that priors.parquet carries no
+    points-scale signal.
     """
     elo_final = ratings["elo_final"]
     srs_now = ratings["srs_now"]
@@ -151,6 +204,8 @@ def build_game_rows(games: list[dict], ratings: dict, week: int,
     games_played = ratings["games_played"]
     elo_cfg = ratings["elo_cfg"]
     blend_cfg = ratings["blend_cfg"]
+    r_pre = ratings.get("r_pre") or {}
+    decay_cfg = ratings.get("decay_cfg") or DecayConfig(half_life_games=DEFAULT_HALF_LIFE_GAMES)
 
     rows = []
     for g in games:
@@ -159,6 +214,10 @@ def build_game_rows(games: list[dict], ratings: dict, week: int,
             continue
         elo_h = elo_final.get(h, elo_cfg.base)
         elo_a = elo_final.get(a, elo_cfg.base)
+        if h in r_pre:
+            elo_h = blend_rating(r_pre[h], elo_h, games_played.get(h, 0), decay_cfg)
+        if a in r_pre:
+            elo_a = blend_rating(r_pre[a], elo_a, games_played.get(a, 0), decay_cfg)
         model_margin = expected_margin(
             elo_h, elo_a, srs_now.get(h), srs_now.get(a),
             games_played.get(h, 0), games_played.get(a, 0), elo_cfg, blend_cfg)
@@ -211,9 +270,13 @@ def main() -> None:
 
     elo_cfg, blend_cfg = load_rating()
     gl_cfg = load_gameline()
+    prior_weights = load_weights(_ASSETS / "priors_weights.json")
+    decay_cfg = load_decay_config()
 
     sched = _load_committed("schedules.parquet")
     ratings = _season_to_date_ratings(sched, season, week, elo_cfg, blend_cfg)
+    ratings["r_pre"] = load_priors_for_season(season, prior_weights)
+    ratings["decay_cfg"] = decay_cfg
 
     espn_games = espn.fetch_schedule(season, week, season_type=season_type)
     games_for_rows = [{**g, "game_date": _game_date_from_commence(g["commence_time"])}
