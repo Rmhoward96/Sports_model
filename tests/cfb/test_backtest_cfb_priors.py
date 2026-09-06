@@ -18,6 +18,7 @@ _spec.loader.exec_module(backtest_cfb_priors)
 ats_result = backtest_cfb_priors.ats_result
 bucket_winrate = backtest_cfb_priors.bucket_winrate
 load_decay_config = backtest_cfb_priors.load_decay_config
+grade_vs_market = backtest_cfb_priors.grade_vs_market
 
 
 def test_ats_vs_closing_counts_cover_correctly():
@@ -75,3 +76,26 @@ def test_load_decay_config_reads_fitted_values(tmp_path):
     path.write_text('{"half_life_games": 6.0, "prior_floor": 0.05}')
     cfg = load_decay_config(path)
     assert cfg == DecayConfig(half_life_games=6.0, prior_floor=0.05)
+
+
+def test_load_decay_config_lives_in_sportsmodel_cfb_priors():
+    # Task 6's live producer needs DecayConfig at runtime and scripts/ is not
+    # an importable package -- the loader (and its default path constant)
+    # must live in sportsmodel.cfb.priors, not in this script.
+    import sportsmodel.cfb.priors as priors_mod
+    assert backtest_cfb_priors.load_decay_config is priors_mod.load_decay_config
+
+
+def test_grade_vs_market_home_margin_convention_locks_ats_direction():
+    # assets/cfb/lines.parquet stores market_spread in HOME-MARGIN convention
+    # (positive = home favored), NOT sportsbook convention (negative = home
+    # favored). Home favored by 10 -> market_spread=+10. The model likes away
+    # (model_margin=+3, i.e. it expects a smaller home margin than the
+    # market's +10). Home wins by 15 (actual_margin=+15) -> home covers the
+    # sportsbook -10 closing line -> the model's away pick LOSES. This example
+    # inverts to "win" if market_spread's convention is mishandled (passed
+    # straight into ats_result instead of negated), so it locks the
+    # convention with a real assertion rather than only self-consistent
+    # ats_result cases.
+    result = grade_vs_market(model_margin=3, market_spread=10, actual_margin=15)
+    assert result["ats"] == "loss"

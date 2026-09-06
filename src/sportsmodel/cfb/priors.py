@@ -15,6 +15,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from statistics import mean, pstdev
 
+from .. import config
+
 
 @dataclass(frozen=True)
 class PriorWeights:
@@ -121,6 +123,28 @@ class DecayConfig:
 
     half_life_games: float
     prior_floor: float = 0.0
+
+
+DECAY_PATH = config.PROJECT_ROOT / "assets" / "cfb" / "priors_decay.json"
+DEFAULT_HALF_LIFE_GAMES = 4.0  # documented default half-life; matches the
+                               # committed default assets/cfb/priors_decay.json
+
+
+def load_decay_config(path=DECAY_PATH) -> DecayConfig:
+    """Load a fitted `DecayConfig` from its sibling JSON file (see
+    backtest_cfb_priors.py's design note on why DecayConfig lives in a
+    separate file from PriorWeights); missing file -> the documented default
+    half-life, mirroring `load_weights`'s missing-file-safe fallback.
+
+    Kept next to `load_weights` so both the backtest (Task 5) and the live
+    producer (Task 6) can load fitted config the same way -- `scripts/` is
+    not an importable package, so this can't live in the backtest script.
+    """
+    p = Path(path)
+    if not p.exists():
+        return DecayConfig(half_life_games=DEFAULT_HALF_LIFE_GAMES)
+    data = json.loads(p.read_text())
+    return DecayConfig(**data)
 
 
 def prior_weight(games_played: float, cfg: DecayConfig) -> float:

@@ -93,9 +93,12 @@ them) ===
        fields, nothing else, loadable by `load_weights` unchanged.
      - `assets/cfb/priors_decay.json` -- `{"half_life_games": ...,
        "prior_floor": ...}`, a sibling file for `DecayConfig`, loaded via
-       `load_decay_config` (below) -- same missing-file-safe pattern as
-       `load_weights` (falls back to a documented default rather than
-       raising), so Task 6 can call it the same way.
+       `sportsmodel.cfb.priors.load_decay_config` -- same missing-file-safe
+       pattern as `load_weights` (falls back to a documented default rather
+       than raising). It lives in `sportsmodel.cfb.priors` (next to
+       `load_weights`), not in this script, so Task 6's producer -- which
+       needs `DecayConfig` at runtime and isn't in the `scripts/` package --
+       can import and call it the same way.
 
 7. **Ablation = leave-one-out from the final fit, not a full nested refit.**
    For each of the six adjustment factors (portal, coach, qb, starters,
@@ -123,9 +126,12 @@ from sportsmodel.nfl.srs import compute_srs
 from sportsmodel.nfl.ratings import BlendConfig, expected_margin
 from sportsmodel.nfl.points import compute_points_ratings, expected_total
 from sportsmodel.cfb.priors import (
+    DECAY_PATH as DECAY_OUT_PATH,
+    DEFAULT_HALF_LIFE_GAMES as _DEFAULT_HALF_LIFE_GAMES,
     DecayConfig,
     PriorWeights,
     blend_rating,
+    load_decay_config,
     preseason_rating,
     season_features_z,
 )
@@ -136,9 +142,6 @@ LINES_PATH = ASSETS / "lines.parquet"
 PRIORS_PATH = ASSETS / "priors.parquet"
 RATING_PATH = ASSETS / "rating.json"
 WEIGHTS_OUT_PATH = ASSETS / "priors_weights.json"
-DECAY_OUT_PATH = ASSETS / "priors_decay.json"
-_DEFAULT_HALF_LIFE_GAMES = 4.0  # documented default half-life (see design note #6
-                                # and the committed default priors_decay.json)
 
 EARLY_WEEKS = {1, 2, 3, 4, 5}  # "Weeks 1-5" per the brief -- where a
                                # forward-looking prior should matter most,
@@ -216,18 +219,6 @@ def _clean_market(value) -> float | None:
     except (TypeError, ValueError):
         pass
     return float(value)
-
-
-def load_decay_config(path=DECAY_OUT_PATH) -> DecayConfig:
-    """Load a fitted `DecayConfig` from its sibling JSON file (see design
-    note #6); missing file -> the documented default half-life, mirroring
-    `sportsmodel.cfb.priors.load_weights`'s missing-file-safe fallback."""
-    import json
-    p = pathlib.Path(path)
-    if not p.exists():
-        return DecayConfig(half_life_games=_DEFAULT_HALF_LIFE_GAMES)
-    data = json.loads(p.read_text())
-    return DecayConfig(**data)
 
 
 def load_merged_schedule(schedules_path=SCHEDULES_PATH, lines_path=LINES_PATH) -> pd.DataFrame:
@@ -493,31 +484,52 @@ def accuracy_table(raw_rows: list[dict], priors_by_season: dict, z_by_season: di
     return rows
 
 
+def grade_vs_market(model_margin: float, market_spread: float, actual_margin: float) -> dict:
+    """Grade one game's model pick against its closing market line.
+
+    `market_spread` (assets/cfb/lines.parquet) is stored in HOME-MARGIN
+    convention (positive = home favored), matching `model_margin`/
+    `actual_margin` directly -- see build_cfb_lines.py's docstring. `ats_result`
+    instead expects `closing_home_spread` in standard SPORTSBOOK convention
+    (negative = home favored), so it is negated at this call site only; the
+    local `threshold` stays in home-margin convention (== market_spread) so
+    it lines up with `model_margin` for `gap`/`clv_proxy`, and with
+    `ats_result`'s own internal threshold (`-closing_home_spread ==
+    market_spread`) so the pick direction used here matches the one
+    `ats_result` grades against.
+
+    Example: home favored by 10 (market_spread=+10), model likes away
+    (model_margin=+3, i.e. model expects a smaller home margin than the
+    market), home wins by 15 (actual_margin=+15) -> home covers -> the
+    model's away pick LOSES.
+    """
+    threshold = market_spread
+    gap = abs(model_margin - threshold)
+    ats = ats_result(model_margin, -market_spread, actual_margin)
+    model_favors_home = model_margin > threshold
+    clv_proxy = (model_margin - threshold) if model_favors_home else (threshold - model_margin)
+    return {"gap": gap, "ats": ats, "clv_proxy": clv_proxy}
+
+
 def edge_table(raw_rows: list[dict], priors_by_season: dict, z_by_season: dict,
                weights: PriorWeights, decay_cfg: DecayConfig,
                elo_cfg: EloConfig, blend_cfg: BlendConfig) -> list[dict]:
     """Bucket games with a valid closing spread by |model_margin - closing
     threshold|; report ATS win% (via ats_result/bucket_winrate) and mean
-    CLV-proxy (design decision #4) per bucket."""
+    CLV-proxy (design decision #4) per bucket. Per-game grading (market-line
+    convention conversion included) is `grade_vs_market`, above."""
     graded = []
     for r in raw_rows:
         if r["market_spread"] is None:
             continue
         model_margin = prior_seeded_margin(r, priors_by_season, z_by_season, weights, decay_cfg,
                                            elo_cfg, blend_cfg)
-        threshold = -r["market_spread"]
-        gap = abs(model_margin - threshold)
-        ats = ats_result(model_margin, r["market_spread"], r["actual_margin"])
-        model_favors_home = model_margin > threshold
-        clv_proxy = (model_margin - threshold) if model_favors_home else (threshold - model_margin)
-        graded.append({"gap": gap, "ats": ats, "clv_proxy": clv_proxy})
+        graded.append(grade_vs_market(model_margin, r["market_spread"], r["actual_margin"]))
 
     rows = []
     for lo, hi in EDGE_BUCKETS:
         bucket = [g for g in graded if lo <= g["gap"] < hi]
-        wr = bucket_winrate(graded, min_gap=lo) if hi == float("inf") else None
-        decided = [g for g in bucket if g["ats"] != "push"]
-        win_pct = (sum(1 for g in decided if g["ats"] == "win") / len(decided)) if decided else 0.0
+        win_pct = bucket_winrate(bucket, min_gap=lo)
         mean_clv = sum(g["clv_proxy"] for g in bucket) / len(bucket) if bucket else 0.0
         rows.append({
             "gap_bucket": f"[{lo},{hi})", "n": len(bucket),
