@@ -109,3 +109,44 @@ def preseason_rating(row: dict, z: dict, weights: PriorWeights) -> float:
         + weights.w_sos_prior * z["prior_sos"]
         + weights.w_sos_shift * z["forward_sos_shift"]
     )
+
+
+@dataclass(frozen=True)
+class DecayConfig:
+    """Configuration for the decaying prior blend.
+
+    half_life_games: number of games at which the prior weight decays to 0.5
+    prior_floor: minimum prior weight (default 0.0)
+    """
+
+    half_life_games: float
+    prior_floor: float = 0.0
+
+
+def prior_weight(games_played: float, cfg: DecayConfig) -> float:
+    """Decay weight of the preseason prior with exponential half-life.
+
+    Returns a weight in [cfg.prior_floor, 1.0]:
+    - At 0 games: weight = 1.0 (prior dominates)
+    - At cfg.half_life_games: weight = 0.5 (equal blend)
+    - As games increase: weight → cfg.prior_floor
+
+    Formula: max(prior_floor, 0.5 ** (games_played / half_life_games))
+    """
+    return max(cfg.prior_floor, 0.5 ** (games_played / cfg.half_life_games))
+
+
+def blend_rating(
+    r_pre: float, in_season_rating: float, games_played: float, cfg: DecayConfig
+) -> float:
+    """Blend preseason prior with in-season rating using decay-based weight.
+
+    Blends:
+    - r_pre (preseason rating) with weight w
+    - in_season_rating with weight (1 - w)
+    where w = prior_weight(games_played, cfg)
+
+    Result: w * r_pre + (1 - w) * in_season_rating
+    """
+    w = prior_weight(games_played, cfg)
+    return w * r_pre + (1 - w) * in_season_rating
