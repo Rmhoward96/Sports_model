@@ -46,6 +46,8 @@ Pulled per team-season into a committed snapshot, mirroring `build_cfb_lines.py`
 | Recruiting class | `/recruiting/teams` | Already in SP+ base; kept for the fallback prior and as an explanatory field. |
 | Transfer portal | `/player/portal` | **Explicit adjustment:** net portal talent = Σ(incoming player ratings) − Σ(outgoing). Data horizon ~2021+. |
 | Coaching change | `/coaches` | **Explicit adjustment:** detect HC change by comparing consecutive seasons; flag first-year HC (and optionally coordinator change if derivable). |
+| Returning starters | `/player/returning`, roster/usage + `/player/portal` | **Explicit adjustment**, beyond raw returning-production %: count of returning starters (offense/defense) and — weighted heaviest — a **QB-continuity** signal (did the primary starting QB return, or leave via portal/draft/graduation). QB continuity is the single most predictive returning-starter factor, so it gets its own fitted weight. |
+| Strength-of-schedule shift | `/games` (schedule) + opponents' `/ratings/sp` | **Explicit adjustment:** (a) *prior-year SoS* de-biases the backward rating — a team that feasted on a weak slate is regressed; (b) *forward SoS shift* (this year's avg opponent preseason rating vs last year's) as context. Both z-scored across FBS. |
 | Talent composite | `/teams/talent` | Optional supporting feature for the portal/coaching adjustments. |
 
 ## Model design
@@ -56,9 +58,13 @@ For each team-season:
 
 ```
 R_pre = base_rating(SP+ preseason, in Elo-scale units)
-        + w_portal   * net_portal_talent_z
-        + w_coach    * coaching_change_flag
-        + w_recruit  * recruiting_z        # only in the SP+-absent fallback prior
+        + w_portal    * net_portal_talent_z
+        + w_coach     * coaching_change_flag
+        + w_qb        * qb_continuity_flag        # returning primary starter = +, new QB = -
+        + w_starters  * returning_starters_z      # offense/defense returning-starter count
+        + w_sos_prior * prior_year_sos_z          # de-bias a soft prior-year slate
+        + w_sos_shift * forward_sos_shift_z       # this year's slate vs last year's
+        + w_recruit   * recruiting_z              # only in the SP+-absent fallback prior
 ```
 
 - `base_rating` is SP+ (or FPI) preseason, mapped onto the model's Elo scale via
@@ -99,14 +105,18 @@ longer for SP+/recruiting-only variants), extending
    (ATS > ~52.4%, and/or positive CLV)? A signal that improves accuracy but does
    **not** beat the line is reported as "better predictor, no edge" — and we do
    not label or sell it as an edge.
-3. **Ablation:** fit `w_*` with each factor in/out to confirm portal and coaching
-   each carry independent, non-spurious signal before inclusion.
+3. **Ablation:** fit `w_*` with each factor in/out (portal, coaching, QB
+   continuity, returning starters, prior-year SoS, forward SoS shift) to confirm
+   each carries independent, non-spurious signal before inclusion. QB continuity
+   and returning starters overlap with SP+'s returning-production term, so the
+   ablation must show they add signal *beyond* the base, or they're dropped.
 
 ## Increments
 
 1. **CFBD priors ingest** → `scripts/build_cfb_priors.py` writing
    `assets/cfb/priors.parquet` (team-season: base rating, returning production,
-   recruiting, net portal, coaching-change flag). Idempotent, retried, like
+   recruiting, net portal, coaching-change flag, QB-continuity flag, returning-
+   starters count, prior-year SoS, forward SoS shift). Idempotent, retried, like
    `build_cfb_lines`. Manual/seasonal workflow.
 2. **Prior assembly + Elo-scale mapping** (pure, unit-tested): components →
    `R_pre` per team-season.
