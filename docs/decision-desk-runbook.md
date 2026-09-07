@@ -1,7 +1,7 @@
-# CFB decision-desk runbook
+# Decision-desk runbook (CFB + NFL)
 
 A midweek, in-session runbook: a Claude Code controller (you) reads this doc
-and drives the CFB decision desk end to end — bundle → three agents →
+and drives the CFB or NFL decision desk end to end — bundle → three agents →
 synthesis → write. Nothing here runs unattended; it's invoked on demand by a
 person sitting at the controller.
 
@@ -16,20 +16,36 @@ function's docstring if this doc and the code ever disagree; the code wins.
 - `SPORTSDATA_API_KEY` — SportsDataIO key (injuries via InjuredPlayers, for `desk_inputs.py`).
 - `DATABASE_URL` — Supabase Postgres, for both `desk_inputs.py` (reads
   `predictions_current`) and `write_desk_picks.py` (writes `desk_picks`).
-- `assets/cfb/schedules.parquet` and `assets/cfb/fbs_teams.json` present
-  (recent-form computation reads these).
-- `predictions_current` already populated for `sport = 'cfb'` (i.e.
-  `scripts/generate_cfb.py` has run for the current week) — `desk_inputs.py`
-  does not generate predictions, it only reads them.
+- `desk_inputs.py` takes `--sport {cfb,nfl}` (default `cfb`) — pick the sport
+  before running Step 1.
+- `assets/<sport>/schedules.parquet` and `assets/<sport>/fbs_teams.json`
+  (CFB) or `assets/<sport>/nfl_teams.json` (NFL) present (recent-form
+  computation reads these).
+- `predictions_current` already populated for the chosen `sport` (i.e.
+  `scripts/generate_cfb.py` or `scripts/generate_nfl.py` has run for the
+  current week, matching the sport) — `desk_inputs.py` does not generate
+  predictions, it only reads them.
 
 ## Step 1 — Prepare the bundle
 
 ```
 SPORTSDATA_API_KEY=... DATABASE_URL=... \
-  PYTHONPATH=src uv run python scripts/desk_inputs.py --out data/cfb/desk_bundle.json
+  PYTHONPATH=src uv run python scripts/desk_inputs.py --sport cfb --out data/cfb/desk_bundle.json
+```
+
+```
+SPORTSDATA_API_KEY=... DATABASE_URL=... \
+  PYTHONPATH=src uv run python scripts/desk_inputs.py --sport nfl --out data/nfl/desk_bundle.json
 ```
 
 Optional: `--days-ahead N` (default 7) narrows/widens the slate window.
+
+Note on injuries: the NFL injuries endpoint is
+`/projections/json/InjuredPlayers` (CFB uses `/scores/json/InjuredPlayers`).
+For both sports, injuries come back keyed by team abbreviation and are
+crosswalked to ESPN display names via SportsDataIO's `FullName`. Free/trial
+SportsDataIO tiers return scrambled values for some fields — spot-check one
+known injury per slate before trusting the feed, for either sport.
 
 This produces one JSON object per **upcoming** FBS game (already-started
 games are excluded). Each entry:
@@ -179,7 +195,9 @@ written, not the most recent edit.
 
 ## The picks-JSON contract (authoritative: `write_desk_picks.validate_picks`)
 
-Each pick is a flat JSON object. `sport` is `"cfb"` for this desk.
+Each pick is a flat JSON object. This contract is sport-agnostic: `sport` is
+`"cfb"` or `"nfl"` depending on which desk produced the pick.
+`scripts/write_desk_picks.py` remains the authority regardless of sport.
 
 ### Required fields (must be present **and non-null**)
 
