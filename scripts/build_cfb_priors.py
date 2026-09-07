@@ -162,8 +162,13 @@ def main() -> None:
         portal = cfbd.parse_portal(
             cfbd._get("/player/portal", api_key, params={"year": season})
         )
+        # Fetch each coach's FULL tenure history (not just this year) so
+        # parse_coaches can tell whether `season` is their FIRST year at the
+        # school. Querying with year=season alone returns a single-season
+        # record per coach, which makes every coach look first-year.
         coaches = cfbd.parse_coaches(
-            cfbd._get("/coaches", api_key, params={"year": season}), season
+            cfbd._get("/coaches", api_key, params={"minYear": 2000, "maxYear": season}),
+            season,
         )
 
         parsed = {

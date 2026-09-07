@@ -13,6 +13,33 @@ def test_zscore_centers_and_scales():
     assert z["C"] > 0 and z["A"] < 0
 
 
+def test_zscore_accepts_numpy_floats():
+    # Parquet rows deliver numpy float64; zscore must not choke on them
+    # (regression: statistics.pstdev raised 'float has no attribute numerator').
+    np = __import__("numpy")
+    z = zscore({"A": np.float64(10.0), "B": np.float64(20.0), "C": np.float64(30.0)})
+    assert abs(z["B"]) < 1e-9 and z["C"] > 0 and z["A"] < 0
+
+
+def test_season_features_z_excludes_nan_values():
+    # A parquet null arrives as NaN (a float, not None). It must be treated as
+    # missing (team -> 0.0) and must not corrupt the other teams' z-scores.
+    nan = float("nan")
+    rows = [
+        {"team_espn_id": "1", "portal_net": 10.0, "returning_starters": 0.5,
+         "prior_sos": 5.0, "forward_sos_shift": 1.0},
+        {"team_espn_id": "2", "portal_net": 30.0, "returning_starters": nan,
+         "prior_sos": 7.0, "forward_sos_shift": -1.0},
+        {"team_espn_id": "3", "portal_net": 20.0, "returning_starters": 0.7,
+         "prior_sos": 9.0, "forward_sos_shift": 0.0},
+    ]
+    z = season_features_z(rows)
+    assert z["2"]["returning_starters"] == 0.0            # NaN -> neutral
+    # portal_net (no NaN) still z-scores normally: team 3 is the mean -> ~0
+    assert abs(z["3"]["portal_net"]) < 1e-9
+    assert z["1"]["portal_net"] < 0 and z["2"]["portal_net"] > 0
+
+
 def test_zscore_zero_std_returns_zeros():
     z = zscore({"A": 5.0, "B": 5.0, "C": 5.0})
     assert z == {"A": 0.0, "B": 0.0, "C": 0.0}
