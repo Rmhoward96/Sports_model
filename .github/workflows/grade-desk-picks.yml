@@ -1,0 +1,37 @@
+name: grade-desk-picks
+
+# Decision-desk forward grading: for each logged desk_picks row, once the game
+# is FINAL, grade the picked side (ml/spread/total) against the actual result
+# and record closing-line value (CLV) vs the ESPN pickcenter closing line ->
+# desk_pick_results. Pure code + ESPN + Supabase only (no SportsData/LLM
+# keys needed -- grading itself makes no model or provider calls), idempotent,
+# so it runs often.
+on:
+  schedule:
+    - cron: "0 */6 * * *"   # every 6h - a finished game gets graded within hours
+  workflow_dispatch:
+    inputs:
+      days:
+        description: "Rolling window in days"
+        type: string
+        default: "7"
+
+jobs:
+  grade:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v10.0.1
+
+      - name: Set up Python + sync deps
+        run: uv sync
+
+      - name: Grade desk picks (forward CLV)
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+        run: |
+          uv run python scripts/grade_desk_picks.py \
+            --days "${{ github.event.inputs.days || '7' }}"
