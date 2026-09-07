@@ -1,0 +1,22 @@
+[
+  {
+    "year": 2024,
+    "team": "Alabama",
+    "conference": "SEC",
+    "rating": 28.4,
+    "ranking": 3,
+    "offense": {"ranking": 5, "rating": 38.2},
+    "defense": {"ranking": 10, "rating": 9.8},
+    "specialTeams": {"ranking": 50, "rating": -0.4}
+  },
+  {
+    "year": 2024,
+    "team": "Kent State",
+    "conference": "MAC",
+    "rating": -18.6,
+    "ranking": 130,
+    "offense": {"ranking": 125, "rating": 15.1},
+    "defense": {"ranking": 128, "rating": 33.7},
+    "specialTeams": {"ranking": 100, "rating": -1.2}
+  }
+]

@@ -1,0 +1,33 @@
+name: build-cfb-priors
+
+# One-time (manual) ingest of historical CFB preseason priors from collegefootballdata.com,
+# committed as assets/cfb/priors.parquet for the backtest (seasons + current season).
+# CFBD_API_KEY is a repo secret; the key is never printed. Dispatch this once after adding
+# the secret to populate the backtest history, then Task 5's backtest can run.
+on:
+  workflow_dispatch: {}
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v5
+      - name: Install uv
+        uses: astral-sh/setup-uv@v10.0.1
+      - name: Sync deps
+        run: uv sync
+      - name: Build CFB preseason priors
+        env:
+          CFBD_API_KEY: ${{ secrets.CFBD_API_KEY }}
+        run: uv run python scripts/build_cfb_priors.py --seasons 2021 2026
+      - name: Commit priors asset
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add assets/cfb/priors.parquet
+          git diff --staged --quiet || git commit -m "data(cfb): preseason priors from CFBD (build-cfb-priors)"
+          git push

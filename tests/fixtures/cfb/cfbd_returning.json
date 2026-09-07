@@ -1,0 +1,36 @@
+[
+  {
+    "season": 2024,
+    "team": "Alabama",
+    "conference": "SEC",
+    "totalPPA": 145.2,
+    "totalPassingPPA": 60.1,
+    "totalReceivingPPA": 45.0,
+    "totalRushingPPA": 40.1,
+    "percentPPA": 0.71,
+    "percentPassingPPA": 0.62,
+    "percentReceivingPPA": 0.75,
+    "percentRushingPPA": 0.68,
+    "usage": 0.66,
+    "passingUsage": 0.60,
+    "receivingUsage": 0.70,
+    "rushingUsage": 0.64
+  },
+  {
+    "season": 2024,
+    "team": "Kent State",
+    "conference": "MAC",
+    "totalPPA": 30.5,
+    "totalPassingPPA": 5.0,
+    "totalReceivingPPA": 10.0,
+    "totalRushingPPA": 15.5,
+    "percentPPA": 0.40,
+    "percentPassingPPA": 0.35,
+    "percentReceivingPPA": 0.45,
+    "percentRushingPPA": 0.42,
+    "usage": 0.38,
+    "passingUsage": 0.30,
+    "receivingUsage": 0.40,
+    "rushingUsage": 0.44
+  }
+]

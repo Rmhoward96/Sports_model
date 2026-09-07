@@ -1,0 +1,24 @@
+[
+  {
+    "firstName": "Jedd",
+    "lastName": "Fisch",
+    "hireDate": "2024-01-01",
+    "seasons": [
+      {"school": "Arizona", "year": 2021, "games": 12, "wins": 1, "losses": 11},
+      {"school": "Arizona", "year": 2022, "games": 12, "wins": 5, "losses": 7},
+      {"school": "Arizona", "year": 2023, "games": 13, "wins": 10, "losses": 3},
+      {"school": "Washington", "year": 2024, "games": 13, "wins": 11, "losses": 2}
+    ]
+  },
+  {
+    "firstName": "Kirby",
+    "lastName": "Smart",
+    "hireDate": "2016-01-01",
+    "seasons": [
+      {"school": "Georgia", "year": 2016, "games": 13, "wins": 8, "losses": 5},
+      {"school": "Georgia", "year": 2017, "games": 15, "wins": 13, "losses": 2},
+      {"school": "Georgia", "year": 2023, "games": 15, "wins": 13, "losses": 1},
+      {"school": "Georgia", "year": 2024, "games": 14, "wins": 11, "losses": 3}
+    ]
+  }
+]
