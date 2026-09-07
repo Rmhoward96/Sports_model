@@ -29,6 +29,21 @@ backtested (historical news leaks outcomes), so its only honest validation is
 forward paper-trading. Until it demonstrably beats the line over a real sample,
 it is a decision aid with rationale — never sold as an edge.
 
+### Locked decisions (from review)
+
+- **Provider:** SportsDataIO (key `SPORTSDATA_API_KEY`, a GitHub secret).
+- **Execution:** **on-demand / manual** — the desk runs inside a Claude Code
+  session that the user triggers (I drive the three agents as subagents over a
+  prepared input bundle and write the picks). There is **no scheduled
+  Claude-API workflow and no `ANTHROPIC_API_KEY` in CI** — the LLM reasoning
+  happens in-session. Only the *grading* is automated (it needs no LLM).
+- **Cadence:** one pass per week, run **midweek**, when the user triggers it.
+- **Coverage:** **every game, tiered** — a pick on every FBS game, each tagged
+  with a conviction tier (high / medium / low), with a highlighted "best bets"
+  (high-conviction) subset. Full graded sample for the CLV test *and* the
+  strongest looks surfaced.
+- **Scope:** CFB first.
+
 ## The three agents
 
 1. **Statistics agent** — reads our own model output (`predictions_current`:
@@ -60,9 +75,10 @@ the cost.
   GitHub Actions secret (`SPORTSDATA_API_KEY`), provisioned by the user, never
   seen by the assistant or committed — same handling as `CFBD_API_KEY`. The
   adapter isolates the provider so it can be swapped.
-- **LLM:** the agents call the Claude API (Anthropic SDK). Requires
-  `ANTHROPIC_API_KEY` as a secret and a per-run budget. Model tiering: cheap
-  model for the three stream briefs, a stronger model for the synthesis.
+- **LLM:** the three agents + synthesis run as **subagents inside the
+  on-demand Claude Code session** — no Anthropic API key or CI budget. The
+  session's controller prepares each agent's input bundle (files), dispatches
+  the agents, and writes the resulting picks. Grading is pure code (no LLM).
 - **Closing line:** the CFBD lines we already ingest (`lines.parquet` /
   live ESPN pickcenter) — the benchmark the picks are graded against.
 
@@ -87,9 +103,12 @@ per upcoming CFB game:
 ## Storage & serving
 
 - `desk_picks` (new table): game_pk, sport, game_date, matchup, ml_pick,
-  spread_side + spread_line, total_side + total_line, confidence, rationale,
-  agent_notes (json), model_version, created_at. Written pre-kickoff;
-  idempotent per (game_pk, model_version).
+  spread_side + spread_line, total_side + total_line, confidence,
+  conviction_tier (high/medium/low), rationale, agent_notes (json),
+  model_version, created_at. Written pre-kickoff; idempotent per
+  (game_pk, model_version). A pick on every FBS game; the tier drives the
+  "best bets" highlighting on the site and lets the CLV test segment by
+  conviction.
 - `desk_pick_results` (new table/view): joins picks to finals + the closing
   line → ml_correct, spread_cover (vs line), total_result (vs line), CLV.
 - Front-end: a **Decision Desk** section on the CFB page showing each game's
@@ -105,12 +124,15 @@ per upcoming CFB game:
   as an edge. Below that, it stays labeled "assistive — not a proven edge,"
   reported straight either way.
 
-## Cost (must be watched)
+## Cost
 
-Per CFB slate (~50 FBS games): ~3 briefs + 1 synthesis (+ up to 3 follow-ups)
-= ~4–7 LLM calls/game → ~200–350 calls/week, plus the news-API calls. The
-spec includes a hard per-run game cap and a cheap-model floor for the briefs;
-the workflow runs once or twice pre-slate, not continuously.
+Because the desk runs **on-demand in a Claude Code session** (not a paid CI
+loop), there is no standing API bill — the LLM cost is the session's own
+subagent usage on the weeks the user runs it, once per week. The only external
+cost is the SportsDataIO subscription (the user's key). Grading runs in CI but
+is pure code (free). To keep a single run tractable over ~50 FBS games, the
+briefs are batched (one agent pass over the whole slate's bundle, not one
+dispatch per game) rather than fanned out per game.
 
 ## Non-goals
 
@@ -135,10 +157,12 @@ the workflow runs once or twice pre-slate, not continuously.
   forward test will tell us honestly.
 - **Cost creep:** capped per run; revisited if the forward test shows no edge.
 
-## Open questions for review
+## Resolved (review complete)
 
-1. Provider: SportsDataIO as recommended, or a specific alternative you prefer?
-2. Cadence: how many pre-slate runs (e.g., a Wednesday first pass + a
-   Friday/Saturday-morning refresh as injuries/weather firm up)?
-3. Any appetite for a small "confidence threshold" so the desk only surfaces
-   its higher-conviction picks, rather than a pick on every game?
+- Provider → **SportsDataIO**.
+- Cadence → **one midweek pass per week**, user-triggered.
+- Coverage → **every game, tiered** (best-bets = high-conviction subset).
+- Execution → **on-demand in-session** (no CI Claude-API loop).
+
+Implementation plan follows in
+`docs/superpowers/plans/2026-09-07-cfb-decision-desk.md`.
