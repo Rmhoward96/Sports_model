@@ -1,0 +1,302 @@
+[
+  {
+    "sport": "nfl",
+    "game_pk": 401872656,
+    "model_version": "desk-nfl-v1",
+    "commence_time": "2026-09-10T00:20:00+00:00",
+    "matchup": "New England Patriots @ Seattle Seahawks",
+    "ml_pick": "home",
+    "spread_side": null,
+    "spread_line": -3.5,
+    "total_side": null,
+    "total_line": 44.5,
+    "confidence": 0.52,
+    "conviction_tier": "low",
+    "rationale": "Model (SEA -3.3) sits right on the market (SEA -3.5) and the total lean is <1.5 pts \u2014 no edge either way. Declining both sides; ML SEA is the model's side at a true near-coin-flip. Low.",
+    "agent_notes": {
+      "statistics": "Model margin (home) +3.3 vs market home spread -3.5 -> spread edge away by 0.2. Model total 45.7 vs market 44.5 -> Over by 1.2. Home win prob 0.58.",
+      "analyst": "Trailing form (prior-season blend; SEASON OPENER, so weak signal): Seattle Seahawks 5-0 (WWWWW), avg margin +11.6, pace 41.6; New England Patriots 4-1 (WWWLW), avg margin +15.6, pace 53.2.",
+      "news": "Provider injury feed returned all statuses as 'Scrambled' (unusable); no material opener injury surfaced in-session. Both rosters reported broadly intact."
+    }
+  },
+  {
+    "sport": "nfl",
+    "game_pk": 401872657,
+    "model_version": "desk-nfl-v1",
+    "commence_time": "2026-09-11T00:35:00+00:00",
+    "matchup": "San Francisco 49ers @ Los Angeles Rams",
+    "ml_pick": "home",
+    "spread_side": null,
+    "spread_line": -3.5,
+    "total_side": "under",
+    "total_line": 48.5,
+    "confidence": 0.56,
+    "conviction_tier": "medium",
+    "rationale": "Spread is a dead heat (model LAR -3.5 = market LAR -3.5), so no side. The edge is the TOTAL: model projects 43.6 vs a 48.5 market \u2014 a ~5-pt Under lean, the desk's clearest number here. Lean Under 48.5 (medium); ML LAR is the model's coin-flip side.",
+    "agent_notes": {
+      "statistics": "Model margin (home) +3.5 vs market home spread -3.5 -> spread edge away by 0.0. Model total 43.6 vs market 48.5 -> Under by 4.9. Home win prob 0.59.",
+      "analyst": "Trailing form (prior-season blend; SEASON OPENER, so weak signal): Los Angeles Rams 3-2 (WLLWW), avg margin +9.6, pace 64.0; San Francisco 49ers 4-1 (LWWWW), avg margin +9.2, pace 53.2.",
+      "news": "Scrambled provider feed; no confirmed opener scratch surfaced. No QB news against either side."
+    }
+  },
+  {
+    "sport": "nfl",
+    "game_pk": 401872658,
+    "model_version": "desk-nfl-v1",
+    "commence_time": "2026-09-13T17:00:00+00:00",
+    "matchup": "Atlanta Falcons @ Pittsburgh Steelers",
+    "ml_pick": "home",
+    "spread_side": "home",
+    "spread_line": -3.5,
+    "total_side": null,
+    "total_line": 42.5,
+    "confidence": 0.55,
+    "conviction_tier": "medium",
+    "rationale": "Model likes PIT by ~5.4 vs a 3.5 market \u2014 a ~1.9-pt lean to the home favorite laying a field goal. Total is ~pick (model 43.4 vs 42.5). Lean PIT -3.5 / PIT ML (medium).",
+    "agent_notes": {
+      "statistics": "Model margin (home) +5.4 vs market home spread -3.5 -> spread edge home by 1.9. Model total 43.4 vs market 42.5 -> Over by 0.9. Home win prob 0.64.",
+      "analyst": "Trailing form (prior-season blend; SEASON OPENER, so weak signal): Pittsburgh Steelers 4-1 (WLWWW), avg margin +3.6, pace 42.8; Atlanta Falcons 4-1 (WWWWL), avg margin -3.0, pace 47.0.",
+      "news": "Scrambled provider feed; no material Pittsburgh/Atlanta opener injury surfaced in-session."
+    }
+  },
+  {
+    "sport": "nfl",
+    "game_pk": 401872659,
+    "model_version": "desk-nfl-v1",
+    "commence_time": "2026-09-13T17:00:00+00:00",
+    "matchup": "Baltimore Ravens @ Indianapolis Colts",
+    "ml_pick": "away",
+    "spread_side": "home",
+    "spread_line": 3.5,
+    "total_side": null,
+    "total_line": 47.5,
+    "confidence": 0.55,
+    "conviction_tier": "medium",
+    "rationale": "Market makes road-favorite BAL -3.5; model has the margin at just BAL -1.4, a ~2.1-pt lean to the home dog. Take IND +3.5 (spread home). ML is the model's side (BAL, ~0.44 home win prob). Medium \u2014 a getting-points lean, not a Colts-win call.",
+    "agent_notes": {
+      "statistics": "Model margin (home) -1.4 vs market home spread +3.5 -> spread edge home by 2.1. Model total 46.0 vs market 47.5 -> Under by 1.5. Home win prob 0.44.",
+      "analyst": "Trailing form (prior-season blend; SEASON OPENER, so weak signal): Indianapolis Colts 0-5 (LLLLL), avg margin -10.8, pace 54.4; Baltimore Ravens 2-3 (LWLWL), avg margin +6.0, pace 48.0.",
+      "news": "Lamar Jackson reported fully healthy entering 2026 (so no discount on Baltimore). Provider feed scrambled; no Colts opener scratch surfaced."
+    }
+  },
+  {
+    "sport": "nfl",
+    "game_pk": 401872660,
+    "model_version": "desk-nfl-v1",
+    "commence_time": "2026-09-13T17:00:00+00:00",
+    "matchup": "Buffalo Bills @ Houston Texans",
+    "ml_pick": "home",
+    "spread_side": null,
+    "spread_line": -1.5,
+    "total_side": null,
+    "total_line": 44.5,
+    "confidence": 0.51,
+    "conviction_tier": "low",
+    "rationale": "Model HOU -1.0 vs market HOU -1.5 and total within ~1 pt \u2014 no edge. Decline both; ML HOU is the model's side in a near-pick between two strong trailing profiles. Low.",
+    "agent_notes": {
+      "statistics": "Model margin (home) +1.0 vs market home spread -1.5 -> spread edge away by 0.5. Model total 43.4 vs market 44.5 -> Under by 1.1. Home win prob 0.51.",
+      "analyst": "Trailing form (prior-season blend; SEASON OPENER, so weak signal): Houston Texans 5-0 (WWWWW), avg margin +8.8, pace 47.6; Buffalo Bills 4-1 (WLWWW), avg margin +7.6, pace 50.0.",
+      "news": "Scrambled provider feed; no confirmed opener injury for either side surfaced in-session."
+    }
+  },
+  {
+    "sport": "nfl",
+    "game_pk": 401872661,
+    "model_version": "desk-nfl-v1",
+    "commence_time": "2026-09-13T17:00:00+00:00",
+    "matchup": "Chicago Bears @ Carolina Panthers",
+    "ml_pick": "away",
+    "spread_side": "home",
+    "spread_line": 3.0,
+    "total_side": "under",
+    "total_line": 46.5,
+    "confidence": 0.56,
+    "conviction_tier": "medium",
+    "rationale": "Total is the real edge: model 40.1 vs a 46.5 market (~6.4-pt Under, the biggest total divergence on the slate). Spread also leans the home dog CAR +3 by ~1.7. Lean Under 46.5 + CAR +3 (medium). ML CHI is the model's side.",
+    "agent_notes": {
+      "statistics": "Model margin (home) -1.3 vs market home spread +3.0 -> spread edge home by 1.7. Model total 40.1 vs market 46.5 -> Under by 6.4. Home win prob 0.45.",
+      "analyst": "Trailing form (prior-season blend; SEASON OPENER, so weak signal): Carolina Panthers 2-3 (LLWLW), avg margin -3.2, pace 41.2; Chicago Bears 2-3 (LLWWL), avg margin +4.0, pace 47.2.",
+      "news": "Scrambled provider feed; no material opener injury surfaced. No QB news against either side."
+    }
+  },
+  {
+    "sport": "nfl",
+    "game_pk": 401872922,
+    "model_version": "desk-nfl-v1",
+    "commence_time": "2026-09-13T17:00:00+00:00",
+    "matchup": "Cleveland Browns @ Jacksonville Jaguars",
+    "ml_pick": "home",
+    "spread_side": null,
+    "spread_line": -8.5,
+    "total_side": null,
+    "total_line": 40.5,
+    "confidence": 0.53,
+    "conviction_tier": "low",
+    "rationale": "Model agrees with a big number (JAX -8.0 vs market -8.5) \u2014 no spread value in laying two scores when the model matches the line. Total ~pick. ML JAX (model's side, ~0.71). Declining spread/total. Low.",
+    "agent_notes": {
+      "statistics": "Model margin (home) +8.0 vs market home spread -8.5 -> spread edge away by 0.5. Model total 39.7 vs market 40.5 -> Under by 0.8. Home win prob 0.71.",
+      "analyst": "Trailing form (prior-season blend; SEASON OPENER, so weak signal): Jacksonville Jaguars 5-0 (WWWWW), avg margin +19.8, pace 53.0; Cleveland Browns 2-3 (WWLLL), avg margin -4.8, pace 38.8.",
+      "news": "Scrambled provider feed; no confirmed opener scratch surfaced in-session."
+    }
+  },
+  {
+    "sport": "nfl",
+    "game_pk": 401872923,
+    "model_version": "desk-nfl-v1",
+    "commence_time": "2026-09-13T17:00:00+00:00",
+    "matchup": "New Orleans Saints @ Detroit Lions",
+    "ml_pick": "home",
+    "spread_side": "away",
+    "spread_line": -7.0,
+    "total_side": null,
+    "total_line": 50.5,
+    "confidence": 0.53,
+    "conviction_tier": "low",
+    "rationale": "Model DET -5.5 vs a 7.0 market \u2014 a ~1.5-pt lean to the road dog getting a touchdown-plus. Take NO +7 (spread away) at low conviction; total ~pick. ML DET is the model's side.",
+    "agent_notes": {
+      "statistics": "Model margin (home) +5.5 vs market home spread -7.0 -> spread edge away by 1.5. Model total 50.9 vs market 50.5 -> Over by 0.4. Home win prob 0.65.",
+      "analyst": "Trailing form (prior-season blend; SEASON OPENER, so weak signal): Detroit Lions 2-3 (WLLLW), avg margin -1.6, pace 54.0; New Orleans Saints 4-1 (LWWWW), avg margin +7.2, pace 42.4.",
+      "news": "Scrambled provider feed; no material Lions/Saints opener injury surfaced in-session."
+    }
+  },
+  {
+    "sport": "nfl",
+    "game_pk": 401872924,
+    "model_version": "desk-nfl-v1",
+    "commence_time": "2026-09-13T17:00:00+00:00",
+    "matchup": "New York Jets @ Tennessee Titans",
+    "ml_pick": "home",
+    "spread_side": null,
+    "spread_line": -1.5,
+    "total_side": "over",
+    "total_line": 39.5,
+    "confidence": 0.52,
+    "conviction_tier": "low",
+    "rationale": "Spread ~pick (model TEN -2.0 vs market -1.5). Mild total lean: model 41.9 vs 39.5 (~2.4 Over). Take Over 39.5 at low conviction; ML TEN is the model's side. Low.",
+    "agent_notes": {
+      "statistics": "Model margin (home) +2.0 vs market home spread -1.5 -> spread edge home by 0.5. Model total 41.9 vs market 39.5 -> Over by 2.4. Home win prob 0.54.",
+      "analyst": "Trailing form (prior-season blend; SEASON OPENER, so weak signal): Tennessee Titans 2-3 (LLWLW), avg margin -7.2, pace 52.8; New York Jets 0-5 (LLLLL), avg margin -26.8, pace 48.4.",
+      "news": "Scrambled provider feed; no confirmed opener injury surfaced. NYJ enter on a poor trailing run."
+    }
+  },
+  {
+    "sport": "nfl",
+    "game_pk": 401872925,
+    "model_version": "desk-nfl-v1",
+    "commence_time": "2026-09-13T17:00:00+00:00",
+    "matchup": "Tampa Bay Buccaneers @ Cincinnati Bengals",
+    "ml_pick": "home",
+    "spread_side": "away",
+    "spread_line": -3.5,
+    "total_side": "under",
+    "total_line": 50.5,
+    "confidence": 0.56,
+    "conviction_tier": "medium",
+    "rationale": "Total is the edge: model 44.9 vs a 50.5 market (~5.6-pt Under) even with Burrow healthy. Spread also leans the road dog TB +3.5 by ~1.4. Lean Under 50.5 + TB +3.5 (medium). ML CIN is the model's side.",
+    "agent_notes": {
+      "statistics": "Model margin (home) +2.1 vs market home spread -3.5 -> spread edge away by 1.4. Model total 44.9 vs market 50.5 -> Under by 5.6. Home win prob 0.55.",
+      "analyst": "Trailing form (prior-season blend; SEASON OPENER, so weak signal): Cincinnati Bengals 2-3 (LWWLL), avg margin +3.2, pace 50.4; Tampa Bay Buccaneers 1-4 (WLLLL), avg margin -1.8, pace 42.2.",
+      "news": "Joe Burrow reported healthy/cleared entering 2026 (Cincinnati offense at full strength). Provider feed scrambled; no Tampa opener scratch surfaced."
+    }
+  },
+  {
+    "sport": "nfl",
+    "game_pk": 401872926,
+    "model_version": "desk-nfl-v1",
+    "commence_time": "2026-09-13T20:25:00+00:00",
+    "matchup": "Arizona Cardinals @ Los Angeles Chargers",
+    "ml_pick": "home",
+    "spread_side": null,
+    "spread_line": -10.0,
+    "total_side": null,
+    "total_line": 47.5,
+    "confidence": 0.53,
+    "conviction_tier": "low",
+    "rationale": "Model (LAC -9.2) matches a double-digit market (LAC -10) \u2014 no value laying that number when the model agrees. Total ~pick. ML LAC (model's side, ~0.74). Declining spread/total. Low.",
+    "agent_notes": {
+      "statistics": "Model margin (home) +9.2 vs market home spread -10.0 -> spread edge away by 0.8. Model total 46.8 vs market 47.5 -> Under by 0.7. Home win prob 0.74.",
+      "analyst": "Trailing form (prior-season blend; SEASON OPENER, so weak signal): Los Angeles Chargers 3-2 (LLWWW), avg margin +0.6, pace 35.8; Arizona Cardinals 0-5 (LLLLL), avg margin -19.0, pace 55.0.",
+      "news": "Scrambled provider feed; no confirmed opener injury surfaced. ARI enter on a poor trailing run."
+    }
+  },
+  {
+    "sport": "nfl",
+    "game_pk": 401872927,
+    "model_version": "desk-nfl-v1",
+    "commence_time": "2026-09-13T20:25:00+00:00",
+    "matchup": "Green Bay Packers @ Minnesota Vikings",
+    "ml_pick": "home",
+    "spread_side": null,
+    "spread_line": -1.5,
+    "total_side": null,
+    "total_line": 46.5,
+    "confidence": 0.51,
+    "conviction_tier": "low",
+    "rationale": "Model MIN -1.8 vs market -1.5 and total within ~1 pt \u2014 no edge. Decline both; ML MIN is the model's side in a near-pick. Low.",
+    "agent_notes": {
+      "statistics": "Model margin (home) +1.8 vs market home spread -1.5 -> spread edge home by 0.3. Model total 47.3 vs market 46.5 -> Over by 0.8. Home win prob 0.54.",
+      "analyst": "Trailing form (prior-season blend; SEASON OPENER, so weak signal): Minnesota Vikings 5-0 (WWWWW), avg margin +13.6, pace 34.4; Green Bay Packers 1-4 (LLLLW), avg margin -7.4, pace 46.2.",
+      "news": "Scrambled provider feed; no material opener injury surfaced. Note: trailing form (MIN hot, GB cold) is prior-season noise across the season boundary \u2014 treat with caution."
+    }
+  },
+  {
+    "sport": "nfl",
+    "game_pk": 401872928,
+    "model_version": "desk-nfl-v1",
+    "commence_time": "2026-09-13T20:25:00+00:00",
+    "matchup": "Miami Dolphins @ Las Vegas Raiders",
+    "ml_pick": "away",
+    "spread_side": "away",
+    "spread_line": -3.5,
+    "total_side": "over",
+    "total_line": 40.5,
+    "confidence": 0.51,
+    "conviction_tier": "low",
+    "rationale": "Model shows the slate's LARGEST divergence \u2014 it makes MIA the favorite (margin MIA +2.8) while the market has LV -3.5 (~6.3-pt gap toward MIA +3.5). But that edge rests on ratings blind to Miami's QB downgrade, so the desk deliberately FADES its own number here: MIA +3.5 / Over 40.5 at LOW conviction only, flagged as model-vs-news conflict rather than a real edge.",
+    "agent_notes": {
+      "statistics": "Model margin (home) -2.8 vs market home spread -3.5 -> spread edge away by 6.3. Model total 43.2 vs market 40.5 -> Over by 2.7. Home win prob 0.40.",
+      "analyst": "Trailing form (prior-season blend; SEASON OPENER, so weak signal): Las Vegas Raiders 1-4 (WLLLL), avg margin -12.4, pace 37.2; Miami Dolphins 2-3 (LWLLW), avg margin -7.6, pace 47.6.",
+      "news": "This is where news undercuts the model: Miami is into a downgraded QB situation (Malik Willis) for the opener, which the ratings model does not capture; Las Vegas has Kirk Cousins and RB Ashton Jeanty (ankle) reportedly on track. Provider feed scrambled."
+    }
+  },
+  {
+    "sport": "nfl",
+    "game_pk": 401872929,
+    "model_version": "desk-nfl-v1",
+    "commence_time": "2026-09-13T20:25:00+00:00",
+    "matchup": "Washington Commanders @ Philadelphia Eagles",
+    "ml_pick": "home",
+    "spread_side": "home",
+    "spread_line": -4.5,
+    "total_side": null,
+    "total_line": 44.5,
+    "confidence": 0.57,
+    "conviction_tier": "medium",
+    "rationale": "Model likes PHI by ~7.9 vs a 4.5 market \u2014 a ~3.4-pt lean to the home favorite, one of the desk's cleaner spread numbers. Total ~pick. Lean PHI -4.5 / PHI ML (medium).",
+    "agent_notes": {
+      "statistics": "Model margin (home) +7.9 vs market home spread -4.5 -> spread edge home by 3.4. Model total 44.7 vs market 44.5 -> Over by 0.2. Home win prob 0.71.",
+      "analyst": "Trailing form (prior-season blend; SEASON OPENER, so weak signal): Philadelphia Eagles 3-2 (LWWWL), avg margin +6.6, pace 37.0; Washington Commanders 2-3 (WLLWL), avg margin -6.8, pace 44.4.",
+      "news": "Jayden Daniels reported healthy for Washington (opponent at full strength QB), so the lean is not injury-driven. Provider feed scrambled; no Philadelphia opener scratch surfaced."
+    }
+  },
+  {
+    "sport": "nfl",
+    "game_pk": 401872930,
+    "model_version": "desk-nfl-v1",
+    "commence_time": "2026-09-14T00:20:00+00:00",
+    "matchup": "Dallas Cowboys @ New York Giants",
+    "ml_pick": "away",
+    "spread_side": "home",
+    "spread_line": 3.0,
+    "total_side": "under",
+    "total_line": 48.5,
+    "confidence": 0.55,
+    "conviction_tier": "medium",
+    "rationale": "Model has the margin near pick (DAL -0.3) while the market lays DAL -3 \u2014 a ~2.7-pt lean to the home dog NYG +3. Total also leans Under (model 45.8 vs 48.5). Take NYG +3 (medium) + Under 48.5 (low-med). ML DAL is the model's side.",
+    "agent_notes": {
+      "statistics": "Model margin (home) -0.3 vs market home spread +3.0 -> spread edge home by 2.7. Model total 45.8 vs market 48.5 -> Under by 2.7. Home win prob 0.48.",
+      "analyst": "Trailing form (prior-season blend; SEASON OPENER, so weak signal): New York Giants 2-3 (WWLLL), avg margin +2.4, pace 44.4; Dallas Cowboys 1-4 (LWLLL), avg margin -9.8, pace 57.8.",
+      "news": "Scrambled provider feed; no material Cowboys/Giants opener injury surfaced in-session."
+    }
+  }
+]
