@@ -1,34 +1,46 @@
 [
   {
-    "Team": "Alabama",
-    "Name": "John Smith",
+    "Team": "ALA",
+    "TeamID": 1001,
+    "FirstName": "John",
+    "LastName": "Smith",
     "Position": "QB",
-    "Status": "Questionable",
-    "BodyPart": "Shoulder",
-    "Practice": "Limited"
+    "InjuryStatus": "Questionable",
+    "InjuryBodyPart": "Shoulder",
+    "InjuryNotes": "Limited in practice",
+    "InjuryStartDate": "2024-08-28T00:00:00"
   },
   {
-    "Team": "Alabama",
-    "Name": "Mike Jones",
+    "Team": "ALA",
+    "TeamID": 1001,
+    "FirstName": "Mike",
+    "LastName": "Jones",
     "Position": "RB",
-    "Status": "Out",
-    "BodyPart": null,
-    "Practice": null
+    "InjuryStatus": "Out",
+    "InjuryBodyPart": null,
+    "InjuryNotes": null,
+    "InjuryStartDate": null
   },
   {
-    "Team": "Georgia",
-    "Name": "Dan Lee",
+    "Team": "UGA",
+    "TeamID": 1002,
+    "FirstName": "Dan",
+    "LastName": "Lee",
     "Position": "WR",
-    "Status": "Probable",
-    "BodyPart": "Ankle",
-    "Practice": "Full"
+    "InjuryStatus": "Probable",
+    "InjuryBodyPart": "Ankle",
+    "InjuryNotes": null,
+    "InjuryStartDate": "2024-08-30T00:00:00"
   },
   {
     "Team": null,
-    "Name": "Unknown Player",
+    "TeamID": null,
+    "FirstName": "Unknown",
+    "LastName": "Player",
     "Position": "OL",
-    "Status": "Out",
-    "BodyPart": "Knee",
-    "Practice": null
+    "InjuryStatus": "Out",
+    "InjuryBodyPart": "Knee",
+    "InjuryNotes": null,
+    "InjuryStartDate": null
   }
 ]

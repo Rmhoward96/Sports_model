@@ -1,22 +1,29 @@
-"""SportsDataIO adapter: live CFB injuries/news/weather for the news agent.
+"""SportsDataIO adapter: live CFB injuries (+ team crosswalk) for the news
+agent.
 
 Pure response parsers for the SportsDataIO CFB endpoints that feed the
-decision desk's news agent (injuries, headlines, game-day weather). Every
-parser is a pure function over already-decoded JSON -- no network, no DB, no
-file reads. Field names mirror SportsDataIO's real CFB schemas:
+decision desk's news agent. Field names mirror SportsDataIO's REAL CFB
+schemas, verified against their published OpenAPI swagger (the prior
+implementation guessed at endpoint paths/fields and 404'd live):
 
-  - Injuries (`/scores/json/Injuries` or similar): rows carry `Team`, `Name`,
-    `Position`, `Status`, `BodyPart`, `Practice` (all nullable in practice).
-  - News (`/scores/json/News`): rows carry `Title`, `Content`, `Updated`, and
-    a nullable `Team` (single team abbreviation, or null for a
-    league-wide/general story).
-  - Weather: game rows carry `GameID`, `ForecastTempLow`/`ForecastTempHigh`,
-    `ForecastWindSpeed`, `ForecastDescription` (free text; no numeric precip
-    field exists in the schema, so precipitation is inferred from keywords
-    in the description), and a nested `Stadium.Type` (`"Outdoor"`, `"Dome"`,
-    or `"RetractableDome"`) used to derive the `dome` flag. All of these are
-    null for a long-range forecast that hasn't populated yet, or (in the
-    dome-stadium case) because forecast fields are meaningless indoors.
+  - Injuries: `GET /v3/cfb/scores/json/InjuredPlayers` (NOT `/Injuries`,
+    which does not exist in this API). Returns a `Player[]` array. Relevant
+    fields (all nullable in practice): `FirstName`, `LastName` (there is NO
+    single "Name" field), `Team` (the team ABBREVIATION/Key, e.g. "SMU"),
+    `TeamID`, `Position`, `InjuryStatus` (e.g. Probable/Questionable/
+    Doubtful/Out), `InjuryBodyPart`, `InjuryNotes`, `InjuryStartDate`.
+
+  - Teams (abbreviation -> school crosswalk): `GET
+    /v3/cfb/scores/json/Teams`. Returns a `Team[]` array: `TeamID` (int),
+    `Key` (abbreviation, e.g. "SMU"), `School` (e.g. "SMU", "Florida
+    State"), `Name` (mascot), `TeamLogoUrl`. `InjuredPlayers` keys rows by
+    this same `Key` abbreviation, not the school name, so this endpoint is
+    what lets a later ingest step rekey injuries onto a school name (and
+    from there onto ESPN's display name -- see scripts/desk_inputs.py).
+
+There is NO News endpoint and NO usable weather endpoint in the CFB API --
+`parse_news`/`parse_weather` (and their fixtures) have been removed rather
+than kept as parsers for endpoints that don't exist.
 
 `_get` is the only network-touching piece here, and it is used solely by a
 later ingest step's main() -- never by the parse_* functions above. It
@@ -41,14 +48,6 @@ from tenacity import retry, stop_after_attempt, wait_exponential
 
 _BASE = "https://api.sportsdata.io/v3/cfb"
 
-# Keywords in SportsDataIO's free-text `ForecastDescription` that indicate
-# precipitation. There is no numeric precip-probability field in the CFB
-# weather schema, so this substring match is the documented proxy.
-_PRECIP_KEYWORDS = ("rain", "snow", "shower", "storm", "sleet", "drizzle")
-
-# Stadium.Type values that mean "not exposed to weather".
-_DOME_TYPES = {"Dome", "RetractableDome"}
-
 
 @retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=0.5, max=8))
 def _get(path: str, api_key: str, params: dict | None = None) -> Any:
@@ -68,99 +67,60 @@ def _get(path: str, api_key: str, params: dict | None = None) -> Any:
 
 
 def parse_injuries(payload) -> dict[str, list[dict]]:
-    """Injury report grouped by team, from SportsDataIO's CFB Injuries
-    endpoint (list of {"Team", "Name", "Position", "Status", "BodyPart",
-    "Practice", ...}).
+    """Injury report grouped by team ABBREVIATION, from SportsDataIO's real
+    CFB `InjuredPlayers` endpoint (list of `Player` objects: `FirstName`,
+    `LastName`, `Team`, `TeamID`, `Position`, `InjuryStatus`,
+    `InjuryBodyPart`, `InjuryNotes`, `InjuryStartDate`, ...).
 
-    Rows with a null `Team` are skipped (nothing to key them by). Per player:
-      - "player": Name
+    Rows with a null `Team` are skipped (nothing to key them by). Per
+    player:
+      - "player": "{FirstName} {LastName}", stripped (either half may be
+        missing/null -- treated as empty rather than crashing).
       - "position": Position
-      - "status": Status (e.g. "Out"/"Questionable"/"Doubtful"/"Probable")
-      - "note": "{BodyPart} - {Practice}" when both are present, whichever
-        one is present alone, or None when both are null (real SportsDataIO
-        rows are often missing one or both)."""
+      - "status": InjuryStatus (e.g. "Out"/"Questionable"/"Doubtful"/
+        "Probable")
+      - "note": InjuryBodyPart and InjuryNotes joined with " - ", skipping
+        whichever is null, or None when both are null.
+
+    Note this dict is keyed by SportsDataIO's team ABBREVIATION (e.g.
+    "SMU"), not a school name -- callers that need to join onto ESPN
+    display names must first rekey through `parse_teams`'s
+    abbreviation -> School map (see scripts/desk_inputs.py)."""
     out: dict[str, list[dict]] = {}
     for row in payload:
         team = row.get("Team")
         if team is None:
             continue
-        body_part, practice = row.get("BodyPart"), row.get("Practice")
-        parts = [p for p in (body_part, practice) if p is not None]
+        first = row.get("FirstName") or ""
+        last = row.get("LastName") or ""
+        player = f"{first} {last}".strip()
+        body_part, notes = row.get("InjuryBodyPart"), row.get("InjuryNotes")
+        parts = [p for p in (body_part, notes) if p is not None]
         note = " - ".join(parts) if parts else None
         out.setdefault(team, []).append({
-            "player": row.get("Name"),
+            "player": player,
             "position": row.get("Position"),
-            "status": row.get("Status"),
+            "status": row.get("InjuryStatus"),
             "note": note,
         })
     return out
 
 
-def parse_news(payload) -> list[dict]:
-    """Headlines, from SportsDataIO's CFB News endpoint (list of {"Title",
-    "Content", "Updated", "Team", ...}).
+def parse_teams(payload) -> dict[str, str]:
+    """Abbreviation ({Key}) -> school name ({School}) crosswalk, from
+    SportsDataIO's real CFB `Teams` endpoint (list of `Team` objects:
+    `TeamID`, `Key`, `School`, `Name`, `TeamLogoUrl`, ...).
 
-    Per story:
-      - "headline": Title
-      - "teams": [Team] when Team is present, else [] (a null Team means a
-        league-wide/general story not tied to one team)
-      - "published": Updated
-      - "summary": Content"""
-    out = []
+    Rows with a null `Key` or `School` are skipped -- nothing usable to map.
+    This is what lets a later ingest step rekey `parse_injuries`'s
+    abbreviation-keyed dict onto a school name, which is in turn matched
+    (by prefix, since SportsDataIO's school name and ESPN's displayName
+    differ, e.g. "Florida State" vs "Florida State Seminoles") onto ESPN's
+    display name -- see scripts/desk_inputs.py's `_rekey_by_espn_name`."""
+    out: dict[str, str] = {}
     for row in payload:
-        team = row.get("Team")
-        out.append({
-            "headline": row.get("Title"),
-            "teams": [team] if team is not None else [],
-            "published": row.get("Updated"),
-            "summary": row.get("Content"),
-        })
-    return out
-
-
-def parse_weather(payload) -> dict:
-    """Game-day weather keyed by GameID, from SportsDataIO's CFB game/weather
-    schema (list of {"GameID", "ForecastTempLow", "ForecastTempHigh",
-    "ForecastWindSpeed", "ForecastDescription", "Stadium": {"Type", ...}}).
-
-    Rows with a null GameID are skipped. Per game:
-      - "temp": average of ForecastTempLow/ForecastTempHigh when both are
-        present, whichever one is present alone, or None when both are null
-        (e.g. forecast not yet populated).
-      - "wind": ForecastWindSpeed, passed through as-is (may be None).
-      - "precip": True/False from a keyword match against
-        ForecastDescription (see _PRECIP_KEYWORDS), or None when
-        ForecastDescription itself is null (no forecast text to check --
-        e.g. domed games, where SportsDataIO often leaves forecast fields
-        null since they're meaningless indoors).
-      - "dome": True when the nested Stadium.Type is "Dome" or
-        "RetractableDome", False for "Outdoor", or None when Stadium/Type is
-        missing."""
-    out: dict = {}
-    for row in payload:
-        game_id = row.get("GameID")
-        if game_id is None:
+        key, school = row.get("Key"), row.get("School")
+        if key is None or school is None:
             continue
-
-        low, high = row.get("ForecastTempLow"), row.get("ForecastTempHigh")
-        if low is not None and high is not None:
-            temp = (low + high) / 2
-        else:
-            temp = low if low is not None else high
-
-        description = row.get("ForecastDescription")
-        precip = (
-            None if description is None
-            else any(kw in description.lower() for kw in _PRECIP_KEYWORDS)
-        )
-
-        stadium_type = (row.get("Stadium") or {}).get("Type")
-        dome = None if stadium_type is None else stadium_type in _DOME_TYPES
-
-        out[game_id] = {
-            "temp": temp,
-            "wind": row.get("ForecastWindSpeed"),
-            "precip": precip,
-            "dome": dome,
-        }
+        out[key] = school
     return out

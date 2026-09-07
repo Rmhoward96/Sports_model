@@ -1,10 +1,12 @@
 """Pure-assembly tests for scripts/desk_inputs.py's build_bundle.
 
 No network/DB/file access: build_bundle takes already-fetched/parsed inputs
-(games, model_rows, form_rows, injuries, news, weather) plus an injected
-`now`, and returns one bundle entry per UPCOMING game (commence_time strictly
-after `now`). Live-input gathering (SPORTSDATA_API_KEY, Supabase,
-schedules.parquet, ESPN) lives in main(), not here.
+(games, model_rows, form_rows, injuries, weather) plus an injected `now`,
+and returns one bundle entry per UPCOMING game (commence_time strictly after
+`now`). Live-input gathering (SPORTSDATA_API_KEY, Supabase,
+schedules.parquet, ESPN) lives in main(), not here. There is no news
+endpoint in SportsDataIO's CFB API, so build_bundle no longer takes a `news`
+argument or produces a `headlines` field.
 """
 import importlib.util
 import pathlib
@@ -54,15 +56,6 @@ INJURIES = {
     "Coralville": [],
 }
 
-NEWS = [
-    {"headline": "Ames QB battle heats up", "teams": ["Ames"],
-     "published": "2026-09-06T10:00:00Z", "summary": "..."},
-    {"headline": "Coralville shakes up O-line", "teams": ["Coralville"],
-     "published": "2026-09-05T10:00:00Z", "summary": "..."},
-    {"headline": "Unrelated Dover story", "teams": ["Dover"],
-     "published": "2026-09-04T10:00:00Z", "summary": "..."},
-]
-
 WEATHER = {
     401: {"temp": 70.0, "wind": 5.0, "precip": False, "dome": False},
     # 403 deliberately absent -- no forecast populated yet.
@@ -74,13 +67,13 @@ def _by_pk(bundle, pk):
 
 
 def test_only_upcoming_games_included():
-    bundle = build_bundle(GAMES, MODEL_ROWS, FORM_ROWS, INJURIES, NEWS, WEATHER, NOW)
+    bundle = build_bundle(GAMES, MODEL_ROWS, FORM_ROWS, INJURIES, WEATHER, NOW)
     pks = {e["game_pk"] for e in bundle}
     assert pks == {401, 403}
 
 
 def test_full_entry_has_model_form_news_and_market_line():
-    bundle = build_bundle(GAMES, MODEL_ROWS, FORM_ROWS, INJURIES, NEWS, WEATHER, NOW)
+    bundle = build_bundle(GAMES, MODEL_ROWS, FORM_ROWS, INJURIES, WEATHER, NOW)
     entry = _by_pk(bundle, 401)
 
     assert entry["matchup"] == "Boone @ Ames"
@@ -99,16 +92,14 @@ def test_full_entry_has_model_form_news_and_market_line():
     assert entry["form"]["home"] == FORM_ROWS["Ames"]
     assert entry["form"]["away"] == FORM_ROWS["Boone"]
 
-    # news block: injuries for BOTH teams, weather, relevant headlines only
+    # news block: injuries for BOTH teams, weather
     assert entry["news"]["injuries"]["home"] == INJURIES["Ames"]
     assert entry["news"]["injuries"]["away"] == INJURIES["Boone"]
     assert entry["news"]["weather"] == WEATHER[401]
-    headlines = {h["headline"] for h in entry["news"]["headlines"]}
-    assert headlines == {"Ames QB battle heats up"}
 
 
 def test_game_with_no_line_or_model_row_still_appears_with_none_fields():
-    bundle = build_bundle(GAMES, MODEL_ROWS, FORM_ROWS, INJURIES, NEWS, WEATHER, NOW)
+    bundle = build_bundle(GAMES, MODEL_ROWS, FORM_ROWS, INJURIES, WEATHER, NOW)
     entry = _by_pk(bundle, 403)
 
     assert entry["market_spread"] is None
@@ -122,6 +113,3 @@ def test_game_with_no_line_or_model_row_still_appears_with_none_fields():
     assert entry["form"]["away"] == FORM_ROWS["Coralville"]
     assert entry["news"]["injuries"]["away"] == INJURIES["Coralville"]
     assert entry["news"]["weather"] is None
-    # both Ames (home) and Coralville (away) headlines attach; Dover's does not
-    headlines = {h["headline"] for h in entry["news"]["headlines"]}
-    assert headlines == {"Ames QB battle heats up", "Coralville shakes up O-line"}
