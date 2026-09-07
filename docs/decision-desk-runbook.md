@@ -13,7 +13,7 @@ function's docstring if this doc and the code ever disagree; the code wins.
 
 ## Prerequisites
 
-- `SPORTSDATA_API_KEY` — SportsDataIO key (injuries/news for `desk_inputs.py`).
+- `SPORTSDATA_API_KEY` — SportsDataIO key (injuries via InjuredPlayers, for `desk_inputs.py`).
 - `DATABASE_URL` — Supabase Postgres, for both `desk_inputs.py` (reads
   `predictions_current`) and `write_desk_picks.py` (writes `desk_picks`).
 - `assets/cfb/schedules.parquet` and `assets/cfb/fbs_teams.json` present
@@ -53,8 +53,7 @@ games are excluded). Each entry:
   },
   "news": {
     "injuries": {"home": [ /* SportsDataIO injury dicts */ ], "away": [ /* ... */ ]},
-    "weather": null,            // not populated yet (no verified game_pk crosswalk — see desk_inputs.py)
-    "headlines": [ /* {"headline","teams","published","summary"} for either team */ ]
+    "weather": null            // always null: the CFB API exposes no usable weather endpoint
   }
 }
 ```
@@ -66,8 +65,12 @@ Notes for the controller:
 - `form.home`/`form.away` is a **scoring/pace trend** (last-N W/L, avg
   margin, avg combined points), *not* a true ATS record — there's no
   historical-line join here. Don't describe it to the user as ATS.
-- `news.weather` is currently always `null` (documented gap in
-  `desk_inputs.py`); don't fabricate a value.
+- `news.weather` is always `null` — the SportsDataIO CFB API has no usable
+  weather endpoint; don't fabricate a value.
+- The bundle carries **no headlines** — SportsDataIO CFB has no news feed.
+  `news.injuries` (from the InjuredPlayers endpoint) is the only provider
+  signal. The news agent supplements it with **in-session web search** for
+  suspensions, weather, and situational angles (see Step 2, agent 3).
 
 ## Step 2 — Run the three agents (whole-slate, one pass each)
 
@@ -88,10 +91,12 @@ returns a structured brief per game.
    still favors).
 
 3. **news agent** — injuries / suspensions / weather / situational.
-   For each game: read `news.injuries`, `news.weather`, `news.headlines`;
-   surface anything that could move the line or change who covers — a
-   named starter out, a suspension, a short week, a rivalry/trap-game
-   angle, a long road trip. If nothing material, say so explicitly rather
+   For each game: read `news.injuries` (the SportsDataIO InjuredPlayers
+   feed), and **use web search in-session** to fill the rest (suspensions,
+   weather, rivalry/trap-game/short-week angles) — the bundle has no
+   headlines or weather. Surface anything that could move the line or
+   change who covers — a named starter out, a suspension, a short week, a
+   rivalry/trap-game angle, a long road trip. If nothing material, say so rather
    than inventing a narrative.
 
 Each agent's output is a **structured per-game brief** (a dict keyed by

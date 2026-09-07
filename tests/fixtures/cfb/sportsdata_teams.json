@@ -1,0 +1,30 @@
+[
+  {
+    "TeamID": 1001,
+    "Key": "ALA",
+    "School": "Alabama",
+    "Name": "Crimson Tide",
+    "TeamLogoUrl": "https://example.com/ala.png"
+  },
+  {
+    "TeamID": 1002,
+    "Key": "UGA",
+    "School": "Georgia",
+    "Name": "Bulldogs",
+    "TeamLogoUrl": "https://example.com/uga.png"
+  },
+  {
+    "TeamID": 1003,
+    "Key": null,
+    "School": "Unknown",
+    "Name": "Unknown",
+    "TeamLogoUrl": null
+  },
+  {
+    "TeamID": 1004,
+    "Key": "XXX",
+    "School": null,
+    "Name": null,
+    "TeamLogoUrl": null
+  }
+]
