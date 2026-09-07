@@ -14,8 +14,9 @@ SportsDataIO's CFB/NFL APIs have no News endpoint and no usable weather endpoint
 (verified against their published OpenAPI swagger -- the prior
 implementation guessed at both and 404'd live), so neither is fetched here.
 Injuries come from the real `InjuredPlayers` endpoint, keyed by team
-ABBREVIATION; `Teams` supplies the abbreviation -> school crosswalk needed
-to rekey onto ESPN's display names (see `_rekey_by_espn_name` below). Both
+ABBREVIATION; `Teams` supplies the abbreviation -> full-name crosswalk (CFB
+School / NFL FullName) needed to rekey onto ESPN's display names (see
+`_rekey_by_espn_name` below). Both
 SportsDataIO calls are non-fatal: a failure there logs a warning and yields
 empty injuries rather than aborting the whole bundle -- the model/form
 blocks are more valuable than a hard dependency on a third-party feed.
@@ -97,8 +98,8 @@ def build_bundle(
         space as `games`). A team absent here yields `[]` for that side's
         injuries.
       weather: {game_pk -> weather dict}, keyed here by the SAME game_pk as
-        `games`. Currently always empty -- SportsDataIO's CFB API has no
-        usable weather endpoint (see module docstring) -- so every game's
+        `games`. Currently always empty -- no usable SportsDataIO weather
+        endpoint is wired in (see module docstring) -- so every game's
         weather is None; the parameter is kept so a future weather source
         can be plugged in without changing this function's shape.
       now: only games with `commence_time` strictly after `now` are
@@ -235,15 +236,17 @@ def _norm_name(s: str) -> str:
 
 def _rekey_by_espn_name(source: dict[str, object], espn_names: list[str]) -> dict[str, object]:
     """Best-effort remap of a SportsDataIO team-keyed dict onto ESPN display
-    names, matching a SportsDataIO school name (e.g. "Alabama") as a
-    normalized PREFIX of the ESPN displayName (e.g. "Alabama Crimson Tide").
+    names, matching a SportsDataIO team name as a normalized PREFIX (either
+    direction) of the ESPN displayName -- CFB "Alabama" -> "Alabama Crimson
+    Tide"; NFL "Philadelphia Eagles" -> "Philadelphia Eagles" (an exact
+    match, which prefix-matching subsumes).
 
-    SportsDataIO's CFB payloads key rows by bare school name while
-    predictions_current carries ESPN's full displayName -- there's no
+    SportsDataIO keys rows by its own team name (CFB School / NFL FullName)
+    while predictions_current carries ESPN's full displayName -- there's no
     published id crosswalk between the two providers, so this is a
-    heuristic, not a guaranteed join (see task-2-report.md "concerns").
-    Keys that don't uniquely match an ESPN name are dropped rather than
-    risk attaching a team's injuries to the wrong game.
+    heuristic, not a guaranteed join. Keys that don't uniquely match an ESPN
+    name are dropped rather than risk attaching a team's injuries to the
+    wrong game.
     """
     norm_espn = {_norm_name(n): n for n in espn_names}
     out: dict[str, object] = {}
@@ -354,10 +357,11 @@ def main() -> None:
     form_rows = compute_recent_form(schedule_named, set(espn_names))
 
     # -- injuries, from SportsDataIO's real InjuredPlayers/Teams endpoints --
-    # InjuredPlayers keys rows by team ABBREVIATION (e.g. "SMU"); Teams
-    # supplies the abbreviation -> School crosswalk, and _rekey_by_espn_name
-    # then prefix-matches School (e.g. "Florida State") onto ESPN's
-    # displayName (e.g. "Florida State Seminoles"). Both calls are
+    # InjuredPlayers keys rows by team ABBREVIATION (CFB e.g. "SMU", NFL e.g.
+    # "PHI"); Teams supplies the abbreviation -> full-name crosswalk (CFB
+    # School e.g. "Florida State", NFL FullName e.g. "Philadelphia Eagles"),
+    # and _rekey_by_espn_name then prefix-matches that onto ESPN's displayName
+    # ("Florida State Seminoles" / "Philadelphia Eagles"). Both calls are
     # non-fatal: a SportsDataIO outage/error logs a warning and yields empty
     # injuries rather than aborting the whole bundle -- the model/form
     # blocks are still worth writing on their own.
@@ -369,19 +373,19 @@ def main() -> None:
         teams_by_abbrev = adapter.parse_teams(
             adapter._get(adapter.TEAMS_PATH, api_key)
         )
-        injuries_by_school = {
+        injuries_by_name = {
             teams_by_abbrev[abbrev]: rows
             for abbrev, rows in injuries_by_abbrev.items()
             if abbrev in teams_by_abbrev
         }
-        injuries = _rekey_by_espn_name(injuries_by_school, espn_names)
+        injuries = _rekey_by_espn_name(injuries_by_name, espn_names)
     except Exception:
         log.warning("SportsDataIO injuries/teams fetch failed; continuing with no injury data", exc_info=True)
 
-    # Weather is intentionally NOT fetched here: SportsDataIO's CFB API has
-    # no usable weather endpoint (verified against their OpenAPI swagger --
-    # see module docstring), so the news block's weather is left None for
-    # every game.
+    # Weather is intentionally NOT fetched here: SportsDataIO's CFB/NFL feeds
+    # have no usable weather endpoint wired in (verified against their OpenAPI
+    # swagger -- see module docstring), so the news block's weather is left
+    # None for every game.
     weather: dict[int, dict] = {}
 
     bundle = build_bundle(games, model_rows, form_rows, injuries, weather, now)
