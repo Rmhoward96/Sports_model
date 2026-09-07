@@ -51,10 +51,9 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 import pandas as pd
 
 from sportsmodel import config
-from sportsmodel.cfb import sportsdata
+from sportsmodel.cfb import sportsdata as cfb_sportsdata
+from sportsmodel.nfl import sportsdata as nfl_sportsdata
 from sportsmodel.db import get_postgres
-
-OUT_PATH = config.DATA_DIR / "cfb" / "desk_bundle.json"
 
 RECENT_FORM_N = 5
 
@@ -253,16 +252,45 @@ def _rekey_by_espn_name(source: dict[str, object], espn_names: list[str]) -> dic
     return out
 
 
+def _sport_config(sport: str) -> dict:
+    """Per-sport paths/adapter for main(). Everything else in this module is
+    sport-generic. Raises SystemExit on an unsupported sport."""
+    root = config.PROJECT_ROOT
+    configs = {
+        "cfb": {
+            "adapter": cfb_sportsdata,
+            "schedules_path": root / "assets" / "cfb" / "schedules.parquet",
+            "crosswalk_path": root / "assets" / "cfb" / "fbs_teams.json",
+            "out_default": config.DATA_DIR / "cfb" / "desk_bundle.json",
+        },
+        "nfl": {
+            "adapter": nfl_sportsdata,
+            "schedules_path": root / "assets" / "nfl" / "schedules.parquet",
+            "crosswalk_path": root / "assets" / "nfl" / "nfl_teams.json",
+            "out_default": config.DATA_DIR / "nfl" / "desk_bundle.json",
+        },
+    }
+    if sport not in configs:
+        raise SystemExit(f"unsupported --sport {sport!r} (expected one of {sorted(configs)})")
+    return configs[sport]
+
+
 # =============================================================================
 # main()
 # =============================================================================
 
 def main() -> None:
-    ap = argparse.ArgumentParser(description="Build the CFB decision-desk input bundle.")
-    ap.add_argument("--out", type=Path, default=OUT_PATH)
+    ap = argparse.ArgumentParser(description="Build the decision-desk input bundle.")
+    ap.add_argument("--sport", choices=["cfb", "nfl"], default="cfb")
+    ap.add_argument("--out", type=Path, default=None,
+                     help="Output path (defaults to data/<sport>/desk_bundle.json).")
     ap.add_argument("--days-ahead", type=int, default=7,
                      help="Only include games within this many days of now (default 7).")
     args = ap.parse_args()
+
+    cfg = _sport_config(args.sport)
+    out_path = args.out if args.out is not None else cfg["out_default"]
+    adapter = cfg["adapter"]
 
     api_key = os.environ.get("SPORTSDATA_API_KEY")
     if not api_key:
@@ -281,8 +309,8 @@ def main() -> None:
                    home_win_prob, pred_home_score, pred_away_score,
                    commence_time, market_spread, market_total
             FROM predictions_current
-            WHERE sport = 'cfb'
-        """)
+            WHERE sport = %(sport)s
+        """, {"sport": args.sport})
         cols = ["game_pk", "game_date", "home_team_name", "away_team_name",
                 "home_win_prob", "pred_home_score", "pred_away_score",
                 "commence_time", "market_spread", "market_total"]
@@ -303,20 +331,22 @@ def main() -> None:
     espn_names = sorted({g["home_team"] for g in games} | {g["away_team"] for g in games})
 
     if not games:
-        print("No upcoming CFB games in predictions_current within the window; writing empty bundle.")
+        print(f"No upcoming {args.sport} games in predictions_current within the window; writing empty bundle.")
 
     # -- recent form, from schedules.parquet --
-    # schedules.parquet keys teams by ESPN id/"FCS" (not display name), while
-    # predictions_current (and thus `games`/`espn_names` above) is keyed by
-    # ESPN displayName -- translate ids -> names via the same fbs_teams.json
-    # asset cfb.teams reads, so compute_recent_form can join on team name.
-    schedule_path = config.PROJECT_ROOT / "assets" / "cfb" / "schedules.parquet"
-    schedule = pd.read_parquet(schedule_path)
-    fbs_names_path = config.PROJECT_ROOT / "assets" / "cfb" / "fbs_teams.json"
-    id_to_name = json.loads(fbs_names_path.read_text()) if fbs_names_path.exists() else {}
+    # schedules.parquet keys teams by the schedule's own team key (CFB: ESPN
+    # id/"FCS"; NFL: SportsDataIO abbreviation), while predictions_current
+    # (and thus `games`/`espn_names` above) is keyed by ESPN displayName --
+    # translate the schedule's key -> name via the sport's crosswalk asset,
+    # so compute_recent_form can join on team name. A team key absent from
+    # the crosswalk falls through unchanged (degrades to no-form, not a
+    # crash).
+    schedule = pd.read_parquet(cfg["schedules_path"])
+    crosswalk_path = cfg["crosswalk_path"]
+    crosswalk = json.loads(crosswalk_path.read_text()) if crosswalk_path.exists() else {}
     schedule_named = schedule.assign(
-        home_team=schedule["home_team"].astype(str).map(lambda t: id_to_name.get(t, t)),
-        away_team=schedule["away_team"].astype(str).map(lambda t: id_to_name.get(t, t)),
+        home_team=schedule["home_team"].astype(str).map(lambda t: crosswalk.get(t, t)),
+        away_team=schedule["away_team"].astype(str).map(lambda t: crosswalk.get(t, t)),
     )
     form_rows = compute_recent_form(schedule_named, set(espn_names))
 
@@ -330,11 +360,11 @@ def main() -> None:
     # blocks are still worth writing on their own.
     injuries: dict[str, list[dict]] = {}
     try:
-        injuries_by_abbrev = sportsdata.parse_injuries(
-            sportsdata._get("/scores/json/InjuredPlayers", api_key)
+        injuries_by_abbrev = adapter.parse_injuries(
+            adapter._get(adapter.INJURED_PLAYERS_PATH, api_key)
         )
-        teams_by_abbrev = sportsdata.parse_teams(
-            sportsdata._get("/scores/json/Teams", api_key)
+        teams_by_abbrev = adapter.parse_teams(
+            adapter._get(adapter.TEAMS_PATH, api_key)
         )
         injuries_by_school = {
             teams_by_abbrev[abbrev]: rows
@@ -353,9 +383,9 @@ def main() -> None:
 
     bundle = build_bundle(games, model_rows, form_rows, injuries, weather, now)
 
-    args.out.parent.mkdir(parents=True, exist_ok=True)
-    args.out.write_text(json.dumps(bundle, indent=2, default=str))
-    print(f"Wrote {args.out} ({len(bundle)} games)")
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    out_path.write_text(json.dumps(bundle, indent=2, default=str))
+    print(f"Wrote {out_path} ({len(bundle)} games)")
 
 
 if __name__ == "__main__":
