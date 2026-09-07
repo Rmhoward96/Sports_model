@@ -1,0 +1,22 @@
+[
+  {
+    "sport": "cfb",
+    "game_pk": 401858212,
+    "model_version": "desk-v1",
+    "commence_time": "2026-09-07T23:30:00+00:00",
+    "matchup": "SMU Mustangs @ Florida State Seminoles",
+    "ml_pick": "home",
+    "spread_side": "home",
+    "spread_line": 2.5,
+    "total_side": "over",
+    "total_line": 54.5,
+    "confidence": 0.56,
+    "conviction_tier": "medium",
+    "rationale": "Near coin-flip the market has at SMU -2.5, and the model agrees within a point (SMU -2.7), so there is no model edge on the side. The desk leans the home dog FSU +2.5 (and FSU ML as a lower-conviction live dog) on situational/news factors the ratings model can't see: SMU is playing its FIRST game of the season on the road while FSU already has 60 minutes of tape from a Week-0 win, and SMU is missing three running backs (Link Rhodes, Christian Rhodes, EJ Kelly) plus an OL, thinning a Kevin Jennings offense whose QB himself missed ~10 days with a camp finger injury. Total: lean Over 54.5 -- the model projects ~62.8, FSU's secondary is banged up (DB K.J. Kirkland doubtful), and Jennings' passing game is explosive; tempered to medium (not high) because SMU's RB losses cut rushing volume and Week-1 model totals are noisy.",
+    "agent_notes": {
+      "statistics": "Model margin SMU -2.7 vs market SMU -2.5 (no spread edge); model total 62.8 vs 54.5 (large Over lean); win_prob FSU 0.42 -- essentially a toss-up.",
+      "analyst": "No 2026 form yet (Week 1). Situational: FSU already played (Week-0 W over New Mexico State 34-17); SMU's opener on the road -> rust risk.",
+      "news": "SMU missing 3 RBs (L. Rhodes, C. Rhodes, EJ Kelly) + OL A. Hoopii; QB K. Jennings back from a camp finger injury (~10 days out). FSU DB K.J. Kirkland doubtful; multiple FSU DBs banged up. FSU home, primetime at Doak Campbell."
+    }
+  }
+]
