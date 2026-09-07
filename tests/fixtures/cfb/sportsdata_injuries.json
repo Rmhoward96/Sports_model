@@ -1,0 +1,34 @@
+[
+  {
+    "Team": "Alabama",
+    "Name": "John Smith",
+    "Position": "QB",
+    "Status": "Questionable",
+    "BodyPart": "Shoulder",
+    "Practice": "Limited"
+  },
+  {
+    "Team": "Alabama",
+    "Name": "Mike Jones",
+    "Position": "RB",
+    "Status": "Out",
+    "BodyPart": null,
+    "Practice": null
+  },
+  {
+    "Team": "Georgia",
+    "Name": "Dan Lee",
+    "Position": "WR",
+    "Status": "Probable",
+    "BodyPart": "Ankle",
+    "Practice": "Full"
+  },
+  {
+    "Team": null,
+    "Name": "Unknown Player",
+    "Position": "OL",
+    "Status": "Out",
+    "BodyPart": "Knee",
+    "Practice": null
+  }
+]
