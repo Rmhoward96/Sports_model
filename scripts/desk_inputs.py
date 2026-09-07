@@ -1,13 +1,16 @@
-"""Build the per-slate CFB decision-desk input bundle -> JSON.
+"""Build the per-slate decision-desk input bundle -> JSON, for CFB or NFL.
 
-Assembles one entry per UPCOMING FBS game for the (later, in-session) desk
-agents (statistics/analyst/news) to read: a model block (margin/total/
-win_prob from `predictions_current`), a recent-form block (last-N results +
-ATS/pace summary from `assets/cfb/schedules.parquet`), a news block
-(injuries for both teams, from SportsDataIO via `cfb.sportsdata`; weather
-stays None -- see below), and the pick-time market line.
+Assembles one entry per UPCOMING game (`--sport {cfb,nfl}`, default cfb) for
+the (later, in-session) desk agents (statistics/analyst/news) to read: a
+model block (margin/total/win_prob from `predictions_current`), a
+recent-form block (last-N results + ATS/pace summary from
+`assets/<sport>/schedules.parquet`), a news block (injuries for both teams,
+from SportsDataIO via the sport's `sportsdata` adapter; weather stays None --
+see below), and the pick-time market line. All sport-specific inputs (adapter,
+schedules/crosswalk paths, DB filter, output path) are resolved by
+`_sport_config`; everything else here is sport-generic.
 
-SportsDataIO's CFB API has no News endpoint and no usable weather endpoint
+SportsDataIO's CFB/NFL APIs have no News endpoint and no usable weather endpoint
 (verified against their published OpenAPI swagger -- the prior
 implementation guessed at both and 404'd live), so neither is fetched here.
 Injuries come from the real `InjuredPlayers` endpoint, keyed by team
@@ -33,7 +36,7 @@ the exact input/output shapes. `main()` is the thin IO wrapper.
 
 Usage:
     SPORTSDATA_API_KEY=... DATABASE_URL=... \\
-        PYTHONPATH=src uv run python scripts/desk_inputs.py [--out PATH]
+        PYTHONPATH=src uv run python scripts/desk_inputs.py [--sport cfb|nfl] [--out PATH]
 """
 from __future__ import annotations
 
