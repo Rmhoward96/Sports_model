@@ -1,0 +1,26 @@
+[
+  {
+    "GameID": 12345,
+    "ForecastTempLow": 58,
+    "ForecastTempHigh": 72,
+    "ForecastWindSpeed": 10,
+    "ForecastDescription": "Partly Cloudy",
+    "Stadium": {"Type": "Outdoor"}
+  },
+  {
+    "GameID": 12346,
+    "ForecastTempLow": 45,
+    "ForecastTempHigh": 50,
+    "ForecastWindSpeed": 22,
+    "ForecastDescription": "Rain showers likely",
+    "Stadium": {"Type": "Outdoor"}
+  },
+  {
+    "GameID": 12347,
+    "ForecastTempLow": null,
+    "ForecastTempHigh": null,
+    "ForecastWindSpeed": null,
+    "ForecastDescription": null,
+    "Stadium": {"Type": "Dome"}
+  }
+]
