@@ -99,3 +99,29 @@ def test_grade_vs_market_home_margin_convention_locks_ats_direction():
     # ats_result cases.
     result = grade_vs_market(model_margin=3, market_spread=10, actual_margin=15)
     assert result["ats"] == "loss"
+
+
+def test_clv_proxy_is_outcome_based_and_differs_from_gap():
+    # gap is pre-game only: |model_margin - market_spread|, independent of
+    # what actually happened. clv_proxy must be a genuinely different,
+    # signed, OUTCOME-based quantity -- not just a relabeling of gap.
+    #
+    # Home favored by 10 (market_spread=+10). Model likes away by a lot
+    # (model_margin=-5, well below the +10 threshold) -> gap = 15.
+    # Away wins outright (actual_margin=-2), so the model's away pick
+    # actually covers the closing number by 12 (threshold - actual_margin
+    # = 10 - (-2) = 12) -- a real, decent-sized win, much smaller than the
+    # pre-game gap of 15 and with independent meaning.
+    result = grade_vs_market(model_margin=-5, market_spread=10, actual_margin=-2)
+    assert result["gap"] == 15
+    assert result["clv_proxy"] == 12
+    assert result["clv_proxy"] != result["gap"]
+    assert result["ats"] == "win"  # sign of clv_proxy agrees with the ats grade
+
+    # Same pre-game gap, but the model's away pick LOSES this time (home
+    # actually covers) -- clv_proxy flips negative while gap stays positive,
+    # proving clv_proxy carries outcome information gap cannot.
+    losing = grade_vs_market(model_margin=-5, market_spread=10, actual_margin=20)
+    assert losing["gap"] == 15
+    assert losing["clv_proxy"] == -10  # threshold - actual_margin = 10 - 20
+    assert losing["ats"] == "loss"

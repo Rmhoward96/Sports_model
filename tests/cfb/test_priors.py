@@ -28,6 +28,22 @@ def test_preseason_rating_is_sp_base_plus_weighted_adjustments():
     assert r == 1500.0 + 25.0 + 20.0 - 8.0 + 12.0 + 6.0
 
 
+def test_qb_returning_none_is_neutral_not_a_penalty():
+    # Missing /player/returning data (qb_returning=None) must contribute 0,
+    # not be treated the same as a confirmed-departed QB (-w_qb).
+    w = PriorWeights(sp_scale=25.0, sp_offset=1500.0, w_qb=12.0)
+    z = {"portal_net": 0.0, "returning_starters": 0.0, "prior_sos": 0.0, "forward_sos_shift": 0.0}
+    base = {"sp_rating": 0.0, "coach_first_year": False}
+
+    r_true = preseason_rating({**base, "qb_returning": True}, z, w)
+    r_false = preseason_rating({**base, "qb_returning": False}, z, w)
+    r_none = preseason_rating({**base, "qb_returning": None}, z, w)
+
+    assert r_true == 1500.0 + 12.0
+    assert r_false == 1500.0 - 12.0
+    assert r_none == 1500.0
+
+
 def test_zero_weights_reduce_to_sp_only():
     w = PriorWeights(sp_scale=25.0, sp_offset=1500.0)   # rest default 0
     r = preseason_rating({"sp_rating": 2.0, "coach_first_year": False, "qb_returning": True},

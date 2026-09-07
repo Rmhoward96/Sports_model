@@ -99,7 +99,14 @@ def preseason_rating(row: dict, z: dict, weights: PriorWeights) -> float:
     this team (portal_net, returning_starters, prior_sos, forward_sos_shift),
     e.g. from `season_features_z`.
     """
-    qb_flag_signed = 1.0 if row["qb_returning"] else -1.0
+    qb_returning = row["qb_returning"]
+    if qb_returning is None:
+        # Missing /player/returning data is neutral (no signal either way),
+        # matching the neutral treatment of coach_first_year=None and the
+        # portal_net default -- not a penalty as if the QB were confirmed gone.
+        qb_flag_signed = 0.0
+    else:
+        qb_flag_signed = 1.0 if qb_returning else -1.0
     coach_flag = 1.0 if row["coach_first_year"] else 0.0
     return (
         weights.sp_offset

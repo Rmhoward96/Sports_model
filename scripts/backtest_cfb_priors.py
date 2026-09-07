@@ -55,13 +55,16 @@ them) ===
 4. **"CLV" without an opening line.** True closing-line value (the market's
    move from bet-time to close) needs an EARLIER line snapshot; this repo
    only stores CFBD's closing lines (see backtest_cfb_gameline.py's module
-   docstring). Lacking that, `edge_table` reports a CLV-PROXY: the model's
-   signed edge over the closing number in the direction of its own pick
-   (`model_margin - closing_cover_threshold`, sign-flipped for an away
-   pick so it is positive when the model and the market agree in direction
-   and would read as "the model saw value here"). This is explicitly
-   labeled "clv_proxy" in the printed table -- it is NOT a claim about
-   actual line movement.
+   docstring). Lacking that, `edge_table` reports a CLV-PROXY: the signed
+   REALIZED margin by which the actual game result beat or missed the
+   closing number, from the model's own picked-side perspective
+   (`actual_margin - closing_cover_threshold`, sign-flipped for an away
+   pick). Positive means the side the model picked actually covered (and by
+   how much); negative means it missed. This is distinct from `gap`, which
+   is the model's PRE-GAME distance from the market and carries no outcome
+   information at all -- `clv_proxy` is the only one of the two that reflects
+   whether the model's edge actually paid off. Explicitly labeled "clv_proxy"
+   in the printed table -- it is NOT a claim about actual line movement.
 
 5. **Fitting objective + holdout.** `fit_prior_weights` runs a scipy-free
    coordinate search (mirrors `_coordinate_search` in
@@ -244,8 +247,7 @@ def load_merged_schedule(schedules_path=SCHEDULES_PATH, lines_path=LINES_PATH) -
 # backtest_cfb_gameline.py's `_raw_model_predictions` + `_apply_gl` split).
 # --------------------------------------------------------------------------
 
-def raw_walk_forward(schedule_df: pd.DataFrame, elo_cfg: EloConfig,
-                      blend_cfg: BlendConfig) -> list[dict]:
+def raw_walk_forward(schedule_df: pd.DataFrame, elo_cfg: EloConfig) -> list[dict]:
     """One entry per scored game: pre-game elo/SRS/points state (all
     strictly leak-free -- refreshed once per completed week, matching
     backtest_cfb_ratings.py/backtest_cfb_gameline.py's precedent for CFB-scale
@@ -507,7 +509,15 @@ def grade_vs_market(model_margin: float, market_spread: float, actual_margin: fl
     gap = abs(model_margin - threshold)
     ats = ats_result(model_margin, -market_spread, actual_margin)
     model_favors_home = model_margin > threshold
-    clv_proxy = (model_margin - threshold) if model_favors_home else (threshold - model_margin)
+    # clv_proxy is a SIGNED, OUTCOME-based proxy -- not just a repackaging of
+    # `gap` (which is pre-game and outcome-independent). It is the realized
+    # margin by which the model's picked side beat (+) or missed (-) the
+    # closing number: actual_margin - threshold from the home side's
+    # perspective, sign-flipped when the model picked away so it always
+    # reads positive-good/negative-bad for the SIDE THE MODEL CHOSE. This
+    # tracks `ats` (same sign as a "win"/"loss") but keeps the magnitude of
+    # the cover/miss instead of collapsing it to a binary result.
+    clv_proxy = (actual_margin - threshold) if model_favors_home else (threshold - actual_margin)
     return {"gap": gap, "ats": ats, "clv_proxy": clv_proxy}
 
 
@@ -571,7 +581,7 @@ def main() -> None:
     blend_cfg = BlendConfig(w_sos=rating["w_sos"], srs_min_games=rating["srs_min_games"])
 
     t_walk0 = time.time()
-    raw = raw_walk_forward(full_span, elo_cfg, blend_cfg)
+    raw = raw_walk_forward(full_span, elo_cfg)
     t_walk = time.time() - t_walk0
 
     train_seasons = {s for s in priors_seasons if s % 2 == 0}
