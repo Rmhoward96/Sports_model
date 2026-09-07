@@ -76,6 +76,13 @@ CREATE OR REPLACE VIEW desk_current AS
 -- total-vs-line rate, and mean closing-line-value on both markets. avg()
 -- ignores NULLs, so ungraded fields (e.g. no spread pick that game) drop out
 -- of that column's average rather than dragging it toward zero.
+--
+-- desk_picks carries one row per (game_pk, model_version); a game can in
+-- principle have more than one model_version on file. Dedup to the latest
+-- version per game FIRST (same DISTINCT ON as desk_current above) before
+-- joining to desk_pick_results -- otherwise a multi-version game would join
+-- to the same result row once per version, inflating count(*)/avg() and
+-- letting the game contribute to more than one conviction_tier bucket.
 CREATE OR REPLACE VIEW desk_record AS
   SELECT
     p.sport,
@@ -86,7 +93,11 @@ CREATE OR REPLACE VIEW desk_record AS
     round((avg(r.total_result::int) * 100)::numeric, 1) AS total_pct,
     round(avg(r.clv_spread)::numeric, 2) AS mean_clv_spread,
     round(avg(r.clv_total)::numeric, 2) AS mean_clv_total
-  FROM desk_picks p
+  FROM (
+    SELECT DISTINCT ON (sport, game_pk) sport, game_pk, conviction_tier
+    FROM desk_picks
+    ORDER BY sport, game_pk, created_at DESC
+  ) p
   JOIN desk_pick_results r ON r.sport = p.sport AND r.game_pk = p.game_pk
   GROUP BY p.sport, p.conviction_tier
   ORDER BY p.sport, p.conviction_tier;

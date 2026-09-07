@@ -16,6 +16,7 @@ _spec.loader.exec_module(write_desk_picks)
 
 validate_picks = write_desk_picks.validate_picks
 writable_picks = write_desk_picks.writable_picks
+fill_missing_game_dates = write_desk_picks.fill_missing_game_dates
 
 
 def _pick(**overrides) -> dict:
@@ -116,6 +117,29 @@ def test_writable_picks_drops_started_games_keeps_future_ones():
 
     game_pks = {p["game_pk"] for p in result}
     assert game_pks == {2}
+
+
+# =============================================================================
+# fill_missing_game_dates
+# =============================================================================
+
+def test_missing_game_date_is_derived_from_commence_time():
+    # 2026-09-13T05:00:00Z minus the 8h US-game-day shift lands on 2026-09-12.
+    pick = _pick(game_date=None, commence_time="2026-09-13T05:00:00Z")
+
+    result = fill_missing_game_dates([pick])
+
+    assert result[0]["game_date"] == "2026-09-12"
+
+
+def test_explicit_game_date_is_kept_as_is():
+    # Even if it looks "wrong" relative to commence_time, an explicit
+    # game_date is never overwritten -- only a missing one is derived.
+    pick = _pick(game_date="2026-01-01", commence_time="2026-09-13T05:00:00Z")
+
+    result = fill_missing_game_dates([pick])
+
+    assert result[0]["game_date"] == "2026-01-01"
 
 
 def test_writable_picks_empty_input():

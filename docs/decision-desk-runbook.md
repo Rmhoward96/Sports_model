@@ -120,6 +120,13 @@ For each pick made:
 - **confidence**: a number in `[0, 1]`, the desk's own calibrated
   probability/strength for that pick (distinct from `conviction_tier`,
   which is the coarse bucket used for the record-tracking views).
+
+  Note on the record itself: `desk_record`'s `ats_pct`/`total_pct` grade
+  the pick against the CLOSING line, not the line the desk actually bet —
+  a harder bar than the ~52.4% -110 breakeven (which is defined against
+  the line you bet, not the close). `mean_clv_spread`/`mean_clv_total`
+  measure the separate question of whether the desk's pick-time number
+  beat the close.
 - **rationale**: prose explaining the pick. **Every pick must cite at least
   one concrete fact** surfaced by an agent — a named injury, a specific
   trend, a specific number (e.g. "model has Alabama -8.9 vs. a market

@@ -24,7 +24,7 @@ from __future__ import annotations
 import argparse
 import json
 import sys
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
@@ -157,6 +157,42 @@ def writable_picks(picks: list[dict], now: datetime) -> list[dict]:
 
 
 # =============================================================================
+# fill_missing_game_dates -- safety net for a missing game_date
+# =============================================================================
+
+def _game_date_from_commence(commence_iso: str) -> str:
+    """US game date from a UTC `commence_time`.
+
+    Same 8h-shift trick as `generate_cfb.py::_game_date_from_commence`: CFB
+    kickoffs run from ~15:00 UTC through ~04:00-07:00 UTC the next day, and
+    shifting back 8h before taking the date maps every real kickoff onto its
+    true US game day without a timezone lookup.
+    """
+    dt = _parse_iso(commence_iso)
+    return (dt - timedelta(hours=8)).date().isoformat()
+
+
+def fill_missing_game_dates(picks: list[dict]) -> list[dict]:
+    """Derive `game_date` from `commence_time` wherever it's missing. PURE.
+
+    `validate_picks` does not require `game_date`, but
+    `grade_desk_picks._pending_desk_picks` windows its query on
+    `game_date >= start` -- a pick written with `game_date = NULL` would
+    silently never be graded (SQL `NULL >= anything` is never true). Rather
+    than force every caller of this script to supply `game_date` (fragile --
+    an agent-produced picks JSON could easily omit it), derive it here from
+    `commence_time`, which IS required. A pick that already has an explicit
+    `game_date` is left untouched.
+    """
+    filled = []
+    for p in picks:
+        if p.get("game_date") is None:
+            p = {**p, "game_date": _game_date_from_commence(p["commence_time"])}
+        filled.append(p)
+    return filled
+
+
+# =============================================================================
 # main()
 # =============================================================================
 
@@ -177,6 +213,8 @@ def main() -> None:
         for p in problems:
             print(f"  - {p}")
         raise SystemExit(1)
+
+    picks = fill_missing_game_dates(picks)
 
     now = datetime.now(timezone.utc)
     to_write = writable_picks(picks, now)
