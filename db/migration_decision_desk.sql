@@ -66,7 +66,8 @@ CREATE OR REPLACE VIEW desk_current AS
     total_line,
     confidence,
     conviction_tier,
-    rationale
+    rationale,
+    agent_notes
   FROM desk_picks
   WHERE commence_time > now()
   ORDER BY sport, game_pk, created_at DESC, commence_time ASC;
