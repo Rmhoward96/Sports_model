@@ -13,7 +13,6 @@ from __future__ import annotations
 import json
 from dataclasses import dataclass
 from pathlib import Path
-from statistics import mean, pstdev
 
 from .. import config
 
@@ -37,16 +36,31 @@ class PriorWeights:
     w_sos_shift: float = 0.0
 
 
+def _is_missing(v) -> bool:
+    """True for a missing feature value -- None OR NaN. Parquet nulls come back
+    as float NaN (numpy float64, a subclass of float), not None, so a plain
+    `is None` check would let them through into the stats and corrupt them."""
+    return v is None or (isinstance(v, float) and v != v)
+
+
 def zscore(values: dict) -> dict:
-    """Population z-score each value in `values`; std==0 -> all zeros."""
+    """Population z-score each value in `values`; std==0 -> all zeros.
+
+    Uses plain arithmetic (not `statistics.mean`/`pstdev`): values arrive as
+    numpy float64 from parquet, and the statistics module routes through
+    Fraction and raises on any non-Fraction (including a NaN that reduces the
+    mean-of-squares to a bare float). Callers should pre-filter missing values
+    (see `_is_missing`); coercing to float here keeps the math built-in-typed."""
     keys = list(values.keys())
-    vals = [values[k] for k in keys]
-    if not vals:
+    vals = [float(values[k]) for k in keys]
+    n = len(vals)
+    if n == 0:
         return {}
-    m = mean(vals)
-    s = pstdev(vals)
-    if s == 0:
+    m = sum(vals) / n
+    var = sum((v - m) ** 2 for v in vals) / n
+    if var == 0:
         return {k: 0.0 for k in keys}
+    s = var ** 0.5
     return {k: (v - m) / s for k, v in zip(keys, vals)}
 
 
@@ -73,16 +87,16 @@ def season_features_z(rows: list[dict]) -> dict:
     per feature across the season's teams (one shared implementation so the
     backtest and the live producer z-score identically).
 
-    A None value for a feature is treated as missing: it is excluded from
-    that feature's mean/std, and the team maps to 0.0 for that feature
-    (rather than being dropped or raising).
+    A missing value for a feature (None, or a NaN from a parquet null) is
+    excluded from that feature's mean/std, and the team maps to 0.0 for that
+    feature (rather than being dropped or raising).
     """
     result = {row["team_espn_id"]: {} for row in rows}
     for feature in _Z_FEATURES:
         present = {
             row["team_espn_id"]: row.get(feature)
             for row in rows
-            if row.get(feature) is not None
+            if not _is_missing(row.get(feature))
         }
         z = zscore(present)
         for row in rows:
