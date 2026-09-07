@@ -87,3 +87,36 @@ def test_parse_games_extracts_matchups_for_sos():
     assert len(out) == 2
     assert out[0] == {"home_team": "Georgia", "away_team": "Clemson", "season": 2024}
     assert out[1] == {"home_team": "Alabama", "away_team": "Western Kentucky", "season": 2024}
+
+
+# ------------------------------------------------- null handling (live data) --
+# Real CFBD responses carry nulls the hand-written happy-path fixtures did not
+# (a null portal `rating`/`destination`, a null `percentPassingPPA`, an SP+
+# "nationalAverages" row with no team, an unscored recruiting class). These
+# used to crash the ingest (TypeError on `int += None`); guard each parser.
+
+def test_parse_portal_handles_null_rating_and_destination():
+    out = cfbd.parse_portal(_load("cfbd_portal.json"))
+    assert None not in out                       # null destination never becomes a key
+    assert out["Miami"]["in"] == 0.40            # unrated (null) incoming adds 0, no crash
+    assert out["Ole Miss"]["out"] == 0.40        # uncommitted null-rating outbound adds 0
+
+
+def test_parse_returning_null_passing_ppa_is_neutral_qb():
+    out = cfbd.parse_returning(_load("cfbd_returning.json"))
+    np = out["New Program"]
+    assert np["qb_returning"] is None            # null passing data -> neutral, not a penalty
+    assert np["returning_pct"] is None
+    assert np["returning_starters"] is None
+
+
+def test_parse_sp_skips_national_averages_and_null_rating():
+    out = cfbd.parse_sp(_load("cfbd_sp.json"))
+    assert None not in out                        # the team:null nationalAverages row is dropped
+    assert set(out) == {"Alabama", "Kent State"}
+
+
+def test_parse_recruiting_skips_null_points():
+    out = cfbd.parse_recruiting(_load("cfbd_recruiting.json"))
+    assert "No Class Yet" not in out
+    assert set(out) == {"Georgia", "Kent State"}

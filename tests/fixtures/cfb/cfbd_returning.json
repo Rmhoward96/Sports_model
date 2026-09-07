@@ -32,5 +32,14 @@
     "passingUsage": 0.30,
     "receivingUsage": 0.40,
     "rushingUsage": 0.44
+  },
+  {
+    "season": 2024,
+    "team": "New Program",
+    "conference": "Ind",
+    "totalPPA": null,
+    "percentPPA": null,
+    "percentPassingPPA": null,
+    "usage": null
   }
 ]
