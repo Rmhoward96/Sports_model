@@ -47,8 +47,8 @@ crosswalked to ESPN display names via SportsDataIO's `FullName`. Free/trial
 SportsDataIO tiers return scrambled values for some fields — spot-check one
 known injury per slate before trusting the feed, for either sport.
 
-This produces one JSON object per **upcoming** FBS game (already-started
-games are excluded). Each entry:
+This produces one JSON object per **upcoming** game (FBS for CFB, all 32
+franchises for NFL; already-started games are excluded). Each entry:
 
 ```jsonc
 {
@@ -69,7 +69,7 @@ games are excluded). Each entry:
   },
   "news": {
     "injuries": {"home": [ /* SportsDataIO injury dicts */ ], "away": [ /* ... */ ]},
-    "weather": null            // always null: the CFB API exposes no usable weather endpoint
+    "weather": null            // always null: no usable weather endpoint is wired in (CFB or NFL)
   }
 }
 ```
@@ -81,9 +81,11 @@ Notes for the controller:
 - `form.home`/`form.away` is a **scoring/pace trend** (last-N W/L, avg
   margin, avg combined points), *not* a true ATS record — there's no
   historical-line join here. Don't describe it to the user as ATS.
-- `news.weather` is always `null` — the SportsDataIO CFB API has no usable
-  weather endpoint; don't fabricate a value.
-- The bundle carries **no headlines** — SportsDataIO CFB has no news feed.
+- `news.weather` is always `null` — no usable weather endpoint is wired in
+  for either sport; don't fabricate a value.
+- The bundle carries **no headlines** — the desk does not pull a news feed
+  (NFL has a News endpoint but it is intentionally not wired in; the news
+  agent uses injuries + in-session web search, same as CFB).
   `news.injuries` (from the InjuredPlayers endpoint) is the only provider
   signal. The news agent supplements it with **in-session web search** for
   suspensions, weather, and situational angles (see Step 2, agent 3).
