@@ -34,5 +34,29 @@
     "rating": 0.55,
     "stars": 3,
     "eligibility": "Immediate"
+  },
+  {
+    "season": 2024,
+    "firstName": "Walk",
+    "lastName": "On",
+    "position": "LB",
+    "origin": "Alabama",
+    "destination": "Miami",
+    "transferDate": "2024-01-11",
+    "rating": null,
+    "stars": 0,
+    "eligibility": "Immediate"
+  },
+  {
+    "season": 2024,
+    "firstName": "Un",
+    "lastName": "Committed",
+    "position": "DB",
+    "origin": "Ole Miss",
+    "destination": null,
+    "transferDate": "2024-01-12",
+    "rating": null,
+    "stars": 0,
+    "eligibility": "Immediate"
   }
 ]

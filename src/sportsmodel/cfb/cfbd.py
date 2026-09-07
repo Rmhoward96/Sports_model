@@ -54,8 +54,12 @@ def _get(path: str, api_key: str, params: dict | None = None) -> Any:
 
 def parse_sp(payload) -> dict[str, float]:
     """SP+ overall rating by team, from CFBD `/ratings/sp` (list of
-    {"team": ..., "rating": ..., ...})."""
-    return {row["team"]: row["rating"] for row in payload}
+    {"team": ..., "rating": ..., ...}).
+
+    CFBD includes a synthetic "nationalAverages" row (no `team`) and can carry
+    a null `rating`; both are skipped so only real, rated teams get an entry."""
+    return {row["team"]: row["rating"] for row in payload
+            if row.get("team") is not None and row.get("rating") is not None}
 
 
 def parse_returning(payload) -> dict[str, dict]:
@@ -75,10 +79,16 @@ def parse_returning(payload) -> dict[str, dict]:
     """
     out = {}
     for row in payload:
-        out[row["team"]] = {
-            "returning_pct": row["percentPPA"],
-            "returning_starters": row["usage"],
-            "qb_returning": row["percentPassingPPA"] >= QB_RETURNING_THRESHOLD,
+        team = row.get("team")
+        if team is None:
+            continue
+        ppp = row.get("percentPassingPPA")
+        out[team] = {
+            "returning_pct": row.get("percentPPA"),
+            "returning_starters": row.get("usage"),
+            # None passing data -> None (downstream treats a missing QB signal
+            # as NEUTRAL, not a penalty), otherwise the >= threshold bool.
+            "qb_returning": None if ppp is None else ppp >= QB_RETURNING_THRESHOLD,
         }
     return out
 
@@ -87,8 +97,10 @@ def parse_recruiting(payload) -> dict[str, float]:
     """Recruiting class strength by team, from CFBD `/recruiting/teams` (list
     of {"team", "points", "rank", ...}). Uses `points` (the composite class
     score) rather than `rank`, since points is continuous and comparable
-    across classes/years while rank is not."""
-    return {row["team"]: row["points"] for row in payload}
+    across classes/years while rank is not. Rows with a null `points` (a team
+    with no class scored yet) are skipped."""
+    return {row["team"]: row["points"] for row in payload
+            if row.get("team") is not None and row.get("points") is not None}
 
 
 def parse_portal(payload) -> dict[str, dict]:
@@ -97,16 +109,24 @@ def parse_portal(payload) -> dict[str, dict]:
     each destination school and "out" for each origin school; "net" is
     in - out (rounded to 4 decimals). Every school appearing as either an
     origin or a destination gets an entry, defaulting the side it never
-    appears on to 0."""
+    appears on to 0.
+
+    Real CFBD portal data has nulls: an unrated transfer (`rating` null, e.g.
+    a walk-on) contributes 0 to the sum, and a player still uncommitted has a
+    null `destination` (they count as an outgoing move for their origin but add
+    to no destination). Null `origin`/`destination` sides are simply skipped."""
     out: dict[str, dict] = {}
 
     def _entry(team: str) -> dict:
         return out.setdefault(team, {"in": 0, "out": 0})
 
     for row in payload:
-        rating = row["rating"]
-        _entry(row["destination"])["in"] += rating
-        _entry(row["origin"])["out"] += rating
+        rating = row.get("rating") or 0.0   # null rating -> 0 contribution
+        dest, orig = row.get("destination"), row.get("origin")
+        if dest is not None:
+            _entry(dest)["in"] += rating
+        if orig is not None:
+            _entry(orig)["out"] += rating
 
     for team, sides in out.items():
         sides["net"] = round(sides["in"] - sides["out"], 4)

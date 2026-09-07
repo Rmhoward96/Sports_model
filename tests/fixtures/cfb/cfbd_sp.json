@@ -18,5 +18,11 @@
     "offense": {"ranking": 125, "rating": 15.1},
     "defense": {"ranking": 128, "rating": 33.7},
     "specialTeams": {"ranking": 100, "rating": -1.2}
+  },
+  {
+    "year": 2024,
+    "team": null,
+    "conference": "nationalAverages",
+    "rating": null
   }
 ]
