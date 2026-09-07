@@ -150,3 +150,69 @@ def upsert_game_predictions(records: list[dict]) -> int:
         cur.executemany(sql, rows)
         conn.commit()
     return len(rows)
+
+
+_DESK_PICKS_COLS = [
+    "sport", "game_pk", "model_version", "game_date", "commence_time",
+    "matchup", "ml_pick", "spread_side", "spread_line", "total_side",
+    "total_line", "confidence", "conviction_tier", "rationale", "agent_notes",
+]
+
+
+def upsert_desk_picks(records: list[dict]) -> int:
+    """Upsert decision-desk picks into Supabase `desk_picks`.
+
+    Idempotent on (sport, game_pk, model_version) -- a re-run of the same
+    model_version for the same game overwrites the pick fields in place.
+    `created_at` is intentionally excluded from both the column list and the
+    DO UPDATE SET clause: it is set once by the table's DEFAULT now() on the
+    first INSERT and must NOT change on a later update, so a pick's original
+    "posted at" time survives edits (contrast with prediction_accuracy's
+    graded_at, which IS bumped on every update -- here we want the opposite:
+    never touch it after the first write).
+    Requires DATABASE_URL and desk_picks (db/migration_decision_desk.sql).
+    """
+    if not records:
+        return 0
+    key = ("sport", "game_pk", "model_version")
+    updates = ", ".join(f"{c} = EXCLUDED.{c}" for c in _DESK_PICKS_COLS if c not in key)
+    placeholders = ", ".join(["%s"] * len(_DESK_PICKS_COLS))
+    sql = (
+        f"INSERT INTO desk_picks ({', '.join(_DESK_PICKS_COLS)}) "
+        f"VALUES ({placeholders}) "
+        f"ON CONFLICT (sport, game_pk, model_version) DO UPDATE SET {updates}"
+    )
+    rows = [tuple(r.get(c) for c in _DESK_PICKS_COLS) for r in records]
+    with get_postgres() as conn, conn.cursor() as cur:
+        cur.executemany(sql, rows)
+        conn.commit()
+    return len(rows)
+
+
+_DESK_PICK_RESULTS_COLS = [
+    "sport", "game_pk", "ml_correct", "spread_cover", "total_result",
+    "clv_spread", "clv_total",
+]
+
+
+def upsert_desk_pick_results(records: list[dict]) -> int:
+    """Upsert graded decision-desk results into Supabase `desk_pick_results`.
+
+    Idempotent on (sport, game_pk) -- re-grading a game overwrites in place.
+    Requires DATABASE_URL and desk_pick_results (db/migration_decision_desk.sql).
+    """
+    if not records:
+        return 0
+    key = ("sport", "game_pk")
+    updates = ", ".join(f"{c} = EXCLUDED.{c}" for c in _DESK_PICK_RESULTS_COLS if c not in key)
+    placeholders = ", ".join(["%s"] * len(_DESK_PICK_RESULTS_COLS))
+    sql = (
+        f"INSERT INTO desk_pick_results ({', '.join(_DESK_PICK_RESULTS_COLS)}) "
+        f"VALUES ({placeholders}) "
+        f"ON CONFLICT (sport, game_pk) DO UPDATE SET {updates}, graded_at = now()"
+    )
+    rows = [tuple(r.get(c) for c in _DESK_PICK_RESULTS_COLS) for r in records]
+    with get_postgres() as conn, conn.cursor() as cur:
+        cur.executemany(sql, rows)
+        conn.commit()
+    return len(rows)
