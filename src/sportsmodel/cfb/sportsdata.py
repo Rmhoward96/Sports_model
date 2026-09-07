@@ -48,6 +48,11 @@ from tenacity import retry, stop_after_attempt, wait_exponential
 
 _BASE = "https://api.sportsdata.io/v3/cfb"
 
+# Endpoint paths (see module docstring). Exposed as constants so
+# scripts/desk_inputs.py can stay adapter-generic across sports.
+INJURED_PLAYERS_PATH = "/scores/json/InjuredPlayers"
+TEAMS_PATH = "/scores/json/Teams"
+
 
 @retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=0.5, max=8))
 def _get(path: str, api_key: str, params: dict | None = None) -> Any:
