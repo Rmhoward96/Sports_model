@@ -284,8 +284,16 @@ def main() -> None:
 
                     pick_line = None
                     if row["market"] in ("spread", "total"):
+                        # grade_ev_pick expects the HOME-referenced spread line
+                        # (cover math: actual_margin + line, negative = home
+                        # favored). odds_snapshot stores each spread outcome with
+                        # its OWN handicap, so the away row carries +3 where home
+                        # carries -3 -- always pull the home line for spreads so
+                        # away spread picks aren't graded against a sign-flipped
+                        # number. Totals carry the same line on both sides.
+                        line_side = "home" if row["market"] == "spread" else row["side"]
                         pick_line = _pinnacle_line_at(
-                            cur, row["game_pk"], row["market"], row["side"], row["created_at"])
+                            cur, row["game_pk"], row["market"], line_side, row["created_at"])
                     pinnacle_close = _pinnacle_close_price(
                         cur, row["game_pk"], row["market"], row["side"], row["commence_time"])
 
