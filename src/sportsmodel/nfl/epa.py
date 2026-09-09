@@ -47,6 +47,25 @@ def team_epa_from_pbp(pbp: pd.DataFrame) -> dict[str, dict]:
     }
 
 
+def team_epa_by_season(pbp: pd.DataFrame) -> dict[tuple[int, str], dict]:
+    """Aggregate per-(season, team) offensive/defensive EPA from a
+    multi-season play-by-play frame.
+
+    Pure: DataFrame in, dict out, no IO. Groups `pbp` by `season` and runs
+    `team_epa_from_pbp` independently within each season group, so each
+    season's off/def EPA is computed only from that season's plays -- no
+    cross-season blending. Returns a dict keyed `(season, team) ->
+    {"off_epa", "def_epa"}` over every (season, team) pair that appears in
+    the frame.
+    """
+    out: dict[tuple[int, str], dict] = {}
+    for season, group in pbp.groupby("season"):
+        season_epa = team_epa_from_pbp(group)
+        for team, values in season_epa.items():
+            out[(int(season), team)] = values
+    return out
+
+
 def load_team_epa(seasons: list[int]) -> dict[str, dict]:
     """Load team off/def EPA for the given seasons from nflverse pbp data."""
     import nfl_data_py as nfl

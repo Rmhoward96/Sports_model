@@ -1,8 +1,8 @@
 """build_features.assemble is PURE: an Elo-augmented per-game schedule frame
-(the shape `run_elo(...).games` produces) + a team->EPA/PPA dict in, one
-feature row per game out. No IO here -- main()'s parquet/CFBD/EPA loading is
-the thin live wrapper, exercised only by scripts/generate_*.py-style live
-runs, not unit tested.
+(the shape `run_elo(...).games` produces) + a (season, team)->EPA/PPA dict
+in, one feature row per game out. No IO here -- main()'s parquet/CFBD/EPA
+loading is the thin live wrapper, exercised only by scripts/generate_*.py-style
+live runs, not unit tested.
 
 Fixture: 3 NFL teams (A, B, C), 3 games across weeks 1-3 of one season.
     G1: wk1, A(home) beats B(away) 24-17.  elo_home=1500 elo_away=1450
@@ -47,11 +47,23 @@ G3 = {
 
 ELO_GAMES = pd.DataFrame([G1, G2, G3])
 
-# C is deliberately absent from the EPA dict to exercise the "missing team"
-# graceful-NaN path.
+# EPA_BY_TEAM is keyed (season, team) -- this is what a caller who has
+# already shifted prior-season EPA/PPA onto the current season's key looks
+# like: G1/G2/G3 are all season 2025, so their EPA/PPA must be looked up
+# under (2025, team), NOT under (2024, team) or any other season.
+#
+# A deliberately different (2024, "A") entry is included so that a bug which
+# looked EPA up by team alone (ignoring season) or which fell through to the
+# wrong season would be caught by test_assemble_g3_epa_join_is_season_scoped
+# below -- if the lookup used (2024, "A")'s value instead of (2025, "A")'s,
+# the off_epa assertion there would fail.
+#
+# C is deliberately absent from season 2025 entirely to exercise the
+# "missing team" graceful-NaN path.
 EPA_BY_TEAM = {
-    "A": {"off_epa": 0.10, "def_epa": -0.05},
-    "B": {"off_epa": 0.20, "def_epa": 0.00},
+    (2025, "A"): {"off_epa": 0.10, "def_epa": -0.05},
+    (2025, "B"): {"off_epa": 0.20, "def_epa": 0.00},
+    (2024, "A"): {"off_epa": 99.0, "def_epa": 99.0},
 }
 
 
@@ -112,7 +124,42 @@ def test_assemble_g3_epa_join_with_missing_team_is_nan_not_crash():
     row = _row(bf.assemble("nfl", ELO_GAMES, EPA_BY_TEAM), "2025_03_A_C")
     assert row["home_off_epa"] == pytest.approx(0.10)
     assert row["home_def_epa"] == pytest.approx(-0.05)
-    # C is missing from EPA_BY_TEAM entirely
+    # C is missing from EPA_BY_TEAM entirely (any season)
+    assert math.isnan(row["away_off_epa"])
+    assert math.isnan(row["away_def_epa"])
+    assert math.isnan(row["off_epa_diff"])
+    assert math.isnan(row["def_epa_diff"])
+
+
+def test_assemble_g3_epa_join_is_season_scoped_not_leaked():
+    """G3 is a season-2025 game. EPA_BY_TEAM carries BOTH (2025, "A") =
+    {0.10, -0.05} and a deliberately different (2024, "A") = {99.0, 99.0}.
+    The join must use the (2025, "A") value -- if `assemble` looked EPA up
+    by team alone (ignoring season, the original leakage bug's shape) or
+    picked up the wrong season's entry, home_off_epa would come back 99.0
+    instead of 0.10."""
+    row = _row(bf.assemble("nfl", ELO_GAMES, EPA_BY_TEAM), "2025_03_A_C")
+    assert row["home_off_epa"] == pytest.approx(0.10)
+    assert row["home_def_epa"] == pytest.approx(-0.05)
+    assert row["home_off_epa"] != pytest.approx(99.0)
+
+
+def test_assemble_epa_nan_for_season_with_no_stored_entry():
+    """A game in a season that has no (season, team) key at all in the dict
+    (e.g. the earliest season in the schedule, which has no prior season to
+    draw leakage-free EPA from) must come back NaN for every team, not raise
+    and not silently fall back to some other season's value."""
+    game_2023 = {
+        "game_id": "2023_01_A_B", "season": 2023, "week": 1,
+        "home_team": "A", "away_team": "B",
+        "home_score": 21, "away_score": 14,
+        "elo_home": 1500, "elo_away": 1500, "gameday": "2023-09-01",
+    }
+    out = bf.assemble("nfl", pd.DataFrame([game_2023]), EPA_BY_TEAM, upcoming=False)
+    row = _row(out, "2023_01_A_B")
+    # EPA_BY_TEAM has no (2023, "A") or (2023, "B") key at all.
+    assert math.isnan(row["home_off_epa"])
+    assert math.isnan(row["home_def_epa"])
     assert math.isnan(row["away_off_epa"])
     assert math.isnan(row["away_def_epa"])
     assert math.isnan(row["off_epa_diff"])
@@ -186,8 +233,8 @@ def test_assemble_cfb_rest_weeks_and_bye_columns():
             "elo_home": 1520, "elo_away": 1480,
         },
     ])
-    ppa_by_team = {"A": {"off_ppa": 0.3, "def_ppa": -0.1}}
-    out = bf.assemble("cfb", cfb_games, ppa_by_team, upcoming=False)
+    ppa_by_season_team = {(2025, "A"): {"off_ppa": 0.3, "def_ppa": -0.1}}
+    out = bf.assemble("cfb", cfb_games, ppa_by_season_team, upcoming=False)
     row = _row(out, "c2")
     assert row["home_rest_weeks"] == 3
     assert row["home_off_bye"] == True  # noqa: E712

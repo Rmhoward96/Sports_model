@@ -2,10 +2,11 @@
 
 `assemble` is PURE: it consumes an Elo-augmented per-game schedule frame
 (the shape `run_elo(schedule_df, EloConfig()).games` produces -- each row
-already carries pre-game `elo_home`/`elo_away`) plus a team -> EPA/PPA dict,
-and emits one feature row per game. `main()` is the thin live wrapper that
-loads the committed schedule parquet, runs Elo over it, loads EPA (NFL) or
-PPA (CFB, via CFBD), calls `assemble`, and writes the output parquet.
+already carries pre-game `elo_home`/`elo_away`) plus a (season, team) ->
+EPA/PPA dict, and emits one feature row per game. `main()` is the thin live
+wrapper that loads the committed schedule parquet, runs Elo over it, loads
+EPA (NFL) or PPA (CFB, via CFBD), calls `assemble`, and writes the output
+parquet.
 
 No-leakage contract
 --------------------
@@ -23,13 +24,18 @@ CFB has no reliable per-game dates in its schedule (see Task-3 notes), so
 CFB rest is `rest_weeks_cfb`'s week-gap/bye proxy rather than day counts;
 NFL rest is exact day counts via `rest_days_nfl`.
 
-Season scope for team-level EPA/PPA (documented, keep-it-simple choice):
-main() aggregates EPA/PPA over the single most-recently-completed season in
-the schedule (not the full historical span) for BOTH sports -- nflverse
-play-by-play for the full multi-decade span is hundreds of MB, and CFBD's
-`/ppa/teams` is inherently a single-`year` query. `assemble` itself is
-agnostic to how many seasons went into the dict; a caller wanting a
-multi-season blend can pass one in.
+Season scope for team-level EPA/PPA (leakage-free, prior-season):
+a game in season S uses each team's EPA/PPA computed over season S-1 only
+-- by the time season S kicks off, season S-1 is fully complete and known,
+so there is no way for a game to see EPA/PPA derived from its own season's
+plays (which would leak the game's own future/in-progress plays into its
+features). `assemble` itself does not know about "prior season" at all: it
+just looks up `(game_season, team)` in the dict it's given. The season
+shift is entirely `main()`'s responsibility -- it aggregates EPA/PPA per
+season and stores season S-1's values under key `(S, team)` before calling
+`assemble`. The earliest season in the schedule has no S-1 to draw from, so
+those games' EPA/PPA come back NaN (correct: there is nothing else to use
+without leaking).
 """
 from __future__ import annotations
 
@@ -75,14 +81,24 @@ def _diff(home_value: Any, away_value: Any) -> float:
 def assemble(
     sport: str,
     elo_games_df: pd.DataFrame,
-    epa_or_ppa_by_team: dict[str, dict] | None,
+    epa_by_season_team: dict[tuple[int, str], dict] | None,
     upcoming: bool = False,
 ) -> pd.DataFrame:
-    """Pure: Elo-augmented schedule + team EPA/PPA dict -> one feature row/game.
+    """Pure: Elo-augmented schedule + (season, team) EPA/PPA dict -> one
+    feature row per game.
 
     `sport` is "nfl" or "cfb" -- it selects the rest-feature shape (NFL exact
     day rest vs CFB week-gap/bye) and the EPA/PPA column names
     (`*_off_epa`/`*_def_epa` vs `*_off_ppa`/`*_def_ppa`).
+
+    `epa_by_season_team` is keyed `(season, team) -> {off/def value}`. For
+    each game, the home/away EPA/PPA join looks up `(game_season, home_team)`
+    / `(game_season, away_team)` -- i.e. whatever value the caller stored
+    under the CURRENT game's season key. `assemble` has no notion of "prior
+    season" itself; it is the caller's job (see `main()`) to have already
+    shifted prior-season aggregates onto the current season's key so no game
+    ever sees EPA/PPA computed from its own season. A missing key (e.g. no
+    entry at all for that season) yields NaN, same as a missing team.
 
     With `upcoming=False` (default): only games with BOTH scores present are
     emitted, each carrying `margin`/`total` targets. With `upcoming=True`:
@@ -96,7 +112,7 @@ def assemble(
     if sport not in ("nfl", "cfb"):
         raise ValueError(f"sport must be 'nfl' or 'cfb', got {sport!r}")
 
-    epa_or_ppa_by_team = epa_or_ppa_by_team or {}
+    epa_by_season_team = epa_by_season_team or {}
     off_key, def_key = ("off_epa", "def_epa") if sport == "nfl" else ("off_ppa", "def_ppa")
 
     df = elo_games_df.sort_values(["season", "week"]).reset_index(drop=True)
@@ -168,8 +184,8 @@ def assemble(
             row["home_off_bye"] = home_rw["off_bye"]
             row["away_off_bye"] = away_rw["off_bye"]
 
-        home_epa = epa_or_ppa_by_team.get(home) or {}
-        away_epa = epa_or_ppa_by_team.get(away) or {}
+        home_epa = epa_by_season_team.get((season, home)) or {}
+        away_epa = epa_by_season_team.get((season, away)) or {}
         home_off = home_epa.get(off_key)
         home_def = home_epa.get(def_key)
         away_off = away_epa.get(off_key)
@@ -190,12 +206,6 @@ def assemble(
     return pd.DataFrame(rows)
 
 
-def _latest_completed_season(sched: pd.DataFrame) -> int:
-    completed = sched.dropna(subset=["home_score", "away_score"])
-    source = completed if len(completed) else sched
-    return int(source["season"].max())
-
-
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--sport", choices=["nfl", "cfb"], required=True)
@@ -205,24 +215,46 @@ def main() -> None:
     sched = pd.read_parquet(assets_dir / "schedules.parquet")
 
     elo_games = run_elo(sched, EloConfig()).games
-    season = _latest_completed_season(sched)
+    seasons = sorted(int(s) for s in sched["season"].dropna().unique())
 
     if args.sport == "nfl":
-        from sportsmodel.nfl.epa import load_team_epa
+        from sportsmodel.nfl.epa import team_epa_by_season
+        import nfl_data_py as nfl
 
-        epa_by_team = load_team_epa([season])
+        # Need pbp for every season present in the schedule PLUS each of
+        # their season-1's, so every season S has its prior season's EPA
+        # available to shift forward onto key (S, team).
+        needed = set(seasons) | {s - 1 for s in seasons}
+        pbp = nfl.import_pbp_data(sorted(needed))
+        by_season = team_epa_by_season(pbp)
+
+        # Leakage-free shift: season S's key holds season (S-1)'s EPA.
+        epa_by_season_team: dict[tuple[int, str], dict] = {}
+        for (prev_season, team), values in by_season.items():
+            epa_by_season_team[(prev_season + 1, team)] = values
     else:
         from sportsmodel.cfb import cfbd
 
         api_key = os.environ.get("CFBD_API_KEY")
         if not api_key:
             raise RuntimeError("CFBD_API_KEY must be set to fetch CFB PPA")
-        payload = cfbd._get(
-            "/ppa/teams", api_key, {"year": season, "excludeGarbageTime": "true"}
-        )
-        epa_by_team = cfbd.parse_team_ppa(payload)
 
-    features = assemble(args.sport, elo_games, epa_by_team, upcoming=False)
+        # One CFBD call per distinct prior season (dedupe requested years).
+        prior_seasons = sorted({s - 1 for s in seasons})
+        ppa_by_prior_season = {}
+        for prior in prior_seasons:
+            payload = cfbd._get(
+                "/ppa/teams", api_key, {"year": prior, "excludeGarbageTime": "true"}
+            )
+            ppa_by_prior_season[prior] = cfbd.parse_team_ppa(payload)
+
+        # Leakage-free shift: season S's key holds season (S-1)'s PPA.
+        epa_by_season_team = {}
+        for s in seasons:
+            for team, values in ppa_by_prior_season[s - 1].items():
+                epa_by_season_team[(s, team)] = values
+
+    features = assemble(args.sport, elo_games, epa_by_season_team, upcoming=False)
 
     out_path = assets_dir / "features.parquet"
     features.to_parquet(out_path, index=False)

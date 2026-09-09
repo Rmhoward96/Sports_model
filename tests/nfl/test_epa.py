@@ -1,6 +1,6 @@
 import pandas as pd
 
-from sportsmodel.nfl.epa import team_epa_from_pbp
+from sportsmodel.nfl.epa import team_epa_by_season, team_epa_from_pbp
 
 
 def test_off_def_epa_means_with_nan_and_null_team_dropped():
@@ -51,3 +51,33 @@ def test_team_only_on_one_side_gets_none_for_other():
 
     assert result["MIA"]["off_epa"] is None
     assert result["MIA"]["def_epa"] == 1.0
+
+
+def test_team_epa_by_season_keeps_seasons_distinct():
+    # KC's 2023 offense (epa 1.0, 3.0 -> mean 2.0) is deliberately different
+    # from KC's 2024 offense (epa 0.0, 0.0 -> mean 0.0), so a bug that pooled
+    # both seasons together instead of grouping by season would produce a
+    # single blended mean rather than the two distinct per-season values
+    # asserted below.
+    pbp = pd.DataFrame(
+        [
+            {"season": 2023, "posteam": "KC", "defteam": "BUF", "epa": 1.0},
+            {"season": 2023, "posteam": "KC", "defteam": "BUF", "epa": 3.0},
+            {"season": 2023, "posteam": "BUF", "defteam": "KC", "epa": 0.5},
+            {"season": 2024, "posteam": "KC", "defteam": "BUF", "epa": 0.0},
+            {"season": 2024, "posteam": "KC", "defteam": "BUF", "epa": 0.0},
+            {"season": 2024, "posteam": "BUF", "defteam": "KC", "epa": 2.0},
+        ]
+    )
+
+    result = team_epa_by_season(pbp)
+
+    assert set(result.keys()) == {(2023, "KC"), (2023, "BUF"), (2024, "KC"), (2024, "BUF")}
+
+    assert result[(2023, "KC")]["off_epa"] == 2.0
+    assert result[(2023, "KC")]["def_epa"] == 0.5
+    assert result[(2024, "KC")]["off_epa"] == 0.0
+    assert result[(2024, "KC")]["def_epa"] == 2.0
+
+    # Distinct from each other -- proves no cross-season blending occurred.
+    assert result[(2023, "KC")]["off_epa"] != result[(2024, "KC")]["off_epa"]
