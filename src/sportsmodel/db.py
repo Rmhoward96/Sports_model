@@ -235,3 +235,77 @@ def upsert_desk_pick_results(records: list[dict]) -> int:
         cur.executemany(sql, rows)
         conn.commit()
     return len(rows)
+
+
+_EV_PICKS_COLS = [
+    "sport", "game_pk", "market", "side", "model_version", "matchup",
+    "commence_time", "base_prob", "true_prob", "edge", "desk_delta",
+    "conviction_tier", "pinnacle_price", "ev_pinnacle", "best_book",
+    "best_price", "ev_best", "is_pick",
+]
+
+_EV_PILOT_DEFAULT_MODEL_VERSION = "ev-pilot-v1"
+
+
+def upsert_ev_picks(records: list[dict]) -> int:
+    """Upsert +EV pilot board rows into Supabase `ev_picks`.
+
+    Idempotent on (sport, game_pk, market, side, model_version) -- a re-run of
+    the same model_version for the same (game, market, side) overwrites the
+    row's fields in place. `created_at` is intentionally excluded from both
+    the column list and the DO UPDATE SET clause: it is set once by the
+    table's DEFAULT now() on the first INSERT and must NOT change on a later
+    update, so a row's original "first posted" time survives recomputation
+    (same pattern as upsert_desk_picks). A record that omits `model_version`
+    defaults to "ev-pilot-v1".
+    Requires DATABASE_URL and ev_picks (db/migration_ev_pilot.sql).
+    """
+    if not records:
+        return 0
+    key = ("sport", "game_pk", "market", "side", "model_version")
+    updates = ", ".join(f"{c} = EXCLUDED.{c}" for c in _EV_PICKS_COLS if c not in key)
+    placeholders = ", ".join(["%s"] * len(_EV_PICKS_COLS))
+    sql = (
+        f"INSERT INTO ev_picks ({', '.join(_EV_PICKS_COLS)}) "
+        f"VALUES ({placeholders}) "
+        f"ON CONFLICT (sport, game_pk, market, side, model_version) DO UPDATE SET {updates}"
+    )
+    rows = [
+        tuple(
+            r.get(c, _EV_PILOT_DEFAULT_MODEL_VERSION) if c == "model_version" else r.get(c)
+            for c in _EV_PICKS_COLS
+        )
+        for r in records
+    ]
+    with get_postgres() as conn, conn.cursor() as cur:
+        cur.executemany(sql, rows)
+        conn.commit()
+    return len(rows)
+
+
+_EV_RESULTS_COLS = ["sport", "game_pk", "market", "side", "won", "clv"]
+
+
+def upsert_ev_results(records: list[dict]) -> int:
+    """Upsert graded +EV pilot results into Supabase `ev_results`.
+
+    Idempotent on (sport, game_pk, market, side) -- re-grading a row
+    overwrites in place and bumps graded_at (same pattern as
+    upsert_desk_pick_results).
+    Requires DATABASE_URL and ev_results (db/migration_ev_pilot.sql).
+    """
+    if not records:
+        return 0
+    key = ("sport", "game_pk", "market", "side")
+    updates = ", ".join(f"{c} = EXCLUDED.{c}" for c in _EV_RESULTS_COLS if c not in key)
+    placeholders = ", ".join(["%s"] * len(_EV_RESULTS_COLS))
+    sql = (
+        f"INSERT INTO ev_results ({', '.join(_EV_RESULTS_COLS)}) "
+        f"VALUES ({placeholders}) "
+        f"ON CONFLICT (sport, game_pk, market, side) DO UPDATE SET {updates}, graded_at = now()"
+    )
+    rows = [tuple(r.get(c) for c in _EV_RESULTS_COLS) for r in records]
+    with get_postgres() as conn, conn.cursor() as cur:
+        cur.executemany(sql, rows)
+        conn.commit()
+    return len(rows)

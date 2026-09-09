@@ -2,15 +2,9 @@
 latest odds, compute edge/EV via `sportsmodel.serving.ev_pilot`, and land the
 rows in `ev_picks`.
 
-Sub-project 4 (+EV desk-driven pilot), task 1 -- see
-.superpowers/sdd/2026-09-09-plus-ev-4-desk-driven-pilot/task-1-brief.md.
-
-TODO(task 2): `ev_picks` (the table + `db.upsert_ev_picks`) lands in sub-project 4
-task 2. Until that upsert exists, this script prints the computed rows and writes
-them to a JSON file instead of upserting -- swap `_write_rows` below for
-`db.upsert_ev_picks(rows)` once that function exists, per the task-1 brief
-("if `db.upsert_ev_picks` doesn't exist yet, write the rows to a JSON/print ...
-do NOT block on Task 2").
+Sub-project 4 (+EV desk-driven pilot), task 1 & 2 -- see
+.superpowers/sdd/2026-09-09-plus-ev-4-desk-driven-pilot/task-1-brief.md and
+task-2-brief.md.
 
 Reads:
   - `desk_current` (view over desk_picks): the desk's latest pick per upcoming
@@ -24,13 +18,12 @@ Usage:
 from __future__ import annotations
 
 import argparse
-import json
 import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
-from sportsmodel.db import get_postgres
+from sportsmodel.db import get_postgres, upsert_ev_picks
 from sportsmodel.serving.ev_pilot import assemble_games, ev_rows_for_game
 
 DESK_CURRENT_COLS = [
@@ -38,7 +31,7 @@ DESK_CURRENT_COLS = [
     "ml_pick", "spread_side", "total_side", "conviction_tier",
 ]
 
-OUT_PATH = Path(__file__).resolve().parents[1] / "tmp" / "ev_board.json"
+MODEL_VERSION = "ev-pilot-v1"
 
 
 def load_desk_current(sport: str) -> list[dict]:
@@ -78,16 +71,6 @@ def load_latest_odds(game_pks: list[int]) -> list[dict]:
     return [dict(zip(cols, r)) for r in rows]
 
 
-def _write_rows(rows: list[dict]) -> None:
-    """TODO(task 2): replace with db.upsert_ev_picks(rows) once the `ev_picks`
-    table + upsert exist. For now, print + dump to JSON so the pilot's edge/EV
-    engine is inspectable end-to-end without blocking on the task-2 table."""
-    OUT_PATH.parent.mkdir(parents=True, exist_ok=True)
-    OUT_PATH.write_text(json.dumps(rows, indent=2, default=str))
-    print(f"[build_ev_board] TODO(task 2): wrote {len(rows)} row(s) to {OUT_PATH} "
-          f"(no ev_picks table/upsert yet -- see db.upsert_ev_picks TODO).")
-
-
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--sport", default="nfl", help="Sport key (default: nfl)")
@@ -101,10 +84,13 @@ def main() -> None:
     for game in games:
         all_rows.extend(ev_rows_for_game(game))
 
+    for row in all_rows:
+        row["model_version"] = MODEL_VERSION
+
     picks = [r for r in all_rows if r["is_pick"]]
     passes = [r for r in all_rows if not r["is_pick"]]
 
-    _write_rows(all_rows)
+    upsert_ev_picks(all_rows)
 
     print(f"[build_ev_board] sport={args.sport} games={len(games)} rows={len(all_rows)} "
           f"picks={len(picks)} passes={len(passes)}")
