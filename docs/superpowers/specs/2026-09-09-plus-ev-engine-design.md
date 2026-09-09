@@ -3,11 +3,15 @@
 **Status:** in review (2026-09-09)
 
 **Goal:** A new **+EV view**, toggled against the existing prediction pages for
-NFL and CFB, that compares the **implied probability of the Pinnacle line (the
-sharp book)** against an **estimated true probability** from a feature-rich
-model (Elo, L10 win %, rest days, offensive/defensive EPA/PPA, strength of
-schedule, strength of victory, +more), **influenced by the decision desk**, and
-surfaces the **probability gap and EV** — with EV shown both at the Pinnacle
+NFL and CFB, that finds **+EV bets by the probability gap** — the difference
+between an **estimated true probability** and the market's **implied
+probability**. True probability comes from a feature-rich model (Elo, L10 win %,
+rest days, offensive/defensive EPA/PPA, strength of schedule, strength of
+victory, +more) **with the decision desk factored directly into the estimate**
+(e.g. the model computes 47%, the desk surfaces news that moves it to 51% — 51%
+is the true probability used). Implied probability comes from the **Pinnacle
+line** — used as the cleanest *baseline* (sharp, low-vig), not an adversary to
+beat. The view surfaces the **gap and EV**, with EV shown both at the Pinnacle
 price and at the best soft book. Moneyline, spread, and total, both sports.
 Disciplined and CLV-gated: calibrated true-prob, forward grading vs the Pinnacle
 close, honest "pass / no edge" when the gap is small.
@@ -18,12 +22,14 @@ close, honest "pass / no edge" when the gap is small.
   model is a *separate* model that powers only the +EV view. Predictions keep
   reading `predictions_current`; nothing in `generate_nfl.py` / `generate_cfb.py`
   or the prediction UI changes.
-- **Not a promise of profit.** Pinnacle's no-vig line is the sharpest public
-  benchmark; beating it is a high bar. We already proved the base Elo/points
-  model has ~no market edge (MAE 13.36 vs the line's 12.37; corr 0.90 with the
-  line). The engine's job is to **honestly measure** edge and surface only the
-  rare calibrated, CLV-positive spots — never a wall of green numbers. We must
-  be prepared to conclude "no durable edge on most markets" and say so.
+- **Gaps must be real, not artifacts.** The engine surfaces a bet when true
+  probability and implied probability diverge enough to be +EV. The discipline
+  (calibration so a stated 56% really hits ~56%; `EV_CEILING`; forward CLV vs the
+  Pinnacle close) exists so those gaps reflect genuine information — the desk's
+  news, a rest/EPA edge the price hasn't absorbed — rather than a mis-calibrated
+  model or a stale line. It is not a promise of profit: some slates will show few
+  or no qualifying gaps, and that "pass" is a valid, honest output, not a
+  failure.
 - Secrets (`ODDS_API_KEY`, `CFBD_API_KEY`, `DATABASE_URL`) are GitHub Actions
   secrets, read only in scripts' `main()`; never in the session. The user runs
   all Supabase SQL. `app.js` is external (`/Users/ryan/Desktop/CappingAlpha`),
@@ -115,6 +121,18 @@ Missing features degrade gracefully (imputed to league mean, flagged), never cra
   P(cover @ line), P(over) from the total distribution.
 - **Calibration:** Platt/isotonic (`model/calibration.py`) so a stated 56% hits
   ~56%; validated on held-out/walk-forward data.
+- **Desk is a factor in the true probability, not a post-hoc overlay.** When the
+  desk has a pick on the game, its information enters the true-probability
+  estimate here: the model's feature-based number is adjusted by the desk's
+  signal (conviction tier + side agreement) and the result *is* the true
+  probability the +EV engine uses. Example: features give 47%; the desk surfaces
+  news worth +4pp → true probability 51%. Mechanically this is a **margin
+  adjustment of up to ±3.5 pts** scaled by conviction/agreement, with the desk's
+  net contribution to the final probability **hard-clamped to ≤ ~10 percentage
+  points** so news moves the number meaningfully but never egregiously (a 30%
+  can't be dragged near 60%). Caps are named constants; the desk's per-game
+  contribution is recorded so the effect is auditable. Games with no desk pick
+  use the un-adjusted feature probability.
 - **Backtest:** walk-forward over historical seasons — margin/total MAE vs the
   closing line, win-prob calibration (reliability), and a **CLV proxy** vs the
   closing line. This is the go/no-go evidence for whether any edge exists.
@@ -126,15 +144,11 @@ Missing features degrade gracefully (imputed to league mean, flagged), never cra
   **`edge = true_prob − pinnacle_novig`**, **`ev_pinnacle`** (`ev(true_prob,
   pinnacle_price)`), **`ev_best`** (`ev(true_prob, best_soft_book_price)`) + the
   book name, and the delta between them (the soft-book benefit).
-- **Desk influence — points-flexible, probability-bounded.** When the desk has
-  a pick on the game, adjust the model **margin** by up to **±3.5 pts** (scaled
-  by conviction tier — low/med/high — and by whether the desk agrees with the
-  model's side; disagreement can pull the margin back toward the line), THEN
-  **clamp the desk's contribution to the final probability to ≤ ~10 percentage
-  points** vs the un-nudged prob. So the desk can move the number by more than a
-  couple points, but can never do an egregious swing (a 30% implied can't be
-  dragged near 60%). All caps are named constants, tunable, and recorded per row
-  so the effect is auditable.
+- The `true_prob` consumed here **already includes the desk** (it is folded into
+  the true-probability estimate in sub-project 3, clamped to ≤ ~10pp). This
+  engine does not apply a second desk adjustment; it just reads the
+  desk-inclusive true probability and the per-game desk contribution recorded
+  alongside it (for display/auditing).
 - **Discipline gates:** `EV_CEILING` (kill stale-line artifacts), a minimum
   edge threshold (below it → **pass / no edge**, the default), and only surface
   markets where both a Pinnacle and a soft-book two-way price exist.
@@ -179,8 +193,9 @@ Missing features degrade gracefully (imputed to league mean, flagged), never cra
 - **Pinnacle is region `eu`** in The Odds API; always request `regions=us,eu`.
 - Edge is measured at the **Pinnacle no-vig** number; EV shown at both Pinnacle
   and best soft-book price.
-- Desk nudge: ≤ ±3.5 pts margin, hard-clamped to ≤ ~10pp probability
-  contribution; every cap a named constant; effect recorded per row.
+- The desk is folded **into** the true probability (sub-project 3), not applied
+  as a separate step: ≤ ±3.5 pts margin, hard-clamped to ≤ ~10pp probability
+  contribution; every cap a named constant; effect recorded per game.
 - Disciplined framing everywhere: calibrated, `EV_CEILING`, min-edge "pass"
   default, forward CLV-gated; the UI never implies bankable profit before the
   CLV/calibration record supports it.
