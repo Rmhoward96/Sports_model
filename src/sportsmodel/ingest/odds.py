@@ -62,7 +62,12 @@ def fetch_events(cfg: "SportConfig | None" = None) -> list[dict]:
     return _get(f"/sports/{cfg.odds_sport}/events", {"dateFormat": "iso"})
 
 
-def fetch_game_odds(cfg: "SportConfig | None" = None, regions: str = "us") -> list[dict]:
+def fetch_game_odds(cfg: "SportConfig | None" = None, regions: str = "us,eu") -> list[dict]:
+    """Game-line odds (h2h/totals/spreads) for the sport's upcoming events.
+
+    Defaults to both `us` and `eu` regions -- Pinnacle is an EU-region bookmaker
+    on The Odds API, so `eu` must be included alongside `us` to pull its lines.
+    """
     cfg = cfg or _mlb()
     return _get(f"/sports/{cfg.odds_sport}/odds", {
         "regions": regions, "markets": ",".join(cfg.game_markets),

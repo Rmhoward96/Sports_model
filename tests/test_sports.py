@@ -1,4 +1,5 @@
 from sportsmodel.sports import get, SPORTS
+from sportsmodel.ingest.odds import GAME_MARKETS
 
 def test_mlb_config_matches_legacy_constants():
     from sportsmodel.ingest import odds
@@ -15,6 +16,12 @@ def test_nfl_config_present_with_seven_prop_markets():
         "player_pass_yds", "player_pass_tds", "player_reception_yds",
         "player_receptions", "player_rush_yds", "player_rush_reception_yds",
         "player_anytime_td"}
+
+def test_cfb_config_present():
+    c = get("cfb")
+    assert c.odds_sport == "americanfootball_ncaaf"
+    assert c.game_markets == GAME_MARKETS
+    assert c.commence_shift_hours == 8
 
 def test_unknown_sport_raises():
     import pytest

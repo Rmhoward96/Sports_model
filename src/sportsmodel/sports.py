@@ -44,6 +44,13 @@ SPORTS: dict[str, SportConfig] = {
         },
         commence_shift_hours=0,
     ),
+    "cfb": SportConfig(
+        key="cfb",
+        odds_sport="americanfootball_ncaaf",
+        game_markets=GAME_MARKETS,
+        prop_market_map={},
+        commence_shift_hours=8,
+    ),
 }
 
 
