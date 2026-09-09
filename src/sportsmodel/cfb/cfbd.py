@@ -93,6 +93,33 @@ def parse_returning(payload) -> dict[str, dict]:
     return out
 
 
+def parse_team_ppa(payload) -> dict[str, dict]:
+    """Team-level offensive/defensive PPA (predicted points added) by team,
+    from CFBD `/ppa/teams` (list of {"team", "conference", "offense":
+    {"overall", ...}, "defense": {"overall", ...}}).
+
+    Per team, returns:
+      - "off_ppa": overall offensive PPA (offense.overall).
+      - "def_ppa": overall defensive PPA (defense.overall).
+
+    Real CFBD responses can omit `offense`/`defense` entirely for a team with
+    no plays yet (e.g. a first-year program); `off`/`def_` default to {} so
+    both fields fall back to None rather than crashing. Rows with a null
+    `team` are skipped."""
+    out = {}
+    for row in payload:
+        team = row.get("team")
+        if team is None:
+            continue
+        off = row.get("offense") or {}
+        def_ = row.get("defense") or {}
+        out[team] = {
+            "off_ppa": off.get("overall"),
+            "def_ppa": def_.get("overall"),
+        }
+    return out
+
+
 def parse_recruiting(payload) -> dict[str, float]:
     """Recruiting class strength by team, from CFBD `/recruiting/teams` (list
     of {"team", "points", "rank", ...}). Uses `points` (the composite class
