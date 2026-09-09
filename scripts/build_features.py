@@ -209,13 +209,21 @@ def assemble(
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--sport", choices=["nfl", "cfb"], required=True)
+    parser.add_argument("--from-season", type=int, default=None,
+                        help="Only emit feature rows for games in this season or later "
+                             "(Elo still warms up over all prior seasons). Trims the pbp/PPA "
+                             "pull and output to a recent window for a faster backtest.")
     args = parser.parse_args()
 
     assets_dir = _ASSETS / args.sport
     sched = pd.read_parquet(assets_dir / "schedules.parquet")
 
+    # Elo runs over the FULL history (ratings must warm up); we only trim which
+    # games get emitted as feature rows, and thus which seasons of EPA/PPA we pull.
     elo_games = run_elo(sched, EloConfig()).games
-    seasons = sorted(int(s) for s in sched["season"].dropna().unique())
+    if args.from_season is not None:
+        elo_games = elo_games[elo_games["season"] >= args.from_season].reset_index(drop=True)
+    seasons = sorted(int(s) for s in elo_games["season"].dropna().unique())
 
     if args.sport == "nfl":
         from sportsmodel.nfl.epa import team_epa_by_season
