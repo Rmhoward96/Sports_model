@@ -120,19 +120,21 @@ def main() -> None:
     captured_at = datetime.now(timezone.utc).isoformat()
 
     for sport in SPORTS:
+        # The whole per-sport pipeline -- fetch, match, parse AND store -- is
+        # inside the boundary: a transient failure anywhere (ESPN, the Odds API,
+        # or the odds_snapshot write) logs and moves on to the next sport rather
+        # than aborting the run, so one sport can never take the other down.
         try:
             rows = run_sport(sport, captured_at)
-        except Exception as e:  # one sport's network/ESPN hiccup shouldn't kill the other
+            if rows:
+                n = upsert_odds_snapshot(rows)
+                print(f"[{sport}] stored {n} odds rows in odds_snapshot")
+            else:
+                print(f"[{sport}] no odds rows; nothing to store")
+            print(f"[{sport}] credits remaining: {odds.last_requests_remaining}")
+        except Exception as e:  # one sport's failure shouldn't kill the other
             print(f"[{sport}] failed: {e}")
             continue
-
-        if rows:
-            n = upsert_odds_snapshot(rows)
-            print(f"[{sport}] stored {n} odds rows in odds_snapshot")
-        else:
-            print(f"[{sport}] no odds rows; nothing to store")
-
-        print(f"[{sport}] credits remaining: {odds.last_requests_remaining}")
 
 
 if __name__ == "__main__":
