@@ -1,0 +1,46 @@
+[
+  {
+    "Team": "PHI",
+    "TeamID": 22,
+    "FirstName": "John",
+    "LastName": "Smith",
+    "Position": "QB",
+    "InjuryStatus": "Questionable",
+    "InjuryBodyPart": "Shoulder",
+    "InjuryNotes": "Limited in practice",
+    "InjuryStartDate": "2026-09-03T00:00:00"
+  },
+  {
+    "Team": "PHI",
+    "TeamID": 22,
+    "FirstName": "Mike",
+    "LastName": "Jones",
+    "Position": "RB",
+    "InjuryStatus": "Out",
+    "InjuryBodyPart": null,
+    "InjuryNotes": null,
+    "InjuryStartDate": null
+  },
+  {
+    "Team": "DAL",
+    "TeamID": 9,
+    "FirstName": "Dan",
+    "LastName": "Lee",
+    "Position": "WR",
+    "InjuryStatus": "Probable",
+    "InjuryBodyPart": "Ankle",
+    "InjuryNotes": null,
+    "InjuryStartDate": "2026-09-04T00:00:00"
+  },
+  {
+    "Team": null,
+    "TeamID": null,
+    "FirstName": "Unknown",
+    "LastName": "Player",
+    "Position": "OL",
+    "InjuryStatus": "Out",
+    "InjuryBodyPart": "Knee",
+    "InjuryNotes": "Season-ending",
+    "InjuryStartDate": null
+  }
+]

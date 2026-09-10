@@ -1,0 +1,30 @@
+[
+  {
+    "Key": "PHI",
+    "TeamID": 22,
+    "City": "Philadelphia",
+    "Name": "Eagles",
+    "FullName": "Philadelphia Eagles"
+  },
+  {
+    "Key": "DAL",
+    "TeamID": 9,
+    "City": "Dallas",
+    "Name": "Cowboys",
+    "FullName": "Dallas Cowboys"
+  },
+  {
+    "Key": null,
+    "TeamID": 999,
+    "City": "Unknown",
+    "Name": "Unknown",
+    "FullName": "Unknown"
+  },
+  {
+    "Key": "XXX",
+    "TeamID": 998,
+    "City": null,
+    "Name": null,
+    "FullName": null
+  }
+]

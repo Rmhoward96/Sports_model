@@ -1,14 +1,19 @@
 name: desk-inputs
 
-# On-demand: assemble the CFB decision-desk input bundle (model output + recent
-# form + SportsDataIO injuries/news + the ESPN pick-time line) and upload it as
-# an artifact. The three desk agents run in a Claude Code session over this
+# On-demand: assemble the CFB or NFL decision-desk input bundle (model output +
+# recent form + SportsDataIO injuries/news + the ESPN pick-time line) and upload
+# it as an artifact. The three desk agents run in a Claude Code session over this
 # bundle (see docs/decision-desk-runbook.md); this workflow only does the
 # secret-bearing data pull (SPORTSDATA_API_KEY + DATABASE_URL live here, not in
 # the session). Download the artifact with:  gh run download <run-id> -n desk-bundle
 on:
   workflow_dispatch:
     inputs:
+      sport:
+        description: "Sport to build the bundle for"
+        type: choice
+        options: [cfb, nfl]
+        default: cfb
       days_ahead:
         description: "Only include games within this many days of now"
         type: string
@@ -34,7 +39,7 @@ jobs:
         env:
           SPORTSDATA_API_KEY: ${{ secrets.SPORTSDATA_API_KEY }}
           DATABASE_URL: ${{ secrets.DATABASE_URL }}
-        run: uv run python scripts/desk_inputs.py --out desk_bundle.json --days-ahead "${{ github.event.inputs.days_ahead || '7' }}"
+        run: uv run python scripts/desk_inputs.py --sport "${{ github.event.inputs.sport || 'cfb' }}" --out desk_bundle.json --days-ahead "${{ github.event.inputs.days_ahead || '7' }}"
 
       - name: Upload bundle
         uses: actions/upload-artifact@v4
