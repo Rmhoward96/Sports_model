@@ -1,0 +1,39 @@
+name: build-ev-board
+
+# Build the +EV board -> ev_picks / ev_current. Joins desk_current (desk picks)
+# + the latest odds_snapshot (Pinnacle + soft books) and writes one edge/EV row
+# per market side for every upcoming game. DATABASE_URL lives here, not in the
+# session. Run AFTER capture-odds (odds must be fresh) and, for the desk overlay,
+# after a desk run. Line-shopping picks appear even with no desk pick.
+#
+# The +EV board is assistive -- not a proven edge until grade-ev's forward CLV
+# record supports it.
+on:
+  workflow_dispatch:
+  schedule:
+    # A little after the capture-odds windows on game days (Sun/Mon/Thu/Sat),
+    # so the board reflects the freshest lines. Crons are UTC.
+    - cron: "30 20 * * 0,1,4,6"
+    - cron: "30 23 * * 0,1,4,6"
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v5
+      - name: Install uv
+        uses: astral-sh/setup-uv@v10.0.1
+      - name: Sync deps
+        run: uv sync
+      - name: Build +EV board (NFL)
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+        run: uv run python scripts/build_ev_board.py --sport nfl
+      - name: Build +EV board (CFB)
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+        run: uv run python scripts/build_ev_board.py --sport cfb
