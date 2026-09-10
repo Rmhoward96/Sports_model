@@ -76,6 +76,8 @@ def test_ev_picks_tuple_built_in_column_order_with_all_fields(monkeypatch):
         "best_book": "draftkings",
         "best_price": -105,
         "ev_best": 0.06,
+        "best_line_implied": 0.512,
+        "soft_vs_sharp_gap": 0.008,
         "is_pick": True,
     }
     n = db.upsert_ev_picks([row])
@@ -85,7 +87,7 @@ def test_ev_picks_tuple_built_in_column_order_with_all_fields(monkeypatch):
         "nfl", 12345, "spread", "home", "ev-pilot-v1",
         "Bills @ Jets", "2026-09-14T17:00:00+00:00",
         0.52, 0.57, 0.05, 0.05, "A", -110, 0.04,
-        "draftkings", -105, 0.06, True,
+        "draftkings", -105, 0.06, 0.512, 0.008, True,
     )]
     assert "INSERT INTO ev_picks" in sink["sql"]
     assert "ON CONFLICT (sport, game_pk, market, side, model_version) DO UPDATE" in sink["sql"]
@@ -249,7 +251,7 @@ def test_ev_picks_cols_matches_ev_rows_for_game_output_shape():
         "sport", "game_pk", "matchup", "commence_time", "market", "side",
         "base_prob", "true_prob", "edge", "desk_delta", "conviction_tier",
         "pinnacle_price", "ev_pinnacle", "best_book", "best_price", "ev_best",
-        "is_pick",
+        "best_line_implied", "soft_vs_sharp_gap", "is_pick",
     }
     cols = set(db._EV_PICKS_COLS)
     assert ev_row_fields <= cols

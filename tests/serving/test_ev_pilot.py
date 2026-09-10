@@ -6,9 +6,10 @@ Sub-project 4 (+EV desk-driven pilot), task 1 -- see
 from __future__ import annotations
 
 from sportsmodel.model.trueprob_prob import DESK_MAX_PROB_DELTA, win_prob
-from sportsmodel.serving.board import EV_CEILING, ev, novig
+from sportsmodel.serving.board import EV_CEILING, ev, implied_prob, novig
 from sportsmodel.serving.ev_pilot import (
     MIN_EDGE,
+    MIN_EV,
     SIGMA_MARGIN,
     assemble_games,
     ev_rows_for_game,
@@ -59,6 +60,9 @@ def test_no_desk_pick_passes_on_every_market():
 def test_high_conviction_ml_pick_raises_true_prob_within_clamp_and_is_pick():
     desk = {"ml_pick": "home", "conviction_tier": "high"}
     game = _pickem_game(desk=desk)
+    # A soft book posting the same -110 as Pinnacle -- the desk's raised
+    # true_prob alone (not a soft-line edge) is what should clear MIN_EV here.
+    game["books"]["moneyline"]["home"] = [("fanduel", -110)]
     rows = ev_rows_for_game(game)
     ml = next(r for r in rows if r["market"] == "moneyline")
 
@@ -67,10 +71,16 @@ def test_high_conviction_ml_pick_raises_true_prob_within_clamp_and_is_pick():
     assert ml["true_prob"] > ml["base_prob"]
     assert ml["true_prob"] - ml["base_prob"] <= DESK_MAX_PROB_DELTA + 1e-9
     assert ml["edge"] > 0
+    # The pick comes purely from the desk overlay pushing ev_best past MIN_EV --
+    # the soft book's raw price (-110) itself still carries vig, so the raw
+    # soft-vs-sharp gap versus the no-vig base_prob is negative, not an edge.
+    assert ml["soft_vs_sharp_gap"] < 0
+    assert ml["ev_best"] is not None and ml["ev_best"] > MIN_EV
     assert ml["is_pick"] is True
     assert ml["edge"] >= MIN_EDGE
 
-    # spread/total on this game carry no desk pick -> untouched (pass).
+    # spread/total on this game carry no desk pick and no soft-book prices ->
+    # untouched (pass).
     spread = next(r for r in rows if r["market"] == "spread")
     total = next(r for r in rows if r["market"] == "total")
     assert spread["desk_delta"] == 0.0 and spread["is_pick"] is False
@@ -91,18 +101,66 @@ def test_ev_best_at_least_ev_pinnacle_when_soft_book_prices_better():
     assert ml["ev_best"] >= ml["ev_pinnacle"]
 
 
+def test_line_shopping_pick_with_no_desk_pick():
+    # No desk pick at all -- but a soft book prices the (market-favored) home
+    # side better than Pinnacle's -110/-110. This should surface a pure
+    # line-shopping edge and become a pick with zero desk involvement.
+    game = _pickem_game(desk=None)
+    game["books"]["moneyline"]["home"] = [("fanduel", 120)]
+    rows = ev_rows_for_game(game)
+    ml = next(r for r in rows if r["market"] == "moneyline")
+
+    assert ml["desk_delta"] == 0.0
+    assert ml["best_book"] == "fanduel"
+    assert ml["best_price"] == 120
+    assert ml["best_line_implied"] == implied_prob(120)
+    assert ml["soft_vs_sharp_gap"] is not None and ml["soft_vs_sharp_gap"] > 0
+    assert ml["ev_best"] is not None and ml["ev_best"] > 0
+    assert ml["is_pick"] is True
+
+
+def test_no_desk_pick_and_best_price_matches_pinnacle_is_not_a_pick():
+    # No desk pick, and the "best" soft price is identical to Pinnacle's --
+    # no line-shopping bargain, no desk overlay -> should not clear MIN_EV.
+    game = _pickem_game(desk=None)
+    game["books"]["moneyline"]["home"] = [("fanduel", -110)]
+    rows = ev_rows_for_game(game)
+    ml = next(r for r in rows if r["market"] == "moneyline")
+
+    assert ml["desk_delta"] == 0.0
+    # The soft price matches Pinnacle's own vig-laden price -- no bargain vs.
+    # the no-vig base_prob, so the gap is <= 0, not a positive edge.
+    assert ml["soft_vs_sharp_gap"] <= 0
+    assert ml["ev_best"] is not None and ml["ev_best"] <= 0
+    assert ml["is_pick"] is False
+
+
+def test_best_line_implied_matches_implied_prob_of_best_price():
+    game = _pickem_game(desk=None)
+    game["books"]["moneyline"]["home"] = [("fanduel", 150), ("draftkings", 130)]
+    rows = ev_rows_for_game(game)
+    ml = next(r for r in rows if r["market"] == "moneyline")
+
+    assert ml["best_price"] == 150
+    assert ml["best_line_implied"] == implied_prob(150)
+
+
 def test_ev_ceiling_blocks_contrived_huge_edge():
     # A lopsided two-way Pinnacle price (home is a big underdog priced at +900) makes
     # any positive true_prob translate into a huge EV at that price, well past
     # EV_CEILING -- is_pick must stay False even though desk_delta/edge are nonzero.
+    # A soft book matching the same +900 price makes ev_best just as huge, so this
+    # also confirms EV_CEILING blocks on ev_best, not just ev_pinnacle.
     desk = {"ml_pick": "home", "conviction_tier": "high"}
     game = _pickem_game(desk=desk)
     game["pinnacle"]["moneyline"] = {"home": 900, "away": -3000}
+    game["books"]["moneyline"]["home"] = [("fanduel", 900)]
     rows = ev_rows_for_game(game)
     ml = next(r for r in rows if r["market"] == "moneyline")
 
     assert ml["desk_delta"] != 0.0
     assert ml["ev_pinnacle"] > EV_CEILING
+    assert ml["ev_best"] > EV_CEILING
     assert ml["is_pick"] is False
 
 

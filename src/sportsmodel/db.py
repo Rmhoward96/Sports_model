@@ -241,7 +241,8 @@ _EV_PICKS_COLS = [
     "sport", "game_pk", "market", "side", "model_version", "matchup",
     "commence_time", "base_prob", "true_prob", "edge", "desk_delta",
     "conviction_tier", "pinnacle_price", "ev_pinnacle", "best_book",
-    "best_price", "ev_best", "is_pick",
+    "best_price", "ev_best", "best_line_implied", "soft_vs_sharp_gap",
+    "is_pick",
 ]
 
 _EV_PILOT_DEFAULT_MODEL_VERSION = "ev-pilot-v1"

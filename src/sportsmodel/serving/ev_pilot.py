@@ -4,20 +4,29 @@ Sub-project 4 (+EV desk-driven pilot), task 1 -- see
 .superpowers/sdd/2026-09-09-plus-ev-4-desk-driven-pilot/task-1-brief.md.
 
 Design (post sub-project-3 NO-GO, market-anchored): the model does NOT supply the
-base true probability. Base true prob = Pinnacle's no-vig implied probability; the
-desk overlays a clamped probability delta on top of it:
+base true probability. Base true prob = Pinnacle's no-vig implied probability (the
+sharp true prob); the desk overlays a clamped probability delta on top of it:
 
     true_prob = clamp(base_prob + desk_delta, 0, 1)
 
-If the desk has no pick on a market, desk_delta is 0, so true_prob == base_prob,
-edge is 0, and the market passes. The model (via `sportsmodel.model.trueprob_prob`)
-only supplies sigma + the win/cover/over probability-conversion functions used to
-translate the desk's points-shift into a probability delta -- it is never the base.
+If the desk has no pick on a market, desk_delta is 0, so true_prob == base_prob.
+The board surfaces TWO independent edge sources against this true_prob, and a row
+is a pick whenever either one clears the floor:
+  - line-shopping: the best available soft-book price is itself +EV vs true_prob
+    (ev_best > 0), regardless of whether the desk touched the market at all --
+    this is the "best_line_implied" / "soft_vs_sharp_gap" edge;
+  - desk overlay: the desk moves true_prob away from base_prob (desk_delta != 0),
+    which can also push ev_best (and ev_pinnacle) positive.
+`is_pick` is keyed off ev_best alone (see `_finish_row`), so it captures both
+sources without needing to special-case which one produced the edge. The model
+(via `sportsmodel.model.trueprob_prob`) only supplies sigma + the win/cover/over
+probability-conversion functions used to translate the desk's points-shift into a
+probability delta -- it is never the base.
 
-PURE -- no IO. Reuses `sportsmodel.serving.board` (novig/ev/best_price/MAJOR_BOOKS/
-EV_CEILING) and `sportsmodel.model.trueprob_prob` (win_prob/cover_prob/over_prob/
-desk_margin_shift/DESK_MAX_PROB_DELTA) for all probability + EV math -- nothing here
-re-derives no-vig, EV, or normal-distribution math.
+PURE -- no IO. Reuses `sportsmodel.serving.board` (implied_prob/novig/ev/best_price/
+MAJOR_BOOKS/EV_CEILING) and `sportsmodel.model.trueprob_prob` (win_prob/cover_prob/
+over_prob/desk_margin_shift/DESK_MAX_PROB_DELTA) for all probability + EV math --
+nothing here re-derives no-vig, EV, or normal-distribution math.
 """
 from __future__ import annotations
 
@@ -28,7 +37,7 @@ from ..model.trueprob_prob import (
     over_prob,
     win_prob,
 )
-from .board import EV_CEILING, MAJOR_BOOKS, best_price, ev, novig
+from .board import EV_CEILING, MAJOR_BOOKS, best_price, ev, implied_prob, novig
 
 # Football margin/total sigmas carried over from the sub-project-3 true-prob model
 # (see trueprob_prob.py); the model supplies these + the prob-conversion functions
@@ -38,7 +47,14 @@ SIGMA_MARGIN = 13.2
 SIGMA_TOTAL = 10.0
 
 # A market only becomes a pick once the desk-adjusted edge clears this floor.
+# No longer consulted by `is_pick` (see module docstring) -- kept defined since
+# the test suite still asserts against it as a documented desk-edge floor.
 MIN_EDGE = 0.02
+
+# A market only becomes a pick once the best available price clears this much
+# EV vs true_prob. Below this, "+EV" is noise (rounding/vig-residue), not a
+# real line-shopping or desk edge.
+MIN_EV = 0.01
 
 
 def market_margin(pinnacle_home_spread: float) -> float:
@@ -115,12 +131,9 @@ def _finish_row(game: dict, market: str, side: str, base_prob: float, desk_delta
     ev_pinnacle = ev(true_prob, pinnacle_price)
     best = best_price(soft_by_side.get(side) or [])
     ev_best = ev(true_prob, best[1]) if best else None
-    is_pick = (
-        desk_delta != 0
-        and abs(edge) >= MIN_EDGE
-        and ev_pinnacle is not None
-        and 0 < ev_pinnacle <= EV_CEILING
-    )
+    best_line_implied = implied_prob(best[1]) if best else None
+    soft_vs_sharp_gap = (base_prob - best_line_implied) if best_line_implied is not None else None
+    is_pick = ev_best is not None and MIN_EV < ev_best <= EV_CEILING
     return {
         "sport": game.get("sport"),
         "game_pk": game.get("game_pk"),
@@ -138,6 +151,8 @@ def _finish_row(game: dict, market: str, side: str, base_prob: float, desk_delta
         "best_book": best[0] if best else None,
         "best_price": best[1] if best else None,
         "ev_best": ev_best,
+        "best_line_implied": best_line_implied,
+        "soft_vs_sharp_gap": soft_vs_sharp_gap,
         "is_pick": is_pick,
     }
 

@@ -35,6 +35,14 @@ CREATE TABLE IF NOT EXISTS ev_picks (
     PRIMARY KEY (sport, game_pk, market, side, model_version)
 );
 
+-- Line-shopping columns, added after the initial CREATE TABLE -- IF NOT EXISTS
+-- keeps this idempotent on an already-existing ev_picks table.
+-- best_line_implied: raw implied prob of the best soft price actually bettable.
+-- soft_vs_sharp_gap: base_prob (Pinnacle no-vig) minus best_line_implied;
+-- positive means the best soft price is a bargain vs the sharp fair line.
+ALTER TABLE ev_picks ADD COLUMN IF NOT EXISTS best_line_implied DOUBLE PRECISION;
+ALTER TABLE ev_picks ADD COLUMN IF NOT EXISTS soft_vs_sharp_gap DOUBLE PRECISION;
+
 CREATE INDEX IF NOT EXISTS idx_ev_picks_commence ON ev_picks (sport, commence_time);
 
 -- One row per (sport, game_pk, market, side): the graded outcome of that
@@ -58,6 +66,14 @@ CREATE TABLE IF NOT EXISTS ev_results (
 -- (sport, game_pk, market, side) so a re-run doesn't produce duplicate rows
 -- for the same market. Only games that haven't kicked off yet. is_pick is
 -- included so the page can show picks vs. passes.
+--
+-- best_line_implied/soft_vs_sharp_gap are appended at the END of the select
+-- list (not interleaved next to best_price/ev_best) so CREATE OR REPLACE VIEW
+-- can add them in place -- Postgres allows appending output columns via
+-- CREATE OR REPLACE, but errors 42P16 ("cannot change name/type of an
+-- existing column") if you try to insert or reorder columns mid-list (see the
+-- DROP VIEW comment in migration_prediction_tool.sql for the case where that
+-- DOES require a DROP first).
 CREATE OR REPLACE VIEW ev_current AS
   SELECT DISTINCT ON (sport, game_pk, market, side)
     sport,
@@ -77,7 +93,9 @@ CREATE OR REPLACE VIEW ev_current AS
     best_book,
     best_price,
     ev_best,
-    is_pick
+    is_pick,
+    best_line_implied,
+    soft_vs_sharp_gap
   FROM ev_picks
   WHERE commence_time > now()
   ORDER BY sport, game_pk, market, side, created_at DESC, commence_time ASC;
