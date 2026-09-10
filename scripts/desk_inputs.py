@@ -57,6 +57,7 @@ import pandas as pd
 from sportsmodel import config
 from sportsmodel.cfb import sportsdata as cfb_sportsdata
 from sportsmodel.nfl import sportsdata as nfl_sportsdata
+from sportsmodel.nfl import injuries_nflverse
 from sportsmodel.db import get_postgres
 
 RECENT_FORM_N = 5
@@ -258,6 +259,50 @@ def _rekey_by_espn_name(source: dict[str, object], espn_names: list[str]) -> dic
     return out
 
 
+# =============================================================================
+# injury sources -- one per sport, each returning {full_team_name -> [rows]}
+# =============================================================================
+#
+# Both return injuries keyed by FULL team name (ready for _rekey_by_espn_name).
+# They differ only in where the data comes from and how abbreviations resolve:
+#   - CFB: SportsDataIO's real InjuredPlayers + Teams endpoints (its CFB feed
+#     is genuine). abbrev -> School name via parse_teams (a live call). Needs
+#     the api_key; ignores the crosswalk.
+#   - NFL: nflverse's official injury report (SportsDataIO's NFL feed is
+#     SCRAMBLED). abbrev -> full name via the nfl_teams.json crosswalk (the
+#     SAME abbrev->name map already loaded for form). Needs no api_key.
+
+
+def _cfb_injuries_by_name(adapter, api_key, crosswalk, now) -> dict[str, list[dict]]:
+    """CFB injuries, {School name -> rows}, from SportsDataIO."""
+    injuries_by_abbrev = adapter.parse_injuries(
+        adapter._get(adapter.INJURED_PLAYERS_PATH, api_key)
+    )
+    teams_by_abbrev = adapter.parse_teams(
+        adapter._get(adapter.TEAMS_PATH, api_key)
+    )
+    return {
+        teams_by_abbrev[abbrev]: rows
+        for abbrev, rows in injuries_by_abbrev.items()
+        if abbrev in teams_by_abbrev
+    }
+
+
+def _nfl_injuries_by_name(adapter, api_key, crosswalk, now) -> dict[str, list[dict]]:
+    """NFL injuries, {full team name -> rows}, from nflverse's injury report.
+
+    nflverse keys by abbreviation (ARI, PHI, LA, ...) -- exactly the keys in
+    `nfl_teams.json` -- so the form crosswalk resolves them to ESPN full names
+    with no extra mapping. `adapter`/`api_key` are unused (nflverse needs no
+    key); kept in the signature so both sources share one shape."""
+    by_abbrev = injuries_nflverse.current_injuries(now)
+    return {
+        crosswalk[abbrev]: rows
+        for abbrev, rows in by_abbrev.items()
+        if abbrev in crosswalk
+    }
+
+
 def _sport_config(sport: str) -> dict:
     """Per-sport paths/adapter for main(). Everything else in this module is
     sport-generic. Raises SystemExit on an unsupported sport."""
@@ -265,12 +310,14 @@ def _sport_config(sport: str) -> dict:
     configs = {
         "cfb": {
             "adapter": cfb_sportsdata,
+            "injury_source": _cfb_injuries_by_name,
             "schedules_path": root / "assets" / "cfb" / "schedules.parquet",
             "crosswalk_path": root / "assets" / "cfb" / "fbs_teams.json",
             "out_default": config.DATA_DIR / "cfb" / "desk_bundle.json",
         },
         "nfl": {
             "adapter": nfl_sportsdata,
+            "injury_source": _nfl_injuries_by_name,
             "schedules_path": root / "assets" / "nfl" / "schedules.parquet",
             "crosswalk_path": root / "assets" / "nfl" / "nfl_teams.json",
             "out_default": config.DATA_DIR / "nfl" / "desk_bundle.json",
@@ -356,31 +403,21 @@ def main() -> None:
     )
     form_rows = compute_recent_form(schedule_named, set(espn_names))
 
-    # -- injuries, from SportsDataIO's real InjuredPlayers/Teams endpoints --
-    # InjuredPlayers keys rows by team ABBREVIATION (CFB e.g. "SMU", NFL e.g.
-    # "PHI"); Teams supplies the abbreviation -> full-name crosswalk (CFB
-    # School e.g. "Florida State", NFL FullName e.g. "Philadelphia Eagles"),
-    # and _rekey_by_espn_name then prefix-matches that onto ESPN's displayName
-    # ("Florida State Seminoles" / "Philadelphia Eagles"). Both calls are
-    # non-fatal: a SportsDataIO outage/error logs a warning and yields empty
-    # injuries rather than aborting the whole bundle -- the model/form
-    # blocks are still worth writing on their own.
+    # -- injuries, from the sport's injury_source (see the functions above) --
+    # Each source returns {full team name -> rows} (CFB School / NFL FullName,
+    # e.g. "Florida State" / "Philadelphia Eagles"); _rekey_by_espn_name then
+    # prefix-matches that onto ESPN's displayName ("Florida State Seminoles" /
+    # "Philadelphia Eagles"). CFB uses SportsDataIO's real feed; NFL uses
+    # nflverse (SportsDataIO's NFL injury feed is scrambled). The fetch is
+    # non-fatal: any outage/error logs a warning and yields empty injuries
+    # rather than aborting the whole bundle -- the model/form blocks are still
+    # worth writing on their own.
     injuries: dict[str, list[dict]] = {}
     try:
-        injuries_by_abbrev = adapter.parse_injuries(
-            adapter._get(adapter.INJURED_PLAYERS_PATH, api_key)
-        )
-        teams_by_abbrev = adapter.parse_teams(
-            adapter._get(adapter.TEAMS_PATH, api_key)
-        )
-        injuries_by_name = {
-            teams_by_abbrev[abbrev]: rows
-            for abbrev, rows in injuries_by_abbrev.items()
-            if abbrev in teams_by_abbrev
-        }
+        injuries_by_name = cfg["injury_source"](adapter, api_key, crosswalk, now)
         injuries = _rekey_by_espn_name(injuries_by_name, espn_names)
     except Exception:
-        log.warning("SportsDataIO injuries/teams fetch failed; continuing with no injury data", exc_info=True)
+        log.warning("injury fetch failed; continuing with no injury data", exc_info=True)
 
     # Weather is intentionally NOT fetched here: SportsDataIO's CFB/NFL feeds
     # have no usable weather endpoint wired in (verified against their OpenAPI
