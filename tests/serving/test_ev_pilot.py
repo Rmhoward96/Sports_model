@@ -72,9 +72,9 @@ def test_high_conviction_ml_pick_raises_true_prob_within_clamp_and_is_pick():
     assert ml["true_prob"] - ml["base_prob"] <= DESK_MAX_PROB_DELTA + 1e-9
     assert ml["edge"] > 0
     # The pick comes purely from the desk overlay pushing ev_best past MIN_EV --
-    # the soft book's raw price (-110) itself still carries vig, so the raw
-    # soft-vs-sharp gap versus the no-vig base_prob is negative, not an edge.
-    assert ml["soft_vs_sharp_gap"] < 0
+    # the soft book posts the SAME -110 as Pinnacle, so the price-vs-price
+    # soft-vs-sharp gap is 0 (no line-shopping edge); the edge here is the desk.
+    assert abs(ml["soft_vs_sharp_gap"]) < 1e-9
     assert ml["ev_best"] is not None and ml["ev_best"] > MIN_EV
     assert ml["is_pick"] is True
     assert ml["edge"] >= MIN_EDGE

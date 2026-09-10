@@ -132,7 +132,12 @@ def _finish_row(game: dict, market: str, side: str, base_prob: float, desk_delta
     best = best_price(soft_by_side.get(side) or [])
     ev_best = ev(true_prob, best[1]) if best else None
     best_line_implied = implied_prob(best[1]) if best else None
-    soft_vs_sharp_gap = (base_prob - best_line_implied) if best_line_implied is not None else None
+    # Line-shopping gap: the sharp book's own price implied prob minus the best
+    # soft price's implied prob -- BOTH vig-inclusive (price vs price), so at
+    # equal prices the gap is 0 and a positive gap means the best soft price
+    # pays more than the sharp for the same side. (Value-vs-truth is ev_best,
+    # which uses the no-vig true_prob; this is the pure price edge to display.)
+    soft_vs_sharp_gap = (implied_prob(pinnacle_price) - best_line_implied) if best_line_implied is not None else None
     is_pick = ev_best is not None and MIN_EV < ev_best <= EV_CEILING
     return {
         "sport": game.get("sport"),
