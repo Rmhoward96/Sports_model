@@ -30,8 +30,9 @@ def novig(price_side: int, price_other: int) -> float:
 MAJOR_BOOKS = {
     "draftkings": "DraftKings", "fanduel": "FanDuel", "fanatics": "Fanatics",
     "hardrockbet": "Hard Rock Bet", "thescore": "theScore Bet",
-    "williamhill_us": "Caesars", "caesars": "Caesars", "bet365": "Bet365",
-    "betmgm": "BetMGM", "ballybet": "Bally Bet", "pinnacle": "Pinnacle",
+    "espnbet": "ESPN BET", "williamhill_us": "Caesars", "caesars": "Caesars",
+    "bet365": "Bet365", "betmgm": "BetMGM", "ballybet": "Bally Bet",
+    "pinnacle": "Pinnacle",
 }
 # Plays above this EV are almost always stale-line artifacts, not real value -- excluded
 # so they never make the board or skew the CLV track record.

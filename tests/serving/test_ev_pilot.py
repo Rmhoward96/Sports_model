@@ -87,10 +87,10 @@ def test_high_conviction_ml_pick_raises_true_prob_within_clamp_and_is_pick():
     assert total["desk_delta"] == 0.0 and total["is_pick"] is False
 
 
-def test_confidence_bearing_desk_pick_drives_desk_delta_and_true_prob():
-    # A desk pick carrying numeric confidence (no reliance on conviction_tier)
-    # still produces a pick and moves true_prob/desk_delta.
-    desk = {"ml_pick": "home", "confidence": 0.9}
+def test_tiered_desk_pick_drives_desk_delta_and_true_prob():
+    # A desk pick with a conviction tier moves true_prob/desk_delta and produces
+    # a pick (the desk's own numeric confidence is NOT used to size the nudge).
+    desk = {"ml_pick": "home", "conviction_tier": "high"}
     game = _pickem_game(desk=desk)
     game["books"]["moneyline"]["home"] = [("fanduel", -110)]
     rows = ev_rows_for_game(game)
@@ -103,13 +103,11 @@ def test_confidence_bearing_desk_pick_drives_desk_delta_and_true_prob():
     assert ml["is_pick"] is True
 
 
-def test_higher_confidence_desk_pick_yields_larger_desk_delta_than_lower():
-    game_high = _pickem_game(desk={"ml_pick": "home", "confidence": 0.9})
-    game_low = _pickem_game(desk={"ml_pick": "home", "confidence": 0.55})
-    rows_high = ev_rows_for_game(game_high)
-    rows_low = ev_rows_for_game(game_low)
-    ml_high = next(r for r in rows_high if r["market"] == "moneyline")
-    ml_low = next(r for r in rows_low if r["market"] == "moneyline")
+def test_higher_tier_desk_pick_yields_larger_desk_delta_than_lower():
+    game_high = _pickem_game(desk={"ml_pick": "home", "conviction_tier": "high"})
+    game_low = _pickem_game(desk={"ml_pick": "home", "conviction_tier": "low"})
+    ml_high = next(r for r in ev_rows_for_game(game_high) if r["market"] == "moneyline")
+    ml_low = next(r for r in ev_rows_for_game(game_low) if r["market"] == "moneyline")
 
     assert ml_high["desk_delta"] >= ml_low["desk_delta"] > 0
 
