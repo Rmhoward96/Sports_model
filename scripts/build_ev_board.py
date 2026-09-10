@@ -38,7 +38,7 @@ MODEL_VERSION = "ev-pilot-v1"
 # NULL, so a non-desk game yields a pure line-shopping row.
 GAME_COLS = [
     "sport", "game_pk", "matchup", "commence_time",
-    "ml_pick", "spread_side", "total_side", "conviction_tier",
+    "ml_pick", "spread_side", "total_side", "conviction_tier", "confidence",
 ]
 
 
@@ -53,7 +53,7 @@ def load_upcoming_games(sport: str) -> list[dict]:
                    p.game_pk,
                    p.away_team_name || ' @ ' || p.home_team_name AS matchup,
                    p.commence_time,
-                   d.ml_pick, d.spread_side, d.total_side, d.conviction_tier
+                   d.ml_pick, d.spread_side, d.total_side, d.conviction_tier, d.confidence
             FROM predictions_current p
             LEFT JOIN desk_current d
               ON d.sport = p.sport AND d.game_pk = p.game_pk
