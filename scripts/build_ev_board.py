@@ -7,8 +7,12 @@ Sub-project 4 (+EV desk-driven pilot), task 1 & 2 -- see
 task-2-brief.md.
 
 Reads:
-  - `desk_current` (view over desk_picks): the desk's latest pick per upcoming
-    game for `--sport`.
+  - `predictions_current`: the full upcoming slate for `--sport` (game_pk, team
+    names -> matchup, commence_time). The board is built over EVERY upcoming
+    game, so LINE-SHOPPING (best soft price vs the sharp Pinnacle fair) is
+    surfaced everywhere, not only on games the desk picked.
+  - `desk_current` (view over desk_picks): LEFT-joined as an OPTIONAL overlay --
+    a game with no desk pick still gets a line-shopping row (desk_delta 0).
   - `odds_snapshot`: latest per-book snapshot per (game_pk, market, side, book)
     captured before commence_time, for those games' Pinnacle + soft-book prices.
 
@@ -26,24 +30,39 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 from sportsmodel.db import get_postgres, upsert_ev_picks
 from sportsmodel.serving.ev_pilot import assemble_games, ev_rows_for_game
 
-DESK_CURRENT_COLS = [
+MODEL_VERSION = "ev-pilot-v1"
+
+# One row per upcoming game: identity/matchup from predictions_current, the
+# desk's pick fields LEFT-joined (NULL when the desk didn't touch that game).
+# assemble_games sets desk=None when ml_pick/spread_side/total_side are all
+# NULL, so a non-desk game yields a pure line-shopping row.
+GAME_COLS = [
     "sport", "game_pk", "matchup", "commence_time",
     "ml_pick", "spread_side", "total_side", "conviction_tier",
 ]
 
-MODEL_VERSION = "ev-pilot-v1"
 
-
-def load_desk_current(sport: str) -> list[dict]:
-    """The desk's current (upcoming) picks for `sport`, from the `desk_current`
-    view (already deduped to the latest model_version per game)."""
+def load_upcoming_games(sport: str) -> list[dict]:
+    """Every upcoming game for `sport` from `predictions_current`, with the
+    desk's current pick (if any) LEFT-joined from `desk_current`. matchup is
+    built as "<away> @ <home>" to match the desk convention."""
     with get_postgres() as pg, pg.cursor() as cur:
         cur.execute(
-            f"SELECT {', '.join(DESK_CURRENT_COLS)} FROM desk_current WHERE sport = %s",
+            """
+            SELECT p.sport,
+                   p.game_pk,
+                   p.away_team_name || ' @ ' || p.home_team_name AS matchup,
+                   p.commence_time,
+                   d.ml_pick, d.spread_side, d.total_side, d.conviction_tier
+            FROM predictions_current p
+            LEFT JOIN desk_current d
+              ON d.sport = p.sport AND d.game_pk = p.game_pk
+            WHERE p.sport = %s AND p.commence_time > now()
+            """,
             [sport],
         )
         rows = cur.fetchall()
-    return [dict(zip(DESK_CURRENT_COLS, r)) for r in rows]
+    return [dict(zip(GAME_COLS, r)) for r in rows]
 
 
 def load_latest_odds(game_pks: list[int]) -> list[dict]:
@@ -76,9 +95,9 @@ def main() -> None:
     parser.add_argument("--sport", default="nfl", help="Sport key (default: nfl)")
     args = parser.parse_args()
 
-    desk_rows = load_desk_current(args.sport)
-    odds_rows = load_latest_odds([d["game_pk"] for d in desk_rows])
-    games = assemble_games(desk_rows, odds_rows)
+    game_rows = load_upcoming_games(args.sport)
+    odds_rows = load_latest_odds([g["game_pk"] for g in game_rows])
+    games = assemble_games(game_rows, odds_rows)
 
     all_rows = []
     for game in games:
