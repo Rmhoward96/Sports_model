@@ -16,6 +16,7 @@ dependencies = [
     "scipy>=1.11",
     "numpy>=1.26",
     "nfl-data-py>=0.3.2",
+    "anthropic>=0.40",
 ]
 
 [dependency-groups]

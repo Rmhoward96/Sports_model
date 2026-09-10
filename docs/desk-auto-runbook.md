@@ -1,21 +1,35 @@
 # Automated decision-desk runbook (scheduled, unattended)
 
-This is the runbook a **scheduled Claude Code session** follows to run the
-CFB or NFL decision desk end to end, unattended, the day before a slate. It
-is the automated counterpart to `docs/decision-desk-runbook.md` (the manual,
-in-session version) and it **supersedes that doc's methodology** where they
-differ — in particular, this flow runs through GitHub Actions (not local
-scripts), declines totals, treats the model as supporting context only, and
-does **not** do ad-hoc web search.
+The disciplined desk methodology, plus the manual fallback for running the
+desk by hand. It is the automated counterpart to
+`docs/decision-desk-runbook.md` (the interactive, in-session version) and it
+**supersedes that doc's methodology** where they differ — this flow declines
+totals, treats the model as supporting context only, and does **not** do
+ad-hoc web search.
 
-The scheduled session runs on the user's machine and does **not** hold the
-Supabase / SportsDataIO secrets (those live only as GitHub Actions secrets).
-So every step that touches the database or a paid API goes through
-`gh workflow run`; the session itself only builds the bundle artifact,
-synthesizes picks locally, and commits the picks JSON.
+## Primary path: fully automated in CI (no live Claude app)
 
-**Repo:** `/Users/ryan/Desktop/Sports Model` · **Branch:** `main` ·
-Requires `gh` (authenticated) and `uv` on PATH.
+The desk now runs **entirely in GitHub Actions**, on a cron, with no machine
+or app dependency:
+
+- `.github/workflows/desk-auto-nfl.yml` — Wed/Sat/Sun (Thu/Sun/Mon slates)
+- `.github/workflows/desk-auto-cfb.yml` — Wed/Thu/Fri (Thu/Fri/Sat slates)
+
+Each workflow runs the whole chain in one job: build the bundle
+(`desk_inputs.py`) → **synthesize picks via the Anthropic API**
+(`scripts/synthesize_desk_picks.py`, which embeds the methodology below) →
+write (`write_desk_picks.py`) → rebuild the +EV board (`build_ev_board.py`).
+Secrets required in the repo: `DATABASE_URL`, `SPORTSDATA_API_KEY`,
+`ANTHROPIC_API_KEY`. Optional repo variable `DESK_SYNTH_MODEL` overrides the
+synthesis model (default `claude-opus-4-8`). The synthesis is fail-closed:
+invalid picks (after one repair round) write nothing.
+
+The rest of this doc is the **manual fallback** — how a person (or a Claude
+session) drives the same pipeline by hand via `gh`, e.g. to re-run a slate or
+debug. It needs `gh` (authenticated) and `uv` on PATH; it does **not** hold
+the secrets locally, so DB/API steps go through `gh workflow run`.
+
+**Repo:** `/Users/ryan/Desktop/Sports Model` · **Branch:** `main`
 
 ---
 

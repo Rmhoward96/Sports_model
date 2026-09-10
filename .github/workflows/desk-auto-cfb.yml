@@ -1,0 +1,54 @@
+name: desk-auto-cfb
+
+# Fully automated CFB decision desk -- runs entirely in CI, no live Claude app.
+# The day before each slate (Wed->Thu, Thu->Fri, Fri->Sat) it: builds the desk
+# bundle, synthesizes picks via the Anthropic API (disciplined methodology in
+# scripts/synthesize_desk_picks.py + docs/desk-auto-runbook.md), writes them to
+# desk_picks, and rebuilds the CFB +EV board. All secrets live here.
+#
+# Requires repo secrets: DATABASE_URL, SPORTSDATA_API_KEY, ANTHROPIC_API_KEY.
+# Optional repo variable DESK_SYNTH_MODEL overrides the synthesis model.
+on:
+  workflow_dispatch:
+  schedule:
+    # 22:15 UTC = 4:15pm CST / 5:15pm CDT (late afternoon CT year-round).
+    # Wed(3), Thu(4), Fri(5) -- a day before the Thu / Fri / Sat slates.
+    - cron: "15 22 * * 3,4,5"
+
+permissions:
+  contents: read
+
+jobs:
+  desk:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      SPORT: cfb
+    steps:
+      - uses: actions/checkout@v5
+      - name: Install uv
+        uses: astral-sh/setup-uv@v10.0.1
+      - name: Sync deps
+        run: uv sync
+
+      - name: Build desk bundle
+        env:
+          SPORTSDATA_API_KEY: ${{ secrets.SPORTSDATA_API_KEY }}
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+        run: uv run python scripts/desk_inputs.py --sport "$SPORT" --out desk_bundle.json --days-ahead 7
+
+      - name: Synthesize picks (Anthropic API)
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          DESK_SYNTH_MODEL: ${{ vars.DESK_SYNTH_MODEL }}
+        run: uv run python scripts/synthesize_desk_picks.py --sport "$SPORT" --bundle desk_bundle.json --out picks.json
+
+      - name: Write picks
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+        run: uv run python scripts/write_desk_picks.py --in picks.json
+
+      - name: Rebuild +EV board
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+        run: uv run python scripts/build_ev_board.py --sport "$SPORT"
