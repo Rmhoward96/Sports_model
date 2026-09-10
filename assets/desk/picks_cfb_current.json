@@ -1,0 +1,942 @@
+[
+  {
+    "sport": "cfb",
+    "game_pk": 401856670,
+    "model_version": "desk-cfb-v1",
+    "commence_time": "2026-09-13T02:15:00+00:00",
+    "matchup": "Arkansas Razorbacks @ Utah Utes",
+    "ml_pick": "home",
+    "spread_side": "home",
+    "spread_line": -12.5,
+    "total_side": null,
+    "total_line": null,
+    "confidence": 0.57,
+    "conviction_tier": "medium",
+    "rationale": "Utah is 5-0 (+23.6 avg); Arkansas 0-5 and thinned (TE Lassiter, P Smith, DL Allen OUT). The model projects Utah -17.5, comfortably past the -12.5. Lay the rolling home favorite -12.5.",
+    "agent_notes": {
+      "statistics": "Model home margin +17.5 vs market implied +12.5 (line -12.5); win_prob Utah Utes 0.85. Model total 55.3 vs market 54.5.",
+      "analyst": "Utah Utes: 5-0 (avg margin +23.6, last WWWWW). Arkansas Razorbacks: 0-5 (avg margin -8.4, last LLLLL).",
+      "news": "OUT -- Utah Utes: none listed. Arkansas Razorbacks: TE Maddox Lassiter, P Connor Smith, DL J'Lynn Allen. (CFB injury feed verified real, not scrambled.)"
+    }
+  },
+  {
+    "sport": "cfb",
+    "game_pk": 401856671,
+    "model_version": "desk-cfb-v1",
+    "commence_time": "2026-09-12T23:45:00+00:00",
+    "matchup": "Southern Miss Golden Eagles @ Auburn Tigers",
+    "ml_pick": "home",
+    "spread_side": "away",
+    "spread_line": 32.5,
+    "total_side": null,
+    "total_line": null,
+    "confidence": 0.54,
+    "conviction_tier": "low",
+    "rationale": "Auburn is only 2-3 (+6.6 avg) yet laying -32.5; the model has the margin near 18. Take the points with Southern Miss +32.5.",
+    "agent_notes": {
+      "statistics": "Model home margin +18.2 vs market implied +32.5 (line -32.5); win_prob Auburn Tigers 0.86. Model total 49.6 vs market 56.5.",
+      "analyst": "Auburn Tigers: 2-3 (avg margin +6.6, last LWLLW). Southern Miss Golden Eagles: 2-3 (avg margin -2, last LLLWW).",
+      "news": "OUT -- Auburn Tigers: CB Devin Williams. Southern Miss Golden Eagles: none listed. (CFB injury feed verified real, not scrambled.)"
+    }
+  },
+  {
+    "sport": "cfb",
+    "game_pk": 401856673,
+    "model_version": "desk-cfb-v1",
+    "commence_time": "2026-09-12T16:45:00+00:00",
+    "matchup": "Western Kentucky Hilltoppers @ Georgia Bulldogs",
+    "ml_pick": "home",
+    "spread_side": null,
+    "spread_line": null,
+    "total_side": null,
+    "total_line": null,
+    "confidence": 0.52,
+    "conviction_tier": "low",
+    "rationale": "No actionable edge: the model margin sits near the market number (+30.3 model vs +40.5 implied home margin) and no injury or form signal separates the sides. Desk declines the spread; ml lean follows the favorite only.",
+    "agent_notes": {
+      "statistics": "Model home margin +30.3 vs market implied +40.5 (line -40.5); win_prob Georgia Bulldogs 0.96. Model total 52.9 vs market 55.5.",
+      "analyst": "Georgia Bulldogs: 5-0 (avg margin +21, last WWWWW). Western Kentucky Hilltoppers: 3-2 (avg margin +6, last LLWWW).",
+      "news": "OUT -- Georgia Bulldogs: none listed. Western Kentucky Hilltoppers: none listed. (CFB injury feed verified real, not scrambled.)"
+    }
+  },
+  {
+    "sport": "cfb",
+    "game_pk": 401856674,
+    "model_version": "desk-cfb-v1",
+    "commence_time": "2026-09-12T19:30:00+00:00",
+    "matchup": "Alabama Crimson Tide @ Kentucky Wildcats",
+    "ml_pick": "away",
+    "spread_side": "away",
+    "spread_line": -10.5,
+    "total_side": null,
+    "total_line": null,
+    "confidence": 0.54,
+    "conviction_tier": "low",
+    "rationale": "Alabama is 3-2 (+10.2) and the model has them by ~15, past the -10.5. Tempered to low: the Tide secondary is thinned (DBs Sherman/Edmonds, WR Rogers OUT), a real cover risk against a big number. Lean Alabama -10.5.",
+    "agent_notes": {
+      "statistics": "Model home margin -15.2 vs market implied -10.5 (line +10.5); win_prob Kentucky Wildcats 0.17. Model total 52.0 vs market 49.5.",
+      "analyst": "Kentucky Wildcats: 3-2 (avg margin +0.2, last LLWWW). Alabama Crimson Tide: 3-2 (avg margin +10.2, last LWWLW).",
+      "news": "OUT -- Kentucky Wildcats: RB Tovani Mizell, OL Jay Clark. Alabama Crimson Tide: WR Noah Rogers, LB Cayden Jones, DL Jeremiah Beaman, DB Nick Sherman, DB Jorden Edmonds. (CFB injury feed verified real, not scrambled.)"
+    }
+  },
+  {
+    "sport": "cfb",
+    "game_pk": 401856676,
+    "model_version": "desk-cfb-v1",
+    "commence_time": "2026-09-12T23:45:00+00:00",
+    "matchup": "Charlotte 49ers @ Ole Miss Rebels",
+    "ml_pick": "home",
+    "spread_side": null,
+    "spread_line": null,
+    "total_side": null,
+    "total_line": null,
+    "confidence": 0.52,
+    "conviction_tier": "low",
+    "rationale": "No actionable edge: the model margin sits near the market number (+37.2 model vs +47.5 implied home margin) and no injury or form signal separates the sides. Desk declines the spread; ml lean follows the favorite only.",
+    "agent_notes": {
+      "statistics": "Model home margin +37.2 vs market implied +47.5 (line -47.5); win_prob Ole Miss Rebels 0.99. Model total 61.8 vs market 60.5.",
+      "analyst": "Ole Miss Rebels: 5-0 (avg margin +20.4, last WWWWW). Charlotte 49ers: 0-5 (avg margin -28, last LLLLL).",
+      "news": "OUT -- Ole Miss Rebels: none listed. Charlotte 49ers: none listed. (CFB injury feed verified real, not scrambled.)"
+    }
+  },
+  {
+    "sport": "cfb",
+    "game_pk": 401856677,
+    "model_version": "desk-cfb-v1",
+    "commence_time": "2026-09-12T19:30:00+00:00",
+    "matchup": "Mississippi State Bulldogs @ Minnesota Golden Gophers",
+    "ml_pick": "home",
+    "spread_side": null,
+    "spread_line": null,
+    "total_side": null,
+    "total_line": null,
+    "confidence": 0.52,
+    "conviction_tier": "low",
+    "rationale": "No actionable edge: the model margin sits near the market number (+6.2 model vs +1.5 implied home margin) and no injury or form signal separates the sides. Desk declines the spread; ml lean follows the favorite only.",
+    "agent_notes": {
+      "statistics": "Model home margin +6.2 vs market implied +1.5 (line -1.5); win_prob Minnesota Golden Gophers 0.63. Model total 50.6 vs market 55.5.",
+      "analyst": "Minnesota Golden Gophers: 2-3 (avg margin -11.4, last WLLWL). Mississippi State Bulldogs: 1-4 (avg margin -13, last LLLWL).",
+      "news": "OUT -- Minnesota Golden Gophers: RB Ryan Estrada. Mississippi State Bulldogs: none listed. (CFB injury feed verified real, not scrambled.)"
+    }
+  },
+  {
+    "sport": "cfb",
+    "game_pk": 401856678,
+    "model_version": "desk-cfb-v1",
+    "commence_time": "2026-09-12T00:00:00+00:00",
+    "matchup": "Missouri Tigers @ Kansas Jayhawks",
+    "ml_pick": "away",
+    "spread_side": null,
+    "spread_line": null,
+    "total_side": null,
+    "total_line": null,
+    "confidence": 0.52,
+    "conviction_tier": "low",
+    "rationale": "No actionable edge: the model margin sits near the market number (-8.8 model vs -5.5 implied home margin) and no injury or form signal separates the sides. Desk declines the spread; ml lean follows the favorite only.",
+    "agent_notes": {
+      "statistics": "Model home margin -8.8 vs market implied -5.5 (line +5.5); win_prob Kansas Jayhawks 0.29. Model total 58.0 vs market 50.5.",
+      "analyst": "Kansas Jayhawks: 1-4 (avg margin -9.2, last LLLWL). Missouri Tigers: 2-3 (avg margin -0.6, last WLWLL).",
+      "news": "OUT -- Kansas Jayhawks: none listed. Missouri Tigers: OL Josh Atkins, DT Elias Williams, RB Ahmad Hardy. (CFB injury feed verified real, not scrambled.)"
+    }
+  },
+  {
+    "sport": "cfb",
+    "game_pk": 401856679,
+    "model_version": "desk-cfb-v1",
+    "commence_time": "2026-09-12T16:00:00+00:00",
+    "matchup": "Oklahoma Sooners @ Michigan Wolverines",
+    "ml_pick": "home",
+    "spread_side": "away",
+    "spread_line": -5.5,
+    "total_side": null,
+    "total_line": null,
+    "confidence": 0.54,
+    "conviction_tier": "low",
+    "rationale": "The model has Oklahoma as the stronger side (Michigan by only ~1.6) while the market lays Michigan -5.5. Low-conviction points play -- Oklahoma +5.5.",
+    "agent_notes": {
+      "statistics": "Model home margin +1.6 vs market implied -5.5 (line +5.5); win_prob Michigan Wolverines 0.53. Model total 59.2 vs market 43.5.",
+      "analyst": "Michigan Wolverines: 4-1 (avg margin +5, last LWWWW). Oklahoma Sooners: 4-1 (avg margin +3, last WWWWL).",
+      "news": "OUT -- Michigan Wolverines: none listed. Oklahoma Sooners: none listed. (CFB injury feed verified real, not scrambled.)"
+    }
+  },
+  {
+    "sport": "cfb",
+    "game_pk": 401856681,
+    "model_version": "desk-cfb-v1",
+    "commence_time": "2026-09-12T23:00:00+00:00",
+    "matchup": "Tennessee Volunteers @ Georgia Tech Yellow Jackets",
+    "ml_pick": "away",
+    "spread_side": "home",
+    "spread_line": 12.5,
+    "total_side": null,
+    "total_line": null,
+    "confidence": 0.57,
+    "conviction_tier": "medium",
+    "rationale": "Tennessee laid -12.5 but the model has them by only ~3.5, and the Vols' back seven is banged up (LB Carter, DBs Richard/Farooq OUT). Georgia Tech at home is live -- take the points +12.5.",
+    "agent_notes": {
+      "statistics": "Model home margin -3.5 vs market implied -12.5 (line +12.5); win_prob Georgia Tech Yellow Jackets 0.41. Model total 59.2 vs market 55.5.",
+      "analyst": "Georgia Tech Yellow Jackets: 2-3 (avg margin -1.2, last LLWLW). Tennessee Volunteers: 3-2 (avg margin +9.6, last LWWLW).",
+      "news": "OUT -- Georgia Tech Yellow Jackets: OL Josh Petty. Tennessee Volunteers: DB Jadais Richard, LB Arion Carter, DB Edrees Farooq, LB Jaedon Harmon. (CFB injury feed verified real, not scrambled.)"
+    }
+  },
+  {
+    "sport": "cfb",
+    "game_pk": 401856682,
+    "model_version": "desk-cfb-v1",
+    "commence_time": "2026-09-12T23:30:00+00:00",
+    "matchup": "Ohio State Buckeyes @ Texas Longhorns",
+    "ml_pick": "away",
+    "spread_side": "away",
+    "spread_line": 1.5,
+    "total_side": null,
+    "total_line": null,
+    "confidence": 0.58,
+    "conviction_tier": "medium",
+    "rationale": "Ohio State is 4-1 with a dominant +22.0 avg margin; Texas 4-1 at only +2.0. The model projects OSU by ~7 and the market has them as a short road dog (+1.5). Back the stronger team getting points -- Ohio State +1.5.",
+    "agent_notes": {
+      "statistics": "Model home margin -7.0 vs market implied +1.5 (line -1.5); win_prob Texas Longhorns 0.33. Model total 59.3 vs market 49.5.",
+      "analyst": "Texas Longhorns: 4-1 (avg margin +2, last WWLWW). Ohio State Buckeyes: 4-1 (avg margin +22, last LWWWW).",
+      "news": "OUT -- Texas Longhorns: none listed. Ohio State Buckeyes: none listed. (CFB injury feed verified real, not scrambled.)"
+    }
+  },
+  {
+    "sport": "cfb",
+    "game_pk": 401856683,
+    "model_version": "desk-cfb-v1",
+    "commence_time": "2026-09-12T16:00:00+00:00",
+    "matchup": "Arizona State Sun Devils @ Texas A&M Aggies",
+    "ml_pick": "home",
+    "spread_side": null,
+    "spread_line": null,
+    "total_side": null,
+    "total_line": null,
+    "confidence": 0.52,
+    "conviction_tier": "low",
+    "rationale": "No actionable edge: the model margin sits near the market number (+12.4 model vs +14.5 implied home margin) and no injury or form signal separates the sides. Desk declines the spread; ml lean follows the favorite only.",
+    "agent_notes": {
+      "statistics": "Model home margin +12.4 vs market implied +14.5 (line -14.5); win_prob Texas A&M Aggies 0.76. Model total 54.4 vs market 50.5.",
+      "analyst": "Texas A&M Aggies: 4-1 (avg margin +16.8, last LWWWW). Arizona State Sun Devils: 3-2 (avg margin +1.6, last LWWWL).",
+      "news": "OUT -- Texas A&M Aggies: RB Tiger Riden Jr., WR Madden Williams. Arizona State Sun Devils: LB Zyrus Fiaseu, DL MyKeil Gardner, DB Nigel Pringle. (CFB injury feed verified real, not scrambled.)"
+    }
+  },
+  {
+    "sport": "cfb",
+    "game_pk": 401856684,
+    "model_version": "desk-cfb-v1",
+    "commence_time": "2026-09-12T20:15:00+00:00",
+    "matchup": "Delaware Blue Hens @ Vanderbilt Commodores",
+    "ml_pick": "home",
+    "spread_side": null,
+    "spread_line": null,
+    "total_side": null,
+    "total_line": null,
+    "confidence": 0.52,
+    "conviction_tier": "low",
+    "rationale": "No actionable edge: the model margin sits near the market number (+20.9 model vs +21.0 implied home margin) and no injury or form signal separates the sides. Desk declines the spread; ml lean follows the favorite only.",
+    "agent_notes": {
+      "statistics": "Model home margin +20.9 vs market implied +21.0 (line -21); win_prob Vanderbilt Commodores 0.89. Model total 53.7 vs market 54.5.",
+      "analyst": "Vanderbilt Commodores: 4-1 (avg margin +12, last WWWLW). Delaware Blue Hens: 2-3 (avg margin -7.8, last WLLWL).",
+      "news": "OUT -- Vanderbilt Commodores: none listed. Delaware Blue Hens: DT Noah Frazier. (CFB injury feed verified real, not scrambled.)"
+    }
+  },
+  {
+    "sport": "cfb",
+    "game_pk": 401856781,
+    "model_version": "desk-cfb-v1",
+    "commence_time": "2026-09-12T16:00:00+00:00",
+    "matchup": "Washington State Cougars @ Kansas State Wildcats",
+    "ml_pick": "home",
+    "spread_side": "away",
+    "spread_line": 17.5,
+    "total_side": null,
+    "total_line": null,
+    "confidence": 0.57,
+    "conviction_tier": "medium",
+    "rationale": "K-State laid -17.5 but the model only has them by ~8, and Washington State arrives 3-2 (+12.6 avg margin). Double-digit gap between model and line on a non-elite favorite -- take the Cougars +17.5.",
+    "agent_notes": {
+      "statistics": "Model home margin +7.9 vs market implied +17.5 (line -17.5); win_prob Kansas State Wildcats 0.67. Model total 55.7 vs market 49.5.",
+      "analyst": "Kansas State Wildcats: 3-2 (avg margin +3.2, last WLWLW). Washington State Cougars: 3-2 (avg margin +12.6, last WLWLW).",
+      "news": "OUT -- Kansas State Wildcats: OL John Pastore. Washington State Cougars: TE Hudson Cedarland, TE Trey Leckner. (CFB injury feed verified real, not scrambled.)"
+    }
+  },
+  {
+    "sport": "cfb",
+    "game_pk": 401856782,
+    "model_version": "desk-cfb-v1",
+    "commence_time": "2026-09-12T16:00:00+00:00",
+    "matchup": "Oregon Ducks @ Oklahoma State Cowboys",
+    "ml_pick": "away",
+    "spread_side": "home",
+    "spread_line": 23.5,
+    "total_side": null,
+    "total_line": null,
+    "confidence": 0.56,
+    "conviction_tier": "medium",
+    "rationale": "Oklahoma State is 0-5 at home but getting 23.5. The model has Oregon by ~19, inside the number. Big-number discipline: take the points with the Cowboys +23.5.",
+    "agent_notes": {
+      "statistics": "Model home margin -19.4 vs market implied -23.5 (line +23.5); win_prob Oklahoma State Cowboys 0.12. Model total 67.0 vs market 57.5.",
+      "analyst": "Oklahoma State Cowboys: 0-5 (avg margin -15.4, last LLLLL). Oregon Ducks: 5-0 (avg margin +14.4, last WWWWW).",
+      "news": "OUT -- Oklahoma State Cowboys: none listed. Oregon Ducks: none listed. (CFB injury feed verified real, not scrambled.)"
+    }
+  },
+  {
+    "sport": "cfb",
+    "game_pk": 401856783,
+    "model_version": "desk-cfb-v1",
+    "commence_time": "2026-09-12T23:30:00+00:00",
+    "matchup": "Texas Tech Red Raiders @ Oregon State Beavers",
+    "ml_pick": "away",
+    "spread_side": "home",
+    "spread_line": 26.5,
+    "total_side": null,
+    "total_line": null,
+    "confidence": 0.56,
+    "conviction_tier": "medium",
+    "rationale": "Texas Tech is rolling (5-0, +32.0) but 26.5 is a massive road lay; the model has the margin at ~20. Take Oregon State +26.5 on the inflated number.",
+    "agent_notes": {
+      "statistics": "Model home margin -19.9 vs market implied -26.5 (line +26.5); win_prob Oregon State Beavers 0.11. Model total 68.6 vs market 53.5.",
+      "analyst": "Oregon State Beavers: 2-3 (avg margin -2, last LLLWW). Texas Tech Red Raiders: 5-0 (avg margin +32, last WWWWW).",
+      "news": "OUT -- Oregon State Beavers: WR Adonis McDaniel. Texas Tech Red Raiders: DL Jayden Cofield, WR Kai Powell. (CFB injury feed verified real, not scrambled.)"
+    }
+  },
+  {
+    "sport": "cfb",
+    "game_pk": 401856788,
+    "model_version": "desk-cfb-v1",
+    "commence_time": "2026-09-12T23:30:00+00:00",
+    "matchup": "Iowa State Cyclones @ Iowa Hawkeyes",
+    "ml_pick": "home",
+    "spread_side": "away",
+    "spread_line": 14.0,
+    "total_side": null,
+    "total_line": null,
+    "confidence": 0.54,
+    "conviction_tier": "low",
+    "rationale": "Iowa laid -14 but the model has them by ~8; Iowa State is 3-2 despite S Awls and RB Allah OUT. Take the points with the Cyclones +14.",
+    "agent_notes": {
+      "statistics": "Model home margin +7.8 vs market implied +14.0 (line -14); win_prob Iowa Hawkeyes 0.67. Model total 41.2 vs market 40.5.",
+      "analyst": "Iowa Hawkeyes: 3-2 (avg margin +11.6, last WWLLW). Iowa State Cyclones: 3-2 (avg margin +3, last WWWLL).",
+      "news": "OUT -- Iowa Hawkeyes: none listed. Iowa State Cyclones: S Braden Awls, RB Salahadin Allah. (CFB injury feed verified real, not scrambled.)"
+    }
+  },
+  {
+    "sport": "cfb",
+    "game_pk": 401856790,
+    "model_version": "desk-cfb-v1",
+    "commence_time": "2026-09-12T19:30:00+00:00",
+    "matchup": "UCF Knights @ Pittsburgh Panthers",
+    "ml_pick": "home",
+    "spread_side": null,
+    "spread_line": null,
+    "total_side": null,
+    "total_line": null,
+    "confidence": 0.52,
+    "conviction_tier": "low",
+    "rationale": "No actionable edge: the model margin sits near the market number (+8.1 model vs +7.0 implied home margin) and no injury or form signal separates the sides. Desk declines the spread; ml lean follows the favorite only.",
+    "agent_notes": {
+      "statistics": "Model home margin +8.1 vs market implied +7.0 (line -7); win_prob Pittsburgh Panthers 0.68. Model total 59.6 vs market 56.5.",
+      "analyst": "Pittsburgh Panthers: 3-2 (avg margin -1, last LWLWW). UCF Knights: 1-4 (avg margin -17.2, last LWLLL).",
+      "news": "OUT -- Pittsburgh Panthers: none listed. UCF Knights: none listed. (CFB injury feed verified real, not scrambled.)"
+    }
+  },
+  {
+    "sport": "cfb",
+    "game_pk": 401856810,
+    "model_version": "desk-cfb-v1",
+    "commence_time": "2026-09-12T19:30:00+00:00",
+    "matchup": "Arizona Wildcats @ BYU Cougars",
+    "ml_pick": "home",
+    "spread_side": "away",
+    "spread_line": 7.5,
+    "total_side": null,
+    "total_line": null,
+    "confidence": 0.59,
+    "conviction_tier": "medium",
+    "rationale": "News edge: BYU's secondary and backfield are gutted -- two starting CBs (Doe, Kabeya), S Raider Damuni, two RBs (J. Damuni, Moa) and an OL all OUT. Arizona comes in 5-0 (+17.0 avg margin). The -7.5 looks a field goal too rich on a depleted home team; lean the Wildcats +7.5.",
+    "agent_notes": {
+      "statistics": "Model home margin +6.5 vs market implied +7.5 (line -7.5); win_prob BYU Cougars 0.64. Model total 57.0 vs market 47.5.",
+      "analyst": "BYU Cougars: 3-2 (avg margin +2.8, last LWWWL). Arizona Wildcats: 5-0 (avg margin +17, last WWWWW).",
+      "news": "OUT -- BYU Cougars: S Raider Damuni, CB Kevin Doe, CB Jonathan Kabeya, RB Jovesa Damuni, RB Sione Moa, OL Brigham Alexander. Arizona Wildcats: none listed. (CFB injury feed verified real, not scrambled.)"
+    }
+  },
+  {
+    "sport": "cfb",
+    "game_pk": 401858214,
+    "model_version": "desk-cfb-v1",
+    "commence_time": "2026-09-11T23:30:00+00:00",
+    "matchup": "Rutgers Scarlet Knights @ Boston College Eagles",
+    "ml_pick": "home",
+    "spread_side": null,
+    "spread_line": null,
+    "total_side": null,
+    "total_line": null,
+    "confidence": 0.52,
+    "conviction_tier": "low",
+    "rationale": "No actionable edge: the model margin sits near the market number (+1.4 model vs +3.5 implied home margin) and no injury or form signal separates the sides. Desk declines the spread; ml lean follows the favorite only.",
+    "agent_notes": {
+      "statistics": "Model home margin +1.4 vs market implied +3.5 (line -3.5); win_prob Boston College Eagles 0.52. Model total 48.4 vs market 54.5.",
+      "analyst": "Boston College Eagles: 1-4 (avg margin -8.2, last WLLLL). Rutgers Scarlet Knights: 2-3 (avg margin -8.2, last LLWLW).",
+      "news": "OUT -- Boston College Eagles: TE Kaelan Chudzinski. Rutgers Scarlet Knights: none listed. (CFB injury feed verified real, not scrambled.)"
+    }
+  },
+  {
+    "sport": "cfb",
+    "game_pk": 401858216,
+    "model_version": "desk-cfb-v1",
+    "commence_time": "2026-09-12T19:30:00+00:00",
+    "matchup": "California Golden Bears @ Syracuse Orange",
+    "ml_pick": "away",
+    "spread_side": "away",
+    "spread_line": 3.5,
+    "total_side": null,
+    "total_line": null,
+    "confidence": 0.58,
+    "conviction_tier": "medium",
+    "rationale": "Syracuse is 0-5 (-31.0 avg margin) and missing six rotation players (two WRs, two OL, LB, DB). The market still lays them -3.5 at home; the model has Cal winning outright. Form and news both point to the road dog -- take Cal +3.5.",
+    "agent_notes": {
+      "statistics": "Model home margin -2.5 vs market implied +3.5 (line -3.5); win_prob Syracuse Orange 0.43. Model total 55.4 vs market 56.5.",
+      "analyst": "Syracuse Orange: 0-5 (avg margin -31, last LLLLL). California Golden Bears: 2-3 (avg margin -6.6, last WLWLL).",
+      "news": "OUT -- Syracuse Orange: WR Nate Edwards, OL Jackson Iak, OL D'Joni Scatliffe, WR Terrell Wilfong, LB Maurice Medley, DB Tedarius Hughes. California Golden Bears: none listed. (CFB injury feed verified real, not scrambled.)"
+    }
+  },
+  {
+    "sport": "cfb",
+    "game_pk": 401858217,
+    "model_version": "desk-cfb-v1",
+    "commence_time": "2026-09-12T19:30:00+00:00",
+    "matchup": "Duke Blue Devils @ Illinois Fighting Illini",
+    "ml_pick": "home",
+    "spread_side": "away",
+    "spread_line": 6.0,
+    "total_side": null,
+    "total_line": null,
+    "confidence": 0.55,
+    "conviction_tier": "low",
+    "rationale": "Illinois is missing six rotation players (WR Perry, multiple TE/LB/DL) and the model has the game a pick'em at -6. Lean Duke +6 on the injury thinning.",
+    "agent_notes": {
+      "statistics": "Model home margin +0.6 vs market implied +6.0 (line -6); win_prob Illinois Fighting Illini 0.50. Model total 52.7 vs market 51.5.",
+      "analyst": "Illinois Fighting Illini: 3-2 (avg margin +2.6, last WLWWL). Duke Blue Devils: 3-2 (avg margin +2.2, last WWWLL).",
+      "news": "OUT -- Illinois Fighting Illini: WR Alex Perry, TE Tanner Hollinger, LB Erik Gayle, TE Grant Smith, DL Cameron Brooks, LB Jaylen Stewart. Duke Blue Devils: none listed. (CFB injury feed verified real, not scrambled.)"
+    }
+  },
+  {
+    "sport": "cfb",
+    "game_pk": 401858219,
+    "model_version": "desk-cfb-v1",
+    "commence_time": "2026-09-12T23:30:00+00:00",
+    "matchup": "Georgia Southern Eagles @ Clemson Tigers",
+    "ml_pick": "home",
+    "spread_side": null,
+    "spread_line": null,
+    "total_side": null,
+    "total_line": null,
+    "confidence": 0.52,
+    "conviction_tier": "low",
+    "rationale": "No actionable edge: the model margin sits near the market number (+23.0 model vs +20.5 implied home margin) and no injury or form signal separates the sides. Desk declines the spread; ml lean follows the favorite only.",
+    "agent_notes": {
+      "statistics": "Model home margin +23.0 vs market implied +20.5 (line -20.5); win_prob Clemson Tigers 0.91. Model total 55.1 vs market 55.5.",
+      "analyst": "Clemson Tigers: 4-1 (avg margin +12.6, last WWWWL). Georgia Southern Eagles: 3-2 (avg margin -6.6, last WLWWL).",
+      "news": "OUT -- Clemson Tigers: DT Markus Strong, DT Vic Burley, RB Peyton Streko, DT Kourtney Kelly, S Polo Anderson. Georgia Southern Eagles: none listed. (CFB injury feed verified real, not scrambled.)"
+    }
+  },
+  {
+    "sport": "cfb",
+    "game_pk": 401858221,
+    "model_version": "desk-cfb-v1",
+    "commence_time": "2026-09-12T16:00:00+00:00",
+    "matchup": "Old Dominion Monarchs @ Virginia Tech Hokies",
+    "ml_pick": "home",
+    "spread_side": "away",
+    "spread_line": 19.5,
+    "total_side": null,
+    "total_line": null,
+    "confidence": 0.59,
+    "conviction_tier": "medium",
+    "rationale": "Largest form/market gap on the board: ODU is 5-0 (+22.6 avg), Virginia Tech 1-4 (-12.2). The market lays VT -19.5 on reputation; the model barely favors the Hokies (+3.8). Fade the inflated number -- ODU +19.5.",
+    "agent_notes": {
+      "statistics": "Model home margin +3.8 vs market implied +19.5 (line -19.5); win_prob Virginia Tech Hokies 0.58. Model total 52.6 vs market 50.5.",
+      "analyst": "Virginia Tech Hokies: 1-4 (avg margin -12.2, last LLLLW). Old Dominion Monarchs: 5-0 (avg margin +22.6, last WWWWW).",
+      "news": "OUT -- Virginia Tech Hokies: LB Gabe Williams. Old Dominion Monarchs: none listed. (CFB injury feed verified real, not scrambled.)"
+    }
+  },
+  {
+    "sport": "cfb",
+    "game_pk": 401858224,
+    "model_version": "desk-cfb-v1",
+    "commence_time": "2026-09-12T16:00:00+00:00",
+    "matchup": "Wake Forest Demon Deacons @ Purdue Boilermakers",
+    "ml_pick": "away",
+    "spread_side": "away",
+    "spread_line": -3.0,
+    "total_side": null,
+    "total_line": null,
+    "confidence": 0.56,
+    "conviction_tier": "low",
+    "rationale": "Purdue is 0-5 (-24.2 avg) at home; Wake Forest 3-2. The model agrees with the market's Wake -3. Low-conviction lay -- Wake Forest -3.",
+    "agent_notes": {
+      "statistics": "Model home margin -4.2 vs market implied -3.0 (line +3); win_prob Purdue Boilermakers 0.39. Model total 59.3 vs market 49.5.",
+      "analyst": "Purdue Boilermakers: 0-5 (avg margin -24.2, last LLLLL). Wake Forest Demon Deacons: 3-2 (avg margin +1.8, last LWWWL).",
+      "news": "OUT -- Purdue Boilermakers: TE Kylan Fox, DB Raderrion Daniels. Wake Forest Demon Deacons: none listed. (CFB injury feed verified real, not scrambled.)"
+    }
+  },
+  {
+    "sport": "cfb",
+    "game_pk": 401858440,
+    "model_version": "desk-cfb-v1",
+    "commence_time": "2026-09-12T19:30:00+00:00",
+    "matchup": "Eastern Michigan Eagles @ Michigan State Spartans",
+    "ml_pick": "home",
+    "spread_side": "away",
+    "spread_line": 17.5,
+    "total_side": null,
+    "total_line": null,
+    "confidence": 0.54,
+    "conviction_tier": "low",
+    "rationale": "EMU is down six players, but MSU (1-4) laying -17.5 is steep; the model has it ~13. Take the points with Eastern Michigan +17.5.",
+    "agent_notes": {
+      "statistics": "Model home margin +13.0 vs market implied +17.5 (line -17.5); win_prob Michigan State Spartans 0.77. Model total 51.5 vs market 49.5.",
+      "analyst": "Michigan State Spartans: 1-4 (avg margin -5, last WLLLL). Eastern Michigan Eagles: 2-3 (avg margin -2, last LWWLL).",
+      "news": "OUT -- Michigan State Spartans: none listed. Eastern Michigan Eagles: DL Jefferson Adam, OL Joshua Anderson, LB Kadin Bailey, OL Elijha Payne, DB Dior Boyd, TE Jackson Holt. (CFB injury feed verified real, not scrambled.)"
+    }
+  },
+  {
+    "sport": "cfb",
+    "game_pk": 401858441,
+    "model_version": "desk-cfb-v1",
+    "commence_time": "2026-09-12T23:00:00+00:00",
+    "matchup": "Bowling Green Falcons @ Nebraska Cornhuskers",
+    "ml_pick": "home",
+    "spread_side": "away",
+    "spread_line": 29.5,
+    "total_side": null,
+    "total_line": null,
+    "confidence": 0.54,
+    "conviction_tier": "low",
+    "rationale": "Nebraska is an underwhelming 2-3 (-8.2 avg) laying -29.5; the model projects ~20. Take Bowling Green +29.5 against a non-covering favorite.",
+    "agent_notes": {
+      "statistics": "Model home margin +19.8 vs market implied +29.5 (line -29.5); win_prob Nebraska Cornhuskers 0.88. Model total 56.5 vs market 51.5.",
+      "analyst": "Nebraska Cornhuskers: 2-3 (avg margin -8.2, last LLWLW). Bowling Green Falcons: 1-4 (avg margin -1.2, last WLLLL).",
+      "news": "OUT -- Nebraska Cornhuskers: WR Larry Miles. Bowling Green Falcons: none listed. (CFB injury feed verified real, not scrambled.)"
+    }
+  },
+  {
+    "sport": "cfb",
+    "game_pk": 401858442,
+    "model_version": "desk-cfb-v1",
+    "commence_time": "2026-09-12T16:00:00+00:00",
+    "matchup": "Penn State Nittany Lions @ Temple Owls",
+    "ml_pick": "away",
+    "spread_side": "home",
+    "spread_line": 23.5,
+    "total_side": null,
+    "total_line": null,
+    "confidence": 0.54,
+    "conviction_tier": "low",
+    "rationale": "Penn State laid -23.5; the model has the margin ~20. Standard big-number discipline -- Temple +23.5.",
+    "agent_notes": {
+      "statistics": "Model home margin -19.9 vs market implied -23.5 (line +23.5); win_prob Temple Owls 0.11. Model total 51.0 vs market 49.5.",
+      "analyst": "Temple Owls: 1-4 (avg margin -16.4, last LLLLW). Penn State Nittany Lions: 3-2 (avg margin +4.4, last WWWLL).",
+      "news": "OUT -- Temple Owls: CB Devontae Ward-Grant. Penn State Nittany Lions: none listed. (CFB injury feed verified real, not scrambled.)"
+    }
+  },
+  {
+    "sport": "cfb",
+    "game_pk": 401858443,
+    "model_version": "desk-cfb-v1",
+    "commence_time": "2026-09-12T23:15:00+00:00",
+    "matchup": "San Diego State Aztecs @ UCLA Bruins",
+    "ml_pick": "home",
+    "spread_side": "away",
+    "spread_line": 12.5,
+    "total_side": null,
+    "total_line": null,
+    "confidence": 0.57,
+    "conviction_tier": "medium",
+    "rationale": "UCLA is 0-5 (-29.6 avg margin) yet laid -12.5 at home against a 3-2 SDSU. The model has it near a field goal, not two scores. Take the points with the Aztecs +12.5.",
+    "agent_notes": {
+      "statistics": "Model home margin +3.1 vs market implied +12.5 (line -12.5); win_prob UCLA Bruins 0.56. Model total 47.2 vs market 55.5.",
+      "analyst": "UCLA Bruins: 0-5 (avg margin -29.6, last LLLLL). San Diego State Aztecs: 3-2 (avg margin +2.2, last LWWLW).",
+      "news": "OUT -- UCLA Bruins: none listed. San Diego State Aztecs: S Dalesean Staley. (CFB injury feed verified real, not scrambled.)"
+    }
+  },
+  {
+    "sport": "cfb",
+    "game_pk": 401858444,
+    "model_version": "desk-cfb-v1",
+    "commence_time": "2026-09-12T19:30:00+00:00",
+    "matchup": "Maryland Terrapins @ UConn Huskies",
+    "ml_pick": "away",
+    "spread_side": null,
+    "spread_line": null,
+    "total_side": null,
+    "total_line": null,
+    "confidence": 0.52,
+    "conviction_tier": "low",
+    "rationale": "No actionable edge: the model margin sits near the market number (+0.4 model vs -12.5 implied home margin) and no injury or form signal separates the sides. Desk declines the spread; ml lean follows the favorite only.",
+    "agent_notes": {
+      "statistics": "Model home margin +0.4 vs market implied -12.5 (line +12.5); win_prob UConn Huskies 0.50. Model total 56.3 vs market 52.5.",
+      "analyst": "UConn Huskies: 4-1 (avg margin +6.4, last WWWWL). Maryland Terrapins: 0-5 (avg margin -22.6, last LLLLL).",
+      "news": "OUT -- UConn Huskies: none listed. Maryland Terrapins: LB Zahir Mathis. (CFB injury feed verified real, not scrambled.)"
+    }
+  },
+  {
+    "sport": "cfb",
+    "game_pk": 401858445,
+    "model_version": "desk-cfb-v1",
+    "commence_time": "2026-09-13T03:00:00+00:00",
+    "matchup": "Louisiana Ragin' Cajuns @ USC Trojans",
+    "ml_pick": "home",
+    "spread_side": null,
+    "spread_line": null,
+    "total_side": null,
+    "total_line": null,
+    "confidence": 0.52,
+    "conviction_tier": "low",
+    "rationale": "No actionable edge: the model margin sits near the market number (+18.1 model vs +30.5 implied home margin) and no injury or form signal separates the sides. Desk declines the spread; ml lean follows the favorite only.",
+    "agent_notes": {
+      "statistics": "Model home margin +18.1 vs market implied +30.5 (line -30.5); win_prob USC Trojans 0.85. Model total 62.5 vs market 59.5.",
+      "analyst": "USC Trojans: 4-1 (avg margin +6.8, last WLWWW). Louisiana Ragin' Cajuns: 4-1 (avg margin +1.4, last WWWWL).",
+      "news": "OUT -- USC Trojans: OL Kilian O'Connor, DT Jahkeem Stewart. Louisiana Ragin' Cajuns: none listed. (CFB injury feed verified real, not scrambled.)"
+    }
+  },
+  {
+    "sport": "cfb",
+    "game_pk": 401858446,
+    "model_version": "desk-cfb-v1",
+    "commence_time": "2026-09-12T19:30:00+00:00",
+    "matchup": "Utah State Aggies @ Washington Huskies",
+    "ml_pick": "home",
+    "spread_side": null,
+    "spread_line": null,
+    "total_side": null,
+    "total_line": null,
+    "confidence": 0.52,
+    "conviction_tier": "low",
+    "rationale": "No actionable edge: the model margin sits near the market number (+17.6 model vs +26.5 implied home margin) and no injury or form signal separates the sides. Desk declines the spread; ml lean follows the favorite only.",
+    "agent_notes": {
+      "statistics": "Model home margin +17.6 vs market implied +26.5 (line -26.5); win_prob Washington Huskies 0.85. Model total 58.0 vs market 55.5.",
+      "analyst": "Washington Huskies: 3-2 (avg margin +14.4, last LWWLW). Utah State Aggies: 2-3 (avg margin +5, last LWLWL).",
+      "news": "OUT -- Washington Huskies: none listed. Utah State Aggies: none listed. (CFB injury feed verified real, not scrambled.)"
+    }
+  },
+  {
+    "sport": "cfb",
+    "game_pk": 401859184,
+    "model_version": "desk-cfb-v1",
+    "commence_time": "2026-09-12T19:30:00+00:00",
+    "matchup": "Rice Owls @ Notre Dame Fighting Irish",
+    "ml_pick": "home",
+    "spread_side": null,
+    "spread_line": null,
+    "total_side": null,
+    "total_line": null,
+    "confidence": 0.52,
+    "conviction_tier": "low",
+    "rationale": "No actionable edge: the model margin sits near the market number (+35.7 model vs +44.5 implied home margin) and no injury or form signal separates the sides. Desk declines the spread; ml lean follows the favorite only.",
+    "agent_notes": {
+      "statistics": "Model home margin +35.7 vs market implied +44.5 (line -44.5); win_prob Notre Dame Fighting Irish 0.98. Model total 54.4 vs market 55.5.",
+      "analyst": "Notre Dame Fighting Irish: 5-0 (avg margin +33.6, last WWWWW). Rice Owls: 2-3 (avg margin -19, last LLWLW).",
+      "news": "OUT -- Notre Dame Fighting Irish: OL Charles Jagusah, OL Matty Augustine, DL Christopher Burgess Jr., CB Chaz Smith. Rice Owls: none listed. (CFB injury feed verified real, not scrambled.)"
+    }
+  },
+  {
+    "sport": "cfb",
+    "game_pk": 401860881,
+    "model_version": "desk-cfb-v1",
+    "commence_time": "2026-09-12T22:00:00+00:00",
+    "matchup": "Memphis Tigers @ Boise State Broncos",
+    "ml_pick": "home",
+    "spread_side": null,
+    "spread_line": null,
+    "total_side": null,
+    "total_line": null,
+    "confidence": 0.52,
+    "conviction_tier": "low",
+    "rationale": "No actionable edge: the model margin sits near the market number (+5.1 model vs +8.5 implied home margin) and no injury or form signal separates the sides. Desk declines the spread; ml lean follows the favorite only.",
+    "agent_notes": {
+      "statistics": "Model home margin +5.1 vs market implied +8.5 (line -8.5); win_prob Boise State Broncos 0.61. Model total 65.5 vs market 54.5.",
+      "analyst": "Boise State Broncos: 3-2 (avg margin +2.6, last WWWLL). Memphis Tigers: 2-3 (avg margin +1.2, last LLLWW).",
+      "news": "OUT -- Boise State Broncos: OL Jacob Tracy. Memphis Tigers: none listed. (CFB injury feed verified real, not scrambled.)"
+    }
+  },
+  {
+    "sport": "cfb",
+    "game_pk": 401860884,
+    "model_version": "desk-cfb-v1",
+    "commence_time": "2026-09-12T19:30:00+00:00",
+    "matchup": "UTSA Roadrunners @ Texas State Bobcats",
+    "ml_pick": "away",
+    "spread_side": null,
+    "spread_line": null,
+    "total_side": null,
+    "total_line": null,
+    "confidence": 0.52,
+    "conviction_tier": "low",
+    "rationale": "No actionable edge: the model margin sits near the market number (-0.8 model vs +1.5 implied home margin) and no injury or form signal separates the sides. Desk declines the spread; ml lean follows the favorite only.",
+    "agent_notes": {
+      "statistics": "Model home margin -0.8 vs market implied +1.5 (line -1.5); win_prob Texas State Bobcats 0.47. Model total 58.6 vs market 65.5.",
+      "analyst": "Texas State Bobcats: 3-2 (avg margin +6.4, last WWWLL). UTSA Roadrunners: 3-2 (avg margin +8.4, last LWWLW).",
+      "news": "OUT -- Texas State Bobcats: none listed. UTSA Roadrunners: none listed. (CFB injury feed verified real, not scrambled.)"
+    }
+  },
+  {
+    "sport": "cfb",
+    "game_pk": 401862702,
+    "model_version": "desk-cfb-v1",
+    "commence_time": "2026-09-12T16:00:00+00:00",
+    "matchup": "South Florida Bulls @ Army Black Knights",
+    "ml_pick": "away",
+    "spread_side": "away",
+    "spread_line": 3.5,
+    "total_side": null,
+    "total_line": null,
+    "confidence": 0.55,
+    "conviction_tier": "low",
+    "rationale": "South Florida is 3-2 with an explosive +21.0 avg margin against a pick'em line (Army -3.5). Lean USF +3.5 on form.",
+    "agent_notes": {
+      "statistics": "Model home margin -0.0 vs market implied +3.5 (line -3.5); win_prob Army Black Knights 0.49. Model total 54.5 vs market 46.5.",
+      "analyst": "Army Black Knights: 3-2 (avg margin +1, last LWLWW). South Florida Bulls: 3-2 (avg margin +21, last WWLWL).",
+      "news": "OUT -- Army Black Knights: none listed. South Florida Bulls: none listed. (CFB injury feed verified real, not scrambled.)"
+    }
+  },
+  {
+    "sport": "cfb",
+    "game_pk": 401862703,
+    "model_version": "desk-cfb-v1",
+    "commence_time": "2026-09-12T23:30:00+00:00",
+    "matchup": "Navy Midshipmen @ Florida Atlantic Owls",
+    "ml_pick": "away",
+    "spread_side": "away",
+    "spread_line": -4.5,
+    "total_side": null,
+    "total_line": null,
+    "confidence": 0.54,
+    "conviction_tier": "low",
+    "rationale": "The model has Navy by ~11 while the market lays only -4.5; Navy is 3-2. Low-conviction lay -- Navy -4.5.",
+    "agent_notes": {
+      "statistics": "Model home margin -10.9 vs market implied -4.5 (line +4.5); win_prob Florida Atlantic Owls 0.25. Model total 54.4 vs market 58.5.",
+      "analyst": "Florida Atlantic Owls: 1-4 (avg margin -8.8, last LLLWL). Navy Midshipmen: 3-2 (avg margin -7.6, last WWWLL).",
+      "news": "OUT -- Florida Atlantic Owls: TE Brooks Johnson. Navy Midshipmen: none listed. (CFB injury feed verified real, not scrambled.)"
+    }
+  },
+  {
+    "sport": "cfb",
+    "game_pk": 401862705,
+    "model_version": "desk-cfb-v1",
+    "commence_time": "2026-09-12T19:45:00+00:00",
+    "matchup": "UNLV Rebels @ North Texas Mean Green",
+    "ml_pick": "home",
+    "spread_side": "home",
+    "spread_line": 3.0,
+    "total_side": null,
+    "total_line": null,
+    "confidence": 0.54,
+    "conviction_tier": "low",
+    "rationale": "The model has North Texas (4-1, +17.8 avg) winning by ~3 as a home dog (+3). Lean the Mean Green +3.",
+    "agent_notes": {
+      "statistics": "Model home margin +3.2 vs market implied -3.0 (line +3); win_prob North Texas Mean Green 0.56. Model total 69.8 vs market 56.5.",
+      "analyst": "North Texas Mean Green: 4-1 (avg margin +17.8, last LWWWW). UNLV Rebels: 4-1 (avg margin +14.2, last LWWWW).",
+      "news": "OUT -- North Texas Mean Green: CB Caden Jenkins, CB Zach Johnson. UNLV Rebels: DL CJ Besser, OL Tevita Tausinga. (CFB injury feed verified real, not scrambled.)"
+    }
+  },
+  {
+    "sport": "cfb",
+    "game_pk": 401862707,
+    "model_version": "desk-cfb-v1",
+    "commence_time": "2026-09-12T23:00:00+00:00",
+    "matchup": "Tulsa Golden Hurricane @ Sam Houston Bearkats",
+    "ml_pick": "away",
+    "spread_side": "home",
+    "spread_line": 13.5,
+    "total_side": null,
+    "total_line": null,
+    "confidence": 0.54,
+    "conviction_tier": "low",
+    "rationale": "Tulsa laid -13.5 but the model has them by only ~4. Take the points with Sam Houston +13.5.",
+    "agent_notes": {
+      "statistics": "Model home margin -3.7 vs market implied -13.5 (line +13.5); win_prob Sam Houston Bearkats 0.40. Model total 53.8 vs market 51.5.",
+      "analyst": "Sam Houston Bearkats: 2-3 (avg margin -17.6, last LLWWL). Tulsa Golden Hurricane: 2-3 (avg margin -1.8, last LWWLL).",
+      "news": "OUT -- Sam Houston Bearkats: none listed. Tulsa Golden Hurricane: none listed. (CFB injury feed verified real, not scrambled.)"
+    }
+  },
+  {
+    "sport": "cfb",
+    "game_pk": 401862708,
+    "model_version": "desk-cfb-v1",
+    "commence_time": "2026-09-12T19:30:00+00:00",
+    "matchup": "UL Monroe Warhawks @ UAB Blazers",
+    "ml_pick": "home",
+    "spread_side": null,
+    "spread_line": null,
+    "total_side": null,
+    "total_line": null,
+    "confidence": 0.52,
+    "conviction_tier": "low",
+    "rationale": "No actionable edge: the model margin sits near the market number (+11.0 model vs +10.0 implied home margin) and no injury or form signal separates the sides. Desk declines the spread; ml lean follows the favorite only.",
+    "agent_notes": {
+      "statistics": "Model home margin +11.0 vs market implied +10.0 (line -10); win_prob UAB Blazers 0.74. Model total 57.0 vs market 55.5.",
+      "analyst": "UAB Blazers: 1-4 (avg margin -15.6, last WLLLL). UL Monroe Warhawks: 0-5 (avg margin -17, last LLLLL).",
+      "news": "OUT -- UAB Blazers: none listed. UL Monroe Warhawks: none listed. (CFB injury feed verified real, not scrambled.)"
+    }
+  },
+  {
+    "sport": "cfb",
+    "game_pk": 401864571,
+    "model_version": "desk-cfb-v1",
+    "commence_time": "2026-09-12T16:00:00+00:00",
+    "matchup": "App State Mountaineers @ East Carolina Pirates",
+    "ml_pick": "home",
+    "spread_side": "away",
+    "spread_line": 7.5,
+    "total_side": null,
+    "total_line": null,
+    "confidence": 0.54,
+    "conviction_tier": "low",
+    "rationale": "ECU (4-1, +13.2) laid -7.5; the model has them by ~4. Low-conviction points play -- App State +7.5.",
+    "agent_notes": {
+      "statistics": "Model home margin +4.0 vs market implied +7.5 (line -7.5); win_prob East Carolina Pirates 0.58. Model total 57.4 vs market 56.5.",
+      "analyst": "East Carolina Pirates: 4-1 (avg margin +13.2, last WLWWW). App State Mountaineers: 1-4 (avg margin -10.4, last LWLLL).",
+      "news": "OUT -- East Carolina Pirates: none listed. App State Mountaineers: none listed. (CFB injury feed verified real, not scrambled.)"
+    }
+  },
+  {
+    "sport": "cfb",
+    "game_pk": 401864575,
+    "model_version": "desk-cfb-v1",
+    "commence_time": "2026-09-12T23:00:00+00:00",
+    "matchup": "South Alabama Jaguars @ Tulane Green Wave",
+    "ml_pick": "home",
+    "spread_side": "home",
+    "spread_line": -9.5,
+    "total_side": null,
+    "total_line": null,
+    "confidence": 0.58,
+    "conviction_tier": "medium",
+    "rationale": "Tulane is 5-0 (+16.2 avg) and the model likes them (-16.4) well beyond the -9.5 number; South Alabama is 3-2 with a negative avg margin. Form and model agree -- lay Tulane -9.5.",
+    "agent_notes": {
+      "statistics": "Model home margin +16.4 vs market implied +9.5 (line -9.5); win_prob Tulane Green Wave 0.83. Model total 51.5 vs market 49.5.",
+      "analyst": "Tulane Green Wave: 5-0 (avg margin +16.2, last WWWWW). South Alabama Jaguars: 3-2 (avg margin -1.2, last LWWLW).",
+      "news": "OUT -- Tulane Green Wave: none listed. South Alabama Jaguars: none listed. (CFB injury feed verified real, not scrambled.)"
+    }
+  },
+  {
+    "sport": "cfb",
+    "game_pk": 401864578,
+    "model_version": "desk-cfb-v1",
+    "commence_time": "2026-09-13T03:59:00+00:00",
+    "matchup": "New Mexico State Aggies @ Hawai'i Rainbow Warriors",
+    "ml_pick": "home",
+    "spread_side": "home",
+    "spread_line": -7.0,
+    "total_side": null,
+    "total_line": null,
+    "confidence": 0.54,
+    "conviction_tier": "low",
+    "rationale": "Hawai'i (3-2) is laying -7 and the model likes them by ~14; NMSU is 1-4 (-11.8). Lean Hawai'i -7, tempered by home injuries (DL Caravallo, WR Haynes OUT).",
+    "agent_notes": {
+      "statistics": "Model home margin +13.7 vs market implied +7.0 (line -7); win_prob Hawai'i Rainbow Warriors 0.79. Model total 62.5 vs market 50.5.",
+      "analyst": "Hawai'i Rainbow Warriors: 3-2 (avg margin +5.8, last WLWLW). New Mexico State Aggies: 1-4 (avg margin -11.8, last LWLLL).",
+      "news": "OUT -- Hawai'i Rainbow Warriors: DL Nazaiah Caravallo, WR Robert Haynes IV. New Mexico State Aggies: S Bernock Iya, TE Josiah Thomas. (CFB injury feed verified real, not scrambled.)"
+    }
+  },
+  {
+    "sport": "cfb",
+    "game_pk": 401866414,
+    "model_version": "desk-cfb-v1",
+    "commence_time": "2026-09-12T22:00:00+00:00",
+    "matchup": "Buffalo Bulls @ Florida International Panthers",
+    "ml_pick": "home",
+    "spread_side": "away",
+    "spread_line": 10.5,
+    "total_side": null,
+    "total_line": null,
+    "confidence": 0.54,
+    "conviction_tier": "low",
+    "rationale": "FIU (4-1) laid -10.5 but the model has them by only ~4. Take the points with Buffalo +10.5.",
+    "agent_notes": {
+      "statistics": "Model home margin +3.6 vs market implied +10.5 (line -10.5); win_prob Florida International Panthers 0.57. Model total 55.6 vs market 47.5.",
+      "analyst": "Florida International Panthers: 4-1 (avg margin +14.4, last WWWWL). Buffalo Bulls: 1-4 (avg margin -4.8, last LLLWL).",
+      "news": "OUT -- Florida International Panthers: none listed. Buffalo Bulls: none listed. (CFB injury feed verified real, not scrambled.)"
+    }
+  },
+  {
+    "sport": "cfb",
+    "game_pk": 401866418,
+    "model_version": "desk-cfb-v1",
+    "commence_time": "2026-09-12T22:00:00+00:00",
+    "matchup": "Jacksonville State Gamecocks @ Ohio Bobcats",
+    "ml_pick": "home",
+    "spread_side": "home",
+    "spread_line": -2.5,
+    "total_side": null,
+    "total_line": null,
+    "confidence": 0.54,
+    "conviction_tier": "low",
+    "rationale": "Ohio (4-1, +8.0 avg) is only -2.5 at home and the model has them by ~6. Low-conviction lay -- Ohio -2.5.",
+    "agent_notes": {
+      "statistics": "Model home margin +6.3 vs market implied +2.5 (line -2.5); win_prob Ohio Bobcats 0.64. Model total 54.5 vs market 50.5.",
+      "analyst": "Ohio Bobcats: 4-1 (avg margin +8, last WWLWW). Jacksonville State Gamecocks: 3-2 (avg margin +1, last LWLWW).",
+      "news": "OUT -- Ohio Bobcats: none listed. Jacksonville State Gamecocks: none listed. (CFB injury feed verified real, not scrambled.)"
+    }
+  },
+  {
+    "sport": "cfb",
+    "game_pk": 401867796,
+    "model_version": "desk-cfb-v1",
+    "commence_time": "2026-09-12T23:30:00+00:00",
+    "matchup": "Louisiana Tech Bulldogs @ LSU Tigers",
+    "ml_pick": "home",
+    "spread_side": "away",
+    "spread_line": 35.5,
+    "total_side": null,
+    "total_line": null,
+    "confidence": 0.56,
+    "conviction_tier": "medium",
+    "rationale": "LSU is a struggling 2-3 (-7.0 avg margin) laying -35.5 with two defenders (DE Reliford, CB Anding) OUT. Louisiana Tech is 3-2 (+6.6). Fade the bloated number -- LaTech +35.5.",
+    "agent_notes": {
+      "statistics": "Model home margin +20.3 vs market implied +35.5 (line -35.5); win_prob LSU Tigers 0.88. Model total 58.5 vs market 55.5.",
+      "analyst": "LSU Tigers: 2-3 (avg margin -7, last LWWLL). Louisiana Tech Bulldogs: 3-2 (avg margin +6.6, last WWLLW).",
+      "news": "OUT -- LSU Tigers: DE Gabriel Reliford, CB Aidan Anding. Louisiana Tech Bulldogs: none listed. (CFB injury feed verified real, not scrambled.)"
+    }
+  },
+  {
+    "sport": "cfb",
+    "game_pk": 401869955,
+    "model_version": "desk-cfb-v1",
+    "commence_time": "2026-09-12T23:00:00+00:00",
+    "matchup": "Georgia State Panthers @ Kennesaw State Owls",
+    "ml_pick": "home",
+    "spread_side": null,
+    "spread_line": null,
+    "total_side": null,
+    "total_line": null,
+    "confidence": 0.52,
+    "conviction_tier": "low",
+    "rationale": "No actionable edge: the model margin sits near the market number (+9.7 model vs +8.5 implied home margin) and no injury or form signal separates the sides. Desk declines the spread; ml lean follows the favorite only.",
+    "agent_notes": {
+      "statistics": "Model home margin +9.7 vs market implied +8.5 (line -8.5); win_prob Kennesaw State Owls 0.71. Model total 52.9 vs market 54.5.",
+      "analyst": "Kennesaw State Owls: 4-1 (avg margin +2.2, last WWWLW). Georgia State Panthers: 0-5 (avg margin -12.2, last LLLLL).",
+      "news": "OUT -- Kennesaw State Owls: none listed. Georgia State Panthers: none listed. (CFB injury feed verified real, not scrambled.)"
+    }
+  },
+  {
+    "sport": "cfb",
+    "game_pk": 401871045,
+    "model_version": "desk-cfb-v1",
+    "commence_time": "2026-09-12T23:00:00+00:00",
+    "matchup": "Middle Tennessee Blue Raiders @ Marshall Thundering Herd",
+    "ml_pick": "home",
+    "spread_side": null,
+    "spread_line": null,
+    "total_side": null,
+    "total_line": null,
+    "confidence": 0.52,
+    "conviction_tier": "low",
+    "rationale": "No actionable edge: the model margin sits near the market number (+13.5 model vs +13.5 implied home margin) and no injury or form signal separates the sides. Desk declines the spread; ml lean follows the favorite only.",
+    "agent_notes": {
+      "statistics": "Model home margin +13.5 vs market implied +13.5 (line -13.5); win_prob Marshall Thundering Herd 0.78. Model total 52.8 vs market 56.5.",
+      "analyst": "Marshall Thundering Herd: 1-4 (avg margin -4.8, last LLWLL). Middle Tennessee Blue Raiders: 2-3 (avg margin -4.8, last WWLLL).",
+      "news": "OUT -- Marshall Thundering Herd: none listed. Middle Tennessee Blue Raiders: none listed. (CFB injury feed verified real, not scrambled.)"
+    }
+  }
+]
