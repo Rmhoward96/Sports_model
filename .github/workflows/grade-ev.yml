@@ -1,0 +1,35 @@
+name: grade-ev
+
+# Forward-grade the +EV board: for each finished game, grade every surfaced
+# pick against the result AND the Pinnacle closing line (CLV) -> ev_results.
+# This is the honest scoreboard -- the board only earns trust once this record
+# is positive. grade_ev.py loops both sports (FINAL_PROVIDERS) internally.
+# DATABASE_URL lives here, not in the session.
+on:
+  workflow_dispatch:
+    inputs:
+      days:
+        description: "Grade finished games within this many days"
+        type: string
+        default: "7"
+  schedule:
+    # Tuesday morning (after the weekend + Mon/Thu slates are final). UTC.
+    - cron: "0 14 * * 2"
+
+permissions:
+  contents: read
+
+jobs:
+  grade:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v5
+      - name: Install uv
+        uses: astral-sh/setup-uv@v10.0.1
+      - name: Sync deps
+        run: uv sync
+      - name: Grade +EV picks (forward CLV)
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+        run: uv run python scripts/grade_ev.py --days "${{ github.event.inputs.days || '7' }}"
