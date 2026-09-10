@@ -22,14 +22,16 @@ def novig(price_side: int, price_other: int) -> float:
     return io / (io + iu)
 
 
-# Mainstream US books only. Offshore/sharp books (bovada, lowvig, mybookieag, betus,
+# The soft books the +EV pilot shops for the best price, plus Pinnacle kept for
+# display as the sharp reference (ev_pilot.assemble_games excludes book=="pinnacle"
+# from the soft pool). Offshore/sharp books (bovada, lowvig, mybookieag, betus,
 # betonlineag, …) post stale/soft lines that manufacture fake "edges" and skew the
 # record, so they are excluded from best-book selection. Values are display names.
 MAJOR_BOOKS = {
-    "fanduel": "FanDuel", "draftkings": "DraftKings", "betmgm": "BetMGM",
-    "williamhill_us": "Caesars", "caesars": "Caesars", "pinnacle": "Pinnacle",
-    "betrivers": "BetRivers", "espnbet": "ESPN BET", "fanatics": "Fanatics",
-    "hardrockbet": "Hard Rock Bet", "ballybet": "Bally Bet",
+    "draftkings": "DraftKings", "fanduel": "FanDuel", "fanatics": "Fanatics",
+    "hardrockbet": "Hard Rock Bet", "thescore": "theScore Bet",
+    "williamhill_us": "Caesars", "caesars": "Caesars", "bet365": "Bet365",
+    "betmgm": "BetMGM", "ballybet": "Bally Bet", "pinnacle": "Pinnacle",
 }
 # Plays above this EV are almost always stale-line artifacts, not real value -- excluded
 # so they never make the board or skew the CLV track record.

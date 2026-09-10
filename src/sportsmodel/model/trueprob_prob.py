@@ -52,17 +52,25 @@ def desk_margin_shift(desk_pick: dict | None) -> float:
     """Nominal margin shift (points) implied by a desk pick, signed toward the
     desk's own side (home -> +, away -> -).
 
-    `desk_pick` is `{"conviction_tier": "high|medium|low", "spread_side":
-    "home"|"away"|None, "agrees_with_model": bool}` (or `None`). If the desk
-    has no `spread_side`, its `ml_pick` side is used instead. Disagreement
-    with the model does not flip the sign -- the desk is expressing its own
-    view regardless of what the model says, so the shift still points toward
-    the desk's side. `None` -> 0.0.
+    `desk_pick` is `{"conviction_tier": "high|medium|low", "confidence":
+    float|None, "spread_side": "home"|"away"|None, "agrees_with_model": bool}`
+    (or `None`). If the desk has no `spread_side`, its `ml_pick` side is used
+    instead. Disagreement with the model does not flip the sign -- the desk is
+    expressing its own view regardless of what the model says, so the shift
+    still points toward the desk's side. `None` -> 0.0.
+
+    The shift magnitude scales with the desk's numeric `confidence` (0-1);
+    `conviction_tier` is only the fallback weight when `confidence` is
+    missing.
     """
     if not desk_pick:
         return 0.0
-    tier = desk_pick.get("conviction_tier")
-    weight = _TIER_WEIGHTS.get(tier, 0.0)
+    conf = desk_pick.get("confidence")
+    if conf is not None:
+        # confidence 0.5 (coinflip) -> 0 weight; 1.0 -> full weight; clamped [0,1].
+        weight = max(0.0, min(1.0, (float(conf) - 0.5) * 2.0))
+    else:
+        weight = _TIER_WEIGHTS.get(desk_pick.get("conviction_tier"), 0.0)
     side = desk_pick.get("spread_side") or desk_pick.get("ml_pick")
     if side == "home":
         sign = 1.0

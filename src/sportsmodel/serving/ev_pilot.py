@@ -109,7 +109,11 @@ def _side_shift(desk: dict | None, desk_side) -> float:
     trueprob_prob's tested tier-weight logic (home -> +, away -> -)."""
     if not desk or desk_side not in ("home", "away"):
         return 0.0
-    return desk_margin_shift({"conviction_tier": desk.get("conviction_tier"), "spread_side": desk_side})
+    return desk_margin_shift({
+        "conviction_tier": desk.get("conviction_tier"),
+        "confidence": desk.get("confidence"),
+        "spread_side": desk_side,
+    })
 
 
 def _total_side_shift(desk: dict | None, desk_side) -> float:
@@ -121,7 +125,11 @@ def _total_side_shift(desk: dict | None, desk_side) -> float:
     if not desk or desk_side not in ("over", "under"):
         return 0.0
     pseudo_side = "home" if desk_side == "over" else "away"
-    return desk_margin_shift({"conviction_tier": desk.get("conviction_tier"), "spread_side": pseudo_side})
+    return desk_margin_shift({
+        "conviction_tier": desk.get("conviction_tier"),
+        "confidence": desk.get("confidence"),
+        "spread_side": pseudo_side,
+    })
 
 
 def _finish_row(game: dict, market: str, side: str, base_prob: float, desk_delta: float,
@@ -303,6 +311,7 @@ def assemble_games(desk_rows: list[dict], odds_rows: list[dict]) -> list[dict]:
                 "spread_side": d.get("spread_side"),
                 "total_side": d.get("total_side"),
                 "conviction_tier": d.get("conviction_tier"),
+                "confidence": d.get("confidence"),
             }
 
         games.append({
