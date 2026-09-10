@@ -99,29 +99,18 @@ def test_desk_margin_shift_uses_desk_side_even_on_disagreement():
     assert shift == pytest.approx(1.0 * DESK_MAX_PTS)
 
 
-def test_desk_margin_shift_higher_confidence_gives_larger_shift():
-    high_conf = desk_margin_shift({"confidence": 0.75, "spread_side": "home"})
-    low_conf = desk_margin_shift({"confidence": 0.55, "spread_side": "home"})
-    assert high_conf > low_conf > 0
+def test_desk_margin_shift_ignores_confidence_uses_tier():
+    # Confidence is NOT used to size the nudge -- only conviction_tier is.
+    # A pick with confidence but no tier -> zero (no tier weight).
+    assert desk_margin_shift({"confidence": 0.9, "spread_side": "home"}) == pytest.approx(0.0)
+    # Same tier, different confidence -> identical shift (confidence ignored).
+    a = desk_margin_shift({"conviction_tier": "high", "confidence": 0.55, "spread_side": "home"})
+    b = desk_margin_shift({"conviction_tier": "high", "confidence": 0.95, "spread_side": "home"})
+    assert a == b == pytest.approx(1.0 * DESK_MAX_PTS)
 
 
-def test_desk_margin_shift_confidence_of_half_is_zero():
-    shift = desk_margin_shift({"confidence": 0.5, "spread_side": "home"})
-    assert shift == pytest.approx(0.0)
-
-
-def test_desk_margin_shift_confidence_clamped_to_full_weight():
-    shift = desk_margin_shift({"confidence": 1.0, "spread_side": "home"})
-    assert shift == pytest.approx(1.0 * DESK_MAX_PTS)
-    # confidence above 1.0 (shouldn't happen, but clamp defensively) doesn't
-    # exceed the full-weight shift.
-    over_shift = desk_margin_shift({"confidence": 1.5, "spread_side": "home"})
-    assert over_shift == pytest.approx(1.0 * DESK_MAX_PTS)
-
-
-def test_desk_margin_shift_confidence_sign_toward_away():
-    shift = desk_margin_shift({"confidence": 0.9, "spread_side": "away"})
-    assert shift < 0
+def test_desk_margin_shift_sign_toward_away():
+    assert desk_margin_shift({"conviction_tier": "high", "spread_side": "away"}) < 0
 
 
 def test_desk_margin_shift_missing_confidence_falls_back_to_tier():
@@ -147,14 +136,6 @@ def test_apply_desk_high_conviction_home_raises_prob_but_clamped():
 def test_apply_desk_clamp_bound_holds_even_with_tiny_sigma():
     # tiny sigma makes the raw win_prob shift huge; clamp must still hold.
     pick = {"conviction_tier": "high", "spread_side": "home", "agrees_with_model": True}
-    _, base, adj = apply_desk(0.0, 1.0, pick)
-    assert abs(adj - base) <= DESK_MAX_PROB_DELTA + 1e-9
-
-
-def test_apply_desk_clamp_bound_holds_with_high_confidence_and_tiny_sigma():
-    # High numeric confidence drives a bigger raw shift than any tier could;
-    # the prob-move clamp must still hold regardless.
-    pick = {"confidence": 1.0, "spread_side": "home"}
     _, base, adj = apply_desk(0.0, 1.0, pick)
     assert abs(adj - base) <= DESK_MAX_PROB_DELTA + 1e-9
 
