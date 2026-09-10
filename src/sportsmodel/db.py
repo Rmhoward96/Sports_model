@@ -89,6 +89,25 @@ def upsert_prop_predictions(records: list[dict]) -> int:
     return len(rows)
 
 
+def upsert_odds_snapshot(records: list[dict]) -> int:
+    """Insert odds snapshots into Supabase `odds_snapshot` (idempotent per capture)."""
+    if not records:
+        return 0
+    cols = ["game_pk", "market", "side", "player_name", "book", "line",
+            "price", "commence_time", "captured_at"]
+    placeholders = ", ".join(["%s"] * len(cols))
+    # captured_at is in the PK, so a re-run of the same pull is a no-op.
+    sql = (
+        f"INSERT INTO odds_snapshot ({', '.join(cols)}) VALUES ({placeholders}) "
+        f"ON CONFLICT DO NOTHING"
+    )
+    rows = [tuple(r.get(c) for c in cols) for r in records]
+    with get_postgres() as conn, conn.cursor() as cur:
+        cur.executemany(sql, rows)
+        conn.commit()
+    return len(rows)
+
+
 _PREDICTION_ACCURACY_COLS = [
     "sport", "game_pk", "game_date", "home_team_name", "away_team_name",
     "win_prob", "predicted_winner", "actual_winner", "winner_correct",
