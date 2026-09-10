@@ -1,0 +1,63 @@
+[
+  {
+    "season": 2024,
+    "team": "Alabama",
+    "conference": "SEC",
+    "offense": {
+      "overall": 0.23,
+      "passing": 0.35,
+      "rushing": 0.12
+    },
+    "defense": {
+      "overall": 0.05,
+      "passing": 0.02,
+      "rushing": 0.08
+    }
+  },
+  {
+    "season": 2024,
+    "team": "Georgia",
+    "conference": "SEC",
+    "offense": {
+      "overall": 0.31,
+      "passing": 0.40,
+      "rushing": 0.20
+    },
+    "defense": {
+      "overall": -0.09,
+      "passing": -0.11,
+      "rushing": -0.06
+    }
+  },
+  {
+    "season": 2024,
+    "team": "Kent State",
+    "conference": "MAC",
+    "offense": {
+      "overall": -0.05,
+      "passing": -0.02,
+      "rushing": -0.08
+    },
+    "defense": {
+      "overall": 0.18,
+      "passing": 0.22,
+      "rushing": 0.14
+    }
+  },
+  {
+    "season": 2024,
+    "team": "New Program",
+    "conference": "Ind"
+  },
+  {
+    "season": 2024,
+    "team": null,
+    "conference": "SEC",
+    "offense": {
+      "overall": 0.10
+    },
+    "defense": {
+      "overall": 0.10
+    }
+  }
+]
