@@ -13,8 +13,11 @@ on:
         type: string
         default: "7"
   schedule:
-    # Tuesday morning (after the weekend + Mon/Thu slates are final). UTC.
-    - cron: "0 14 * * 2"
+    # Daily, 13:20 UTC (~8am ET / 7am CT) -- after even a late West-coast
+    # game the prior evening is final. The grader is idempotent (only touches
+    # finished, ungraded games), so a daily run just picks up each slate the
+    # morning after it finishes instead of waiting until Tuesday.
+    - cron: "20 13 * * *"
 
 permissions:
   contents: read
