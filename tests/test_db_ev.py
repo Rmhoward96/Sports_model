@@ -9,10 +9,12 @@ from sportsmodel import db
 class FakeCursor:
     def __init__(self, sink):
         self.sink = sink
+        self.rowcount = 0
 
     def executemany(self, sql, rows):
         self.sink["sql"] = sql
         self.sink["rows"] = list(rows)
+        self.rowcount = len(self.sink["rows"])
 
     def __enter__(self):
         return self
@@ -243,6 +245,41 @@ def test_ev_results_multiple_records_all_converted_and_commit_called(monkeypatch
     assert n == 2
     assert len(sink["rows"]) == 2
     assert conn_holder["conn"].committed is True
+
+
+# ---------------------------------------------------------------------------
+# clear_other_side_picks -- demote the stale opposite side of a market
+# ---------------------------------------------------------------------------
+
+def test_clear_other_side_picks_empty_is_noop(monkeypatch):
+    def boom():
+        raise AssertionError("get_postgres should not be called for an empty list")
+    monkeypatch.setattr(db_module, "get_postgres", boom)
+    assert db.clear_other_side_picks([]) == 0
+
+
+def test_clear_other_side_picks_demotes_the_opposite_side(monkeypatch):
+    sink = {}
+    monkeypatch.setattr(db_module, "get_postgres", lambda: FakeConn(sink))
+    n = db.clear_other_side_picks([
+        {"sport": "nfl", "game_pk": 42, "market": "moneyline", "side": "away",
+         "model_version": "ev-pilot-v1"},
+    ])
+    assert n == 1
+    # demotes only the OTHER side of this exact market, and only if still a pick
+    assert "UPDATE ev_picks SET is_pick = false" in sink["sql"]
+    assert "side <> %s" in sink["sql"]
+    assert "is_pick = true" in sink["sql"]
+    assert sink["rows"] == [("nfl", 42, "moneyline", "ev-pilot-v1", "away")]
+
+
+def test_clear_other_side_picks_defaults_model_version(monkeypatch):
+    sink = {}
+    monkeypatch.setattr(db_module, "get_postgres", lambda: FakeConn(sink))
+    db.clear_other_side_picks([
+        {"sport": "cfb", "game_pk": 7, "market": "spread", "side": "home"},
+    ])
+    assert sink["rows"] == [("cfb", 7, "spread", "ev-pilot-v1", "home")]
 
 
 # ---------------------------------------------------------------------------

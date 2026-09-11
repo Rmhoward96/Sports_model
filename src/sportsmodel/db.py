@@ -295,6 +295,37 @@ def upsert_ev_picks(records: list[dict]) -> int:
     return len(rows)
 
 
+def clear_other_side_picks(records: list[dict]) -> int:
+    """Demote the OPPOSITE side of every market just written, so a two-way
+    market never shows both sides as picks.
+
+    The engine writes exactly one side per (game, market) per build -- the
+    desk's side, or the market-favored side. When that side flips between builds
+    (e.g. the desk's ml_pick changes), the previous side's row persists with
+    is_pick=true because `side` is part of the primary key, so BOTH sides end up
+    surfaced and graded -- which locks in a guaranteed net loss. After each
+    board build, this sets is_pick=false on any row for the same
+    (sport, game_pk, market, model_version) whose side differs from the one just
+    written. Idempotent; only touches rows still flagged is_pick=true."""
+    if not records:
+        return 0
+    sql = (
+        "UPDATE ev_picks SET is_pick = false "
+        "WHERE sport = %s AND game_pk = %s AND market = %s "
+        "AND model_version = %s AND side <> %s AND is_pick = true"
+    )
+    params = [
+        (r.get("sport"), r.get("game_pk"), r.get("market"),
+         r.get("model_version", _EV_PILOT_DEFAULT_MODEL_VERSION), r.get("side"))
+        for r in records
+    ]
+    with get_postgres() as conn, conn.cursor() as cur:
+        cur.executemany(sql, params)
+        cleared = cur.rowcount if cur.rowcount and cur.rowcount > 0 else 0
+        conn.commit()
+    return cleared
+
+
 _EV_RESULTS_COLS = ["sport", "game_pk", "market", "side", "won", "clv"]
 
 

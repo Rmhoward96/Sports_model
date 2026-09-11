@@ -212,7 +212,7 @@ def _pending_ev_picks(cur, sport: str, start: str) -> list[dict]:
     for backtesting "would a pass have won"), drop this filter.
     """
     cur.execute("""
-        SELECT DISTINCT ON (ep.game_pk, ep.market, ep.side)
+        SELECT DISTINCT ON (ep.game_pk, ep.market)
                ep.game_pk, ep.market, ep.side,
                -- pick-time price: the FROZEN opening price when available,
                -- else the (mutable) pinnacle_price for rows written before
@@ -223,12 +223,16 @@ def _pending_ev_picks(cur, sport: str, start: str) -> list[dict]:
         WHERE ep.sport = %(sport)s AND ep.commence_time >= %(start)s
           AND ep.commence_time <= now()
           AND ep.is_pick = true
+          -- At most ONE side per (game, market) is ever a real pick (betting
+          -- both sides is a guaranteed loss). DISTINCT ON keeps the latest by
+          -- created_at, and the NOT EXISTS skips a market once EITHER side has
+          -- been graded -- so a stale flipped-side row can't double-grade it.
           AND NOT EXISTS (
               SELECT 1 FROM ev_results er
               WHERE er.sport = %(sport)s AND er.game_pk = ep.game_pk
-                AND er.market = ep.market AND er.side = ep.side
+                AND er.market = ep.market
           )
-        ORDER BY ep.game_pk, ep.market, ep.side, ep.created_at DESC
+        ORDER BY ep.game_pk, ep.market, ep.created_at DESC
     """, {"sport": sport, "start": start})
     cols = ["game_pk", "market", "side", "pinnacle_price", "commence_time", "created_at"]
     return [dict(zip(cols, row), sport=sport) for row in cur.fetchall()]

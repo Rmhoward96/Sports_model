@@ -27,7 +27,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
-from sportsmodel.db import get_postgres, upsert_ev_picks
+from sportsmodel.db import get_postgres, upsert_ev_picks, clear_other_side_picks
 from sportsmodel.serving.ev_pilot import assemble_games, ev_rows_for_game
 
 MODEL_VERSION = "ev-pilot-v1"
@@ -110,9 +110,13 @@ def main() -> None:
     passes = [r for r in all_rows if not r["is_pick"]]
 
     upsert_ev_picks(all_rows)
+    # A market's picked side can flip between builds (e.g. the desk's ml_pick
+    # changes); demote the stale opposite side so a two-way market never shows
+    # both sides as picks.
+    cleared = clear_other_side_picks(all_rows)
 
     print(f"[build_ev_board] sport={args.sport} games={len(games)} rows={len(all_rows)} "
-          f"picks={len(picks)} passes={len(passes)}")
+          f"picks={len(picks)} passes={len(passes)} cleared_stale={cleared}")
 
 
 if __name__ == "__main__":
