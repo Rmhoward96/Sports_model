@@ -240,10 +240,17 @@ def upsert_desk_pick_results(records: list[dict]) -> int:
 _EV_PICKS_COLS = [
     "sport", "game_pk", "market", "side", "model_version", "matchup",
     "commence_time", "base_prob", "true_prob", "edge", "desk_delta",
-    "conviction_tier", "pinnacle_price", "ev_pinnacle", "best_book",
-    "best_price", "ev_best", "best_line_implied", "soft_vs_sharp_gap",
-    "is_pick",
+    "conviction_tier", "pinnacle_price", "open_pinnacle_price", "ev_pinnacle",
+    "best_book", "best_price", "ev_best", "best_line_implied",
+    "soft_vs_sharp_gap", "is_pick",
 ]
+
+# Columns set once on first INSERT and NEVER overwritten on a later upsert --
+# the pick-time (opening) Pinnacle price, so CLV grading measures the price the
+# pick was first surfaced at, not the refreshed near-closing price. (created_at
+# gets the same treatment via the table DEFAULT; this one is app-supplied so it
+# must be excluded from DO UPDATE explicitly.)
+_EV_PICKS_IMMUTABLE = {"open_pinnacle_price"}
 
 _EV_PILOT_DEFAULT_MODEL_VERSION = "ev-pilot-v1"
 
@@ -264,7 +271,11 @@ def upsert_ev_picks(records: list[dict]) -> int:
     if not records:
         return 0
     key = ("sport", "game_pk", "market", "side", "model_version")
-    updates = ", ".join(f"{c} = EXCLUDED.{c}" for c in _EV_PICKS_COLS if c not in key)
+    updates = ", ".join(
+        f"{c} = EXCLUDED.{c}"
+        for c in _EV_PICKS_COLS
+        if c not in key and c not in _EV_PICKS_IMMUTABLE
+    )
     placeholders = ", ".join(["%s"] * len(_EV_PICKS_COLS))
     sql = (
         f"INSERT INTO ev_picks ({', '.join(_EV_PICKS_COLS)}) "

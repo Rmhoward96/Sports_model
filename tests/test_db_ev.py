@@ -72,6 +72,7 @@ def test_ev_picks_tuple_built_in_column_order_with_all_fields(monkeypatch):
         "desk_delta": 0.05,
         "conviction_tier": "A",
         "pinnacle_price": -110,
+        "open_pinnacle_price": -108,
         "ev_pinnacle": 0.04,
         "best_book": "draftkings",
         "best_price": -105,
@@ -86,7 +87,7 @@ def test_ev_picks_tuple_built_in_column_order_with_all_fields(monkeypatch):
     assert sink["rows"] == [(
         "nfl", 12345, "spread", "home", "ev-pilot-v1",
         "Bills @ Jets", "2026-09-14T17:00:00+00:00",
-        0.52, 0.57, 0.05, 0.05, "A", -110, 0.04,
+        0.52, 0.57, 0.05, 0.05, "A", -110, -108, 0.04,
         "draftkings", -105, 0.06, 0.512, 0.008, True,
     )]
     assert "INSERT INTO ev_picks" in sink["sql"]
@@ -99,6 +100,10 @@ def test_ev_picks_tuple_built_in_column_order_with_all_fields(monkeypatch):
     assert "model_version = EXCLUDED.model_version" not in sink["sql"]
     # created_at must NOT be touched on conflict -- keeps the original insert time
     assert "created_at" not in sink["sql"]
+    # open_pinnacle_price is INSERTed but frozen -- never reassigned on conflict,
+    # so the pick-time price survives every later board rebuild (for CLV).
+    assert "open_pinnacle_price" in sink["sql"]
+    assert "open_pinnacle_price = EXCLUDED.open_pinnacle_price" not in sink["sql"]
 
 
 def test_ev_picks_missing_model_version_defaults_to_ev_pilot_v1(monkeypatch):
@@ -250,8 +255,9 @@ def test_ev_picks_cols_matches_ev_rows_for_game_output_shape():
     ev_row_fields = {
         "sport", "game_pk", "matchup", "commence_time", "market", "side",
         "base_prob", "true_prob", "edge", "desk_delta", "conviction_tier",
-        "pinnacle_price", "ev_pinnacle", "best_book", "best_price", "ev_best",
-        "best_line_implied", "soft_vs_sharp_gap", "is_pick",
+        "pinnacle_price", "open_pinnacle_price", "ev_pinnacle", "best_book",
+        "best_price", "ev_best", "best_line_implied", "soft_vs_sharp_gap",
+        "is_pick",
     }
     cols = set(db._EV_PICKS_COLS)
     assert ev_row_fields <= cols

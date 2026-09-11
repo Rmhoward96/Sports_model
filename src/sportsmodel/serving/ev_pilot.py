@@ -160,6 +160,11 @@ def _finish_row(game: dict, market: str, side: str, base_prob: float, desk_delta
         "desk_delta": desk_delta,
         "conviction_tier": conviction_tier,
         "pinnacle_price": pinnacle_price,
+        # Seed for the immutable pick-time (opening) Pinnacle price: the upsert
+        # sets open_pinnacle_price from this on FIRST insert and never updates
+        # it, so CLV can measure the true pick-time price against the close even
+        # though pinnacle_price is refreshed on every board rebuild.
+        "open_pinnacle_price": pinnacle_price,
         "ev_pinnacle": ev_pinnacle,
         "best_book": best[0] if best else None,
         "best_price": best[1] if best else None,

@@ -39,6 +39,14 @@ def _pickem_game(desk=None):
     }
 
 
+def test_open_pinnacle_price_seeds_from_pinnacle_price():
+    # Every row seeds open_pinnacle_price == pinnacle_price; the upsert freezes
+    # it on first insert so CLV can measure the true pick-time price later.
+    game = _pickem_game(desk=None)
+    for row in ev_rows_for_game(game):
+        assert row["open_pinnacle_price"] == row["pinnacle_price"]
+
+
 def test_market_margin():
     assert market_margin(-3.0) == 3.0
     assert market_margin(3.0) == -3.0

@@ -213,7 +213,11 @@ def _pending_ev_picks(cur, sport: str, start: str) -> list[dict]:
     """
     cur.execute("""
         SELECT DISTINCT ON (ep.game_pk, ep.market, ep.side)
-               ep.game_pk, ep.market, ep.side, ep.pinnacle_price,
+               ep.game_pk, ep.market, ep.side,
+               -- pick-time price: the FROZEN opening price when available,
+               -- else the (mutable) pinnacle_price for rows written before
+               -- open_pinnacle_price existed. This is what CLV is measured from.
+               COALESCE(ep.open_pinnacle_price, ep.pinnacle_price) AS pinnacle_price,
                ep.commence_time, ep.created_at
         FROM ev_picks ep
         WHERE ep.sport = %(sport)s AND ep.commence_time >= %(start)s
