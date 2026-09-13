@@ -12,6 +12,10 @@ on:
         description: "Grade finished games within this many days"
         type: string
         default: "7"
+      regrade:
+        description: "Clear existing ev_results in the window and re-grade from scratch"
+        type: boolean
+        default: false
   schedule:
     # Daily, 13:20 UTC (~8am ET / 7am CT) -- after even a late West-coast
     # game the prior evening is final. The grader is idempotent (only touches
@@ -35,4 +39,4 @@ jobs:
       - name: Grade +EV picks (forward CLV)
         env:
           DATABASE_URL: ${{ secrets.DATABASE_URL }}
-        run: uv run python scripts/grade_ev.py --days "${{ github.event.inputs.days || '7' }}"
+        run: uv run python scripts/grade_ev.py --days "${{ github.event.inputs.days || '7' }}" ${{ github.event.inputs.regrade == 'true' && '--regrade' || '' }}

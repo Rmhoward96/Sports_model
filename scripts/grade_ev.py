@@ -253,6 +253,27 @@ def _pinnacle_line_at(cur, game_pk: int, market: str, side: str, cutoff) -> floa
     return float(row[0]) if row and row[0] is not None else None
 
 
+def _pinnacle_price_at(cur, game_pk: int, market: str, side: str, cutoff) -> int | None:
+    """The Pinnacle PRICE for (game_pk, market, side) as of the last
+    odds_snapshot at/before `cutoff` -- the true PICK-TIME price, reconstructed
+    from snapshot history.
+
+    Why not just use ev_picks.pinnacle_price? The board overwrites that column
+    toward the close on every rebuild, so by grading time it ~equals the close
+    and CLV collapses to 0. odds_snapshot is append-only (captured_at in the
+    PK), so the price that was actually posted when the board first surfaced
+    this side (cutoff = the ev_picks row's created_at) is still recoverable --
+    and that is the honest anchor for closing-line value."""
+    cur.execute("""
+        SELECT price FROM odds_snapshot
+        WHERE game_pk = %s AND market = %s AND side = %s AND book = 'pinnacle'
+          AND player_name = '' AND captured_at <= %s
+        ORDER BY captured_at DESC LIMIT 1
+    """, (game_pk, market, side, cutoff))
+    row = cur.fetchone()
+    return int(row[0]) if row and row[0] is not None else None
+
+
 def _pinnacle_close_price(cur, game_pk: int, market: str, side: str, commence_time) -> dict:
     """The CLOSING Pinnacle price for (game_pk, market, side): the last
     odds_snapshot at/before commence_time. By grading time (the game has
@@ -272,6 +293,9 @@ def _pinnacle_close_price(cur, game_pk: int, market: str, side: str, commence_ti
 def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("--days", type=int, default=7)
+    ap.add_argument("--regrade", action="store_true",
+                     help="Delete existing ev_results in the window first, then "
+                          "re-grade from scratch (e.g. after fixing the CLV anchor).")
     args = ap.parse_args()
     if not config.DATABASE_URL:
         raise SystemExit("DATABASE_URL required (grading reads/writes Supabase).")
@@ -281,6 +305,16 @@ def main() -> None:
     counts: dict[str, int] = {}
 
     with get_postgres() as conn, conn.cursor() as cur:
+        if args.regrade:
+            cur.execute("""
+                DELETE FROM ev_results er
+                USING ev_picks ep
+                WHERE er.sport = ep.sport AND er.game_pk = ep.game_pk
+                  AND er.market = ep.market AND er.side = ep.side
+                  AND ep.commence_time >= %(start)s
+            """, {"start": start})
+            conn.commit()
+            print(f"--regrade: cleared {cur.rowcount} existing ev_results row(s) in the window")
         for sport, provider in FINAL_PROVIDERS.items():
             pending = _pending_ev_picks(cur, sport, start)
             n = 0
@@ -305,13 +339,21 @@ def main() -> None:
                     pinnacle_close = _pinnacle_close_price(
                         cur, row["game_pk"], row["market"], row["side"], row["commence_time"])
 
+                    # Pick-time price: reconstruct from snapshot history at the
+                    # row's created_at (the honest anchor); fall back to the
+                    # stored column only if no snapshot predates the pick.
+                    pick_price = _pinnacle_price_at(
+                        cur, row["game_pk"], row["market"], row["side"], row["created_at"])
+                    if pick_price is None:
+                        pick_price = row["pinnacle_price"]
+
                     pick = {
                         "sport": sport,
                         "game_pk": row["game_pk"],
                         "market": row["market"],
                         "side": row["side"],
                         "line": pick_line,
-                        "pinnacle_price": row["pinnacle_price"],
+                        "pinnacle_price": pick_price,
                     }
                     graded_rows.append(grade_ev_pick(pick, final, pinnacle_close))
                     n += 1
