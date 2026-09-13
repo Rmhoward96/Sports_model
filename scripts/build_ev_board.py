@@ -140,17 +140,22 @@ def main() -> None:
     # both sides as picks.
     cleared = clear_other_side_picks(all_rows)
 
-    # Auto-parlay the juiced-favorite legs into a single +EV ticket.
-    parlay = build_parlay(parlay_candidates)
-    if parlay is not None:
-        parlay["model_version"] = MODEL_VERSION
-        parlay["is_pick"] = True
-        upsert_ev_parlays([parlay])
-    demoted = demote_stale_parlays(
-        args.sport, parlay["parlay_id"] if parlay else None, MODEL_VERSION)
+    # Auto-parlay the juiced-favorite legs into a single +EV ticket. Non-fatal:
+    # if the ev_parlays table isn't migrated yet, the straight board above is
+    # already written -- log and carry on rather than failing the whole build.
+    parlay_desc, demoted = "none", 0
+    try:
+        parlay = build_parlay(parlay_candidates)
+        if parlay is not None:
+            parlay["model_version"] = MODEL_VERSION
+            parlay["is_pick"] = True
+            upsert_ev_parlays([parlay])
+            parlay_desc = f"{parlay['n_legs']} legs @ {parlay['parlay_price']:+d} ev={parlay['ev']:.3f}"
+        demoted = demote_stale_parlays(
+            args.sport, parlay["parlay_id"] if parlay else None, MODEL_VERSION)
+    except Exception as exc:  # noqa: BLE001 -- parlays are additive; never break the board
+        print(f"[build_ev_board] parlay step skipped ({exc}); run db/migration_ev_parlays.sql")
 
-    parlay_desc = (f"{parlay['n_legs']} legs @ {parlay['parlay_price']:+d} "
-                   f"ev={parlay['ev']:.3f}") if parlay else "none"
     print(f"[build_ev_board] sport={args.sport} games={len(games)} rows={len(all_rows)} "
           f"picks={len(picks)} passes={len(passes)} cleared_stale={cleared} "
           f"parlay={parlay_desc} demoted_parlays={demoted}")
