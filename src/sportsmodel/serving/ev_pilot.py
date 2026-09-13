@@ -56,6 +56,13 @@ MIN_EDGE = 0.02
 # real line-shopping or desk edge.
 MIN_EV = 0.01
 
+# A straight pick priced at -250 or worse is NOT a straight bet, even if the
+# math clears MIN_EV: the break-even hit rate (~71.4% at -250) is too high to
+# treat as +EV on its own. Such legs are excluded from straights and fed to the
+# parlay builder instead (see sportsmodel.serving.parlay). Keep a straight only
+# when best_price is BETTER than this (i.e. > -250).
+MAX_STRAIGHT_JUICE = -250
+
 
 def market_margin(pinnacle_home_spread: float) -> float:
     """Implied home margin from the book's home spread convention (e.g. a
@@ -146,7 +153,14 @@ def _finish_row(game: dict, market: str, side: str, base_prob: float, desk_delta
     # pays more than the sharp for the same side. (Value-vs-truth is ev_best,
     # which uses the no-vig true_prob; this is the pure price edge to display.)
     soft_vs_sharp_gap = (implied_prob(pinnacle_price) - best_line_implied) if best_line_implied is not None else None
-    is_pick = ev_best is not None and MIN_EV < ev_best <= EV_CEILING
+    # A straight pick must clear MIN_EV at a price better than -250; legs priced
+    # -250 or worse are excluded here and picked up by the parlay builder.
+    is_pick = (
+        ev_best is not None
+        and MIN_EV < ev_best <= EV_CEILING
+        and best is not None
+        and best[1] > MAX_STRAIGHT_JUICE
+    )
     return {
         "sport": game.get("sport"),
         "game_pk": game.get("game_pk"),

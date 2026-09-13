@@ -352,3 +352,86 @@ def upsert_ev_results(records: list[dict]) -> int:
         cur.executemany(sql, rows)
         conn.commit()
     return len(rows)
+
+
+# =============================================================================
+# +EV parlays (auto-parlay of juiced-favorite legs) -- see serving/parlay.py
+# =============================================================================
+
+_EV_PARLAYS_COLS = [
+    "sport", "parlay_id", "model_version", "legs", "book", "parlay_price",
+    "true_prob", "ev", "n_legs", "commence_time", "is_pick",
+]
+
+
+def upsert_ev_parlays(records: list[dict]) -> int:
+    """Upsert +EV parlay tickets into Supabase `ev_parlays`.
+
+    Idempotent on (sport, parlay_id, model_version) -- parlay_id is a stable
+    hash of the leg set, so a rebuild with the same legs overwrites in place.
+    `legs` is written as JSON. `created_at` is DEFAULT-set on first insert and
+    never updated. Requires DATABASE_URL and ev_parlays (db/migration_ev_parlays.sql)."""
+    if not records:
+        return 0
+    key = ("sport", "parlay_id", "model_version")
+    updates = ", ".join(f"{c} = EXCLUDED.{c}" for c in _EV_PARLAYS_COLS if c not in key)
+    placeholders = ", ".join(["%s"] * len(_EV_PARLAYS_COLS))
+    sql = (
+        f"INSERT INTO ev_parlays ({', '.join(_EV_PARLAYS_COLS)}) "
+        f"VALUES ({placeholders}) "
+        f"ON CONFLICT (sport, parlay_id, model_version) DO UPDATE SET {updates}"
+    )
+    rows = [
+        tuple(
+            json.dumps(r.get("legs")) if c == "legs"
+            else (r.get(c, _EV_PILOT_DEFAULT_MODEL_VERSION) if c == "model_version" else r.get(c))
+            for c in _EV_PARLAYS_COLS
+        )
+        for r in records
+    ]
+    with get_postgres() as conn, conn.cursor() as cur:
+        cur.executemany(sql, rows)
+        conn.commit()
+    return len(rows)
+
+
+def demote_stale_parlays(sport: str, keep_parlay_id: str | None,
+                          model_version: str = _EV_PILOT_DEFAULT_MODEL_VERSION) -> int:
+    """Set is_pick=false on any still-upcoming parlay for `sport` whose
+    parlay_id isn't `keep_parlay_id` (None keeps nothing). The leg set can
+    change between builds -> a new parlay_id -> the old parlay must be demoted so
+    only the current ticket shows. Only touches commence_time > now() rows so a
+    parlay whose games already kicked off (and may be graded) is left intact."""
+    sql = (
+        "UPDATE ev_parlays SET is_pick = false "
+        "WHERE sport = %s AND model_version = %s AND is_pick = true "
+        "AND commence_time > now() AND parlay_id <> %s"
+    )
+    with get_postgres() as conn, conn.cursor() as cur:
+        cur.execute(sql, (sport, model_version, keep_parlay_id or ""))
+        demoted = cur.rowcount if cur.rowcount and cur.rowcount > 0 else 0
+        conn.commit()
+    return demoted
+
+
+_EV_PARLAY_RESULTS_COLS = ["sport", "parlay_id", "won"]
+
+
+def upsert_ev_parlay_results(records: list[dict]) -> int:
+    """Upsert graded parlay results into Supabase `ev_parlay_results`.
+    Idempotent on (sport, parlay_id); bumps graded_at on update."""
+    if not records:
+        return 0
+    key = ("sport", "parlay_id")
+    updates = ", ".join(f"{c} = EXCLUDED.{c}" for c in _EV_PARLAY_RESULTS_COLS if c not in key)
+    placeholders = ", ".join(["%s"] * len(_EV_PARLAY_RESULTS_COLS))
+    sql = (
+        f"INSERT INTO ev_parlay_results ({', '.join(_EV_PARLAY_RESULTS_COLS)}) "
+        f"VALUES ({placeholders}) "
+        f"ON CONFLICT (sport, parlay_id) DO UPDATE SET {updates}, graded_at = now()"
+    )
+    rows = [tuple(r.get(c) for c in _EV_PARLAY_RESULTS_COLS) for r in records]
+    with get_postgres() as conn, conn.cursor() as cur:
+        cur.executemany(sql, rows)
+        conn.commit()
+    return len(rows)

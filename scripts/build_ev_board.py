@@ -27,8 +27,14 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
-from sportsmodel.db import get_postgres, upsert_ev_picks, clear_other_side_picks
-from sportsmodel.serving.ev_pilot import assemble_games, ev_rows_for_game
+from sportsmodel.db import (
+    get_postgres, upsert_ev_picks, clear_other_side_picks,
+    upsert_ev_parlays, demote_stale_parlays,
+)
+from sportsmodel.serving.ev_pilot import (
+    assemble_games, ev_rows_for_game, MIN_EV, EV_CEILING, MAX_STRAIGHT_JUICE,
+)
+from sportsmodel.serving.parlay import build_parlay
 
 MODEL_VERSION = "ev-pilot-v1"
 
@@ -100,8 +106,27 @@ def main() -> None:
     games = assemble_games(game_rows, odds_rows)
 
     all_rows = []
+    parlay_candidates = []
     for game in games:
-        all_rows.extend(ev_rows_for_game(game))
+        rows = ev_rows_for_game(game)
+        all_rows.extend(rows)
+        # Parlay legs: markets that clear MIN_EV but are priced -250 or worse
+        # (excluded from straights). Pull the leg's per-book prices from the
+        # game so the parlay can be priced at a single real book.
+        books = game.get("books") or {}
+        for row in rows:
+            if (row.get("ev_best") is not None and MIN_EV < row["ev_best"] <= EV_CEILING
+                    and row.get("best_price") is not None
+                    and row["best_price"] <= MAX_STRAIGHT_JUICE):
+                side_books = (books.get(row["market"]) or {}).get(row["side"]) or []
+                if side_books:
+                    parlay_candidates.append({
+                        "sport": row["sport"], "game_pk": row["game_pk"],
+                        "market": row["market"], "side": row["side"],
+                        "matchup": row["matchup"], "commence_time": row["commence_time"],
+                        "true_prob": row["true_prob"], "ev": row["ev_best"],
+                        "book_prices": side_books,
+                    })
 
     for row in all_rows:
         row["model_version"] = MODEL_VERSION
@@ -115,8 +140,20 @@ def main() -> None:
     # both sides as picks.
     cleared = clear_other_side_picks(all_rows)
 
+    # Auto-parlay the juiced-favorite legs into a single +EV ticket.
+    parlay = build_parlay(parlay_candidates)
+    if parlay is not None:
+        parlay["model_version"] = MODEL_VERSION
+        parlay["is_pick"] = True
+        upsert_ev_parlays([parlay])
+    demoted = demote_stale_parlays(
+        args.sport, parlay["parlay_id"] if parlay else None, MODEL_VERSION)
+
+    parlay_desc = (f"{parlay['n_legs']} legs @ {parlay['parlay_price']:+d} "
+                   f"ev={parlay['ev']:.3f}") if parlay else "none"
     print(f"[build_ev_board] sport={args.sport} games={len(games)} rows={len(all_rows)} "
-          f"picks={len(picks)} passes={len(passes)} cleared_stale={cleared}")
+          f"picks={len(picks)} passes={len(passes)} cleared_stale={cleared} "
+          f"parlay={parlay_desc} demoted_parlays={demoted}")
 
 
 if __name__ == "__main__":

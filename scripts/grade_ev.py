@@ -36,6 +36,7 @@ Usage:
 from __future__ import annotations
 
 import argparse
+import json
 import sys
 from datetime import date, timedelta
 from pathlib import Path
@@ -44,7 +45,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from sportsmodel import config
 from sportsmodel.cfb import espn as cfb_espn
-from sportsmodel.db import get_postgres, upsert_ev_results
+from sportsmodel.db import get_postgres, upsert_ev_results, upsert_ev_parlay_results
 from sportsmodel.nfl import espn as nfl_espn
 
 # Results-provider seam: sport key -> module exposing fetch_final(game_pk) ->
@@ -290,6 +291,47 @@ def _pinnacle_close_price(cur, game_pk: int, market: str, side: str, commence_ti
     return {"price": int(row[0])} if row and row[0] is not None else {"price": None}
 
 
+def _pending_parlays(cur, sport: str, start: str) -> list[dict]:
+    """is_pick parlays for `sport` whose latest leg has kicked off and that
+    haven't been graded yet."""
+    cur.execute("""
+        SELECT parlay_id, legs, commence_time
+        FROM ev_parlays ep
+        WHERE ep.sport = %(sport)s AND ep.commence_time >= %(start)s
+          AND ep.commence_time <= now() AND ep.is_pick = true
+          AND NOT EXISTS (
+              SELECT 1 FROM ev_parlay_results er
+              WHERE er.sport = %(sport)s AND er.parlay_id = ep.parlay_id
+          )
+    """, {"sport": sport, "start": start})
+    return [dict(zip(["parlay_id", "legs", "commence_time"], row)) for row in cur.fetchall()]
+
+
+def _grade_one_parlay(cur, sport: str, provider, parlay: dict) -> tuple[bool, bool | None]:
+    """Grade one parlay. Returns (ready, won): ready=False when a leg's game
+    isn't final yet (wait for a later run). A parlay wins only if EVERY decided
+    leg wins; a push leg drops out (sportsbook parlay-reduction rule), and an
+    all-push parlay grades as a push (won=None)."""
+    legs = parlay["legs"]
+    if isinstance(legs, str):
+        legs = json.loads(legs)
+    wons: list[bool | None] = []
+    for leg in legs:
+        final = provider.fetch_final(leg["game_pk"])
+        if final is None:
+            return False, None  # a leg isn't final -> wait
+        line = None
+        if leg["market"] in ("spread", "total"):
+            line_side = "home" if leg["market"] == "spread" else leg["side"]
+            line = _pinnacle_line_at(cur, leg["game_pk"], leg["market"], line_side,
+                                     leg.get("commence_time") or parlay["commence_time"])
+        pick = {"sport": sport, "game_pk": leg["game_pk"], "market": leg["market"],
+                "side": leg["side"], "line": line, "pinnacle_price": leg.get("price")}
+        wons.append(grade_ev_pick(pick, final, {"price": None})["won"])
+    decided = [w for w in wons if w is not None]
+    return True, (all(decided) if decided else None)
+
+
 def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("--days", type=int, default=7)
@@ -302,6 +344,7 @@ def main() -> None:
 
     start = _window_start(args.days)
     graded_rows: list[dict] = []
+    parlay_results: list[dict] = []
     counts: dict[str, int] = {}
 
     with get_postgres() as conn, conn.cursor() as cur:
@@ -313,8 +356,16 @@ def main() -> None:
                   AND er.market = ep.market AND er.side = ep.side
                   AND ep.commence_time >= %(start)s
             """, {"start": start})
+            cleared_res = cur.rowcount
+            cur.execute("""
+                DELETE FROM ev_parlay_results er
+                USING ev_parlays ep
+                WHERE er.sport = ep.sport AND er.parlay_id = ep.parlay_id
+                  AND ep.commence_time >= %(start)s
+            """, {"start": start})
             conn.commit()
-            print(f"--regrade: cleared {cur.rowcount} existing ev_results row(s) in the window")
+            print(f"--regrade: cleared {cleared_res} ev_results + {cur.rowcount} "
+                  f"ev_parlay_results row(s) in the window")
         for sport, provider in FINAL_PROVIDERS.items():
             pending = _pending_ev_picks(cur, sport, start)
             n = 0
@@ -364,9 +415,30 @@ def main() -> None:
             counts[sport] = n
             print(f"{sport}: {len(pending)} pending, {n} final and graded")
 
+        # Parlays: grade any ticket whose legs are all final (all-legs-win).
+        for sport, provider in FINAL_PROVIDERS.items():
+            pend = _pending_parlays(cur, sport, start)
+            pn = 0
+            for parlay in pend:
+                try:
+                    ready, won = _grade_one_parlay(cur, sport, provider, parlay)
+                    if not ready:
+                        continue  # a leg isn't final yet -- wait for a later run
+                    parlay_results.append(
+                        {"sport": sport, "parlay_id": parlay["parlay_id"], "won": won})
+                    pn += 1
+                except Exception as exc:  # noqa: BLE001 -- one bad parlay must not abort
+                    print(f"  {sport} parlay {parlay['parlay_id']}: grading failed ({exc}); skipping")
+                    continue
+            if pend:
+                print(f"{sport}: {len(pend)} parlays pending, {pn} final and graded")
+
     if graded_rows:
         written = upsert_ev_results(graded_rows)
         print(f"Upserted {written} ev_results rows.")
+    if parlay_results:
+        written = upsert_ev_parlay_results(parlay_results)
+        print(f"Upserted {written} ev_parlay_results rows.")
     for sport, n in counts.items():
         print(f"graded {n} {sport} ev picks")
 
