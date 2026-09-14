@@ -30,6 +30,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
 import sys
 from pathlib import Path
 
@@ -246,6 +247,61 @@ def assemble_picks(bundle: list[dict], decisions: list[dict], sport: str) -> lis
     return picks
 
 
+_RECORD_RE = re.compile(r"\b\d{1,2}-\d{1,2}\b")
+
+
+def _nickname(team: str) -> str:
+    """The distinctive last word of a team name ("Kansas City Chiefs" ->
+    "chiefs"), used to find the team in free-text rationale."""
+    return team.split()[-1].lower() if team else ""
+
+
+def flag_pick_issues(picks: list[dict], bundle: list[dict]) -> list[str]:
+    """Consistency guard between a pick's rationale prose and the ground truth.
+    PURE. Returns human-readable flags (empty = clean). Catches the failure
+    mode where the desk's rationale contradicts its own pick:
+
+      1. Record misattribution -- the rationale ties a team's nickname to the
+         OTHER team's record (e.g. "Chiefs are 4-1" when KC is 0-5 and 4-1 is
+         Denver's). This is how a hallucinated rationale flips which team looks
+         strong. Only checked when the two records differ.
+      2. Picked team unmentioned -- the rationale never names the team the pick
+         actually resolves to, so the prose is about a different team.
+    """
+    by_pk = {g["game_pk"]: g for g in bundle}
+    flags: list[str] = []
+    for p in picks:
+        g = by_pk.get(p["game_pk"])
+        if g is None:
+            continue
+        away_team, home_team = _split_matchup(g.get("matchup", ""))
+        form = g.get("form") or {}
+        rec_home = (form.get("home") or {}).get("record")
+        rec_away = (form.get("away") or {}).get("record")
+        text = (p.get("rationale") or "").lower()
+
+        # (1) record misattribution
+        if rec_home and rec_away and rec_home != rec_away:
+            for team, own, other in ((home_team, rec_home, rec_away),
+                                     (away_team, rec_away, rec_home)):
+                nick = _nickname(team)
+                for m in re.finditer(re.escape(nick), text):
+                    seg = text[m.start(): m.end() + 45]
+                    if other in seg and own not in seg:
+                        flags.append(
+                            f"game {p['game_pk']}: rationale ties {team} to record "
+                            f"{other} but its record is {own}")
+                        break
+
+        # (2) picked team must be named in the rationale
+        picked_team = home_team if p.get("ml_pick") == "home" else away_team
+        if text and _nickname(picked_team) and _nickname(picked_team) not in text:
+            flags.append(
+                f"game {p['game_pk']}: pick is {picked_team} but the rationale "
+                f"never names it")
+    return flags
+
+
 def main() -> None:
     ap = argparse.ArgumentParser(description="Synthesize desk picks via the Anthropic API.")
     ap.add_argument("--sport", choices=["cfb", "nfl"], required=True)
@@ -272,19 +328,26 @@ def main() -> None:
     picks = assemble_picks(bundle, decisions, args.sport)
 
     problems = validate_picks(picks)
-    if problems:
-        # One repair round: hand the model its own output + the exact problems.
-        print(f"{len(problems)} validation problem(s); attempting one repair round.")
+    flags = flag_pick_issues(picks, bundle)
+    if problems or flags:
+        # One repair round: hand the model its own output + every issue. Contract
+        # violations (problems) and rationale/pick consistency flags are both
+        # things the model must fix.
+        print(f"{len(problems)} validation problem(s), {len(flags)} consistency "
+              f"flag(s); attempting one repair round.")
         import anthropic
 
         client = anthropic.Anthropic()
         repair = (
-            "Your previous picks failed validation. Here are the problems:\n"
-            + "\n".join(f"- {p}" for p in problems)
+            "Your previous picks had issues. Fix every one.\n"
+            + "Contract problems:\n" + "\n".join(f"- {p}" for p in problems)
+            + "\nRationale/pick consistency flags (the rationale must match the "
+              "team you actually pick and cite the correct records):\n"
+            + "\n".join(f"- {f}" for f in flags)
             + "\n\nHere was your output:\n"
             + json.dumps(decisions, default=str)
             + "\n\nReturn a corrected JSON array (same schema, only the "
-            "judgment fields). Fix every problem."
+            "judgment fields)."
         )
         resp = client.messages.create(
             model=model,
@@ -296,12 +359,22 @@ def main() -> None:
         decisions = _parse_array(text)
         picks = assemble_picks(bundle, decisions, args.sport)
         problems = validate_picks(picks)
+        flags = flag_pick_issues(picks, bundle)
 
     if problems:
         print(f"Still {len(problems)} problem(s) after repair; writing NOTHING:")
         for p in problems:
             print(f"  - {p}")
         raise SystemExit(1)
+
+    # Consistency flags don't block the write (the pick SIDE is already correct
+    # via team resolution; a residual flag means the prose is still off), but
+    # they're surfaced loudly so a bad rationale is never silent.
+    if flags:
+        print(f"WARNING: {len(flags)} rationale/pick consistency flag(s) remain "
+              f"after repair (written anyway -- review the rationale):")
+        for f in flags:
+            print(f"  - {f}")
 
     args.out.write_text(json.dumps(picks, indent=2))
     leans = sum(1 for p in picks if p["spread_side"])

@@ -84,3 +84,41 @@ def test_declined_spread_when_no_team_given():
             "confidence": 0.52, "rationale": "x", "agent_notes": {}}]
     p = syn.assemble_picks(bundle, dec, "nfl")[0]
     assert p["spread_side"] is None and p["spread_line"] is None
+
+
+# --- flag_pick_issues (rationale/pick consistency guard) --------------------
+
+def _bundle_with_form():
+    # Denver (away) 4-1, Kansas City (home) 0-5 -- the real KC/Denver game.
+    return [{
+        "sport": "nfl", "game_pk": 1,
+        "matchup": "Denver Broncos @ Kansas City Chiefs",
+        "commence_time": "2026-09-15T00:15:00Z", "market_spread": -2.5,
+        "model": {"win_prob": 0.436},
+        "form": {"home": {"record": "0-5"}, "away": {"record": "4-1"}},
+    }]
+
+
+def test_guard_flags_record_misattribution():
+    # rationale claims "Chiefs are 4-1" but KC is 0-5 (4-1 is Denver's record)
+    bundle = _bundle_with_form()
+    picks = [{"game_pk": 1, "ml_pick": "away", "matchup": bundle[0]["matchup"],
+              "rationale": "Chiefs are 4-1 and roll over winless Denver."}]
+    flags = syn.flag_pick_issues(picks, bundle)
+    assert any("Kansas City Chiefs" in f and "4-1" in f for f in flags)
+
+
+def test_guard_clean_when_records_correct():
+    bundle = _bundle_with_form()
+    picks = [{"game_pk": 1, "ml_pick": "away", "matchup": bundle[0]["matchup"],
+              "rationale": "Broncos are 4-1 (+4.8) vs a winless Chiefs (0-5); back Denver."}]
+    assert syn.flag_pick_issues(picks, bundle) == []
+
+
+def test_guard_flags_picked_team_unmentioned():
+    bundle = _bundle_with_form()
+    # pick resolves to Denver (away) but the rationale only talks about KC
+    picks = [{"game_pk": 1, "ml_pick": "away", "matchup": bundle[0]["matchup"],
+              "rationale": "The Chiefs defense looks strong here."}]
+    flags = syn.flag_pick_issues(picks, bundle)
+    assert any("Denver Broncos" in f and "never names" in f for f in flags)
