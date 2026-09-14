@@ -50,22 +50,36 @@ You are the decision desk for a sports-betting model: three analysts
 disciplined set of picks. You will receive a JSON "bundle" of upcoming games
 and must return picks as a JSON array.
 
+HOME / AWAY -- READ CAREFULLY. Each game gives `home_team`, `away_team`, and
+`model_pick_team` (the team the MODEL projects to win, derived from its
+win_prob/margin). ALWAYS refer to teams by NAME. Do NOT reason in "home"/"away"
+labels and do NOT try to re-derive which team is home -- it is given. `model`
+values are home-referenced: `model.win_prob` is the HOME team's win prob and a
+NEGATIVE `model.margin`/`market_spread` means the HOME team is favored.
+
+YOUR JOB: the model has already made a pick (`model_pick_team`). For each game
+you either CONFIRM that pick or OVERRIDE it to the other team, based on form +
+injuries. It is common and correct to OVERRIDE when the model looks wrong (e.g.
+the model favors a winless team over a strong one) -- when you do, your pick is
+simply the other team. Say plainly in the rationale whether you confirm or
+override, and which TEAM you are backing.
+
 METHODOLOGY (load-bearing -- follow exactly):
 - The ratings model does NOT beat the closing market (a backtest proved this).
-  So `model.margin`/`model.total` are SUPPORTING CONTEXT ONLY -- never the sole
-  reason for a lean. A large model-vs-line gap is mostly noise.
+  So `model.*` is SUPPORTING CONTEXT ONLY -- never the sole reason for a lean,
+  and the model is sometimes simply wrong (override it then).
 - Spread leans come from REAL edges: injuries (a key player Out/Doubtful at an
   impact position -- QB, top WR/RB, multiple starters in one unit) and
-  early-season form (record + avg margin the market may underweight). Lean only
-  where injuries or form give a genuine edge AND the model does not contradict
-  it. Every spread lean's rationale MUST cite a concrete fact (a named injury, a
-  specific record/avg-margin, or the model-vs-line numbers).
+  early-season form (record + avg margin the market may underweight). Every
+  spread lean's rationale MUST cite a concrete fact (a named injury, a specific
+  record/avg-margin, or the model-vs-line numbers).
 - Decline totals entirely: set "total_side" to null on every game.
-- `ml_pick` is REQUIRED on every game: the more likely winner -- "home" if
-  model.win_prob >= 0.5 else "away". It is independent of the spread lean (you
-  can like the favorite to win but the dog to cover).
-- `spread_side` is the cover lean ("home"/"away") ONLY where a real edge exists;
-  otherwise null (decline -- most games decline).
+- `ml_pick_team` is REQUIRED on every game: the exact team name (must equal this
+  game's `home_team` or `away_team`) you think wins. Independent of the spread
+  lean.
+- `spread_pick_team` is the team you back against the spread ONLY where a real
+  edge exists; otherwise null (decline -- most games decline). Must be an exact
+  team name.
 - Tier honestly with "conviction_tier": mostly "low"/"medium". Reserve "high"
   for a strong multi-signal edge (injuries + form + model all aligned on a
   mispriced side). Having ZERO high picks in a slate is normal and correct.
@@ -82,17 +96,56 @@ OUTPUT: return ONLY a JSON array (no prose, no markdown fences). One object per
 game in the bundle, each EXACTLY:
 {
   "game_pk": <int, copied from the bundle game>,
-  "ml_pick": "home" | "away",
-  "spread_side": "home" | "away" | null,
+  "ml_pick_team": "<exact team name -- this game's home_team or away_team>",
+  "spread_pick_team": "<exact team name>" | null,
   "conviction_tier": "high" | "medium" | "low",
   "confidence": <number in [0,1]>,
-  "rationale": "<prose citing at least one concrete fact>",
+  "rationale": "<prose citing at least one concrete fact; name the team>",
   "agent_notes": {"statistics": "...", "analyst": "...", "news": "..."}
 }
-Do NOT include spread_line, total_side, total_line, matchup, sport, or
-commence_time -- those are filled in downstream. Return every game_pk from the
-bundle exactly once.
+Do NOT emit "home"/"away", spread_line, total fields, matchup, sport, or
+commence_time -- teams resolve to sides downstream. Return every game_pk once.
 """
+
+
+def _split_matchup(matchup: str) -> tuple[str, str]:
+    """('away_team', 'home_team') from an 'Away @ Home' matchup string."""
+    parts = [p.strip() for p in str(matchup or "").split(" @ ")]
+    return (parts[0], parts[1]) if len(parts) == 2 else ("", "")
+
+
+def _resolve_side(team: str | None, away_team: str, home_team: str) -> str | None:
+    """Map a team NAME to 'home'/'away' for its game; None if it matches
+    neither. Tolerant of minor vari/substring differences so the desk can't
+    invert home/away."""
+    if not team:
+        return None
+    t = team.strip().lower()
+    h, a = home_team.lower(), away_team.lower()
+    if t == h:
+        return "home"
+    if t == a:
+        return "away"
+    # substring fallback (e.g. "Chiefs" vs "Kansas City Chiefs")
+    h_hit = t in h or h in t
+    a_hit = t in a or a in t
+    if h_hit and not a_hit:
+        return "home"
+    if a_hit and not h_hit:
+        return "away"
+    return None
+
+
+def _enrich(game: dict) -> dict:
+    """Add explicit home_team/away_team and the model's own pick (by team name)
+    so the LLM never has to infer home/away."""
+    away, home = _split_matchup(game.get("matchup", ""))
+    wp = (game.get("model") or {}).get("win_prob")
+    model_pick_team = None
+    if wp is not None:
+        model_pick_team = home if wp >= 0.5 else away
+    return {**game, "home_team": home, "away_team": away,
+            "model_pick_team": model_pick_team}
 
 
 def _model_decisions(bundle: list[dict], model: str, max_tokens: int) -> list[dict]:
@@ -104,7 +157,7 @@ def _model_decisions(bundle: list[dict], model: str, max_tokens: int) -> list[di
     user = (
         "Here is the games bundle. Synthesize the desk picks per the "
         "methodology and return only the JSON array.\n\n"
-        + json.dumps(bundle, default=str)
+        + json.dumps([_enrich(g) for g in bundle], default=str)
     )
     resp = client.messages.create(
         model=model,
@@ -134,10 +187,11 @@ def assemble_picks(bundle: list[dict], decisions: list[dict], sport: str) -> lis
     """Merge the model's per-game judgment with the bundle's authoritative
     identity + deterministic lines. PURE.
 
-    Only games the model returned a decision for become picks. Deterministic
-    fields (game_pk, commence_time, matchup, spread_line, total_side/line) come
-    from the bundle/policy, never the model -- so a bad game_pk or a wrong
-    spread-line sign is impossible.
+    Only games the model returned a decision for become picks. The desk picks a
+    TEAM (ml_pick_team / spread_pick_team); this resolves the team to home/away
+    against the game's own matchup, so the desk can never invert the side.
+    Deterministic fields (game_pk, commence_time, matchup, spread_line,
+    total_side/line) come from the bundle/policy, never the model.
     """
     by_pk = {g["game_pk"]: g for g in bundle}
     model_version = f"desk-{sport}-v1"
@@ -146,20 +200,21 @@ def assemble_picks(bundle: list[dict], decisions: list[dict], sport: str) -> lis
         g = by_pk.get(dec.get("game_pk"))
         if g is None:
             continue  # model hallucinated a game_pk -> drop it
+        away_team, home_team = _split_matchup(g.get("matchup", ""))
 
-        ml_pick = dec.get("ml_pick")
+        ml_pick = _resolve_side(dec.get("ml_pick_team"), away_team, home_team)
         if ml_pick not in _ML_SIDES:
-            # fall back to the methodology's deterministic rule
+            # unresolvable team name -> fall back to the model's favored side
             wp = (g.get("model") or {}).get("win_prob")
             ml_pick = "home" if (wp is not None and wp >= 0.5) else "away"
 
-        spread_side = dec.get("spread_side")
-        if spread_side not in _SPREAD_SIDES:
-            spread_side = None
+        spread_side = _resolve_side(dec.get("spread_pick_team"), away_team, home_team)
         mkt_s = g.get("market_spread")
         if spread_side is not None and mkt_s is not None:
-            # spread_line is the HOME line; flip sign for the away side.
-            spread_line = mkt_s if spread_side == "home" else -mkt_s
+            # spread_line is ALWAYS the HOME-team line (grade_desk_picks +
+            # the front-end both read it home-referenced); the side, not the
+            # sign, records which team the desk backed.
+            spread_line = mkt_s
         else:
             spread_side, spread_line = None, None  # no line -> can't grade -> decline
 
