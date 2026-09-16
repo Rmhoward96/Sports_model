@@ -1,6 +1,7 @@
 """Warehouse connections: DuckDB (local crunch) and optional Supabase Postgres (serving)."""
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 import duckdb

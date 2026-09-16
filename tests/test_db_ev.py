@@ -1,5 +1,6 @@
 """upsert_ev_picks / upsert_ev_results: column-order tuple building,
 no live DB -- mirrors tests/test_db_desk.py's FakeConn pattern."""
+import json
 import pytest
 
 from sportsmodel import db as db_module
@@ -245,6 +246,29 @@ def test_ev_results_multiple_records_all_converted_and_commit_called(monkeypatch
     assert n == 2
     assert len(sink["rows"]) == 2
     assert conn_holder["conn"].committed is True
+
+
+# ---------------------------------------------------------------------------
+# upsert_ev_parlays -- legs serialized to JSON (regression: json import)
+# ---------------------------------------------------------------------------
+
+def test_upsert_ev_parlays_serializes_legs_json(monkeypatch):
+    sink = {}
+    monkeypatch.setattr(db_module, "get_postgres", lambda: FakeConn(sink))
+    parlay = {
+        "sport": "nfl", "parlay_id": "1:moneyline:home|2:moneyline:away",
+        "legs": [{"game_pk": 1, "side": "home"}, {"game_pk": 2, "side": "away"}],
+        "book": "fanduel", "parlay_price": -140, "true_prob": 0.62, "ev": 0.05,
+        "n_legs": 2, "commence_time": "2026-09-18T00:15:00Z", "is_pick": True,
+    }
+    n = db.upsert_ev_parlays([parlay])
+    assert n == 1
+    # legs column must be a JSON STRING, not a Python list (regression: db.py
+    # previously used json.dumps without importing json).
+    legs_val = sink["rows"][0][db._EV_PARLAYS_COLS.index("legs")]
+    assert isinstance(legs_val, str)
+    assert json.loads(legs_val) == parlay["legs"]
+    assert "INSERT INTO ev_parlays" in sink["sql"]
 
 
 # ---------------------------------------------------------------------------
