@@ -302,6 +302,39 @@ def flag_pick_issues(picks: list[dict], bundle: list[dict]) -> list[str]:
     return flags
 
 
+_DEMOTE_MARKER = "[flagged: rationale consistency check — treat with caution] "
+
+
+def _flagged_game_pks(flags: list[str]) -> set[int]:
+    """Game ids referenced by flag strings ('game <pk>: ...')."""
+    pks: set[int] = set()
+    for f in flags:
+        m = re.match(r"game (\d+):", f)
+        if m:
+            pks.add(int(m.group(1)))
+    return pks
+
+
+def demote_flagged_picks(picks: list[dict], flags: list[str]) -> int:
+    """Neutralize picks whose rationale still failed the consistency guard after
+    the repair round: drop the spread lean and cap conviction to 'low' (so the
+    desk barely nudges the board), and prefix a caution marker to the rationale
+    so a shaky pick never surfaces as a confident one. ml_pick is kept (contract
+    requires it) but at minimum conviction. Returns how many were demoted."""
+    pks = _flagged_game_pks(flags)
+    n = 0
+    for p in picks:
+        if p.get("game_pk") in pks:
+            p["spread_side"] = None
+            p["spread_line"] = None
+            p["conviction_tier"] = "low"
+            rat = p.get("rationale") or ""
+            if not rat.startswith(_DEMOTE_MARKER):
+                p["rationale"] = _DEMOTE_MARKER + rat
+            n += 1
+    return n
+
+
 def main() -> None:
     ap = argparse.ArgumentParser(description="Synthesize desk picks via the Anthropic API.")
     ap.add_argument("--sport", choices=["cfb", "nfl"], required=True)
@@ -367,14 +400,18 @@ def main() -> None:
             print(f"  - {p}")
         raise SystemExit(1)
 
-    # Consistency flags don't block the write (the pick SIDE is already correct
-    # via team resolution; a residual flag means the prose is still off), but
-    # they're surfaced loudly so a bad rationale is never silent.
+    # Residual consistency flags don't block the write (the pick SIDE is correct
+    # via team resolution), but a shaky rationale shouldn't surface as a
+    # confident pick: drop its spread lean, cap it to low conviction, and mark
+    # the rationale. Surfaced loudly so it's never silent.
     if flags:
         print(f"WARNING: {len(flags)} rationale/pick consistency flag(s) remain "
-              f"after repair (written anyway -- review the rationale):")
+              f"after repair:")
         for f in flags:
             print(f"  - {f}")
+        demoted = demote_flagged_picks(picks, flags)
+        print(f"auto-demoted {demoted} flagged pick(s): spread lean dropped, "
+              f"conviction -> low, rationale marked.")
 
     args.out.write_text(json.dumps(picks, indent=2))
     leans = sum(1 for p in picks if p["spread_side"])

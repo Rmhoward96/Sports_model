@@ -122,3 +122,32 @@ def test_guard_flags_picked_team_unmentioned():
               "rationale": "The Chiefs defense looks strong here."}]
     flags = syn.flag_pick_issues(picks, bundle)
     assert any("Denver Broncos" in f and "never names" in f for f in flags)
+
+
+# --- demote_flagged_picks (escalation) -------------------------------------
+
+def test_demote_flagged_pick_drops_lean_caps_tier_marks_rationale():
+    picks = [
+        {"game_pk": 1, "ml_pick": "away", "spread_side": "away", "spread_line": -2.5,
+         "conviction_tier": "high", "rationale": "Chiefs are 4-1..."},
+        {"game_pk": 2, "ml_pick": "home", "spread_side": "home", "spread_line": -6.0,
+         "conviction_tier": "medium", "rationale": "clean pick"},
+    ]
+    flags = ["game 1: rationale ties Kansas City Chiefs to record 4-1 but its record is 0-5"]
+    n = syn.demote_flagged_picks(picks, flags)
+    assert n == 1
+    # game 1 demoted
+    assert picks[0]["spread_side"] is None and picks[0]["spread_line"] is None
+    assert picks[0]["conviction_tier"] == "low"
+    assert picks[0]["rationale"].startswith(syn._DEMOTE_MARKER)
+    assert picks[0]["ml_pick"] == "away"  # ml_pick kept (contract)
+    # game 2 untouched
+    assert picks[1]["spread_side"] == "home" and picks[1]["conviction_tier"] == "medium"
+    assert not picks[1]["rationale"].startswith(syn._DEMOTE_MARKER)
+
+
+def test_demote_is_idempotent_on_rationale_marker():
+    picks = [{"game_pk": 1, "ml_pick": "home", "spread_side": None, "spread_line": None,
+              "conviction_tier": "low", "rationale": syn._DEMOTE_MARKER + "already marked"}]
+    syn.demote_flagged_picks(picks, ["game 1: pick is X but the rationale never names it"])
+    assert picks[0]["rationale"].count(syn._DEMOTE_MARKER) == 1
