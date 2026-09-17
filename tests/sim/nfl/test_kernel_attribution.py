@@ -100,3 +100,42 @@ def test_all_yardage_values_are_ints():
     result = attribute_offense(players, n_pass=20, n_rush=20, n_off_tds=1, rng=rng)
     for field in ("pass_yds", "rush_yds", "rec_yds", "receptions", "td"):
         assert isinstance(result["a"][field], int)
+
+
+def test_multiple_qbs_attribute_pass_yds_to_a_qb_not_a_skill_player():
+    rng = np.random.default_rng(5)
+    # A high-target WR should NOT be mistaken for the passer just because
+    # it has more targets than either QB.
+    starter_qb = _player(player_id="qb1", name="Starter QB", pos="QB", target_share=0.0, catch_rate=0.0)
+    backup_qb = _player(player_id="qb2", name="Backup QB", pos="QB", target_share=0.0, catch_rate=0.0)
+    wr = _player(player_id="wr", name="WR1", pos="WR", target_share=1.0, catch_rate=0.8)
+
+    result = attribute_offense([starter_qb, backup_qb, wr], n_pass=300, n_rush=0, n_off_tds=0, rng=rng)
+
+    team_rec_yds = sum(r["rec_yds"] for r in result.values())
+    assert result["qb1"]["pass_yds"] == team_rec_yds or result["qb2"]["pass_yds"] == team_rec_yds
+    assert result["wr"]["pass_yds"] == 0
+
+
+def test_empty_players_list_returns_empty_dict():
+    rng = np.random.default_rng(6)
+    result = attribute_offense([], n_pass=10, n_rush=10, n_off_tds=1, rng=rng)
+    assert result == {}
+
+
+def test_all_zero_shares_fall_back_to_uniform_without_crashing():
+    rng = np.random.default_rng(7)
+    players = [
+        _player(player_id="a", target_share=0.0, carry_share=0.0, td_share=0.0),
+        _player(player_id="b", target_share=0.0, carry_share=0.0, td_share=0.0),
+    ]
+    n_pass, n_rush, n_off_tds = 100, 100, 4
+    result = attribute_offense(players, n_pass=n_pass, n_rush=n_rush, n_off_tds=n_off_tds, rng=rng)
+
+    total_receptions = sum(r["receptions"] for r in result.values())
+    total_td = sum(r["td"] for r in result.values())
+    assert total_receptions <= n_pass
+    assert total_td == n_off_tds
+    # Uniform fallback: neither player should be starved of carries/targets.
+    assert result["a"]["receptions"] > 0
+    assert result["b"]["receptions"] > 0

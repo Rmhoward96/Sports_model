@@ -144,7 +144,15 @@ def attribute_offense(
         stats[player.player_id]["td"] += int(n_td)
 
     qb_candidates = [p for p in players if p.pos == "QB"]
-    qb = qb_candidates[0] if len(qb_candidates) == 1 else max(players, key=lambda p: p.target_share)
+    if qb_candidates:
+        # One or more players at QB: pick the one with the most passing
+        # work among the QBs themselves (never fall through to the whole
+        # roster, or a high-target WR/RB would get tagged as the passer).
+        qb = max(qb_candidates, key=lambda p: p.target_share)
+    else:
+        # No listed QB: last resort, use the highest-target player on the
+        # whole roster as a stand-in passer.
+        qb = max(players, key=lambda p: p.target_share)
     team_rec_yds = sum(pdata["rec_yds"] for pdata in stats.values())
     stats[qb.player_id]["pass_yds"] = team_rec_yds
 
