@@ -119,3 +119,40 @@ def test_reproducible_with_fixed_seed():
     for pid in sims1.player_stats:
         for market in sims1.player_stats[pid]:
             assert np.array_equal(sims1.player_stats[pid][market], sims2.player_stats[pid][market])
+
+
+def test_all_td_offense_reconciles_player_tds_with_score():
+    # Every drive is a TD for both teams, so each team's score is exactly
+    # 7 * (number of TD drives), and attribute_offense conserves TD counts
+    # across players -- so 7 * sum(player tds) must equal the team's score,
+    # per sim, exactly (no averaging/tolerance needed).
+    all_td = _tr(td=1.0, fg=0.0, punt=0.0, turnover=0.0, downs=0.0, end=0.0)
+    spec = _spec(home=all_td, away=all_td)
+    n_sims = 200
+    sims = simulate_game(spec, n_sims, np.random.default_rng(10))
+
+    home_ids = [p.player_id for p in spec.home_players]
+    away_ids = [p.player_id for p in spec.away_players]
+
+    home_td_totals = sum(sims.player_stats[pid]["td"] for pid in home_ids)
+    away_td_totals = sum(sims.player_stats[pid]["td"] for pid in away_ids)
+
+    assert np.array_equal(sims.home_score, home_td_totals * 7)
+    assert np.array_equal(sims.away_score, away_td_totals * 7)
+    assert np.all(sims.home_score % 7 == 0)
+    assert np.all(sims.away_score % 7 == 0)
+
+
+def test_all_fg_offense_scores_are_multiples_of_three_with_no_player_tds():
+    # Every drive is a FG for both teams: scores are multiples of 3, and
+    # since no drive scores a TD, attribute_offense is called with
+    # n_off_tds=0 for both teams -- no player should ever be credited a TD.
+    all_fg = _tr(td=0.0, fg=1.0, punt=0.0, turnover=0.0, downs=0.0, end=0.0)
+    spec = _spec(home=all_fg, away=all_fg)
+    n_sims = 200
+    sims = simulate_game(spec, n_sims, np.random.default_rng(11))
+
+    assert np.all(sims.home_score % 3 == 0)
+    assert np.all(sims.away_score % 3 == 0)
+    for stats in sims.player_stats.values():
+        assert np.all(stats["td"] == 0)
