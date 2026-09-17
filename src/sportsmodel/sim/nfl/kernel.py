@@ -7,7 +7,7 @@ from __future__ import annotations
 
 import numpy as np
 
-from sportsmodel.sim.nfl.spec import PlayerInput, TeamRates
+from sportsmodel.sim.nfl.spec import NflGameSims, NflGameSpec, PlayerInput, TeamRates
 
 # Per-play yardage variance and floor. Yards on a single target/carry are
 # drawn from a Normal distribution centered on the player's rate stat and
@@ -15,6 +15,13 @@ from sportsmodel.sim.nfl.spec import PlayerInput, TeamRates
 _PASS_PLAY_YDS_SD = 6.0
 _RUSH_PLAY_YDS_SD = 4.0
 _MIN_PLAY_YDS = -5.0
+
+# Drive-count and play-count assumptions for converting a team's simulated
+# drives into an offensive play count to feed attribute_offense.
+_MIN_DRIVES_PER_GAME = 6
+_PLAYS_PER_DRIVE = 6.0
+
+_PLAYER_STAT_NAMES = ("pass_yds", "rush_yds", "rec_yds", "receptions", "td")
 
 
 def sample_drive(off: TeamRates, deff: TeamRates, rng) -> tuple[str, int]:
@@ -157,3 +164,81 @@ def attribute_offense(
     stats[qb.player_id]["pass_yds"] = team_rec_yds
 
     return stats
+
+
+def _simulate_team_drives(
+    off: TeamRates,
+    deff: TeamRates,
+    players: list[PlayerInput],
+    rng,
+) -> tuple[int, dict[str, dict[str, int]]]:
+    """Simulate one team's possessions for a single game and attribute stats.
+
+    Draws a Poisson drive count around `off.drives_per_game` (floored at
+    `_MIN_DRIVES_PER_GAME`), samples each drive via `sample_drive` to get the
+    team's points and TD count, converts the drive count into an offensive
+    play count (`_PLAYS_PER_DRIVE` plays/drive, split pass/run by
+    `off.pass_rate`), and attributes the game's plays and TDs to `players`
+    via a single `attribute_offense` call.
+
+    Returns:
+        Tuple of (points, box) where box is attribute_offense's per-player
+        stat dict for this team.
+    """
+    n_drives = max(_MIN_DRIVES_PER_GAME, int(rng.poisson(off.drives_per_game)))
+
+    points = 0
+    n_off_tds = 0
+    for _ in range(n_drives):
+        outcome, pts = sample_drive(off, deff, rng)
+        points += pts
+        if outcome == "td":
+            n_off_tds += 1
+
+    n_plays = round(n_drives * _PLAYS_PER_DRIVE)
+    n_pass = round(n_plays * off.pass_rate)
+    n_rush = n_plays - n_pass
+
+    box = attribute_offense(players, n_pass, n_rush, n_off_tds, rng)
+    return points, box
+
+
+def simulate_game(spec: NflGameSpec, n_sims: int, rng) -> NflGameSims:
+    """Simulate n_sims independent NFL games from a full game spec.
+
+    Per simulation, each team's drives are sampled (via `_simulate_team_drives`,
+    which wraps `sample_drive` and `attribute_offense`) independently, then
+    home/away scores and per-player stat arrays are accumulated across sims.
+    Both teams' players are stored in a single `player_stats` dict keyed by
+    player_id.
+
+    Args:
+        spec: Full game specification (both teams' rates and rosters).
+        n_sims: Number of independent games to simulate.
+        rng: numpy random Generator (e.g., np.random.default_rng()).
+
+    Returns:
+        NflGameSims with home_score/away_score (length n_sims int arrays)
+        and player_stats keyed by player_id.
+    """
+    home_score = np.zeros(n_sims, dtype=np.int64)
+    away_score = np.zeros(n_sims, dtype=np.int64)
+
+    all_players = [*spec.home_players, *spec.away_players]
+    player_stats: dict[str, dict[str, np.ndarray]] = {
+        p.player_id: {m: np.zeros(n_sims, dtype=np.int64) for m in _PLAYER_STAT_NAMES}
+        for p in all_players
+    }
+
+    for i in range(n_sims):
+        h_points, h_box = _simulate_team_drives(spec.home, spec.away, spec.home_players, rng)
+        a_points, a_box = _simulate_team_drives(spec.away, spec.home, spec.away_players, rng)
+        home_score[i] = h_points
+        away_score[i] = a_points
+
+        for box in (h_box, a_box):
+            for pid, box_stats in box.items():
+                for market in _PLAYER_STAT_NAMES:
+                    player_stats[pid][market][i] = box_stats[market]
+
+    return NflGameSims(home_score, away_score, player_stats)
