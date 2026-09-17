@@ -52,6 +52,45 @@ def test_team_rates_excludes_rows_at_or_after_cutoff():
     assert kc.drives_per_game == pytest.approx(3 / 2)  # 3 drives over 2 games (g1, g2)
 
 
+def test_drive_result_map_pins_real_nflverse_labels():
+    """Pin the exact fixed_drive_result -> bucket mapping against real nflverse
+    2024 labels, including the v1 simplification that opponent-scoring drives
+    (safety, opp touchdown) are treated as 0-point offensive turnovers."""
+    rows = [
+        dict(season=2024, week=1, posteam="KC", defteam="BUF", play_type="pass",
+             fixed_drive_result="Touchdown", drive=1, game_id="g1", yardline_100=10),
+        dict(season=2024, week=1, posteam="KC", defteam="BUF", play_type="run",
+             fixed_drive_result="Field Goal", drive=2, game_id="g1", yardline_100=15),
+        dict(season=2024, week=1, posteam="KC", defteam="BUF", play_type="run",
+             fixed_drive_result="Missed Field Goal", drive=3, game_id="g1", yardline_100=25),
+        dict(season=2024, week=1, posteam="KC", defteam="BUF", play_type="pass",
+             fixed_drive_result="Punt", drive=4, game_id="g1", yardline_100=60),
+        dict(season=2024, week=1, posteam="KC", defteam="BUF", play_type="pass",
+             fixed_drive_result="Turnover", drive=5, game_id="g1", yardline_100=50),
+        dict(season=2024, week=1, posteam="KC", defteam="BUF", play_type="run",
+             fixed_drive_result="Turnover on Downs", drive=6, game_id="g1", yardline_100=40),
+        dict(season=2024, week=1, posteam="KC", defteam="BUF", play_type="run",
+             fixed_drive_result="Safety", drive=7, game_id="g1", yardline_100=2),
+        dict(season=2024, week=1, posteam="KC", defteam="BUF", play_type="pass",
+             fixed_drive_result="Opp touchdown", drive=8, game_id="g1", yardline_100=95),
+        dict(season=2024, week=1, posteam="KC", defteam="BUF", play_type="pass",
+             fixed_drive_result="End of Half", drive=9, game_id="g1", yardline_100=70),
+    ]
+    pbp = pd.DataFrame(rows)
+    rates = team_rates_from_pbp(pbp, upto_season=2024, upto_week=2)
+    kc = rates["KC"]
+
+    # 9 drives total, one each: td, fg, downs (missed FG), punt, turnover,
+    # downs (turnover on downs), turnover (safety), turnover (opp td), end.
+    assert kc.drive_outcomes["td"] == pytest.approx(1 / 9)
+    assert kc.drive_outcomes["fg"] == pytest.approx(1 / 9)
+    assert kc.drive_outcomes["downs"] == pytest.approx(2 / 9)  # missed FG + turnover on downs
+    assert kc.drive_outcomes["punt"] == pytest.approx(1 / 9)
+    assert kc.drive_outcomes["turnover"] == pytest.approx(3 / 9)  # turnover + safety + opp td
+    assert kc.drive_outcomes["end"] == pytest.approx(1 / 9)
+    assert sum(kc.drive_outcomes.values()) == pytest.approx(1.0)
+
+
 def test_team_rates_drive_outcomes_sum_to_one():
     pbp = _pbp_rows()
     rates = team_rates_from_pbp(pbp, upto_season=2023, upto_week=3)

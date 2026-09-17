@@ -27,13 +27,25 @@ Expected columns
     defteam             : str  — defense team code for this play
     play_type           : str  — 'pass' / 'run' (other values ignored for pass_rate)
     fixed_drive_result  : str  — nflverse's per-drive outcome label, one of
-                                  {'Touchdown', 'Field Goal', 'Punt', 'Turnover',
-                                  'Turnover on Downs', 'End of Half', 'End of Game',
-                                  ...}; mapped case-insensitively to the sim's
-                                  6-key drive_outcomes vocabulary (see
-                                  `_DRIVE_RESULT_MAP` below). Anything unrecognized
-                                  falls into "end" (concern: verify the exact
-                                  label set against real nflverse data in Task 9/10).
+                                  {'Touchdown', 'Field Goal', 'Missed Field Goal',
+                                  'Punt', 'Turnover', 'Turnover on Downs', 'Safety',
+                                  'Opp touchdown', 'End of Half', ...}; mapped
+                                  case-insensitively to the sim's 6-key
+                                  drive_outcomes vocabulary (see
+                                  `_DRIVE_RESULT_MAP` below, verified against a
+                                  live 2024 nflverse pull). Anything unforeseen
+                                  falls into "end" as a safe fallback.
+
+                                  v1 simplification: "Safety" and "Opp touchdown"
+                                  (defensive/return TD) are opponent-scoring
+                                  drives from the offense's point of view. Both
+                                  are mapped to "turnover" — i.e. treated as a
+                                  0-point offensive turnover. This deliberately
+                                  does NOT credit the opponent's +2 (safety) or
+                                  +7 (opp touchdown) anywhere in TeamRates; that
+                                  scoring is out of scope for this rate-aggregation
+                                  layer and would need to be handled by whatever
+                                  consumes drive_outcomes if/when it matters.
     drive               : hashable — per-game drive id; used with game_id to
                                   count distinct drives.
     game_id             : hashable — per-game id; used for drives_per_game and
@@ -69,15 +81,24 @@ from sportsmodel.sim.nfl.spec import PlayerInput, TeamRates
 _DRIVE_KEYS: tuple[str, ...] = ("td", "fg", "punt", "turnover", "downs", "end")
 
 # Maps nflverse's `fixed_drive_result` values (lowercased) to the sim's
-# 6-key drive_outcomes vocabulary. Concern (verify in Task 9/10): confirm
-# this covers the full real label set -- unrecognized values fall into "end".
+# 6-key drive_outcomes vocabulary. Verified against a live 2024 nflverse pull.
+# All non-td/fg buckets are 0-point outcomes for the offense; this mapping
+# does not change scoring, only the drive-outcome distribution's accuracy.
+#
+# v1 simplification: "safety" and "opp touchdown" are opponent-scoring drives
+# (the defense/return unit scores against this offense). Both are bucketed as
+# "turnover" -- a 0-point offensive turnover -- and this module does NOT
+# credit the opponent's +2 (safety) or +7 (opp touchdown) points anywhere.
 _DRIVE_RESULT_MAP: dict[str, str] = {
     "touchdown": "td",
-    "field goal": "fg",
+    "field goal": "fg",  # made field goals only
+    "missed field goal": "downs",  # failed attempt: opponent takes over, 0 pts
     "punt": "punt",
     "turnover": "turnover",
     "turnover on downs": "downs",
     "downs": "downs",
+    "safety": "turnover",  # 0 offensive points; opponent's +2 not credited (v1)
+    "opp touchdown": "turnover",  # defensive/return TD; opponent's +7 not credited (v1)
     "end of half": "end",
     "end of game": "end",
     "end of 4th quarter": "end",
