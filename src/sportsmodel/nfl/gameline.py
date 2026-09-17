@@ -29,12 +29,19 @@ class GameLineConfig:
     total_max: int = 120
     w_margin: ShrinkParams = field(default_factory=ShrinkParams)
     w_total: ShrinkParams = field(default_factory=ShrinkParams)
+    # Systematic-bias corrections (points), subtracted from the model estimate
+    # BEFORE shrink. Sign: residual = pred - actual, so a positive bias means the
+    # model runs high and is subtracted. 0.0 = no correction (backward compatible;
+    # loaders default to 0.0 when the field is absent from gameline.json). Fit by
+    # scripts/backtest_{nfl,cfb}_gameline.py; see docs/superpowers/specs/2026-09-17.
+    bias_margin: float = 0.0
+    bias_total: float = 0.0
 
 
 def build_gameline(model_margin: float, model_total: float, market: dict,
                     week: int, cfg: GameLineConfig) -> dict:
-    margin = shrink(model_margin, market.get("spread_line"), week, cfg.w_margin)
-    total = shrink(model_total, market.get("total_line"), week, cfg.w_total)
+    margin = shrink(model_margin - cfg.bias_margin, market.get("spread_line"), week, cfg.w_margin)
+    total = shrink(model_total - cfg.bias_total, market.get("total_line"), week, cfg.w_total)
     margin_dist = normal_to_margin_pmf(margin, cfg.sigma_margin, cfg.offset)
     total_dist = {"kind": "pmf", "pmf": normal_to_pmf(total, cfg.sigma_total, cfg.total_max)}
     win_prob = prob_cover(margin_dist, 0.0)   # P(margin > 0)

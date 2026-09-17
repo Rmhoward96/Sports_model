@@ -92,7 +92,8 @@ def load_gameline() -> GameLineConfig:
     return GameLineConfig(sigma_margin=j["sigma_margin"], sigma_total=j["sigma_total"],
                           offset=j["offset"], total_max=j["total_max"],
                           w_margin=ShrinkParams(**j["w_margin"]),
-                          w_total=ShrinkParams(**j["w_total"]))
+                          w_total=ShrinkParams(**j["w_total"]),
+                          bias_margin=j.get("bias_margin", 0.0), bias_total=j.get("bias_total", 0.0))
 
 
 def load_priors_for_season(season: int, weights: PriorWeights) -> dict[str, float]:

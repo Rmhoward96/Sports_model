@@ -12,5 +12,7 @@
     "start": 0.95,
     "floor": 0.3,
     "decay": 0.1
-  }
+  },
+  "bias_margin": 0.0,
+  "bias_total": 0.0
 }

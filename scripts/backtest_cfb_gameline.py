@@ -58,6 +58,7 @@ from sportsmodel.nfl.ratings import BlendConfig, expected_margin
 from sportsmodel.nfl.points import compute_points_ratings, expected_total
 from sportsmodel.nfl.gameline import GameLineConfig, build_gameline
 from sportsmodel.nfl.shrink import ShrinkParams
+from sportsmodel.model.recalibration import fit_bias, bias_eval
 
 TRAIN_SEASONS = set(range(2015, 2023))   # 2015-2022 inclusive
 OOS_SEASONS = {2023, 2024}
@@ -375,6 +376,32 @@ def main() -> None:
     model_ou, n_ou_model = _ats_accuracy(valid_model_preds, "pred_total", "actual_total", "market_total")
     blend_ou, n_ou_blend = _ats_accuracy(valid_blend_preds, "pred_total", "actual_total", "market_total")
 
+    # --- systematic-bias correction (generation is model-only) --------------
+    # Fit shrunk/clamped bias on TRAIN model-only residuals; apply each only if
+    # it improves the held-out VALID model-only MAE (ship gate). Guard for rows
+    # without a graded result.
+    def _resid(preds, pk, ak):
+        return [p[pk] - p[ak] for p in preds if p.get(pk) is not None and p.get(ak) is not None]
+
+    def _eval_rows(preds):
+        return [p for p in preds
+                if all(p.get(k) is not None for k in
+                       ("pred_margin", "pred_total", "actual_margin", "actual_total"))]
+
+    train_model_preds = _apply_gl(raw_train, model_only_cfg)
+    bias_margin_c = fit_bias(_resid(train_model_preds, "pred_margin", "actual_margin"))
+    bias_total_c = fit_bias(_resid(train_model_preds, "pred_total", "actual_total"))
+    eval_rows = _eval_rows(valid_model_preds)
+    base_eval = bias_eval(eval_rows, 0.0, 0.0)
+    bias_margin = bias_margin_c if bias_eval(eval_rows, bias_margin_c, 0.0)["margin_mae"] < base_eval["margin_mae"] else 0.0
+    bias_total = bias_total_c if bias_eval(eval_rows, 0.0, bias_total_c)["total_mae"] < base_eval["total_mae"] else 0.0
+    final_bias_eval = bias_eval(eval_rows, bias_margin, bias_total)
+    print(f"bias candidates (train, shrunk/clamped): margin={bias_margin_c:+.2f} total={bias_total_c:+.2f}")
+    print(f"bias APPLIED (passed held-out MAE gate): margin={bias_margin:+.2f} total={bias_total:+.2f}")
+    print(f"VALID model-only bias effect: margin_mae {base_eval['margin_mae']:.3f}->{final_bias_eval['margin_mae']:.3f} "
+          f"| total_mae {base_eval['total_mae']:.3f}->{final_bias_eval['total_mae']:.3f} "
+          f"| ou_acc {base_eval['ou_acc']:.3f}->{final_bias_eval['ou_acc']:.3f} (0.5=unbiased)")
+
     out = {
         "sigma_margin": sigma_margin,
         "sigma_total": sigma_total,
@@ -382,6 +409,8 @@ def main() -> None:
         "total_max": final_gl_cfg.total_max,
         "w_margin": {"start": w_margin.start, "floor": w_margin.floor, "decay": w_margin.decay},
         "w_total": {"start": w_total.start, "floor": w_total.floor, "decay": w_total.decay},
+        "bias_margin": bias_margin,
+        "bias_total": bias_total,
     }
     pathlib.Path("assets/cfb/gameline.json").write_text(json.dumps(out, indent=2) + "\n")
 

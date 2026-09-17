@@ -25,4 +25,5 @@ def load_gameline() -> GameLineConfig:
     j = _load("gameline.json")
     return GameLineConfig(sigma_margin=j["sigma_margin"], sigma_total=j["sigma_total"],
                           offset=j["offset"], total_max=j["total_max"],
-                          w_margin=ShrinkParams(**j["w_margin"]), w_total=ShrinkParams(**j["w_total"]))
+                          w_margin=ShrinkParams(**j["w_margin"]), w_total=ShrinkParams(**j["w_total"]),
+                          bias_margin=j.get("bias_margin", 0.0), bias_total=j.get("bias_total", 0.0))
