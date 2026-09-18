@@ -20,11 +20,19 @@ class TeamRates:
         pass_rate: Fraction of plays that are passing plays.
         drives_per_game: Expected number of drives in a game.
         rz_td_rate: Touchdown rate when in the red zone.
+        pass_att_pg: Real pass attempts per game (excludes sacks).
+        rush_att_pg: Rush attempts per game.
+        sack_rate: Sacks / pass plays.
+        completion_pct: Completions / attempts.
     """
     drive_outcomes: dict[str, float]
     pass_rate: float
     drives_per_game: float
     rz_td_rate: float
+    pass_att_pg: float = 0.0
+    rush_att_pg: float = 0.0
+    sack_rate: float = 0.0
+    completion_pct: float = 0.0
 
 
 @dataclass(frozen=True)

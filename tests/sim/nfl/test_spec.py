@@ -93,3 +93,35 @@ def test_nfl_game_spec_fields():
     assert spec.home_players[0] is home_player
     assert len(spec.away_players) == 1
     assert spec.away_players[0] is away_player
+
+
+def test_team_rates_with_only_original_fields():
+    """Test that TeamRates can be constructed with original 4 fields and new fields default to 0.0."""
+    tr = TeamRates(
+        drive_outcomes={"td": .25, "fg": .15, "punt": .4, "turnover": .1, "downs": .05, "end": .05},
+        pass_rate=0.58,
+        drives_per_game=11.0,
+        rz_td_rate=0.6
+    )
+    assert tr.pass_att_pg == 0.0
+    assert tr.rush_att_pg == 0.0
+    assert tr.sack_rate == 0.0
+    assert tr.completion_pct == 0.0
+
+
+def test_team_rates_with_all_fields():
+    """Test that TeamRates with all 8 fields round-trips correctly."""
+    tr = TeamRates(
+        drive_outcomes={"td": .25, "fg": .15, "punt": .4, "turnover": .1, "downs": .05, "end": .05},
+        pass_rate=0.58,
+        drives_per_game=11.0,
+        rz_td_rate=0.6,
+        pass_att_pg=35.2,
+        rush_att_pg=22.8,
+        sack_rate=0.08,
+        completion_pct=0.67
+    )
+    assert tr.pass_att_pg == 35.2
+    assert tr.rush_att_pg == 22.8
+    assert tr.sack_rate == 0.08
+    assert tr.completion_pct == 0.67
