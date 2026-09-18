@@ -1,15 +1,62 @@
 """Per-week active-roster usage model for the NFL sim (NFL-only).
 
-This module bridges nflverse's two player-id namespaces (Pro Football
-Reference `pfr_id` and nflverse's own `gsis_id`) and fetches the raw
+`active_usage` is the module's main export: given a team's target-week depth
+chart, leakage-free weekly history, and a resolved injury list, it produces the
+active players' `PlayerInput` shares (renormalized over the ACTIVE set only, the
+dilution fix over season-average usage) plus the starting QB's gsis_id. It is
+pure — DataFrames in, values out, no IO.
+
+Supporting this, the module bridges nflverse's two player-id namespaces (Pro
+Football Reference `pfr_id` and nflverse's own `gsis_id`) via
+`build_pfr_to_gsis` (pure: DataFrame in, dict out) and fetches the raw
 depth-chart / snap-count / id-crosswalk frames the usage model consumes.
 
-`build_pfr_to_gsis` is pure: DataFrame in, dict out. `fetch_usage_sources`
-is the only IO in this module and is not unit-tested.
+`fetch_usage_sources` is the only IO in this module and is not unit-tested.
 """
 from __future__ import annotations
 
 import pandas as pd
+
+from sportsmodel.sim.nfl.spec import PlayerInput
+
+# Offensive skill positions that participate in the target/carry usage model.
+_SKILL_POSITIONS = frozenset({"QB", "RB", "WR", "TE"})
+
+# --- Cold-start priors --------------------------------------------------------
+# A cold-start player is one on the target-week depth chart with NO weekly usage
+# rows before the cutoff (rookie / returnee / just-signed). Instead of a
+# zero-everything row (which would give them a 0 share and could leave the
+# active-set renorm denominator empty), they get a small per-game pseudo-usage
+# by (position, is_starter) where is_starter == (depth_team == 1). These values
+# are intentionally well below a real starter's usage: they seed a plausible
+# nonzero-but-small share without dominating players who actually have tape.
+_COLD_TARGETS: dict[tuple[str, bool], float] = {
+    ("WR", True): 5.0, ("WR", False): 1.5,
+    ("TE", True): 3.5, ("TE", False): 1.0,
+    ("RB", True): 2.0, ("RB", False): 0.8,
+    ("QB", True): 0.0, ("QB", False): 0.0,
+}
+_COLD_CARRIES: dict[tuple[str, bool], float] = {
+    ("RB", True): 10.0, ("RB", False): 3.0,
+    ("WR", True): 0.3, ("WR", False): 0.1,
+    ("TE", True): 0.0, ("TE", False): 0.0,
+    ("QB", True): 1.5, ("QB", False): 0.5,
+}
+_COLD_TDS: dict[tuple[str, bool], float] = {
+    ("WR", True): 0.35, ("WR", False): 0.10,
+    ("TE", True): 0.25, ("TE", False): 0.07,
+    ("RB", True): 0.40, ("RB", False): 0.12,
+    ("QB", True): 0.05, ("QB", False): 0.02,
+}
+# Cold-start efficiency defaults (league-ish per-position constants), as
+# (ypt, ypc, ypr, catch_rate). Guarded ratios can't be derived without tape,
+# so these documented constants stand in.
+_COLD_EFF: dict[str, tuple[float, float, float, float]] = {
+    "WR": (8.1, 5.0, 13.0, 0.62),
+    "TE": (7.1, 0.0, 10.5, 0.68),
+    "RB": (5.6, 4.3, 7.5, 0.75),
+    "QB": (0.0, 4.0, 0.0, 0.0),
+}
 
 
 def _is_missing_id(value: object) -> bool:
@@ -36,6 +83,233 @@ def build_pfr_to_gsis(ids_df: pd.DataFrame) -> dict[str, str]:
             continue
         mapping[str(pfr_id).strip()] = str(gsis_id).strip()
     return mapping
+
+
+def _depth_team_int(value: object) -> int:
+    """Coerce a depth-chart slot ("1"/"2"/2/…) to int; unknown -> 99 (deep backup)."""
+    try:
+        return int(float(str(value).strip()))
+    except (ValueError, TypeError):
+        return 99
+
+
+def active_usage(
+    team: str,
+    upto_season: int,
+    upto_week: int,
+    depth_df: pd.DataFrame,
+    weekly_df: pd.DataFrame,
+    snaps_df: pd.DataFrame,
+    pfr2gsis: dict[str, str],
+    injuries_out_names: set[str],
+    n_recent: int = 5,
+) -> tuple[list[PlayerInput], str | None]:
+    """Per-week active-roster usage: the dilution fix over season averages.
+
+    Returns ``(active PlayerInputs, starting_qb_gsis_id)``. PURE — no IO.
+
+    What this does differently from ``rates.player_inputs_from_weekly`` (which
+    spreads shares over everyone who ever played, diluting active players by
+    departed/benched ones):
+
+    1. **Active set** is defined by the *target-week* depth chart
+       (``club_code==team, season==upto_season, week==upto_week``), restricted
+       to offensive skill positions (QB/RB/WR/TE), keyed by ``gsis_id`` and
+       de-duplicated to each player's most prominent (lowest ``depth_team``)
+       row. Players whose ``full_name`` or ``football_name`` (case-insensitive)
+       is in ``injuries_out_names`` are dropped. The target-week depth chart and
+       the injury list are pre-game info and ARE allowed to define who's active;
+       everything else is strictly leakage-free.
+
+    2. **Shares/efficiency** come from ``weekly_df`` rows STRICTLY before
+       ``(upto_season, upto_week)`` — ``season < upto_season OR (season ==
+       upto_season AND week < upto_week)`` — taking each active player's last
+       ``n_recent`` games (most recent by ``(season, week)``).
+
+       *Recency weighting scheme:* the ``k = min(n_recent, games_available)``
+       selected games, ordered oldest -> newest, receive linearly increasing
+       integer weights ``1, 2, …, k`` (most recent highest). Per-game usage
+       (targets/carries/tds) is the weighted mean ``sum(w_i * x_i) /
+       sum(w_i)``; efficiency ratios are weighted-sum-over-weighted-sum, e.g.
+       ``ypr = sum(w*rec_yds) / sum(w*receptions)`` (all /0 guarded to 0.0).
+
+       ``target_share`` / ``carry_share`` / ``td_share`` are renormalized
+       **over the active set only** (denominator = sum of the active players'
+       weighted per-game usage), NOT the full roster. This is the dilution fix.
+
+    3. **Cold start:** an active player with no recent rows gets a small
+       ``(position, depth_team)`` pseudo-usage prior (``_COLD_*`` tables) and a
+       positional efficiency default (``_COLD_EFF``), so they carry a nonzero
+       but small share and never break the renorm.
+
+    4. **Starting QB (Ruling C1):** QB1 = the active QB with the minimal
+       ``depth_team``; ties are broken by pass ``attempts`` (an unweighted sum
+       over the recent window, when that column is present), then by most recent
+       game, then by ``gsis_id`` for determinism. Its ``gsis_id`` is returned as the second
+       element. The returned list contains EXACTLY ONE ``pos=="QB"`` — QB1, with
+       ``player_id == its gsis_id`` — so the kernel can attribute team pass_yds
+       to it deterministically; all other QBs are dropped. If no active QB
+       exists, returns ``(players, None)`` with no QB PlayerInput.
+
+    5. **Snaps:** ``snaps_df`` (``pfr_player_id`` + ``offense_pct``, bridged to
+       gsis via ``pfr2gsis``) is accepted but NOT consumed in v1. Shares come
+       from weekly usage alone. TODO: an optional modest snap-share weighting of
+       rotation players is a future refinement; integrating it here added real
+       complexity for little v1 benefit, so correctness was preferred. Both
+       ``snaps_df`` and ``pfr2gsis`` are reserved for that.
+    """
+    del snaps_df, pfr2gsis  # reserved for future snap weighting (see docstring)
+
+    injuries = {
+        str(n).strip().lower()
+        for n in (injuries_out_names or set())
+    }
+
+    # --- 1. Active set from the target-week depth chart ---
+    dmask = (
+        (depth_df["club_code"] == team)
+        & (depth_df["season"] == upto_season)
+        & (depth_df["week"] == upto_week)
+    )
+    drows = depth_df[dmask]
+
+    # gsis_id -> {"pos", "name", "depth_team"}
+    active: dict[str, dict] = {}
+    for row in drows.itertuples(index=False):
+        pos = str(getattr(row, "position", "")).strip().upper()
+        if pos not in _SKILL_POSITIONS:
+            continue
+        gsis = getattr(row, "gsis_id", None)
+        if _is_missing_id(gsis):
+            continue
+        gsis = str(gsis).strip()
+
+        full_name = getattr(row, "full_name", None)
+        football_name = getattr(row, "football_name", None)
+        names_lower = {
+            str(n).strip().lower()
+            for n in (full_name, football_name)
+            if not _is_missing_id(n)
+        }
+        if names_lower & injuries:
+            continue
+
+        dt = _depth_team_int(getattr(row, "depth_team", None))
+        if not _is_missing_id(full_name):
+            display_name = str(full_name).strip()
+        elif not _is_missing_id(football_name):
+            display_name = str(football_name).strip()
+        else:
+            display_name = gsis
+
+        prior = active.get(gsis)
+        if prior is None or dt < prior["depth_team"]:
+            active[gsis] = {"pos": pos, "name": display_name, "depth_team": dt}
+
+    # --- 2. Recent (leakage-free) weekly rows, grouped by player_id (== gsis) ---
+    if len(weekly_df) > 0:
+        wmask = (weekly_df["season"] < upto_season) | (
+            (weekly_df["season"] == upto_season) & (weekly_df["week"] < upto_week)
+        )
+        wf = weekly_df[wmask]
+    else:
+        wf = weekly_df
+
+    recent_by_pid: dict[str, pd.DataFrame] = {}
+    if len(wf) > 0:
+        for pid, pdf in wf.groupby("player_id"):
+            recent_by_pid[str(pid)] = pdf
+
+    def _weighted(pdf: pd.DataFrame) -> dict:
+        """Recency-weighted per-game usage and efficiency for one player."""
+        g = pdf.sort_values(["season", "week"]).tail(n_recent)
+        weights = list(range(1, len(g) + 1))  # oldest -> newest: 1..k
+        sw = float(sum(weights))
+
+        def wsum(col: str) -> float:
+            return float(sum(w * v for w, v in zip(weights, g[col].tolist())))
+
+        w_targets = wsum("targets")
+        w_carries = wsum("carries")
+        w_rec = wsum("receptions")
+        w_rec_yds = wsum("receiving_yards")
+        w_rush_yds = wsum("rushing_yards")
+        w_tds = wsum("receiving_tds") + wsum("rushing_tds")
+
+        return {
+            "avg_targets": w_targets / sw if sw > 0 else 0.0,
+            "avg_carries": w_carries / sw if sw > 0 else 0.0,
+            "avg_tds": w_tds / sw if sw > 0 else 0.0,
+            "ypt": w_rec_yds / w_targets if w_targets > 0 else 0.0,
+            "ypc": w_rush_yds / w_carries if w_carries > 0 else 0.0,
+            "ypr": w_rec_yds / w_rec if w_rec > 0 else 0.0,
+            "catch_rate": w_rec / w_targets if w_targets > 0 else 0.0,
+        }
+
+    # --- 3. Starting QB (Ruling C1): pick QB1, drop other QBs ---
+    qb_ids = [g for g, info in active.items() if info["pos"] == "QB"]
+    qb1: str | None = None
+    if qb_ids:
+        def _qb_key(g: str) -> tuple:
+            dt = active[g]["depth_team"]
+            att = 0.0
+            recent = (-1, -1)
+            pdf = recent_by_pid.get(g)
+            if pdf is not None and len(pdf) > 0:
+                gg = pdf.sort_values(["season", "week"]).tail(n_recent)
+                if "attempts" in gg.columns:
+                    att = float(gg["attempts"].sum())
+                last = gg.iloc[-1]
+                recent = (int(last["season"]), int(last["week"]))
+            # min depth_team, then most attempts, then most recent, then gsis.
+            return (dt, -att, -recent[0], -recent[1], g)
+
+        qb1 = min(qb_ids, key=_qb_key)
+        for g in qb_ids:
+            if g != qb1:
+                del active[g]
+
+    # --- 4. Per-player metrics (recent tape or cold-start prior) ---
+    metrics: dict[str, dict] = {}
+    for gsis, info in active.items():
+        pos = info["pos"]
+        is_starter = info["depth_team"] == 1
+        pdf = recent_by_pid.get(gsis)
+        if pdf is not None and len(pdf) > 0:
+            metrics[gsis] = _weighted(pdf)
+        else:
+            ypt, ypc, ypr, catch_rate = _COLD_EFF.get(pos, (0.0, 0.0, 0.0, 0.0))
+            metrics[gsis] = {
+                "avg_targets": _COLD_TARGETS.get((pos, is_starter), 0.0),
+                "avg_carries": _COLD_CARRIES.get((pos, is_starter), 0.0),
+                "avg_tds": _COLD_TDS.get((pos, is_starter), 0.0),
+                "ypt": ypt, "ypc": ypc, "ypr": ypr, "catch_rate": catch_rate,
+            }
+
+    # --- 5. Renormalize shares OVER THE ACTIVE SET ONLY ---
+    tot_targets = sum(m["avg_targets"] for m in metrics.values())
+    tot_carries = sum(m["avg_carries"] for m in metrics.values())
+    tot_tds = sum(m["avg_tds"] for m in metrics.values())
+
+    players: list[PlayerInput] = []
+    for gsis, info in active.items():
+        m = metrics[gsis]
+        players.append(
+            PlayerInput(
+                player_id=gsis,
+                name=info["name"],
+                pos=info["pos"],
+                target_share=m["avg_targets"] / tot_targets if tot_targets > 0 else 0.0,
+                carry_share=m["avg_carries"] / tot_carries if tot_carries > 0 else 0.0,
+                ypt=m["ypt"],
+                ypc=m["ypc"],
+                ypr=m["ypr"],
+                catch_rate=m["catch_rate"],
+                td_share=m["avg_tds"] / tot_tds if tot_tds > 0 else 0.0,
+            )
+        )
+
+    return players, qb1
 
 
 def fetch_usage_sources(seasons: list[int]) -> dict:
