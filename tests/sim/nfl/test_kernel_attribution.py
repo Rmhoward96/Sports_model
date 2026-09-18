@@ -1,5 +1,6 @@
 import numpy as np
-from sportsmodel.sim.nfl.kernel import attribute_offense
+import pytest
+from sportsmodel.sim.nfl.kernel import _REC_YDS_SHAPE, _skewed_play_yards, attribute_offense
 from sportsmodel.sim.nfl.spec import PlayerInput
 
 
@@ -12,6 +13,7 @@ def _player(**o):
         "carry_share": 0.0,
         "ypt": 8.0,
         "ypc": 4.0,
+        "ypr": 8.0,
         "catch_rate": 1.0,
         "td_share": 0.0,
     }
@@ -20,26 +22,46 @@ def _player(**o):
 
 
 def test_target_shares_respected_over_many_draws():
+    # FIX 3 disperses each player's share by its own per-CALL Gamma(mean=1)
+    # draw, so a single huge-n_pass call is no longer a reliable share check
+    # (one call = one dispersion draw, which itself can land far from 1.0).
+    # Average across many independent team-games instead -- that's exactly
+    # the regime the long-run share is supposed to hold in, since the
+    # dispersion multiplier's mean is 1 and averages out across sims.
     rng = np.random.default_rng(0)
     high = _player(player_id="high", target_share=0.7, catch_rate=1.0)
     low = _player(player_id="low", target_share=0.3, catch_rate=1.0)
-    result = attribute_offense([high, low], n_pass=10000, n_rush=0, n_off_tds=0, rng=rng)
+
+    high_total = low_total = 0
+    for _ in range(300):
+        result = attribute_offense([high, low], n_pass=100, n_rush=0, n_off_tds=0, rng=rng)
+        high_total += result["high"]["receptions"]
+        low_total += result["low"]["receptions"]
 
     # catch_rate=1.0 => receptions == targets assigned, so this checks share allocation.
-    assert result["high"]["receptions"] > result["low"]["receptions"]
-    ratio = result["high"]["receptions"] / (result["high"]["receptions"] + result["low"]["receptions"])
+    assert high_total > low_total
+    ratio = high_total / (high_total + low_total)
     assert 0.6 < ratio < 0.8
 
 
 def test_carry_shares_respected_over_many_draws():
+    # Same reasoning as test_target_shares_respected_over_many_draws: average
+    # across many independent calls so the per-call usage-dispersion draw
+    # (FIX 3) averages out to the underlying carry_share.
     rng = np.random.default_rng(0)
     high = _player(player_id="high", carry_share=0.8, target_share=0.0)
     low = _player(player_id="low", carry_share=0.2, target_share=0.0)
-    result = attribute_offense([high, low], n_pass=0, n_rush=10000, n_off_tds=0, rng=rng)
 
-    # rush_yds is noisy but carry counts drive magnitude; use abs(rush_yds) as a rough proxy
-    # via checking that the high-carry player accumulated far more total rushing volume.
-    assert result["high"]["rush_yds"] > result["low"]["rush_yds"]
+    high_carries_total = low_carries_total = 0
+    for _ in range(300):
+        result = attribute_offense([high, low], n_pass=0, n_rush=100, n_off_tds=0, rng=rng)
+        # rush_yds is noisy per play but its sign/magnitude still tracks carry
+        # volume in aggregate; use it as a rough proxy the same way the
+        # original test did, just averaged over many independent calls.
+        high_carries_total += result["high"]["rush_yds"]
+        low_carries_total += result["low"]["rush_yds"]
+
+    assert high_carries_total > low_carries_total
 
 
 def test_receptions_never_exceed_targets_thrown():
@@ -139,3 +161,75 @@ def test_all_zero_shares_fall_back_to_uniform_without_crashing():
     # Uniform fallback: neither player should be starved of carries/targets.
     assert result["a"]["receptions"] > 0
     assert result["b"]["receptions"] > 0
+
+
+def test_rec_yds_tracks_ypr_not_ypt():
+    # FIX 1: a reception's yards are drawn around ypr, not ypt. Use a single
+    # player at catch_rate=1.0 so every target becomes a reception and the
+    # allocation is deterministic (one player => prob is always 1.0 even
+    # after usage dispersion), isolating the yardage-draw mean.
+    rng = np.random.default_rng(0)
+    player = _player(
+        player_id="a", target_share=1.0, catch_rate=1.0, ypt=5.0, ypr=15.0,
+    )
+    n_pass = 8000
+    result = attribute_offense([player], n_pass=n_pass, n_rush=0, n_off_tds=0, rng=rng)
+
+    assert result["a"]["receptions"] == n_pass
+    mean_yds_per_rec = result["a"]["rec_yds"] / result["a"]["receptions"]
+
+    # Should land near ypr (15.0), nowhere near the old ypt-based mean (5.0).
+    assert abs(mean_yds_per_rec - 15.0) < 1.5
+    assert abs(mean_yds_per_rec - 5.0) > 5.0
+
+
+def test_play_yardage_has_heavy_right_tail():
+    # FIX 2: per-play yardage is a right-skewed Gamma, not a thin Normal --
+    # real boom/bust receptions have a much fatter upper tail than a Normal
+    # with the same mean would produce. Draw the actual per-play generator
+    # directly (rather than reimplementing/duplicating it) and check shape
+    # properties that a Normal distribution centered on the same mean would
+    # not exhibit: p90 well above p50, and a max far beyond the mean.
+    rng = np.random.default_rng(1)
+    mean = 10.0
+    samples = np.array(
+        [_skewed_play_yards(mean, _REC_YDS_SHAPE, 0.0, rng) for _ in range(20000)]
+    )
+
+    p50 = np.percentile(samples, 50)
+    p90 = np.percentile(samples, 90)
+
+    assert samples.mean() == pytest.approx(mean, rel=0.1)
+    # A Normal(mean, sd) has p90/p50 close to 1 + O(sd/mean); for any
+    # reasonable per-play sd this stays well under 2. The Gamma tail blows
+    # well past that.
+    assert p90 / p50 > 2.5
+    # A single play breaking for several multiples of the mean should show
+    # up across 20000 draws -- a thin Normal would essentially never do this.
+    assert samples.max() > 8.0 * mean
+
+
+def test_usage_dispersion_widens_across_sim_target_variance():
+    # FIX 3: usage dispersion should make a player's per-sim target count
+    # noisier across independent team-games than a plain fixed-share
+    # multinomial would produce (variance = n*p*(1-p)) for the same n/p.
+    rng = np.random.default_rng(2)
+    high = _player(player_id="high", target_share=0.6, catch_rate=1.0)
+    low = _player(player_id="low", target_share=0.4, catch_rate=1.0)
+
+    n_pass = 100
+    n_sims = 400
+    receptions = np.array(
+        [
+            attribute_offense([high, low], n_pass=n_pass, n_rush=0, n_off_tds=0, rng=rng)[
+                "high"
+            ]["receptions"]
+            for _ in range(n_sims)
+        ]
+    )
+
+    empirical_var = receptions.var()
+    fixed_share_var = n_pass * 0.6 * (1 - 0.6)
+
+    # Dispersion should push variance well above the fixed-multinomial floor.
+    assert empirical_var > 2.0 * fixed_share_var

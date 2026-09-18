@@ -31,16 +31,16 @@ def _roster(prefix: str) -> list[PlayerInput]:
     return [
         PlayerInput(player_id=f"{prefix}_qb", name=f"{prefix} QB", pos="QB",
                     target_share=0.0, carry_share=0.05, ypt=0.0, ypc=2.0,
-                    catch_rate=0.0, td_share=0.05),
+                    ypr=0.0, catch_rate=0.0, td_share=0.05),
         PlayerInput(player_id=f"{prefix}_wr1", name=f"{prefix} WR1", pos="WR",
                     target_share=0.55, carry_share=0.0, ypt=8.5, ypc=0.0,
-                    catch_rate=0.65, td_share=0.4),
+                    ypr=13.1, catch_rate=0.65, td_share=0.4),
         PlayerInput(player_id=f"{prefix}_wr2", name=f"{prefix} WR2", pos="WR",
                     target_share=0.45, carry_share=0.0, ypt=7.0, ypc=0.0,
-                    catch_rate=0.6, td_share=0.2),
+                    ypr=11.7, catch_rate=0.6, td_share=0.2),
         PlayerInput(player_id=f"{prefix}_rb", name=f"{prefix} RB", pos="RB",
                     target_share=0.0, carry_share=0.95, ypt=0.0, ypc=4.2,
-                    catch_rate=0.0, td_share=0.35),
+                    ypr=0.0, catch_rate=0.0, td_share=0.35),
     ]
 
 
@@ -141,6 +141,19 @@ def test_all_td_offense_reconciles_player_tds_with_score():
     assert np.array_equal(sims.away_score, away_td_totals * 7)
     assert np.all(sims.home_score % 7 == 0)
     assert np.all(sims.away_score % 7 == 0)
+
+
+def test_shared_game_env_correlates_home_and_away_scoring():
+    # FIX 4: a single shared per-sim game_env multiplier scales both teams'
+    # drive counts together, so home and away scoring should be positively
+    # correlated within a sim (a "shootout" sim runs hot for both offenses;
+    # a "slog" runs cold for both) -- fully independent team simulations
+    # would produce ~0 correlation here.
+    rng = np.random.default_rng(20)
+    sims = simulate_game(_spec(), 800, rng)
+
+    corr = np.corrcoef(sims.home_score, sims.away_score)[0, 1]
+    assert corr > 0.1
 
 
 def test_all_fg_offense_scores_are_multiples_of_three_with_no_player_tds():

@@ -25,6 +25,7 @@ def test_player_input_fields_round_trip():
         carry_share=0.05,
         ypt=8.5,
         ypc=4.2,
+        ypr=12.0,
         catch_rate=0.72,
         td_share=0.15
     )
@@ -35,6 +36,7 @@ def test_player_input_fields_round_trip():
     assert p.carry_share == 0.05
     assert p.ypt == 8.5
     assert p.ypc == 4.2
+    assert p.ypr == 12.0
     assert p.catch_rate == 0.72
     assert p.td_share == 0.15
 
@@ -57,6 +59,7 @@ def test_nfl_game_spec_fields():
         carry_share=0.0,
         ypt=9.0,
         ypc=0.0,
+        ypr=12.0,
         catch_rate=0.75,
         td_share=0.2
     )
@@ -68,6 +71,7 @@ def test_nfl_game_spec_fields():
         carry_share=0.4,
         ypt=6.0,
         ypc=5.0,
+        ypr=10.0,
         catch_rate=0.6,
         td_share=0.25
     )

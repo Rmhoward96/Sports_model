@@ -23,6 +23,7 @@ def _wr(player_id, name, target_share, td_share, carry_share=0.0):
         carry_share=carry_share,
         ypt=8.0,
         ypc=0.0,
+        ypr=12.3,
         catch_rate=0.65,
         td_share=td_share,
     )
@@ -208,12 +209,12 @@ def test_out_injury_isolated_to_its_own_team_by_name():
 def test_carry_share_renormalizes_over_survivors_only():
     rb1 = PlayerInput(
         player_id="rb1", name="RB One", pos="RB",
-        target_share=0.1, carry_share=0.5, ypt=6.0, ypc=4.5,
+        target_share=0.1, carry_share=0.5, ypt=6.0, ypc=4.5, ypr=10.0,
         catch_rate=0.6, td_share=0.4,
     )
     rb2 = PlayerInput(
         player_id="rb2", name="RB Two", pos="RB",
-        target_share=0.1, carry_share=0.3, ypt=6.0, ypc=4.0,
+        target_share=0.1, carry_share=0.3, ypt=6.0, ypc=4.0, ypr=10.0,
         catch_rate=0.6, td_share=0.3,
     )
     wr1 = _wr("wr1", "WR One", target_share=0.8, td_share=0.3, carry_share=0.2)

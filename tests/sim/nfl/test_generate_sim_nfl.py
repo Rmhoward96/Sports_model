@@ -27,7 +27,7 @@ def _team_rates():
 def _player(pid, name, pos="WR"):
     return PlayerInput(
         player_id=pid, name=name, pos=pos,
-        target_share=0.5, carry_share=0.0, ypt=8.0, ypc=0.0,
+        target_share=0.5, carry_share=0.0, ypt=8.0, ypc=0.0, ypr=12.3,
         catch_rate=0.65, td_share=0.5,
     )
 

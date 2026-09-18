@@ -37,8 +37,13 @@ class PlayerInput:
         pos: Player position.
         target_share: Fraction of team targets allocated to this player.
         carry_share: Fraction of team carries allocated to this player.
-        ypt: Yards per target.
+        ypt: Yards per target (kept for reference/back-compat; the kernel
+            attributes reception yardage using `ypr`, not `ypt`).
         ypc: Yards per carry.
+        ypr: Yards per reception (receiving_yards / receptions). This is
+            what the kernel uses to draw a completed reception's yardage --
+            using ypt there would understate receiver output by roughly a
+            factor of catch_rate, since ypt = catch_rate * ypr.
         catch_rate: Fraction of targets caught.
         td_share: Fraction of team touchdowns allocated to this player.
     """
@@ -49,6 +54,7 @@ class PlayerInput:
     carry_share: float
     ypt: float
     ypc: float
+    ypr: float
     catch_rate: float
     td_share: float
 

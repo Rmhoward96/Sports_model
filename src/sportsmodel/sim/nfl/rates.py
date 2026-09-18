@@ -227,6 +227,7 @@ def player_inputs_from_weekly(
             carry_share = carries / team_carries if team_carries > 0 else 0.0
             ypt = rec_yards / targets if targets > 0 else 0.0
             ypc = rush_yards / carries if carries > 0 else 0.0
+            ypr = rec_yards / receptions if receptions > 0 else 0.0
             catch_rate = receptions / targets if targets > 0 else 0.0
             td_share = player_tds / team_tds if team_tds > 0 else 0.0
 
@@ -242,6 +243,7 @@ def player_inputs_from_weekly(
                     carry_share=carry_share,
                     ypt=ypt,
                     ypc=ypc,
+                    ypr=ypr,
                     catch_rate=catch_rate,
                     td_share=td_share,
                 )

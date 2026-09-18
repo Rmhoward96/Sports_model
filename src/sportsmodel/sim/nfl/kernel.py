@@ -9,12 +9,38 @@ import numpy as np
 
 from sportsmodel.sim.nfl.spec import NflGameSims, NflGameSpec, PlayerInput, TeamRates
 
-# Per-play yardage variance and floor. Yards on a single target/carry are
-# drawn from a Normal distribution centered on the player's rate stat and
-# floored so a single play can't produce an absurd negative outcome.
-_PASS_PLAY_YDS_SD = 6.0
-_RUSH_PLAY_YDS_SD = 4.0
+# Per-play yardage on a single reception/carry is drawn from a right-skewed
+# Gamma distribution (real boom/bust yardage is nothing like a thin Normal:
+# most plays gain modestly, a few break big). The Gamma's scale is set each
+# draw as mean/shape so the player's rate stat (ypr for receptions, ypc for
+# carries) is preserved regardless of shape; shape alone controls variance/
+# skew (lower shape => fatter right tail). These are tunable -- retune
+# against the walk-forward backtest.
+_REC_YDS_SHAPE = 1.0
+_RUSH_YDS_SHAPE = 1.5
+
+# Lower support bound for a single carry's yardage (rushing can lose yards,
+# e.g. a tackle for loss); a reception's yardage floors at 0 instead (you
+# can't lose yards on a completed catch). Implemented as a left-shift of the
+# Gamma draw (see `_skewed_play_yards`) so the mean is still exactly the
+# player's rate stat, with a defensive max() floor against any rounding.
 _MIN_PLAY_YDS = -5.0
+
+# Per-game usage dispersion: before the multinomial target/carry split, each
+# player's share is multiplied by its own Gamma(mean=1) draw (one draw per
+# player per team per sim) and the results renormalized. This makes a
+# player's game-to-game target/carry volume itself boom/bust, on top of the
+# multinomial sampling noise within a single game. Concentration k -- higher
+# k means the multiplier hugs 1.0 more tightly (CV = 1/sqrt(k)); tunable.
+_USAGE_DISPERSION_K = 4.0
+
+# Shared game-environment multiplier: one Gamma(mean=1) draw per sim, applied
+# to BOTH teams' expected drive count, so a "fast/high-scoring" or
+# "slow/defensive" simulated game moves both teams' volume together --
+# without this, home and away scoring are independent within a sim, which
+# understates real single-game total variance and the total/margin
+# dependence. Tunable.
+_GAME_ENV_K = 8.0
 
 # Drive-count and play-count assumptions for converting a team's simulated
 # drives into an offensive play count to feed attribute_offense.
@@ -85,6 +111,46 @@ def _normalized_probs(shares: list[float]) -> np.ndarray:
     return arr / total
 
 
+def _apply_usage_dispersion(probs: np.ndarray, rng) -> np.ndarray:
+    """Multiply each player's share by its own Gamma(mean=1) draw and renormalize.
+
+    Drawn once per call (i.e. once per team per sim by `attribute_offense`'s
+    caller), this is what makes a player's overall game usage boom/bust from
+    one simulated game to the next, on top of the within-game multinomial
+    sampling noise. A no-op when `probs` is empty; falls back to the
+    unmultiplied probs if every player happens to draw (or already has) a
+    zero share, so `_normalized_probs`'s uniform-fallback guarantee is
+    preserved.
+    """
+    if len(probs) == 0:
+        return probs
+    multipliers = rng.gamma(_USAGE_DISPERSION_K, 1.0 / _USAGE_DISPERSION_K, size=len(probs))
+    dispersed = probs * multipliers
+    total = dispersed.sum()
+    if total <= 0:
+        return probs
+    return dispersed / total
+
+
+def _skewed_play_yards(mean: float, shape: float, floor: float, rng) -> float:
+    """Draw a single play's yardage from a right-skewed Gamma with the given mean.
+
+    The Gamma is left-shifted by `floor` (its lower support bound) so the
+    result can be negative (for carries, `floor=_MIN_PLAY_YDS`) or is
+    guaranteed >= 0 (for receptions, `floor=0.0`), while still averaging out
+    to exactly `mean`: scale = (mean - floor) / shape, draw = floor +
+    Gamma(shape, scale). A final max() against `floor` is a defensive
+    no-op (the shifted Gamma's support already starts at `floor`) that
+    guards against a non-positive `mean - floor` (e.g. mean <= floor),
+    where the Gamma scale would otherwise be degenerate.
+    """
+    spread = mean - floor
+    if spread <= 0:
+        return floor
+    scale = spread / shape
+    return max(floor + rng.gamma(shape, scale), floor)
+
+
 def attribute_offense(
     players: list[PlayerInput],
     n_pass: int,
@@ -95,16 +161,22 @@ def attribute_offense(
     """Attribute a drive-based offensive box score to individual players.
 
     Allocates `n_pass` targets across `players` by `target_share` and
-    `n_rush` carries by `carry_share` (both via multinomial draws), then
-    simulates each individual target/carry: yards per target are drawn
-    around the player's `ypt`, gated by `catch_rate` to determine whether
-    the target becomes a reception (only receptions accrue rec_yds); yards
-    per carry are drawn around the player's `ypc`. Touchdowns (`n_off_tds`)
-    are allocated across players by `td_share` via a separate multinomial
-    draw. The team's passing yards are attributed to the QB (the player
-    whose `pos == "QB"`; if zero or multiple players have that position,
-    the player with the highest `target_share` is used instead) as the sum
-    of the whole team's receiving yards.
+    `n_rush` carries by `carry_share` (both via multinomial draws, after
+    dispersing each player's share by its own per-call Gamma(mean=1) draw --
+    see `_apply_usage_dispersion` -- to add game-to-game usage boom/bust),
+    then simulates each individual target/carry: a target becomes a
+    reception w.p. `catch_rate`, and each reception's yards are drawn from a
+    right-skewed Gamma centered on the player's `ypr` (yards per reception,
+    NOT `ypt` -- using ypt here would understate a receiver's output by
+    roughly a factor of catch_rate); yards per carry are drawn from a
+    right-skewed Gamma centered on the player's `ypc`. Touchdowns
+    (`n_off_tds`) are allocated across players by `td_share` via a separate
+    multinomial draw (shares not dispersed here -- FIX 3 targets game usage
+    volume, not TD credit). The team's passing yards are attributed to
+    the QB (the player whose `pos == "QB"`; if zero or
+    multiple players have that position, the player with the highest
+    `target_share` is used instead) as the sum of the whole team's receiving
+    yards.
 
     Args:
         players: Offensive players to attribute stats to.
@@ -125,8 +197,12 @@ def attribute_offense(
         for p in players
     }
 
-    target_probs = _normalized_probs([p.target_share for p in players])
-    carry_probs = _normalized_probs([p.carry_share for p in players])
+    target_probs = _apply_usage_dispersion(
+        _normalized_probs([p.target_share for p in players]), rng
+    )
+    carry_probs = _apply_usage_dispersion(
+        _normalized_probs([p.carry_share for p in players]), rng
+    )
     td_probs = _normalized_probs([p.td_share for p in players])
 
     target_counts = rng.multinomial(n_pass, target_probs)
@@ -137,14 +213,14 @@ def attribute_offense(
         pdata = stats[player.player_id]
         for _ in range(int(n_targets)):
             if rng.random() < player.catch_rate:
-                yds = max(rng.normal(player.ypt, _PASS_PLAY_YDS_SD), _MIN_PLAY_YDS)
+                yds = _skewed_play_yards(player.ypr, _REC_YDS_SHAPE, 0.0, rng)
                 pdata["rec_yds"] += int(round(yds))
                 pdata["receptions"] += 1
 
     for player, n_carries in zip(players, carry_counts):
         pdata = stats[player.player_id]
         for _ in range(int(n_carries)):
-            yds = max(rng.normal(player.ypc, _RUSH_PLAY_YDS_SD), _MIN_PLAY_YDS)
+            yds = _skewed_play_yards(player.ypc, _RUSH_YDS_SHAPE, _MIN_PLAY_YDS, rng)
             pdata["rush_yds"] += int(round(yds))
 
     for player, n_td in zip(players, td_counts):
@@ -171,21 +247,29 @@ def _simulate_team_drives(
     deff: TeamRates,
     players: list[PlayerInput],
     rng,
+    game_env: float = 1.0,
 ) -> tuple[int, dict[str, dict[str, int]]]:
     """Simulate one team's possessions for a single game and attribute stats.
 
-    Draws a Poisson drive count around `off.drives_per_game` (floored at
-    `_MIN_DRIVES_PER_GAME`), samples each drive via `sample_drive` to get the
-    team's points and TD count, converts the drive count into an offensive
-    play count (`_PLAYS_PER_DRIVE` plays/drive, split pass/run by
-    `off.pass_rate`), and attributes the game's plays and TDs to `players`
-    via a single `attribute_offense` call.
+    Draws a Poisson drive count around `off.drives_per_game * game_env`
+    (floored at `_MIN_DRIVES_PER_GAME`), samples each drive via
+    `sample_drive` to get the team's points and TD count, converts the drive
+    count into an offensive play count (`_PLAYS_PER_DRIVE` plays/drive, split
+    pass/run by `off.pass_rate`), and attributes the game's plays and TDs to
+    `players` via a single `attribute_offense` call.
+
+    `game_env` is the shared per-sim game-environment multiplier (see
+    `simulate_game`): passing the SAME value in for both teams in a sim is
+    what correlates their scoring (a "shootout" or "defensive slog" sim
+    lifts/depresses both teams' drive counts together), rather than treating
+    each team's game as independent. Defaults to 1.0 (no scaling) so this
+    function is usable standalone/in tests without opting into that.
 
     Returns:
         Tuple of (points, box) where box is attribute_offense's per-player
         stat dict for this team.
     """
-    n_drives = max(_MIN_DRIVES_PER_GAME, int(rng.poisson(off.drives_per_game)))
+    n_drives = max(_MIN_DRIVES_PER_GAME, int(rng.poisson(off.drives_per_game * game_env)))
 
     points = 0
     n_off_tds = 0
@@ -206,11 +290,17 @@ def _simulate_team_drives(
 def simulate_game(spec: NflGameSpec, n_sims: int, rng) -> NflGameSims:
     """Simulate n_sims independent NFL games from a full game spec.
 
-    Per simulation, each team's drives are sampled (via `_simulate_team_drives`,
-    which wraps `sample_drive` and `attribute_offense`) independently, then
-    home/away scores and per-player stat arrays are accumulated across sims.
-    Both teams' players are stored in a single `player_stats` dict keyed by
-    player_id.
+    Per simulation, a single shared `game_env` multiplier is drawn (Gamma,
+    mean 1, concentration `_GAME_ENV_K`) and applied to BOTH teams' expected
+    drive counts before `_simulate_team_drives` samples them -- this is what
+    correlates home and away scoring within a sim (a "shootout" sim runs hot
+    for both offenses; a "slog" sim runs cold for both), matching the real
+    within-game total-variance/margin-total dependence that two fully
+    independent team simulations would miss. Team strength differences (via
+    each team's own drive_outcomes/pass_rate/etc.) still drive the margin.
+    Home/away scores and per-player stat arrays are then accumulated across
+    sims, with both teams' players stored in a single `player_stats` dict
+    keyed by player_id.
 
     Args:
         spec: Full game specification (both teams' rates and rosters).
@@ -231,8 +321,13 @@ def simulate_game(spec: NflGameSpec, n_sims: int, rng) -> NflGameSims:
     }
 
     for i in range(n_sims):
-        h_points, h_box = _simulate_team_drives(spec.home, spec.away, spec.home_players, rng)
-        a_points, a_box = _simulate_team_drives(spec.away, spec.home, spec.away_players, rng)
+        game_env = rng.gamma(_GAME_ENV_K, 1.0 / _GAME_ENV_K)
+        h_points, h_box = _simulate_team_drives(
+            spec.home, spec.away, spec.home_players, rng, game_env=game_env
+        )
+        a_points, a_box = _simulate_team_drives(
+            spec.away, spec.home, spec.away_players, rng, game_env=game_env
+        )
         home_score[i] = h_points
         away_score[i] = a_points
 
