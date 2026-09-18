@@ -168,3 +168,71 @@ def test_all_players_dropped_leaves_shares_unchanged_uniform_guard():
     spec = build_spec("HOME", "AWAY", rates, players, injuries)
 
     assert spec.home_players == []
+
+
+def test_out_injury_isolated_to_its_own_team_by_name():
+    # Same name on both rosters; only HOME's copy is ruled Out.
+    home_players = [
+        _wr("h_smith", "Chris Smith", 0.6, 0.6),
+        _wr("h_other", "Home Other", 0.4, 0.4),
+    ]
+    away_players = [
+        _wr("a_smith", "Chris Smith", 0.7, 0.7),
+        _wr("a_other", "Away Other", 0.3, 0.3),
+    ]
+    rates = {"HOME": _team_rates(), "AWAY": _team_rates()}
+    players = {"HOME": home_players, "AWAY": away_players}
+    injuries = {"HOME": [{"player": "chris SMITH", "position": "WR", "status": "out", "note": ""}]}
+
+    spec = build_spec("HOME", "AWAY", rates, players, injuries)
+
+    home_names = {p.name for p in spec.home_players}
+    away_names = {p.name for p in spec.away_players}
+    assert "Chris Smith" not in home_names
+    assert home_names == {"Home Other"}
+    assert "Chris Smith" in away_names
+    assert away_names == {"Chris Smith", "Away Other"}
+
+    # And the reverse: AWAY-only OUT leaves HOME's same-named player untouched.
+    injuries_reverse = {"AWAY": [{"player": "CHRIS smith", "position": "WR", "status": "Out", "note": ""}]}
+    spec2 = build_spec("HOME", "AWAY", rates, players, injuries_reverse)
+
+    home_names2 = {p.name for p in spec2.home_players}
+    away_names2 = {p.name for p in spec2.away_players}
+    assert "Chris Smith" in home_names2
+    assert home_names2 == {"Chris Smith", "Home Other"}
+    assert "Chris Smith" not in away_names2
+    assert away_names2 == {"Away Other"}
+
+
+def test_carry_share_renormalizes_over_survivors_only():
+    rb1 = PlayerInput(
+        player_id="rb1", name="RB One", pos="RB",
+        target_share=0.1, carry_share=0.5, ypt=6.0, ypc=4.5,
+        catch_rate=0.6, td_share=0.4,
+    )
+    rb2 = PlayerInput(
+        player_id="rb2", name="RB Two", pos="RB",
+        target_share=0.1, carry_share=0.3, ypt=6.0, ypc=4.0,
+        catch_rate=0.6, td_share=0.3,
+    )
+    wr1 = _wr("wr1", "WR One", target_share=0.8, td_share=0.3, carry_share=0.2)
+    home_players = [rb1, rb2, wr1]
+    away_players = [_wr("awr1", "Away One", 1.0, 1.0)]
+    rates = {"HOME": _team_rates(), "AWAY": _team_rates()}
+    players = {"HOME": home_players, "AWAY": away_players}
+    injuries = {"HOME": [{"player": "RB Two", "position": "RB", "status": "Out", "note": ""}]}
+
+    spec = build_spec("HOME", "AWAY", rates, players, injuries)
+
+    by_name = {p.name: p for p in spec.home_players}
+    assert set(by_name) == {"RB One", "WR One"}
+
+    carry_sum = sum(p.carry_share for p in spec.home_players)
+    assert carry_sum == pytest.approx(1.0)
+
+    # Survivors' pre-drop carry_share total is 0.5 + 0.2 = 0.7, not 1.0 or
+    # the full pre-drop total of 1.0 (0.5+0.3+0.2) -- renormalization must
+    # use only the surviving players' sum as the denominator.
+    assert by_name["RB One"].carry_share == pytest.approx(0.5 / 0.7)
+    assert by_name["WR One"].carry_share == pytest.approx(0.2 / 0.7)
