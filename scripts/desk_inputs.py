@@ -303,6 +303,24 @@ def _nfl_injuries_by_name(adapter, api_key, crosswalk, now) -> dict[str, list[di
     }
 
 
+def _fetch_nfl_sim(conn) -> dict[int, dict]:
+    """{game_pk -> {"home_win_prob","margin","total","disagreement"}} from
+    `nfl_sim_current`. NFL-only signal (the sim engine has no CFB analog).
+    Caller wraps this in try/except -- a missing table (migration not yet
+    run) or any other DB hiccup should degrade to no sim data rather than
+    abort the bundle, mirroring the injury-fetch non-fatal pattern above."""
+    with conn.cursor() as cur:
+        cur.execute("""
+            SELECT game_pk, sim_home_win_prob, sim_margin, sim_total, disagreement
+            FROM nfl_sim_current
+        """)
+        cols = ["game_pk", "home_win_prob", "margin", "total", "disagreement"]
+        return {
+            row[0]: dict(zip(cols[1:], row[1:]))
+            for row in cur.fetchall()
+        }
+
+
 def _sport_config(sport: str) -> dict:
     """Per-sport paths/adapter for main(). Everything else in this module is
     sport-generic. Raises SystemExit on an unsupported sport."""
@@ -426,6 +444,21 @@ def main() -> None:
     weather: dict[int, dict] = {}
 
     bundle = build_bundle(games, model_rows, form_rows, injuries, weather, now)
+
+    # -- sim disagreement signal, NFL only, from nfl_sim_current --
+    # LEFT-join by game_pk: a game with no sim row yet (or the table itself
+    # missing -- migration not applied) gets sim=None rather than aborting
+    # the bundle, same as the injury fetch above. CFB games get no "sim" key
+    # at all (the sim engine is NFL-only).
+    if args.sport == "nfl":
+        sim_by_pk: dict[int, dict] = {}
+        try:
+            with get_postgres() as conn:
+                sim_by_pk = _fetch_nfl_sim(conn)
+        except Exception:
+            log.warning("sim fetch failed; continuing with no sim data", exc_info=True)
+        for game in bundle:
+            game["sim"] = sim_by_pk.get(game["game_pk"])
 
     out_path.parent.mkdir(parents=True, exist_ok=True)
     out_path.write_text(json.dumps(bundle, indent=2, default=str))

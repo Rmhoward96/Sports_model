@@ -151,3 +151,83 @@ def test_demote_is_idempotent_on_rationale_marker():
               "conviction_tier": "low", "rationale": syn._DEMOTE_MARKER + "already marked"}]
     syn.demote_flagged_picks(picks, ["game 1: pick is X but the rationale never names it"])
     assert picks[0]["rationale"].count(syn._DEMOTE_MARKER) == 1
+
+
+# --- apply_disagreement_cap (sim vs. model disagreement) -------------------
+
+def _pick(gpk=1, tier="high", rationale="strong edge"):
+    return {"game_pk": gpk, "ml_pick": "home", "spread_side": "home",
+            "spread_line": -3.0, "conviction_tier": tier, "rationale": rationale}
+
+
+def _bundle_with_sim(gpk=1, disagreement=0.25):
+    return [{"game_pk": gpk, "matchup": "Denver Broncos @ Kansas City Chiefs",
+              "sim": {"home_win_prob": 0.6, "margin": -3.0, "total": 44.0,
+                       "disagreement": disagreement}}]
+
+
+def test_high_conviction_above_threshold_downgraded_and_noted():
+    picks = [_pick(tier="high")]
+    bundle = _bundle_with_sim(disagreement=0.25)
+    n = syn.apply_disagreement_cap(picks, bundle)
+    assert n == 1
+    assert picks[0]["conviction_tier"] == "medium"
+    assert picks[0]["rationale"].startswith("[sim disagreement 0.25")
+    assert picks[0]["rationale"].endswith("strong edge")
+
+
+def test_high_conviction_at_or_below_threshold_unchanged():
+    picks = [_pick(tier="high")]
+    bundle = _bundle_with_sim(disagreement=0.15)  # exactly at threshold -> not capped
+    n = syn.apply_disagreement_cap(picks, bundle)
+    assert n == 0
+    assert picks[0]["conviction_tier"] == "high"
+    assert picks[0]["rationale"] == "strong edge"
+
+    picks2 = [_pick(tier="high")]
+    bundle2 = _bundle_with_sim(disagreement=0.05)
+    assert syn.apply_disagreement_cap(picks2, bundle2) == 0
+    assert picks2[0]["conviction_tier"] == "high"
+
+
+def test_medium_and_low_unchanged_regardless_of_disagreement():
+    picks = [_pick(gpk=1, tier="medium"), _pick(gpk=2, tier="low")]
+    bundle = [_bundle_with_sim(gpk=1, disagreement=0.9)[0],
+              _bundle_with_sim(gpk=2, disagreement=0.9)[0]]
+    n = syn.apply_disagreement_cap(picks, bundle)
+    assert n == 0
+    assert picks[0]["conviction_tier"] == "medium"
+    assert picks[1]["conviction_tier"] == "low"
+
+
+def test_sim_absent_or_none_is_a_noop():
+    # sim key entirely absent (e.g. a CFB bundle)
+    picks = [_pick(gpk=1, tier="high")]
+    bundle = [{"game_pk": 1, "matchup": "Denver Broncos @ Kansas City Chiefs"}]
+    assert syn.apply_disagreement_cap(picks, bundle) == 0
+    assert picks[0]["conviction_tier"] == "high"
+
+    # sim explicitly None (NFL game the sim hasn't covered yet)
+    picks2 = [_pick(gpk=1, tier="high")]
+    bundle2 = [{"game_pk": 1, "matchup": "Denver Broncos @ Kansas City Chiefs", "sim": None}]
+    assert syn.apply_disagreement_cap(picks2, bundle2) == 0
+    assert picks2[0]["conviction_tier"] == "high"
+
+
+def test_disagreement_cap_returns_correct_count_across_multiple_picks():
+    picks = [_pick(gpk=1, tier="high"), _pick(gpk=2, tier="high"), _pick(gpk=3, tier="medium")]
+    bundle = [_bundle_with_sim(gpk=1, disagreement=0.3)[0],
+              _bundle_with_sim(gpk=2, disagreement=0.05)[0],
+              _bundle_with_sim(gpk=3, disagreement=0.9)[0]]
+    n = syn.apply_disagreement_cap(picks, bundle)
+    assert n == 1
+    assert picks[0]["conviction_tier"] == "medium"
+    assert picks[1]["conviction_tier"] == "high"
+    assert picks[2]["conviction_tier"] == "medium"  # unrelated to cap; already medium
+
+
+def test_disagreement_cap_uses_custom_threshold():
+    picks = [_pick(tier="high")]
+    bundle = _bundle_with_sim(disagreement=0.2)
+    assert syn.apply_disagreement_cap(picks, bundle, threshold=0.25) == 0
+    assert syn.apply_disagreement_cap(picks, bundle, threshold=0.1) == 1

@@ -335,6 +335,39 @@ def demote_flagged_picks(picks: list[dict], flags: list[str]) -> int:
     return n
 
 
+_DISAGREEMENT_THRESHOLD = 0.15
+
+
+def apply_disagreement_cap(
+    picks: list[dict], bundle: list[dict], threshold: float = _DISAGREEMENT_THRESHOLD,
+) -> int:
+    """Cap conviction when the sim engine and the analytic model sharply
+    disagree. PURE. For each pick whose bundle game carries a `sim` block
+    with `disagreement` > `threshold` AND whose `conviction_tier == "high"`,
+    downgrade the tier to "medium" and prepend a short note to the
+    rationale. Picks that are already medium/low, or whose game has no sim
+    block (absent key or explicit None -- e.g. a CFB bundle, or an NFL game
+    the sim hasn't covered yet), are left untouched. Returns how many picks
+    were capped."""
+    by_pk = {g["game_pk"]: g for g in bundle}
+    n = 0
+    for p in picks:
+        if p.get("conviction_tier") != "high":
+            continue
+        g = by_pk.get(p.get("game_pk"))
+        sim = (g or {}).get("sim")
+        if not sim:
+            continue
+        disagreement = sim.get("disagreement")
+        if disagreement is None or disagreement <= threshold:
+            continue
+        p["conviction_tier"] = "medium"
+        note = f"[sim disagreement {disagreement:.2f} — conviction capped] "
+        p["rationale"] = note + (p.get("rationale") or "")
+        n += 1
+    return n
+
+
 def main() -> None:
     ap = argparse.ArgumentParser(description="Synthesize desk picks via the Anthropic API.")
     ap.add_argument("--sport", choices=["cfb", "nfl"], required=True)
@@ -412,6 +445,11 @@ def main() -> None:
         demoted = demote_flagged_picks(picks, flags)
         print(f"auto-demoted {demoted} flagged pick(s): spread lean dropped, "
               f"conviction -> low, rationale marked.")
+
+    capped = apply_disagreement_cap(picks, bundle)
+    if capped:
+        print(f"capped {capped} high-conviction pick(s): sim/model disagreement "
+              f"> {_DISAGREEMENT_THRESHOLD} -> conviction -> medium.")
 
     args.out.write_text(json.dumps(picks, indent=2))
     leans = sum(1 for p in picks if p["spread_side"])
