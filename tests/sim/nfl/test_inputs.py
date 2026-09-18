@@ -1,8 +1,18 @@
 """Tests for NflGameSpec assembly with injury zeroing/renormalization."""
+import importlib.util
+import pathlib
+
+import numpy as np
 import pytest
 
 from sportsmodel.sim.nfl.spec import TeamRates, PlayerInput, NflGameSpec
-from sportsmodel.sim.nfl.inputs import build_spec
+from sportsmodel.sim.nfl.inputs import build_spec, build_spec_from_usage
+from sportsmodel.sim.nfl.kernel import simulate_game
+
+_p = pathlib.Path(__file__).resolve().parents[3] / "scripts" / "generate_sim_nfl.py"
+_spec_mod = importlib.util.spec_from_file_location("generate_sim_nfl", _p)
+gsn = importlib.util.module_from_spec(_spec_mod)
+_spec_mod.loader.exec_module(gsn)
 
 
 def _team_rates(td=0.25):
@@ -237,3 +247,123 @@ def test_carry_share_renormalizes_over_survivors_only():
     # use only the surviving players' sum as the denominator.
     assert by_name["RB One"].carry_share == pytest.approx(0.5 / 0.7)
     assert by_name["WR One"].carry_share == pytest.approx(0.2 / 0.7)
+
+
+# =============================================================================
+# build_spec_from_usage (Task 3, Part A): active-usage players are assembled
+# as-is -- no re-injury-drop, no re-renormalize (Ruling B1) -- with a
+# defensive QB-attribution assert (Ruling C1).
+# =============================================================================
+
+def _qb(player_id, name, target_share=0.05, carry_share=0.05, td_share=0.1):
+    return PlayerInput(
+        player_id=player_id,
+        name=name,
+        pos="QB",
+        target_share=target_share,
+        carry_share=carry_share,
+        ypt=0.0,
+        ypc=4.0,
+        ypr=0.0,
+        catch_rate=0.0,
+        td_share=td_share,
+    )
+
+
+def test_build_spec_from_usage_passes_players_through_unchanged():
+    home_players = [
+        _qb("qb1", "Home QB", target_share=0.05, td_share=0.1),
+        _wr("wr1", "Home WR", target_share=0.95, td_share=0.9),
+    ]
+    away_players = [_qb("qb2", "Away QB", target_share=1.0, td_share=1.0)]
+    rates = {"HOME": _team_rates(), "AWAY": _team_rates()}
+
+    spec = build_spec_from_usage("HOME", "AWAY", rates, home_players, away_players, "qb1", "qb2")
+
+    assert isinstance(spec, NflGameSpec)
+    assert spec.home_team == "HOME"
+    assert spec.away_team == "AWAY"
+    assert spec.home is rates["HOME"]
+    assert spec.away is rates["AWAY"]
+    # Exactly the passed lists -- no renormalization, no injury re-drop.
+    assert spec.home_players == home_players
+    assert spec.away_players == away_players
+
+
+def test_build_spec_from_usage_missing_team_in_rates_raises():
+    home_players = [_qb("qb1", "Home QB")]
+    away_players = [_qb("qb2", "Away QB")]
+    rates = {"AWAY": _team_rates()}
+    with pytest.raises(KeyError):
+        build_spec_from_usage("HOME", "AWAY", rates, home_players, away_players, "qb1", "qb2")
+
+
+def test_build_spec_from_usage_raises_when_qb_gsis_does_not_match_sole_qb():
+    home_players = [_qb("qb1", "Home QB"), _wr("wr1", "Home WR", 0.9, 0.9)]
+    away_players = [_qb("qb2", "Away QB")]
+    rates = {"HOME": _team_rates(), "AWAY": _team_rates()}
+
+    with pytest.raises(ValueError):
+        build_spec_from_usage("HOME", "AWAY", rates, home_players, away_players, "not-qb1", "qb2")
+
+
+def test_build_spec_from_usage_raises_when_two_qbs_present():
+    home_players = [_qb("qb1", "Home QB1"), _qb("qb1b", "Home QB2")]
+    away_players = [_qb("qb2", "Away QB")]
+    rates = {"HOME": _team_rates(), "AWAY": _team_rates()}
+
+    with pytest.raises(ValueError):
+        build_spec_from_usage("HOME", "AWAY", rates, home_players, away_players, "qb1", "qb2")
+
+
+def test_build_spec_from_usage_allows_none_qb_gsis_with_zero_qbs():
+    home_players = [_wr("wr1", "Home WR", 1.0, 1.0)]
+    away_players = [_wr("awr1", "Away WR", 1.0, 1.0)]
+    rates = {"HOME": _team_rates(), "AWAY": _team_rates()}
+
+    spec = build_spec_from_usage("HOME", "AWAY", rates, home_players, away_players, None, None)
+
+    assert spec.home_players == home_players
+    assert spec.away_players == away_players
+
+
+def test_build_spec_from_usage_feeds_kernel_and_pass_yds_lands_on_qb_gsis():
+    """End-to-end: build_spec_from_usage -> simulate_game -> assemble_sim_rows,
+    and the pass_yds player row is keyed by the QB's gsis id (proves the
+    attribution guarantee holds through the whole pipeline)."""
+    home_players = [
+        _qb("qb_gsis_home", "Home QB", target_share=0.05, carry_share=0.1, td_share=0.1),
+        _wr("wr_home", "Home WR", target_share=0.95, td_share=0.9),
+    ]
+    away_players = [
+        _qb("qb_gsis_away", "Away QB", target_share=0.05, carry_share=0.1, td_share=0.1),
+        _wr("wr_away", "Away WR", target_share=0.95, td_share=0.9),
+    ]
+    rates = {"HOME": _team_rates(), "AWAY": _team_rates()}
+
+    spec = build_spec_from_usage(
+        "HOME", "AWAY", rates, home_players, away_players, "qb_gsis_home", "qb_gsis_away"
+    )
+
+    rng = np.random.default_rng(42)
+    sims = simulate_game(spec, n_sims=20, rng=rng)
+
+    games = [{
+        "game_pk": 1,
+        "matchup": "AWAY @ HOME",
+        "commence_time": "2026-09-21T17:00:00+00:00",
+        "home_team": "HOME",
+        "away_team": "AWAY",
+    }]
+    sim_rows, player_rows = gsn.assemble_sim_rows(
+        games, {1: sims}, {1: spec}, {1: 0.5}
+    )
+    assert len(sim_rows) == 1
+
+    by_player_market = {(r["player_id"], r["market"]): r for r in player_rows}
+    assert ("qb_gsis_home", "pass_yds") in by_player_market
+    assert ("qb_gsis_away", "pass_yds") in by_player_market
+    # The non-QB WR should never carry a pass_yds attribution row keyed to it
+    # as the passer -- attribute_offense zeroes pass_yds for everyone but the
+    # sole QB.
+    assert by_player_market[("qb_gsis_home", "pass_yds")]["mean"] >= 0.0

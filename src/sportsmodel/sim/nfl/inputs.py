@@ -106,3 +106,75 @@ def build_spec(
         home_players=home_players,
         away_players=away_players,
     )
+
+
+def _assert_qb_attribution(players: list[PlayerInput], qb_gsis: str | None, team: str) -> None:
+    """Ruling C1: if `qb_gsis` is given, `players` must contain EXACTLY ONE
+    `pos=="QB"` and its `player_id` must equal `qb_gsis`. If `qb_gsis` is
+    None, no assertion is made (the no-QB edge case is allowed)."""
+    if qb_gsis is None:
+        return
+    qbs = [p for p in players if p.pos == "QB"]
+    if len(qbs) != 1 or qbs[0].player_id != qb_gsis:
+        found = [(p.player_id, p.pos) for p in qbs]
+        raise ValueError(
+            f"{team}: expected exactly one QB with player_id == {qb_gsis!r}, "
+            f"found QB(s) {found!r}"
+        )
+
+
+def build_spec_from_usage(
+    home_team: str,
+    away_team: str,
+    rates: dict[str, TeamRates],
+    home_players: list[PlayerInput],
+    away_players: list[PlayerInput],
+    home_qb_gsis: str | None,
+    away_qb_gsis: str | None,
+) -> NflGameSpec:
+    """Assemble an NflGameSpec from active-usage PlayerInputs (usage.active_usage).
+
+    Ruling B1: `home_players`/`away_players` are ALREADY active + injury-
+    filtered + renormalized-over-the-active-set by `active_usage`. This
+    function does NOT re-drop injuries and does NOT re-renormalize -- it
+    assembles the spec directly from the passed players.
+
+    Ruling C1: if `home_qb_gsis`/`away_qb_gsis` is not None, asserts the
+    corresponding players list contains exactly one `pos=="QB"` player whose
+    `player_id` equals that gsis id (raises ValueError otherwise), making the
+    kernel's pass_yds-attribution guarantee explicit at spec-build time. A
+    None qb_gsis allows zero QBs (no-QB edge case) with no assertion.
+
+    Args:
+        home_team: Home team identifier, used as key into rates.
+        away_team: Away team identifier, used as key into rates.
+        rates: Dict mapping team -> TeamRates.
+        home_players: Home team's active PlayerInputs (already filtered/renormalized).
+        away_players: Away team's active PlayerInputs (already filtered/renormalized).
+        home_qb_gsis: Home team's starting QB gsis_id, or None.
+        away_qb_gsis: Away team's starting QB gsis_id, or None.
+
+    Returns:
+        NflGameSpec built directly from the passed players.
+
+    Raises:
+        KeyError: If home_team/away_team is missing from `rates`.
+        ValueError: If a non-None qb_gsis doesn't match exactly one QB in
+            that side's players.
+    """
+    if home_team not in rates:
+        raise KeyError(f"No rates found for home team {home_team!r}")
+    if away_team not in rates:
+        raise KeyError(f"No rates found for away team {away_team!r}")
+
+    _assert_qb_attribution(home_players, home_qb_gsis, home_team)
+    _assert_qb_attribution(away_players, away_qb_gsis, away_team)
+
+    return NflGameSpec(
+        home_team=home_team,
+        away_team=away_team,
+        home=rates[home_team],
+        away=rates[away_team],
+        home_players=home_players,
+        away_players=away_players,
+    )

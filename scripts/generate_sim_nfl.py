@@ -30,8 +30,8 @@ than reimplementing it.
 `upto_week` is derived from the freshly-fetched pbp itself: one past the
 max week that already has ANY pbp rows for `upto_season` (no rows yet =>
 week 1, so a build before Week 1 kicks off excludes the whole new season and
-`team_rates_from_pbp`/`player_inputs_from_weekly` fall back to full prior-
-season data instead of an empty current one).
+`team_rates_from_pbp`/`usage.active_usage` fall back to full prior-season
+data instead of an empty current one).
 
 CONCERN: "has pbp rows for week W" is true as soon as the first game of week
 W has been played, even if other week-W games haven't kicked off yet (e.g. a
@@ -66,13 +66,10 @@ from sportsmodel.db import get_postgres, upsert_nfl_player_sim, upsert_nfl_sim
 from sportsmodel.nfl.injuries_nflverse import current_injuries, nfl_season
 from sportsmodel.sim.engine import pred_scores
 from sportsmodel.sim.nfl.aggregate import disagreement, nfl_player_prop_dists
-from sportsmodel.sim.nfl.inputs import build_spec
+from sportsmodel.sim.nfl.inputs import build_spec_from_usage
 from sportsmodel.sim.nfl.kernel import simulate_game
-from sportsmodel.sim.nfl.rates import (
-    fetch_nflverse,
-    player_inputs_from_weekly,
-    team_rates_from_pbp,
-)
+from sportsmodel.sim.nfl.rates import fetch_nflverse, team_rates_from_pbp
+from sportsmodel.sim.nfl.usage import active_usage, build_pfr_to_gsis, fetch_usage_sources
 
 MODEL_VERSION = "sim-nfl-v1"
 DEFAULT_N_SIMS = 10_000
@@ -88,6 +85,10 @@ FETCH_SEASONS_BACK = 2
 MARKET_MAX = {"pass_yds": 400, "rush_yds": 200, "rec_yds": 200, "receptions": 15}
 
 TEAMS_CROSSWALK_PATH = config.PROJECT_ROOT / "assets" / "nfl" / "nfl_teams.json"
+
+# nflverse injury `status` values (case-insensitive) treated as ruled out for
+# active_usage's per-team injuries_out_names set.
+_OUT_STATUSES = frozenset({"out", "doubtful"})
 
 
 # =============================================================================
@@ -242,6 +243,19 @@ def _determine_upto_week(pbp_df, upto_season: int) -> int:
     return int(season_rows["week"].max()) + 1
 
 
+def _out_names_by_team(injuries: dict[str, list[dict]]) -> dict[str, set[str]]:
+    """{team_abbrev -> {lowercased player name}} for Out/Doubtful entries,
+    the shape `usage.active_usage` expects for `injuries_out_names`."""
+    out: dict[str, set[str]] = {}
+    for team, entries in injuries.items():
+        out[team] = {
+            str(entry["player"]).strip().lower()
+            for entry in entries
+            if str(entry.get("status", "")).strip().lower() in _OUT_STATUSES
+        }
+    return out
+
+
 def main() -> None:
     n_sims = int(os.environ.get("DESK_SIM_N", str(DEFAULT_N_SIMS)))
     now = datetime.now(timezone.utc)
@@ -263,8 +277,12 @@ def main() -> None:
     print(f"leakage cutoff: upto_season={upto_season} upto_week={upto_week}")
 
     rates = team_rates_from_pbp(nflverse["pbp"], upto_season, upto_week)
-    players = player_inputs_from_weekly(nflverse["weekly"], nflverse["snaps"], upto_season, upto_week)
     injuries = current_injuries(now)
+    out_names_by_team = _out_names_by_team(injuries)
+
+    print(f"fetching usage sources for seasons {seasons}")
+    usage_src = fetch_usage_sources(seasons)
+    pfr2gsis = build_pfr_to_gsis(usage_src["ids"])
 
     rng = np.random.default_rng(SIM_SEED)
 
@@ -278,7 +296,29 @@ def main() -> None:
         try:
             home_abbrev = crosswalk[g["home_team"]]
             away_abbrev = crosswalk[g["away_team"]]
-            spec = build_spec(home_abbrev, away_abbrev, rates, players, injuries)
+            home_players, home_qb = active_usage(
+                home_abbrev,
+                upto_season,
+                upto_week,
+                usage_src["depth"],
+                nflverse["weekly"],
+                usage_src["snaps"],
+                pfr2gsis,
+                out_names_by_team.get(home_abbrev, set()),
+            )
+            away_players, away_qb = active_usage(
+                away_abbrev,
+                upto_season,
+                upto_week,
+                usage_src["depth"],
+                nflverse["weekly"],
+                usage_src["snaps"],
+                pfr2gsis,
+                out_names_by_team.get(away_abbrev, set()),
+            )
+            spec = build_spec_from_usage(
+                home_abbrev, away_abbrev, rates, home_players, away_players, home_qb, away_qb
+            )
             sims = simulate_game(spec, n_sims, rng)
         except Exception as exc:  # noqa: BLE001 -- one bad game must not abort the slate
             print(f"skipping game_pk={game_pk} ({g['matchup']}): {exc}")
