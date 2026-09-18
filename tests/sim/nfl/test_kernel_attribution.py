@@ -1,6 +1,11 @@
 import numpy as np
 import pytest
-from sportsmodel.sim.nfl.kernel import _REC_YDS_SHAPE, _skewed_play_yards, attribute_offense
+from sportsmodel.sim.nfl.kernel import (
+    _REC_YDS_SHAPE,
+    _apply_usage_dispersion,
+    _skewed_play_yards,
+    attribute_offense,
+)
 from sportsmodel.sim.nfl.spec import PlayerInput
 
 
@@ -233,3 +238,36 @@ def test_usage_dispersion_widens_across_sim_target_variance():
 
     # Dispersion should push variance well above the fixed-multinomial floor.
     assert empirical_var > 2.0 * fixed_share_var
+
+
+def test_usage_dispersion_is_mean_preserving():
+    # Fix round 1: a naive `p_i * Gamma(k, 1/k)` then renormalize regresses
+    # shares toward equal (confirmed 0.90 -> ~0.88, 0.80 -> ~0.78 in review),
+    # understating workhorse usage -- the wrong direction, since receivers
+    # already under-project. The true-Dirichlet replacement is exactly
+    # mean-preserving: E[dispersed_share_i] == p_i. Check that directly by
+    # averaging many independent dispersion draws for a skewed share vector.
+    rng = np.random.default_rng(3)
+    probs = np.array([0.7, 0.2, 0.1])
+
+    n_draws = 4000
+    dispersed = np.array([_apply_usage_dispersion(probs, rng) for _ in range(n_draws)])
+    mean_dispersed = dispersed.mean(axis=0)
+
+    assert mean_dispersed == pytest.approx(probs, abs=0.02)
+
+
+def test_usage_dispersion_zero_shares_stay_zero_and_fall_back_when_all_zero():
+    # A player with a true zero share must never receive a positive dispersed
+    # share (a hard zero, not just "unlikely" under a tiny Dirichlet weight).
+    rng = np.random.default_rng(4)
+    probs = np.array([0.8, 0.2, 0.0])
+    for _ in range(200):
+        dispersed = _apply_usage_dispersion(probs, rng)
+        assert dispersed[2] == 0.0
+        assert dispersed.sum() == pytest.approx(1.0)
+
+    # All-zero input has no positive alpha to draw from; falls back to the
+    # (all-zero) input rather than crashing or fabricating a distribution.
+    all_zero = np.array([0.0, 0.0])
+    assert np.array_equal(_apply_usage_dispersion(all_zero, rng), all_zero)

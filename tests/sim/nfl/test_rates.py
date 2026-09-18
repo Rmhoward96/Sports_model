@@ -169,6 +169,12 @@ def test_player_inputs_excludes_rows_at_or_after_cutoff_and_shares_sum_to_one():
     assert wr1.ypt == pytest.approx(90 / 8)
     assert wr1.catch_rate == pytest.approx(6 / 8)
     assert rb1.ypc == pytest.approx(60 / 15)
+
+    # ypr = receiving_yards / receptions, distinct from ypt = receiving_yards
+    # / targets (FIX 1: the kernel attributes reception yardage using ypr,
+    # not ypt, so this needs its own correct computation here).
+    assert wr1.ypr == pytest.approx(90 / 6)
+    assert wr1.ypr != pytest.approx(wr1.ypt)
     # Team TDs in window = 1 (p1) + 1 (p2) = 2.
     assert wr1.td_share == pytest.approx(0.5)
     assert rb1.td_share == pytest.approx(0.5)
@@ -186,5 +192,6 @@ def test_player_inputs_divide_by_zero_guarded():
     assert no_usage.carry_share == 0.0
     assert no_usage.ypt == 0.0
     assert no_usage.ypc == 0.0
+    assert no_usage.ypr == 0.0
     assert no_usage.catch_rate == 0.0
     assert no_usage.td_share == 0.0

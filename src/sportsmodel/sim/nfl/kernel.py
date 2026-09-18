@@ -26,13 +26,18 @@ _RUSH_YDS_SHAPE = 1.5
 # player's rate stat, with a defensive max() floor against any rounding.
 _MIN_PLAY_YDS = -5.0
 
-# Per-game usage dispersion: before the multinomial target/carry split, each
-# player's share is multiplied by its own Gamma(mean=1) draw (one draw per
-# player per team per sim) and the results renormalized. This makes a
-# player's game-to-game target/carry volume itself boom/bust, on top of the
-# multinomial sampling noise within a single game. Concentration k -- higher
-# k means the multiplier hugs 1.0 more tightly (CV = 1/sqrt(k)); tunable.
-_USAGE_DISPERSION_K = 4.0
+# Per-game usage dispersion: before the multinomial target/carry split, the
+# whole share vector is redrawn from a Dirichlet(alpha_i = C * p_i) (one draw
+# per team per sim) in place of the fixed shares. This makes a player's
+# overall game usage boom/bust from one simulated game to the next, on top of
+# the multinomial sampling noise within a single game -- and, being a true
+# Dirichlet, it is exactly mean-preserving (E[dispersed_share_i] == p_i), so
+# it widens variance without dragging shares toward equal. Concentration C --
+# higher C means the draw hugs the true shares more tightly (a naive
+# `p_i * Gamma(k, 1/k)` then renormalize is NOT mean-preserving and was
+# rejected: it regresses shares toward equal, understating workhorse usage).
+# Tunable.
+_USAGE_CONCENTRATION = 20.0
 
 # Shared game-environment multiplier: one Gamma(mean=1) draw per sim, applied
 # to BOTH teams' expected drive count, so a "fast/high-scoring" or
@@ -112,24 +117,33 @@ def _normalized_probs(shares: list[float]) -> np.ndarray:
 
 
 def _apply_usage_dispersion(probs: np.ndarray, rng) -> np.ndarray:
-    """Multiply each player's share by its own Gamma(mean=1) draw and renormalize.
+    """Redraw the share vector from a Dirichlet(alpha_i = C * p_i) and return it.
 
     Drawn once per call (i.e. once per team per sim by `attribute_offense`'s
     caller), this is what makes a player's overall game usage boom/bust from
     one simulated game to the next, on top of the within-game multinomial
-    sampling noise. A no-op when `probs` is empty; falls back to the
-    unmultiplied probs if every player happens to draw (or already has) a
-    zero share, so `_normalized_probs`'s uniform-fallback guarantee is
+    sampling noise. Implemented via Gamma draws rather than
+    `rng.dirichlet` directly, since a player with p_i == 0 needs alpha_i == 0
+    (a hard zero, not just a tiny Dirichlet weight) and `rng.dirichlet`
+    rejects zero alphas: for each player with p_i > 0, raw_i ~ Gamma(C * p_i,
+    1); players with p_i == 0 get raw_i = 0; dispersed_i = raw_i / sum(raw).
+    This is exactly mean-preserving (E[dispersed_i] == p_i) -- unlike a naive
+    `p_i * Gamma(k, 1/k)` then renormalize, which regresses shares toward
+    equal and was rejected for that reason. A no-op when `probs` is empty;
+    falls back to the undispersed probs if every player has a zero share
+    (raw all-zero), so `_normalized_probs`'s uniform-fallback guarantee is
     preserved.
     """
     if len(probs) == 0:
         return probs
-    multipliers = rng.gamma(_USAGE_DISPERSION_K, 1.0 / _USAGE_DISPERSION_K, size=len(probs))
-    dispersed = probs * multipliers
-    total = dispersed.sum()
+    raw = np.zeros(len(probs), dtype=float)
+    positive = probs > 0
+    if np.any(positive):
+        raw[positive] = rng.gamma(_USAGE_CONCENTRATION * probs[positive], 1.0)
+    total = raw.sum()
     if total <= 0:
         return probs
-    return dispersed / total
+    return raw / total
 
 
 def _skewed_play_yards(mean: float, shape: float, floor: float, rng) -> float:
@@ -162,7 +176,7 @@ def attribute_offense(
 
     Allocates `n_pass` targets across `players` by `target_share` and
     `n_rush` carries by `carry_share` (both via multinomial draws, after
-    dispersing each player's share by its own per-call Gamma(mean=1) draw --
+    redrawing the share vector from a mean-preserving Dirichlet per call --
     see `_apply_usage_dispersion` -- to add game-to-game usage boom/bust),
     then simulates each individual target/carry: a target becomes a
     reception w.p. `catch_rate`, and each reception's yards are drawn from a
