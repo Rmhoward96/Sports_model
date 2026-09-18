@@ -276,17 +276,30 @@ def _simulate_team_drives(
 
     Draws a Poisson drive count around `off.drives_per_game * game_env`
     (floored at `_MIN_DRIVES_PER_GAME`), samples each drive via
-    `sample_drive` to get the team's points and TD count, converts the drive
-    count into an offensive play count (`_PLAYS_PER_DRIVE` plays/drive, split
-    pass/run by `off.pass_rate`), and attributes the game's plays and TDs to
-    `players` via a single `attribute_offense` call.
+    `sample_drive` to get the team's points and TD count, then determines an
+    offensive play count to feed `attribute_offense`:
+
+    - B.3 (primary path): when `off` carries real per-game volume
+      (`pass_att_pg` and/or `rush_att_pg` > 0), those counts -- which already
+      exclude sacks, so they're real attempted-pass targets, not
+      pass-play-snaps -- are used directly as `n_pass`/`n_rush`, scaled by
+      the same `game_env` that scales the drive count. This anchors
+      box-score volume to the team's real per-game attempts instead of
+      deriving it from the (coarser, and previously biased +63 pass_yds /
+      -6 rush_yds) `n_drives * _PLAYS_PER_DRIVE * pass_rate` estimate.
+    - Legacy fallback: when `off` has no volume fields (both 0.0, the
+      `TeamRates` default), falls back to the pre-B.3 derivation --
+      converts the drive count into a play count (`_PLAYS_PER_DRIVE`
+      plays/drive) split pass/run by `off.pass_rate` -- so specs/tests built
+      before B.3 keep working unchanged.
 
     `game_env` is the shared per-sim game-environment multiplier (see
     `simulate_game`): passing the SAME value in for both teams in a sim is
-    what correlates their scoring (a "shootout" or "defensive slog" sim
-    lifts/depresses both teams' drive counts together), rather than treating
-    each team's game as independent. Defaults to 1.0 (no scaling) so this
-    function is usable standalone/in tests without opting into that.
+    what correlates their scoring AND volume (a "shootout" or "defensive
+    slog" sim lifts/depresses both teams' drive counts and attempt counts
+    together), rather than treating each team's game as independent.
+    Defaults to 1.0 (no scaling) so this function is usable standalone/in
+    tests without opting into that.
 
     Returns:
         Tuple of (points, box) where box is attribute_offense's per-player
@@ -302,9 +315,16 @@ def _simulate_team_drives(
         if outcome == "td":
             n_off_tds += 1
 
-    n_plays = round(n_drives * _PLAYS_PER_DRIVE)
-    n_pass = round(n_plays * off.pass_rate)
-    n_rush = n_plays - n_pass
+    if off.pass_att_pg > 0.0 or off.rush_att_pg > 0.0:
+        # B.3: anchor box-score volume to the team's real per-game attempts
+        # (pass_att_pg already EXCLUDES sacks), scaled by the shared game_env.
+        n_pass = max(0, round(off.pass_att_pg * game_env))
+        n_rush = max(0, round(off.rush_att_pg * game_env))
+    else:
+        # legacy fallback for specs/tests without volume fields
+        n_plays = round(n_drives * _PLAYS_PER_DRIVE)
+        n_pass = round(n_plays * off.pass_rate)
+        n_rush = n_plays - n_pass
 
     box = attribute_offense(players, n_pass, n_rush, n_off_tds, rng)
     return points, box

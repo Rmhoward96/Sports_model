@@ -23,8 +23,16 @@ def _tr(**o):
         "downs": base["downs"],
         "end": base["end"],
     }
-    return TeamRates(drive_outcomes, base.get("pass_rate", 0.58),
-                      base.get("drives_per_game", 11.0), base.get("rz_td_rate", 0.6))
+    return TeamRates(
+        drive_outcomes,
+        base.get("pass_rate", 0.58),
+        base.get("drives_per_game", 11.0),
+        base.get("rz_td_rate", 0.6),
+        pass_att_pg=base.get("pass_att_pg", 0.0),
+        rush_att_pg=base.get("rush_att_pg", 0.0),
+        sack_rate=base.get("sack_rate", 0.0),
+        completion_pct=base.get("completion_pct", 0.0),
+    )
 
 
 def _roster(prefix: str) -> list[PlayerInput]:
@@ -154,6 +162,87 @@ def test_shared_game_env_correlates_home_and_away_scoring():
 
     corr = np.corrcoef(sims.home_score, sims.away_score)[0, 1]
     assert corr > 0.1
+
+
+def _single_receiver_rusher_roster(prefix: str) -> list[PlayerInput]:
+    # A roster engineered so box-score counts are directly observable:
+    # catch_rate=1.0 + a single receiver with target_share=1.0 means
+    # receptions == targets assigned == n_pass exactly (no usage-dispersion
+    # ambiguity, since it's the only player with a positive target share);
+    # a single rusher with carry_share=1.0 and ypc=1.0 means mean rush_yds
+    # tracks n_rush 1-for-1.
+    return [
+        PlayerInput(player_id=f"{prefix}_qb", name=f"{prefix} QB", pos="QB",
+                    target_share=0.0, carry_share=0.0, ypt=0.0, ypc=0.0,
+                    ypr=0.0, catch_rate=0.0, td_share=0.0),
+        PlayerInput(player_id=f"{prefix}_wr", name=f"{prefix} WR", pos="WR",
+                    target_share=1.0, carry_share=0.0, ypt=8.0, ypc=0.0,
+                    ypr=8.0, catch_rate=1.0, td_share=0.0),
+        PlayerInput(player_id=f"{prefix}_rb", name=f"{prefix} RB", pos="RB",
+                    target_share=0.0, carry_share=1.0, ypt=0.0, ypc=1.0,
+                    ypr=0.0, catch_rate=0.0, td_share=0.0),
+    ]
+
+
+def test_drive_box_volume_uses_real_per_game_attempts():
+    # B.3 Task 3: box-score volume should be anchored to the team's real
+    # per-game attempts (pass_att_pg/rush_att_pg), not the old
+    # n_drives * _PLAYS_PER_DRIVE * pass_rate derivation -- that derivation
+    # over-counted pass attempts (+63 pass_yds bias) and under-counted rush
+    # attempts (-6 rush_yds bias) in the walk-forward.
+    home_rates = _tr(pass_att_pg=34.0, rush_att_pg=27.0)
+    away_rates = _tr()  # no volume fields -> legacy path, doesn't matter here
+    home_players = _single_receiver_rusher_roster("home")
+    away_players = _roster("away")
+    spec = NflGameSpec(
+        home_team="Home", away_team="Away",
+        home=home_rates, away=away_rates,
+        home_players=home_players, away_players=away_players,
+    )
+
+    n_sims = 4000
+    sims = simulate_game(spec, n_sims, np.random.default_rng(50))
+
+    mean_receptions = sims.player_stats["home_wr"]["receptions"].mean()
+    mean_rush_yds = sims.player_stats["home_rb"]["rush_yds"].mean()
+
+    # catch_rate=1.0, sole receiver -> team receptions == n_pass exactly
+    # each sim, so the mean over many sims should land tightly on
+    # pass_att_pg (game_env has mean 1.0).
+    assert abs(mean_receptions - 34.0) < 1.5
+    # ypc=1.0, sole rusher -> mean rush_yds tracks n_rush * ypc == rush_att_pg.
+    assert abs(mean_rush_yds - 27.0) < 3.0
+
+
+def test_drive_box_volume_falls_back_to_legacy_without_volume_fields():
+    # Back-compat: a TeamRates without the B.3 volume fields (pass_att_pg=0.0
+    # / rush_att_pg=0.0, the dataclass default) must still run via the
+    # pre-B.3 n_drives/pass_rate derivation instead of collapsing to 0 plays.
+    drives_per_game = 11.0
+    pass_rate = 0.58
+    rates = _tr(drives_per_game=drives_per_game, pass_rate=pass_rate)
+    assert rates.pass_att_pg == 0.0
+    assert rates.rush_att_pg == 0.0
+
+    players = _single_receiver_rusher_roster("home")
+    spec = NflGameSpec(
+        home_team="Home", away_team="Away",
+        home=rates, away=_tr(),
+        home_players=players, away_players=_roster("away"),
+    )
+
+    n_sims = 3000
+    sims = simulate_game(spec, n_sims, np.random.default_rng(51))
+
+    mean_receptions = sims.player_stats["home_wr"]["receptions"].mean()
+    # Legacy formula: n_plays = round(n_drives * _PLAYS_PER_DRIVE),
+    # n_pass = round(n_plays * pass_rate); with drives_per_game=11 well
+    # above the 6-drive floor, this lands close to
+    # drives_per_game * 6.0 * pass_rate = 38.28. A generous band confirms
+    # the legacy path (not a collapse to 0, and not the unrelated
+    # pass_att_pg-anchored value) is still exercised.
+    legacy_expected = drives_per_game * 6.0 * pass_rate
+    assert abs(mean_receptions - legacy_expected) < 5.0
 
 
 def test_all_fg_offense_scores_are_multiples_of_three_with_no_player_tds():
