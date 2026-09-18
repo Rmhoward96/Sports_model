@@ -396,6 +396,93 @@ def upsert_ev_parlays(records: list[dict]) -> int:
     return len(rows)
 
 
+_NFL_SIM_DEFAULT_MODEL_VERSION = "sim-nfl-v1"
+
+_NFL_SIM_COLS = [
+    "game_pk", "model_version", "matchup", "commence_time",
+    "sim_home_win_prob", "sim_margin", "sim_total", "disagreement",
+]
+
+
+def upsert_nfl_sim(records: list[dict]) -> int:
+    """Upsert NFL sim-engine game outputs into Supabase `nfl_sim`.
+
+    Idempotent on (game_pk, model_version) -- a re-run of the same
+    model_version for the same game overwrites the row's fields in place.
+    `created_at` is intentionally excluded from both the column list and the
+    DO UPDATE SET clause: it is set once by the table's DEFAULT now() on the
+    first INSERT and must NOT change on a later update (same pattern as
+    upsert_ev_picks). A record that omits `model_version` defaults to
+    "sim-nfl-v1".
+    Requires DATABASE_URL and nfl_sim (db/migration_nfl_sim.sql).
+    """
+    if not records:
+        return 0
+    key = ("game_pk", "model_version")
+    updates = ", ".join(f"{c} = EXCLUDED.{c}" for c in _NFL_SIM_COLS if c not in key)
+    placeholders = ", ".join(["%s"] * len(_NFL_SIM_COLS))
+    sql = (
+        f"INSERT INTO nfl_sim ({', '.join(_NFL_SIM_COLS)}) "
+        f"VALUES ({placeholders}) "
+        f"ON CONFLICT (game_pk, model_version) DO UPDATE SET {updates}"
+    )
+    rows = [
+        tuple(
+            r.get(c, _NFL_SIM_DEFAULT_MODEL_VERSION) if c == "model_version" else r.get(c)
+            for c in _NFL_SIM_COLS
+        )
+        for r in records
+    ]
+    with get_postgres() as conn, conn.cursor() as cur:
+        cur.executemany(sql, rows)
+        conn.commit()
+    return len(rows)
+
+
+_NFL_PLAYER_SIM_COLS = [
+    "game_pk", "player_id", "model_version", "name", "pos", "team",
+    "market", "mean", "dist", "commence_time",
+]
+
+
+def upsert_nfl_player_sim(records: list[dict]) -> int:
+    """Upsert NFL sim-engine player prop outputs into Supabase `nfl_player_sim`.
+
+    Idempotent on (game_pk, player_id, market, model_version) -- a re-run of
+    the same model_version for the same (game, player, market) overwrites the
+    row's fields in place. `dist` is written as JSON. `created_at` is
+    intentionally excluded from both the column list and the DO UPDATE SET
+    clause: it is set once by the table's DEFAULT now() on the first INSERT
+    and must NOT change on a later update (same pattern as upsert_ev_picks).
+    A record that omits `model_version` defaults to "sim-nfl-v1".
+    Requires DATABASE_URL and nfl_player_sim (db/migration_nfl_sim.sql).
+    """
+    if not records:
+        return 0
+    key = ("game_pk", "player_id", "market", "model_version")
+    updates = ", ".join(
+        f"{c} = EXCLUDED.{c}" for c in _NFL_PLAYER_SIM_COLS if c not in key
+    )
+    placeholders = ", ".join(["%s"] * len(_NFL_PLAYER_SIM_COLS))
+    sql = (
+        f"INSERT INTO nfl_player_sim ({', '.join(_NFL_PLAYER_SIM_COLS)}) "
+        f"VALUES ({placeholders}) "
+        f"ON CONFLICT (game_pk, player_id, market, model_version) DO UPDATE SET {updates}"
+    )
+    rows = [
+        tuple(
+            json.dumps(r.get("dist")) if c == "dist"
+            else (r.get(c, _NFL_SIM_DEFAULT_MODEL_VERSION) if c == "model_version" else r.get(c))
+            for c in _NFL_PLAYER_SIM_COLS
+        )
+        for r in records
+    ]
+    with get_postgres() as conn, conn.cursor() as cur:
+        cur.executemany(sql, rows)
+        conn.commit()
+    return len(rows)
+
+
 def demote_stale_parlays(sport: str, keep_parlay_id: str | None,
                           model_version: str = _EV_PILOT_DEFAULT_MODEL_VERSION) -> int:
     """Set is_pick=false on any still-upcoming parlay for `sport` whose
