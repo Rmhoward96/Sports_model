@@ -36,8 +36,17 @@ _MIN_PLAY_YDS = -5.0
 # higher C means the draw hugs the true shares more tightly (a naive
 # `p_i * Gamma(k, 1/k)` then renormalize is NOT mean-preserving and was
 # rejected: it regresses shares toward equal, understating workhorse usage).
-# Tunable.
-_USAGE_CONCENTRATION = 20.0
+# Retuned in B.2 (2026-09-18): raised 20 -> 150 against the propable-player
+# walk-forward. At 20 the per-game usage draw was over-dispersed (too
+# boom/bust), dragging each player's simulated median below the true median
+# (coverage_p50 ~.33-.41) with a fat upper tail (coverage_p90 high); 150 hugs
+# the recent-usage shares more tightly, lifting the median toward the mean
+# (receptions coverage_p50 ~.47-.48, in the .45-.55 band) and pulling p90 into
+# ~.88-.90 -- all while leaving the mean (and thus MAE) unchanged. Isolated as
+# the single effective lever: raising _GAME_ENV_K helped far less and risks the
+# shared-env correlation feature; yard-shape changes only trade p50 for p90.
+# Tunable -- retune against the walk-forward backtest.
+_USAGE_CONCENTRATION = 150.0
 
 # Shared game-environment multiplier: one Gamma(mean=1) draw per sim, applied
 # to BOTH teams' expected drive count, so a "fast/high-scoring" or

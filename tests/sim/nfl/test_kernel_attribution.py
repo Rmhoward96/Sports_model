@@ -236,8 +236,13 @@ def test_usage_dispersion_widens_across_sim_target_variance():
     empirical_var = receptions.var()
     fixed_share_var = n_pass * 0.6 * (1 - 0.6)
 
-    # Dispersion should push variance well above the fixed-multinomial floor.
-    assert empirical_var > 2.0 * fixed_share_var
+    # Dispersion should push variance clearly above the fixed-multinomial floor
+    # (proving the Dirichlet redraw is active), but only moderately: B.2 retuned
+    # _USAGE_CONCENTRATION 20 -> 150 precisely because the old, larger dispersion
+    # was over-boom/bust and mis-calibrated the player-prop medians. At the
+    # calibrated concentration the redraw still widens variance ~1.5-1.9x the
+    # floor rather than the >2x it produced when over-dispersed.
+    assert empirical_var > 1.3 * fixed_share_var
 
 
 def test_usage_dispersion_is_mean_preserving():
