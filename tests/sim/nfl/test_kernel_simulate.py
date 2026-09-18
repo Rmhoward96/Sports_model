@@ -213,6 +213,14 @@ def test_drive_box_volume_uses_real_per_game_attempts():
     # ypc=1.0, sole rusher -> mean rush_yds tracks n_rush * ypc == rush_att_pg.
     assert abs(mean_rush_yds - 27.0) < 3.0
 
+    # B.3 dispersion: n_pass is a Poisson draw around pass_att_pg*game_env, so
+    # the per-game target count must VARY across sims (a deterministic round()
+    # left only game_env as noise and under-dispersed every marginal). With
+    # catch_rate=1.0 the sole receiver's receptions == n_pass, so its std over
+    # sims should be at least ~sqrt(34) (Poisson) inflated by game_env spread,
+    # comfortably above a small floor.
+    assert sims.player_stats["home_wr"]["receptions"].std() > 4.0
+
 
 def test_drive_box_volume_falls_back_to_legacy_without_volume_fields():
     # Back-compat: a TeamRates without the B.3 volume fields (pass_att_pg=0.0

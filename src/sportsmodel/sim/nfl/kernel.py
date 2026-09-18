@@ -318,8 +318,14 @@ def _simulate_team_drives(
     if off.pass_att_pg > 0.0 or off.rush_att_pg > 0.0:
         # B.3: anchor box-score volume to the team's real per-game attempts
         # (pass_att_pg already EXCLUDES sacks), scaled by the shared game_env.
-        n_pass = max(0, round(off.pass_att_pg * game_env))
-        n_rush = max(0, round(off.rush_att_pg * game_env))
+        # Draw the counts from a Poisson around that mean so per-game attempt
+        # volume carries realistic game-to-game variance (game script, pace,
+        # injuries). A deterministic round() left only the shared game_env as a
+        # noise source, under-dispersing every player marginal (walk-forward
+        # coverage_p90 fell to ~.78-.83); the Poisson restores that spread
+        # without changing the mean.
+        n_pass = int(rng.poisson(off.pass_att_pg * game_env))
+        n_rush = int(rng.poisson(off.rush_att_pg * game_env))
     else:
         # legacy fallback for specs/tests without volume fields
         n_plays = round(n_drives * _PLAYS_PER_DRIVE)
