@@ -84,7 +84,12 @@ from sportsmodel.sim.nfl.aggregate import nfl_player_prop_dists
 from sportsmodel.sim.nfl.inputs import build_spec_from_usage
 from sportsmodel.sim.nfl.kernel import simulate_game
 from sportsmodel.sim.nfl.rates import fetch_nflverse, team_rates_from_pbp
-from sportsmodel.sim.nfl.usage import active_usage, build_pfr_to_gsis, fetch_usage_sources
+from sportsmodel.sim.nfl.usage import (
+    abbrev_alignment,
+    active_usage,
+    build_pfr_to_gsis,
+    fetch_usage_sources,
+)
 
 DEFAULT_N_SIMS = 2000
 SIM_SEED = 42
@@ -255,7 +260,12 @@ def out_names_by_team_week(
 def actual_qb_pass_yds(
     qb_gsis: str | None, actual_stats: dict[str, dict[str, float]]
 ) -> float | None:
-    """Ruling C2: the actual value the sim's starting-QB pass_yds
+    """Not called from the main dists loop (that loop already pairs pass_yds
+    correctly via the generic gsis-keyed path below); this function documents
+    and unit-tests the gsis-pairing CONTRACT that loop relies on, so it isn't
+    mistaken for dead code -- see module docstring's Ruling C2.
+
+    Ruling C2: the actual value the sim's starting-QB pass_yds
     distribution should be compared against -- `actual_stats[qb_gsis]
     ["pass_yds"]` if `qb_gsis` is known and present in `actual_stats`, else
     None. PURE.
@@ -275,54 +285,10 @@ def actual_qb_pass_yds(
     return stats.get("pass_yds")
 
 
-def _clean_codes(series) -> set[str]:
-    """A pandas Series -> {stripped str}, dropping NaN/blank values."""
-    out: set[str] = set()
-    for v in series:
-        if pd.isna(v):
-            continue
-        s = str(v).strip()
-        if s:
-            out.add(s)
-    return out
-
-
-def abbrev_alignment(
-    depth_df: pd.DataFrame,
-    injuries_df: pd.DataFrame,
-    game_teams: set[str],
-    known_teams: set[str],
-) -> dict[str, list[str]]:
-    """Sanity check: do the team-abbreviation conventions used by the
-    depth-chart, historical-injuries, and schedule sources all fall inside
-    `known_teams` (the canonical set `normalize_team` maps onto)? PURE.
-
-    A `depth_df["club_code"]` or `injuries_df["team"]` value NOT in
-    `known_teams` means `active_usage`'s depth-chart lookup (or
-    `out_names_by_team_week`'s per-team dict) can never match a game's
-    `normalize_team`-normalized team code, in which case `active_usage`
-    silently returns `([], None)` for that team -- no exception, no
-    warning -- rather than the mismatch being loud. `run_backtest`'s
-    `n_empty_active` counter is the runtime symptom of exactly this; this
-    helper is the "why" diagnostic, run once up front against the whole
-    fetched span rather than discovered game-by-game.
-
-    Returns `{"depth_unknown": [...], "injuries_unknown": [...],
-    "games_unknown": [...]}` (each sorted), where "games_unknown" are
-    `game_teams` entries (normalized schedule team codes) NOT in
-    `known_teams` -- normally empty, since `known_teams` should already be
-    `normalize_team`'s own codomain, but included for parity/defensiveness.
-    NaN/blank codes in either DataFrame column are dropped, not flagged
-    (they're absent data, not a naming mismatch).
-    """
-    depth_codes = _clean_codes(depth_df["club_code"]) if "club_code" in depth_df.columns else set()
-    injuries_codes = _clean_codes(injuries_df["team"]) if "team" in injuries_df.columns else set()
-
-    return {
-        "depth_unknown": sorted(depth_codes - known_teams),
-        "injuries_unknown": sorted(injuries_codes - known_teams),
-        "games_unknown": sorted(set(game_teams) - known_teams),
-    }
+# NOTE: `abbrev_alignment` (the depth/injuries/schedule abbrev-mismatch
+# diagnostic) now lives in `sportsmodel.sim.nfl.usage` -- imported above --
+# since `scripts/generate_sim_nfl.py` needs the same pure check for the live
+# slate and scripts aren't an importable package. See usage.py's docstring.
 
 
 # =============================================================================

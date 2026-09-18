@@ -18,7 +18,14 @@ NflGameSims/NflGameSpec objects (tests/sim/nfl/test_generate_sim_nfl.py).
 `main()` is the thin IO wrapper: pull the slate from `predictions_current`,
 fetch nflverse, build rates/players/injuries, build a spec + simulate per
 game (wrapped in try/except so one bad game can't abort the whole slate),
-then hand everything to `assemble_sim_rows` in one shot and upsert.
+then hand everything to `assemble_sim_rows` in one shot and upsert. Before the
+per-game loop it also runs `usage.abbrev_alignment` (shared with
+`scripts/backtest_sim_nfl.py`) against the slate's crosswalked team abbrevs
+and prints a WARN/OK line, and it counts (`n_empty_active`, printed in the
+final summary) games where `active_usage` handed back an empty roster for
+either side -- both mirror the backtest's visibility into the same silent
+abbrev-mismatch failure mode, so it isn't discovered only after this path
+goes live. These are warnings, not hard failures: the game still simulates.
 
 Leakage cutoff (current season/week) -- documented heuristic
 --------------------------------------------------------------
@@ -60,16 +67,23 @@ from typing import Any
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 import numpy as np
+import pandas as pd
 
 from sportsmodel import config
 from sportsmodel.db import get_postgres, upsert_nfl_player_sim, upsert_nfl_sim
 from sportsmodel.nfl.injuries_nflverse import current_injuries, nfl_season
+from sportsmodel.nfl.teams import TEAMS
 from sportsmodel.sim.engine import pred_scores
 from sportsmodel.sim.nfl.aggregate import disagreement, nfl_player_prop_dists
 from sportsmodel.sim.nfl.inputs import build_spec_from_usage
 from sportsmodel.sim.nfl.kernel import simulate_game
 from sportsmodel.sim.nfl.rates import fetch_nflverse, team_rates_from_pbp
-from sportsmodel.sim.nfl.usage import active_usage, build_pfr_to_gsis, fetch_usage_sources
+from sportsmodel.sim.nfl.usage import (
+    abbrev_alignment,
+    active_usage,
+    build_pfr_to_gsis,
+    fetch_usage_sources,
+)
 
 MODEL_VERSION = "sim-nfl-v1"
 DEFAULT_N_SIMS = 10_000
@@ -284,12 +298,37 @@ def main() -> None:
     usage_src = fetch_usage_sources(seasons)
     pfr2gsis = build_pfr_to_gsis(usage_src["ids"])
 
+    # Same silent-failure mode `backtest_sim_nfl.py`'s `n_empty_active` guards
+    # against: an ESPN->abbrev crosswalk code that doesn't match nflverse
+    # club_code/injuries team makes `active_usage` hand back an empty roster
+    # with no exception -- see `usage.abbrev_alignment`'s docstring. Resolve
+    # the slate's team abbrevs (best-effort; an unresolvable name here will
+    # also fail -- and get printed -- in the per-game loop below) and check
+    # them, plus the depth/injuries sources, against the known team set.
+    game_teams: set[str] = set()
+    for g in games:
+        for name in (g["home_team"], g["away_team"]):
+            abbrev = crosswalk.get(name)
+            if abbrev:
+                game_teams.add(abbrev)
+    injuries_df_like = pd.DataFrame({"team": list(injuries.keys())})
+    alignment = abbrev_alignment(usage_src["depth"], injuries_df_like, game_teams, TEAMS)
+    if alignment["depth_unknown"] or alignment["injuries_unknown"] or alignment["games_unknown"]:
+        print(
+            f"WARN abbrev mismatch: depth_unknown={alignment['depth_unknown']} "
+            f"injuries_unknown={alignment['injuries_unknown']} "
+            f"games_unknown={alignment['games_unknown']}"
+        )
+    else:
+        print("abbrev alignment: OK (depth/injuries/schedule codes all known)")
+
     rng = np.random.default_rng(SIM_SEED)
 
     sims_by_game: dict = {}
     specs_by_game: dict = {}
     analytic_by_game: dict = {}
     ok_games: list[dict] = []
+    n_empty_active = 0
 
     for g in games:
         game_pk = g["game_pk"]
@@ -316,6 +355,10 @@ def main() -> None:
                 pfr2gsis,
                 out_names_by_team.get(away_abbrev, set()),
             )
+            if not home_players or home_qb is None or not away_players or away_qb is None:
+                # Count it loudly rather than let it silently simulate a
+                # player-less team -- see the abbrev_alignment note above.
+                n_empty_active += 1
             spec = build_spec_from_usage(
                 home_abbrev, away_abbrev, rates, home_players, away_players, home_qb, away_qb
             )
@@ -338,7 +381,10 @@ def main() -> None:
     mean_disagreement = (
         float(np.mean([r["disagreement"] for r in sim_rows])) if sim_rows else float("nan")
     )
-    print(f"games={len(sim_rows)} players={len(player_rows)} mean_disagreement={mean_disagreement:.4f}")
+    print(
+        f"games={len(sim_rows)} players={len(player_rows)} "
+        f"mean_disagreement={mean_disagreement:.4f} n_empty_active={n_empty_active}"
+    )
 
 
 if __name__ == "__main__":

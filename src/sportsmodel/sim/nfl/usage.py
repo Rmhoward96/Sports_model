@@ -12,6 +12,12 @@ Football Reference `pfr_id` and nflverse's own `gsis_id`) via
 depth-chart / snap-count / id-crosswalk frames the usage model consumes.
 
 `fetch_usage_sources` is the only IO in this module and is not unit-tested.
+
+`abbrev_alignment` is a small pure diagnostic shared by both callers
+(`scripts/backtest_sim_nfl.py` and `scripts/generate_sim_nfl.py`): it flags
+team-abbreviation codes in the depth-chart/injuries sources that fall outside
+the canonical `sportsmodel.nfl.teams.TEAMS` set, which is the silent failure
+mode behind `active_usage` handing back an empty roster (see its docstring).
 """
 from __future__ import annotations
 
@@ -227,7 +233,15 @@ def active_usage(
         sw = float(sum(weights))
 
         def wsum(col: str) -> float:
-            return float(sum(w * v for w, v in zip(weights, g[col].tolist())))
+            # Guard NaN/missing values (nflverse weekly stat columns can carry
+            # NaN for a given row) so a single bad cell can't propagate to a
+            # NaN share -> NaN pval -> rng.multinomial raising downstream.
+            return float(
+                sum(
+                    w * (v if pd.notna(v) else 0.0)
+                    for w, v in zip(weights, g[col].tolist())
+                )
+            )
 
         w_targets = wsum("targets")
         w_carries = wsum("carries")
@@ -310,6 +324,57 @@ def active_usage(
         )
 
     return players, qb1
+
+
+def _clean_codes(series) -> set[str]:
+    """A pandas Series -> {stripped str}, dropping NaN/blank values."""
+    out: set[str] = set()
+    for v in series:
+        if pd.isna(v):
+            continue
+        s = str(v).strip()
+        if s:
+            out.add(s)
+    return out
+
+
+def abbrev_alignment(
+    depth_df: pd.DataFrame,
+    injuries_df: pd.DataFrame,
+    game_teams: set[str],
+    known_teams: set[str],
+) -> dict[str, list[str]]:
+    """Sanity check: do the team-abbreviation conventions used by the
+    depth-chart, injuries, and schedule/slate sources all fall inside
+    `known_teams` (the canonical set `normalize_team` maps onto)? PURE.
+
+    A `depth_df["club_code"]` or `injuries_df["team"]` value NOT in
+    `known_teams` means `active_usage`'s depth-chart lookup (or the caller's
+    per-team out-names dict) can never match a game's normalized team code,
+    in which case `active_usage` silently returns `([], None)` for that team
+    -- no exception, no warning -- rather than the mismatch being loud. Both
+    `scripts/backtest_sim_nfl.py`'s `n_empty_active` counter and
+    `scripts/generate_sim_nfl.py`'s empty-roster count are the runtime
+    symptom of exactly this; this helper is the "why" diagnostic, run once up
+    front against the whole fetched span/slate rather than discovered
+    game-by-game.
+
+    Returns `{"depth_unknown": [...], "injuries_unknown": [...],
+    "games_unknown": [...]}` (each sorted), where "games_unknown" are
+    `game_teams` entries (normalized/crosswalked team codes) NOT in
+    `known_teams` -- normally empty, since `known_teams` should already be
+    `normalize_team`'s own codomain, but included for parity/defensiveness.
+    NaN/blank codes in either DataFrame column are dropped, not flagged
+    (they're absent data, not a naming mismatch).
+    """
+    depth_codes = _clean_codes(depth_df["club_code"]) if "club_code" in depth_df.columns else set()
+    injuries_codes = _clean_codes(injuries_df["team"]) if "team" in injuries_df.columns else set()
+
+    return {
+        "depth_unknown": sorted(depth_codes - known_teams),
+        "injuries_unknown": sorted(injuries_codes - known_teams),
+        "games_unknown": sorted(set(game_teams) - known_teams),
+    }
 
 
 def fetch_usage_sources(seasons: list[int]) -> dict:

@@ -10,6 +10,9 @@ Fixtures mirror the nflverse shapes documented in usage.py / rates.py:
 - snaps_df   : pfr_player_id, offense_pct, season, week (reserved; v1 does
                not consume snaps)
 """
+import math
+
+import numpy as np
 import pandas as pd
 import pytest
 
@@ -244,6 +247,31 @@ def test_cold_start_active_player_gets_small_nonzero_share_no_crash():
     # Cold-start efficiency defaults are populated (documented positional values).
     assert rookie.ypr > 0.0
     assert rookie.catch_rate > 0.0
+
+
+def test_weighted_usage_guards_nan_stat_column_no_crash_finite_shares():
+    """A NaN in a recent weekly stat column (nflverse occasionally has one)
+    must not propagate to a NaN share -- it should be treated as 0 for that
+    game, same as `_actual_player_stats` in backtest_sim_nfl.py does."""
+    depth = _depth([
+        dict(season=2023, week=5, club_code="KC", depth_team="1", position="WR",
+             gsis_id="gA", full_name="Alpha Star", football_name=None),
+        dict(season=2023, week=5, club_code="KC", depth_team="2", position="WR",
+             gsis_id="gB", full_name="Beta Backup", football_name=None),
+    ])
+    weekly = _weekly([
+        # gA's most recent game has a NaN targets value (missing stat).
+        _wrow("gA", "Alpha Star", "WR", "KC", 2023, 3, targets=8, receptions=6, rec_yds=90),
+        _wrow("gA", "Alpha Star", "WR", "KC", 2023, 4, targets=np.nan, receptions=5, rec_yds=70),
+        _wrow("gB", "Beta Backup", "WR", "KC", 2023, 4, targets=4, receptions=3, rec_yds=40),
+    ])
+    players, _qb = active_usage("KC", 2023, 5, depth, weekly, _EMPTY_SNAPS, {}, set())
+    assert len(players) == 2
+    for p in players:
+        for field in ("target_share", "carry_share", "td_share", "ypt", "ypc", "ypr", "catch_rate"):
+            value = getattr(p, field)
+            assert math.isfinite(value), f"{p.player_id}.{field} is not finite: {value!r}"
+    assert sum(p.target_share for p in players) == pytest.approx(1.0)
 
 
 def test_returns_playerinput_instances():
