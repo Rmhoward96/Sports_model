@@ -27,13 +27,16 @@ Two structural causes (not parameter tuning):
 
 Replace season-average usage with a **per-week active-roster usage model** so the
 sim projects the right players' workloads for the specific game, and fix QB
-attribution — then **re-gate** on propable players. B.2 succeeds only if the gate
-passes; otherwise props are a documented NO-GO.
+attribution — then **re-gate** on propable players and **iterate** until markets
+reach shippable calibration. A market that hits the targets earns its way to C;
+one that doesn't gets another refinement pass, not abandonment (we stop only on
+clear diminishing returns, surfaced to the user with evidence).
 
 ## Non-goals
 
 - **Not** C: no prop-odds ingestion, prop +EV board, or prop grading yet — those
-  come only if B.2 clears the gate.
+  come only once a market reaches shippable calibration (per-market, as it gets
+  there).
 - **Not** a claim of edge on mainstream markets (QB pass yds, star WR/RB yds are
   heavily shopped). B.2 is about *calibration first*; the realistic edge (for C)
   is softer/niche props + forward CLV, same discipline as the game +EV pilot.
@@ -86,9 +89,11 @@ New `src/sportsmodel/sim/nfl/usage.py` (pure over passed DataFrames, leakage-fre
   will use live (no more `injuries={}` and no full-roster dilution), so the gate
   reflects production. Keep the propable-player metric (usage-gated) from B.1b.
 
-## Ship gate (concrete pass/fail, walk-forward, leakage-free)
+## Calibration targets — iterate toward "shippable" (not a one-shot pass/fail)
 
-Propable players (pass: attempts≥10; rush: carries≥5; rec/receptions: targets≥3):
+These are the numbers that DEFINE "good enough to ship a market," measured
+walk-forward + leakage-free on propable players (pass: attempts≥10; rush:
+carries≥5; rec/receptions: targets≥3):
 
 | Market | MAE target | P50 cov | P90 cov |
 |---|---|---|---|
@@ -97,9 +102,14 @@ Propable players (pass: attempts≥10; rush: carries≥5; rec/receptions: target
 | rec_yds | ≤ 20 | .45–.55 | .85–.93 |
 | receptions | ≤ 1.5 | .45–.55 | .85–.93 |
 
-**Pass = all four markets within these bands.** Partial pass (some markets) →
-those markets may proceed to C, others stay NO-GO. Clear fail → props shelved
-with the honest write-up.
+**The consequence of missing a target is REFINE, not shelve.** Each iteration:
+run the gate, read the propable numbers, diagnose the biggest remaining gap,
+make the targeted fix, re-gate — repeating until a market reaches the bar. A
+market that reaches it becomes eligible for **C** (prop productization) while the
+others keep iterating. We only stop iterating a market when it's shippable OR
+when I judge the returns have clearly diminished — and that stop is surfaced to
+you with the evidence, as a recommendation, never a silent abandonment.
+Every iteration's numbers + what changed go in the ledger so progress is legible.
 
 ## Data sources (all nflverse, leakage-free)
 
