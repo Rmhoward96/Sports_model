@@ -152,3 +152,50 @@ def test_share_below_boundary_equal_values_counts_as_covered():
 
 def test_share_below_empty_input_is_nan():
     assert math.isnan(bsn.share_below([], []))
+
+
+# =============================================================================
+# is_propable
+# =============================================================================
+
+def test_is_propable_pass_yds_at_threshold_attempts_is_propable():
+    assert bsn.is_propable("pass_yds", {"attempts": 10.0}) is True
+
+
+def test_is_propable_pass_yds_below_threshold_attempts_is_not_propable():
+    assert bsn.is_propable("pass_yds", {"attempts": 9.0}) is False
+
+
+def test_is_propable_rush_yds_at_threshold_carries_is_propable():
+    assert bsn.is_propable("rush_yds", {"carries": 5.0}) is True
+
+
+def test_is_propable_rush_yds_below_threshold_carries_is_not_propable():
+    assert bsn.is_propable("rush_yds", {"carries": 4.0}) is False
+
+
+def test_is_propable_rec_yds_at_threshold_targets_is_propable():
+    assert bsn.is_propable("rec_yds", {"targets": 3.0}) is True
+
+
+def test_is_propable_rec_yds_below_threshold_targets_is_not_propable():
+    assert bsn.is_propable("rec_yds", {"targets": 2.0}) is False
+
+
+def test_is_propable_receptions_uses_same_targets_gate_as_rec_yds():
+    assert bsn.is_propable("receptions", {"targets": 3.0}) is True
+    assert bsn.is_propable("receptions", {"targets": 2.0}) is False
+
+
+def test_is_propable_missing_usage_key_treated_as_zero_usage():
+    # A WR-only player has no "attempts" key at all in their actual dict.
+    assert bsn.is_propable("pass_yds", {"carries": 0.0, "targets": 8.0}) is False
+
+
+def test_is_propable_unknown_market_is_never_propable():
+    assert bsn.is_propable("not_a_market", {"attempts": 999.0}) is False
+
+
+def test_is_propable_ignores_irrelevant_usage_columns():
+    # High targets shouldn't make a player propable for a carries-gated market.
+    assert bsn.is_propable("rush_yds", {"targets": 20.0, "carries": 0.0}) is False

@@ -15,7 +15,10 @@ simulates it, and compares the sim's outputs against what actually happened:
           vs. that player's ACTUAL stat that week (MAE), plus a calibration
           check -- the share of actuals falling at/under the sim's p50 and
           p90 quantiles should be ~=0.50 and ~=0.90 if the sim's spread is
-          well-calibrated.
+          well-calibrated. Each market's pairs are filtered to players who'd
+          realistically have a prop line that week (see `is_propable`) so the
+          metric isn't swamped by non-participants (e.g. a WR's pass_yds is
+          0-vs-0 every week and would otherwise dilute the pass_yds numbers).
 
 PURE / IO split
 ----------------
@@ -107,6 +110,20 @@ _ACTUAL_COL = {
     "receptions": "receptions",
 }
 
+# ACTUAL-usage columns pulled alongside the stat columns above, purely to gate
+# per-market relevance (see `is_propable`) -- nflverse weekly column names.
+_USAGE_COLS: tuple[str, ...] = ("attempts", "carries", "targets")
+
+# Per-market (usage column, minimum ACTUAL usage) below which a player-week
+# wouldn't realistically have had a prop line that market, so it's excluded
+# from that market's evaluation pairs.
+_MARKET_USAGE_GATE: dict[str, tuple[str, float]] = {
+    "pass_yds": ("attempts", 10.0),
+    "rush_yds": ("carries", 5.0),
+    "rec_yds": ("targets", 3.0),
+    "receptions": ("targets", 3.0),
+}
+
 
 # =============================================================================
 # PURE metric helpers (unit-tested)
@@ -180,22 +197,49 @@ def share_below(quantile_values: list[float], actuals: list[float]) -> float:
     return float(np.mean(hits))
 
 
+def is_propable(market: str, actual_usage: dict) -> bool:
+    """True if a player's ACTUAL usage that week clears the threshold at
+    which that market would realistically have had a prop line offered.
+
+    `actual_usage` is a mapping that includes (at least) the usage column
+    `_MARKET_USAGE_GATE[market]` needs (`attempts`/`carries`/`targets`);
+    missing keys are treated as 0 usage. Gating on ACTUAL (not projected)
+    usage keeps a market's evaluation sample to players who genuinely had a
+    role in that stat that week, e.g. a WR run 0 pass routes doesn't belong
+    in the pass_yds sample even though their sim'd pass_yds distribution and
+    actual pass_yds (0) both exist. Unknown markets are never propable.
+    """
+    gate = _MARKET_USAGE_GATE.get(market)
+    if gate is None:
+        return False
+    usage_col, threshold = gate
+    return float(actual_usage.get(usage_col, 0.0) or 0.0) >= threshold
+
+
 # =============================================================================
 # Walk-forward harness (heavy IO -- not unit-tested; see module docstring)
 # =============================================================================
 
 def _actual_player_stats(weekly_df, season: int, week: int) -> dict[str, dict[str, float]]:
-    """player_id -> {"pass_yds","rush_yds","rec_yds","receptions"} actuals for
-    one (season, week) slice of nflverse `weekly` data. See module docstring's
-    "actual-stat join" concern for this keying's edge cases."""
+    """player_id -> {"pass_yds","rush_yds","rec_yds","receptions", plus the
+    ACTUAL-usage columns in `_USAGE_COLS` ("attempts","carries","targets")}
+    for one (season, week) slice of nflverse `weekly` data. A usage column
+    absent from this pull (or NaN for a given row) is treated as 0, which
+    only ever makes `is_propable` gate that player-week out -- never in. See
+    module docstring's "actual-stat join" concern for this keying's edge
+    cases."""
     rows = weekly_df[(weekly_df["season"] == season) & (weekly_df["week"] == week)]
     out: dict[str, dict[str, float]] = {}
     for row in rows.itertuples(index=False):
         pid = str(getattr(row, "player_id"))
-        out[pid] = {
+        stats = {
             market: float(getattr(row, col, 0.0) or 0.0)
             for market, col in _ACTUAL_COL.items()
         }
+        stats.update(
+            {col: float(getattr(row, col, 0.0) or 0.0) for col in _USAGE_COLS}
+        )
+        out[pid] = stats
     return out
 
 
@@ -206,7 +250,8 @@ def run_backtest(seasons: list[int], n_sims: int, seed: int = SIM_SEED) -> dict:
       game_probs/game_outcomes, margin_preds/margin_actuals,
       total_preds/total_actuals, and per-market player_mean_pairs/
       player_p50_pairs/player_p90_pairs (each a list of (sim_value, actual)
-      tuples).
+      tuples, restricted to player-weeks that clear that market's
+      `is_propable` ACTUAL-usage gate).
     """
     fetch_seasons = list(range(min(seasons) - WARMUP_SEASONS_BACK, max(seasons) + 1))
     print(f"fetching nflverse seasons {fetch_seasons}")
@@ -278,6 +323,8 @@ def run_backtest(seasons: list[int], n_sims: int, seed: int = SIM_SEED) -> dict:
                 continue
             for market in PLAYER_MARKETS:
                 if market not in markets:
+                    continue
+                if not is_propable(market, actual):
                     continue
                 dist = markets[market]
                 a = actual[market]
