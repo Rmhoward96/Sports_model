@@ -5,6 +5,8 @@ import importlib.util
 import math
 import pathlib
 
+import pandas as pd
+
 _p = pathlib.Path(__file__).resolve().parents[3] / "scripts" / "backtest_sim_nfl.py"
 _spec = importlib.util.spec_from_file_location("backtest_sim_nfl", _p)
 bsn = importlib.util.module_from_spec(_spec)
@@ -199,3 +201,69 @@ def test_is_propable_unknown_market_is_never_propable():
 def test_is_propable_ignores_irrelevant_usage_columns():
     # High targets shouldn't make a player propable for a carries-gated market.
     assert bsn.is_propable("rush_yds", {"targets": 20.0, "carries": 0.0}) is False
+
+
+# =============================================================================
+# out_names_by_team_week
+# =============================================================================
+
+def _injuries_df() -> pd.DataFrame:
+    return pd.DataFrame([
+        {"season": 2023, "week": 1, "team": "KC", "full_name": "Player Out", "report_status": "Out"},
+        {"season": 2023, "week": 1, "team": "KC", "full_name": "Player Doubtful", "report_status": "Doubtful"},
+        {"season": 2023, "week": 1, "team": "KC", "full_name": "Player Questionable", "report_status": "Questionable"},
+        {"season": 2023, "week": 1, "team": "KC", "full_name": float("nan"), "report_status": "Out"},
+        {"season": 2023, "week": 1, "team": "KC", "full_name": "Player NanStatus", "report_status": float("nan")},
+        {"season": 2023, "week": 1, "team": "BUF", "full_name": "Other Team Out", "report_status": "OUT"},
+        {"season": 2023, "week": 2, "team": "KC", "full_name": "Wrong Week Out", "report_status": "Out"},
+    ])
+
+
+def test_out_names_by_team_week_includes_out_and_doubtful_lowercased():
+    result = bsn.out_names_by_team_week(_injuries_df(), 2023, 1)
+    assert result["KC"] == {"player out", "player doubtful"}
+
+
+def test_out_names_by_team_week_excludes_questionable():
+    result = bsn.out_names_by_team_week(_injuries_df(), 2023, 1)
+    assert "player questionable" not in result["KC"]
+
+
+def test_out_names_by_team_week_excludes_nan_name_and_nan_status():
+    result = bsn.out_names_by_team_week(_injuries_df(), 2023, 1)
+    assert "nan" not in result["KC"]
+    assert "player nanstatus" not in result["KC"]
+
+
+def test_out_names_by_team_week_is_case_insensitive_on_status():
+    result = bsn.out_names_by_team_week(_injuries_df(), 2023, 1)
+    assert result["BUF"] == {"other team out"}
+
+
+def test_out_names_by_team_week_excludes_other_week():
+    result = bsn.out_names_by_team_week(_injuries_df(), 2023, 1)
+    assert "wrong week out" not in result.get("KC", set())
+
+
+def test_out_names_by_team_week_no_matching_rows_returns_empty_dict():
+    result = bsn.out_names_by_team_week(_injuries_df(), 2099, 1)
+    assert result == {}
+
+
+# =============================================================================
+# actual_qb_pass_yds
+# =============================================================================
+
+def test_actual_qb_pass_yds_returns_value_for_present_gsis():
+    actual_stats = {"00-001": {"pass_yds": 275.0}}
+    assert bsn.actual_qb_pass_yds("00-001", actual_stats) == 275.0
+
+
+def test_actual_qb_pass_yds_returns_none_for_missing_gsis():
+    actual_stats = {"00-001": {"pass_yds": 275.0}}
+    assert bsn.actual_qb_pass_yds("00-999", actual_stats) is None
+
+
+def test_actual_qb_pass_yds_returns_none_when_qb_gsis_is_none():
+    actual_stats = {"00-001": {"pass_yds": 275.0}}
+    assert bsn.actual_qb_pass_yds(None, actual_stats) is None

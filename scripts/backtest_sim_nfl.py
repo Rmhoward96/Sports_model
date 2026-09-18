@@ -33,30 +33,31 @@ scripts/backtest_sim.py).
 
 CONCERN -- actual-stat join: `_actual_player_stats` keys nflverse `weekly`
 rows by `player_id` alone within a (season, week) slice. This matches
-`player_inputs_from_weekly`'s own keying (both come from the same nflverse
-`player_id` column), so the common case is a clean join. Two edge cases are
-NOT specifically guarded against: (1) a mid-season trade producing two rows
-for the same player_id in the same (season, week) slice under different
+`active_usage`'s own keying (both come from the same nflverse `player_id` /
+`gsis_id` column), so the common case is a clean join. Two edge cases are NOT
+specifically guarded against: (1) a mid-season trade producing two rows for
+the same player_id in the same (season, week) slice under different
 `recent_team` values (e.g., a Tuesday waiver claim ahead of that week's game)
 -- `_actual_player_stats` keeps whichever row is seen last, which could
 silently attribute the wrong team's box score to that player-week; (2) a
 player who has enough PRIOR history to receive a share-based `PlayerInput`
 (and therefore gets a simulated distribution) but did not play at all in the
-target week (bye, healthy scratch, in-season injury not modeled here since
-`injuries={}` is passed to `build_spec` -- see below) has no weekly row and is
-silently dropped from that market's pairs, which slightly biases the
-player-level coverage numbers toward players who play every week. Neither is
-believed to be a large effect at v1 but both are worth re-checking if the
-ship-gate numbers look off for a specific market.
+target week (bye, healthy scratch -- in-season injury IS now modeled, see
+below) has no weekly row and is silently dropped from that market's pairs,
+which slightly biases the player-level coverage numbers toward players who
+play every week. Neither is believed to be a large effect at v1 but both are
+worth re-checking if the ship-gate numbers look off for a specific market.
 
-CONCERN -- no injury zeroing: unlike `scripts/generate_sim_nfl.py` (which
-zeros out OUT/Doubtful players via `injuries_nflverse.current_injuries`),
-this backtest passes `injuries={}` to `build_spec` for every historical game,
-i.e. every player with enough share to appear in the roster is simulated
-regardless of whether they actually played that week. Historical week-by-week
-injury *designations* (not just game logs) would need to be pinned per
-season/week to fix this properly; left as a known limitation of the v1 ship
-gate rather than blocking on it.
+Per-week active-roster + injury filter (mirrors production): each historical
+game's spec is now built the same way `scripts/generate_sim_nfl.py` builds a
+live slate -- `usage.active_usage` per (team, season, week), using that
+week's depth chart and `nfl_data_py.import_injuries` OUT/Doubtful
+designations for that exact (season, week) (see `out_names_by_team_week`),
+not `injuries={}`. `pass_yds` is paired against the actual stats keyed by the
+sim's starting-QB gsis_id (`active_usage`'s second return value), which is
+the same gsis `build_spec_from_usage` asserts the spec's lone QB carries --
+see `actual_qb_pass_yds` -- fixing a prior mispairing artifact (MAE-178)
+where pass_yds could land on the wrong player.
 
 Usage:
     PYTHONPATH=src uv run python scripts/backtest_sim_nfl.py
@@ -74,18 +75,16 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 import numpy as np
+import pandas as pd
 
 from sportsmodel.nfl.data import load_schedules
 from sportsmodel.nfl.teams import normalize_team
 from sportsmodel.sim.engine import pred_scores
 from sportsmodel.sim.nfl.aggregate import nfl_player_prop_dists
-from sportsmodel.sim.nfl.inputs import build_spec
+from sportsmodel.sim.nfl.inputs import build_spec_from_usage
 from sportsmodel.sim.nfl.kernel import simulate_game
-from sportsmodel.sim.nfl.rates import (
-    fetch_nflverse,
-    player_inputs_from_weekly,
-    team_rates_from_pbp,
-)
+from sportsmodel.sim.nfl.rates import fetch_nflverse, team_rates_from_pbp
+from sportsmodel.sim.nfl.usage import active_usage, build_pfr_to_gsis, fetch_usage_sources
 
 DEFAULT_N_SIMS = 2000
 SIM_SEED = 42
@@ -94,11 +93,11 @@ SIM_SEED = 42
 VALIDATION_SEASONS = [2021, 2022, 2023, 2024]
 
 # Extra prior seasons fetched (but never validated on) purely to warm up
-# team_rates_from_pbp/player_inputs_from_weekly for early weeks of the first
-# validation season -- without this, week 1 of VALIDATION_SEASONS[0] would
-# have zero history before its cutoff and team_rates_from_pbp would hand back
-# all-zero drive_outcomes (a divide-by-zero landmine in kernel.sample_drive's
-# renormalization).
+# team_rates_from_pbp and active_usage's recency-weighted usage window for
+# early weeks of the first validation season -- without this, week 1 of
+# VALIDATION_SEASONS[0] would have zero history before its cutoff and
+# team_rates_from_pbp would hand back all-zero drive_outcomes (a
+# divide-by-zero landmine in kernel.sample_drive's renormalization).
 WARMUP_SEASONS_BACK = 2
 
 MARKET_MAX = {"pass_yds": 400, "rush_yds": 200, "rec_yds": 200, "receptions": 15}
@@ -216,6 +215,66 @@ def is_propable(market: str, actual_usage: dict) -> bool:
     return float(actual_usage.get(usage_col, 0.0) or 0.0) >= threshold
 
 
+# Historical injury designations (nfl_data_py `import_injuries` `report_status`
+# values, case-insensitive) treated as ruled out for a given player-week --
+# matches `scripts/generate_sim_nfl.py`'s `_OUT_STATUSES` live-slate gate.
+_OUT_STATUSES = frozenset({"out", "doubtful"})
+
+
+def out_names_by_team_week(
+    injuries_df: pd.DataFrame, season: int, week: int
+) -> dict[str, set[str]]:
+    """team -> {lowercased full_name} of players ruled OUT/Doubtful for one
+    (season, week), from nflverse `import_injuries()` (columns include
+    `season`, `week`, `team`, `full_name`, `report_status`). PURE.
+
+    `report_status` is matched case-insensitively against `_OUT_STATUSES`
+    ("out"/"doubtful"); any other value (e.g. "Questionable") or a NaN status
+    excludes the row. A NaN/blank `full_name` is likewise skipped -- there's
+    nothing to match against a depth chart's name column. This is the
+    per-week active/inactive filter `active_usage`'s `injuries_out_names`
+    expects, sourced from real historical designations instead of the
+    `injuries={}` placeholder the backtest used before this.
+    """
+    out: dict[str, set[str]] = {}
+    rows = injuries_df[
+        (injuries_df["season"] == season) & (injuries_df["week"] == week)
+    ]
+    for row in rows.itertuples(index=False):
+        status = getattr(row, "report_status", None)
+        if pd.isna(status) or str(status).strip().lower() not in _OUT_STATUSES:
+            continue
+        name = getattr(row, "full_name", None)
+        if pd.isna(name) or not str(name).strip():
+            continue
+        team = str(getattr(row, "team", "")).strip()
+        out.setdefault(team, set()).add(str(name).strip().lower())
+    return out
+
+
+def actual_qb_pass_yds(
+    qb_gsis: str | None, actual_stats: dict[str, dict[str, float]]
+) -> float | None:
+    """Ruling C2: the actual value the sim's starting-QB pass_yds
+    distribution should be compared against -- `actual_stats[qb_gsis]
+    ["pass_yds"]` if `qb_gsis` is known and present in `actual_stats`, else
+    None. PURE.
+
+    This makes explicit (and unit-testable) the pairing contract the main
+    dists loop already relies on implicitly: `nfl_player_prop_dists` and
+    `_actual_player_stats` are both keyed by gsis_id, so once `active_usage`
+    hands back the true starting QB's gsis, pass_yds pairs against THAT
+    player's actual stats -- not a mispaired player_id (the MAE-178 root
+    cause).
+    """
+    if qb_gsis is None:
+        return None
+    stats = actual_stats.get(qb_gsis)
+    if stats is None:
+        return None
+    return stats.get("pass_yds")
+
+
 # =============================================================================
 # Walk-forward harness (heavy IO -- not unit-tested; see module docstring)
 # =============================================================================
@@ -258,6 +317,15 @@ def run_backtest(seasons: list[int], n_sims: int, seed: int = SIM_SEED) -> dict:
     nflverse = fetch_nflverse(fetch_seasons)
     pbp, weekly, snaps = nflverse["pbp"], nflverse["weekly"], nflverse["snaps"]
 
+    print(f"fetching usage sources for seasons {fetch_seasons}")
+    usage_src = fetch_usage_sources(fetch_seasons)
+    pfr2gsis = build_pfr_to_gsis(usage_src["ids"])
+
+    print(f"fetching historical injuries for seasons {fetch_seasons}")
+    import nfl_data_py as nfl
+
+    injuries_df = nfl.import_injuries(fetch_seasons)
+
     schedules = load_schedules(fetch_seasons)
     games = schedules[
         schedules["season"].isin(seasons)
@@ -282,22 +350,46 @@ def run_backtest(seasons: list[int], n_sims: int, seed: int = SIM_SEED) -> dict:
     n_skipped = 0
     cutoff_key = None
     rates: dict = {}
-    players: dict = {}
     actual_stats: dict = {}
+    out_by_team: dict[str, set[str]] = {}
+    # (team, season, week) -> active_usage's (players, qb_gsis) result.
+    # Memoized so each team's active roster for a given week is computed
+    # ONCE (active_usage does a league-wide weekly groupby internally) even
+    # though many games in a cutoff block reuse the same team-week.
+    active_cache: dict[tuple[str, int, int], tuple[list, str | None]] = {}
+
+    def _active_for(team: str, season: int, week: int) -> tuple[list, str | None]:
+        key = (team, season, week)
+        if key not in active_cache:
+            active_cache[key] = active_usage(
+                team,
+                season,
+                week,
+                usage_src["depth"],
+                weekly,
+                usage_src["snaps"],
+                pfr2gsis,
+                out_by_team.get(team, set()),
+            )
+        return active_cache[key]
 
     for row in games.itertuples(index=False):
         season, week = int(row.season), int(row.week)
         key = (season, week)
         if key != cutoff_key:
             rates = team_rates_from_pbp(pbp, season, week)
-            players = player_inputs_from_weekly(weekly, snaps, season, week)
             actual_stats = _actual_player_stats(weekly, season, week)
+            out_by_team = out_names_by_team_week(injuries_df, season, week)
             cutoff_key = key
 
         try:
             home = normalize_team(row.home_team)
             away = normalize_team(row.away_team)
-            spec = build_spec(home, away, rates, players, injuries={})
+            home_players, home_qb = _active_for(home, season, week)
+            away_players, away_qb = _active_for(away, season, week)
+            spec = build_spec_from_usage(
+                home, away, rates, home_players, away_players, home_qb, away_qb
+            )
             sims = simulate_game(spec, n_sims, rng)
         except Exception as exc:  # noqa: BLE001 -- one bad game must not abort the walk
             print(f"skipping {season} wk{week} {row.away_team}@{row.home_team}: {exc}")
