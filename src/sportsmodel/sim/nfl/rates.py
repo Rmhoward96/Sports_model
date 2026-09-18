@@ -54,6 +54,14 @@ Expected columns
                                   line); used to gate the red-zone (<=20) subset
                                   for rz_td_rate. Missing/absent column is
                                   tolerated (rz_td_rate becomes 0.0).
+    sack                : int/float 0/1 — 1 if the pass play was a sack (B.3).
+                                  Read unconditionally (import_pbp_data always
+                                  supplies it); sacks are pass PLAYS that are NOT
+                                  attempts, so pass_att_pg = pass plays minus
+                                  sacks. NaN counts as non-sack.
+    complete_pass       : int/float 0/1 — 1 if the pass attempt was completed
+                                  (B.3); used for completion_pct. Read
+                                  unconditionally.
 
 `player_inputs_from_weekly(weekly_df, snaps_df, ...)` expects (nflverse
 `import_weekly_data`); `snaps_df` (nflverse `import_snap_counts`) is accepted
@@ -175,21 +183,22 @@ def team_rates_from_pbp(
         else:
             rz_td_rate = 0.0
 
-        # Per-game volume + efficiency rates (B.3 Task 1).
+        # Per-game volume + efficiency rates (B.3 Task 1). Reuses n_pass/n_run
+        # (the play_type=="pass"/"run" counts computed above for pass_rate);
+        # `n_pass` counts all pass PLAYS including sacks, so attempts subtract
+        # sacks. nflverse passing_yards is gross, so sacks affect target counts
+        # only -- never a yardage subtraction.
         is_pass = team_df["play_type"] == "pass"
-        is_run = team_df["play_type"] == "run"
         is_sack = team_df["sack"] == 1
         is_attempt = is_pass & ~is_sack
 
-        n_pass_plays = int(is_pass.sum())
         n_attempts = int(is_attempt.sum())
-        n_runs = int(is_run.sum())
         n_sacks = int(is_sack.sum())
         n_completions = int((team_df["complete_pass"] == 1)[is_attempt].sum())
 
         pass_att_pg = n_attempts / n_games if n_games > 0 else 0.0
-        rush_att_pg = n_runs / n_games if n_games > 0 else 0.0
-        sack_rate = n_sacks / n_pass_plays if n_pass_plays > 0 else 0.0
+        rush_att_pg = n_run / n_games if n_games > 0 else 0.0
+        sack_rate = n_sacks / n_pass if n_pass > 0 else 0.0
         completion_pct = n_completions / n_attempts if n_attempts > 0 else 0.0
 
         result[team] = TeamRates(
