@@ -9,28 +9,38 @@ def _pbp_rows():
     """Small synthetic play-by-play frame spanning two weeks for two teams.
 
     Columns mirror nflverse's `import_pbp_data` output: season, week,
-    posteam, defteam, play_type, fixed_drive_result, drive, game_id, yardline_100.
+    posteam, defteam, play_type, fixed_drive_result, drive, game_id,
+    yardline_100, sack, complete_pass. (sack/complete_pass are not exercised
+    by the assertions in this fixture's tests; see `_volume_pbp_rows` for
+    those.)
     """
     rows = [
         # Week 1 (2023): KC offense, 2 drives -> 1 TD, 1 punt.
         dict(season=2023, week=1, posteam="KC", defteam="BUF", play_type="pass",
+             sack=0, complete_pass=1,
              fixed_drive_result="Touchdown", drive=1, game_id="g1", yardline_100=15),
         dict(season=2023, week=1, posteam="KC", defteam="BUF", play_type="run",
+             sack=0, complete_pass=0,
              fixed_drive_result="Touchdown", drive=1, game_id="g1", yardline_100=10),
         dict(season=2023, week=1, posteam="KC", defteam="BUF", play_type="pass",
+             sack=0, complete_pass=0,
              fixed_drive_result="Punt", drive=2, game_id="g1", yardline_100=60),
         # Week 1 (2023): BUF offense, 1 drive -> field goal.
         dict(season=2023, week=1, posteam="BUF", defteam="KC", play_type="run",
+             sack=0, complete_pass=0,
              fixed_drive_result="Field Goal", drive=3, game_id="g1", yardline_100=12),
         # Week 2 (2023): KC offense, 1 drive -> turnover. Included (week=2 < upto_week=3).
         dict(season=2023, week=2, posteam="KC", defteam="NE", play_type="pass",
+             sack=0, complete_pass=0,
              fixed_drive_result="Turnover", drive=4, game_id="g2", yardline_100=55),
         # Week 3 (2023): KC offense -> should be EXCLUDED (at upto_week boundary).
         dict(season=2023, week=3, posteam="KC", defteam="NE", play_type="pass",
+             sack=0, complete_pass=1,
              fixed_drive_result="Touchdown", drive=5, game_id="g3", yardline_100=8),
         # Season 2024 week 1: should be EXCLUDED (at/after upto_season boundary... wait
         # upto_season=2023 so season=2024 is after; excluded).
         dict(season=2024, week=1, posteam="KC", defteam="NE", play_type="pass",
+             sack=0, complete_pass=1,
              fixed_drive_result="Touchdown", drive=6, game_id="g4", yardline_100=5),
     ]
     return pd.DataFrame(rows)
@@ -58,22 +68,31 @@ def test_drive_result_map_pins_real_nflverse_labels():
     (safety, opp touchdown) are treated as 0-point offensive turnovers."""
     rows = [
         dict(season=2024, week=1, posteam="KC", defteam="BUF", play_type="pass",
+             sack=0, complete_pass=1,
              fixed_drive_result="Touchdown", drive=1, game_id="g1", yardline_100=10),
         dict(season=2024, week=1, posteam="KC", defteam="BUF", play_type="run",
+             sack=0, complete_pass=0,
              fixed_drive_result="Field Goal", drive=2, game_id="g1", yardline_100=15),
         dict(season=2024, week=1, posteam="KC", defteam="BUF", play_type="run",
+             sack=0, complete_pass=0,
              fixed_drive_result="Missed Field Goal", drive=3, game_id="g1", yardline_100=25),
         dict(season=2024, week=1, posteam="KC", defteam="BUF", play_type="pass",
+             sack=0, complete_pass=0,
              fixed_drive_result="Punt", drive=4, game_id="g1", yardline_100=60),
         dict(season=2024, week=1, posteam="KC", defteam="BUF", play_type="pass",
+             sack=0, complete_pass=0,
              fixed_drive_result="Turnover", drive=5, game_id="g1", yardline_100=50),
         dict(season=2024, week=1, posteam="KC", defteam="BUF", play_type="run",
+             sack=0, complete_pass=0,
              fixed_drive_result="Turnover on Downs", drive=6, game_id="g1", yardline_100=40),
         dict(season=2024, week=1, posteam="KC", defteam="BUF", play_type="run",
+             sack=0, complete_pass=0,
              fixed_drive_result="Safety", drive=7, game_id="g1", yardline_100=2),
         dict(season=2024, week=1, posteam="KC", defteam="BUF", play_type="pass",
+             sack=0, complete_pass=0,
              fixed_drive_result="Opp touchdown", drive=8, game_id="g1", yardline_100=95),
         dict(season=2024, week=1, posteam="KC", defteam="BUF", play_type="pass",
+             sack=0, complete_pass=0,
              fixed_drive_result="End of Half", drive=9, game_id="g1", yardline_100=70),
     ]
     pbp = pd.DataFrame(rows)
@@ -112,6 +131,93 @@ def test_team_rates_pass_rate_and_buf_fg():
     kc = rates["KC"]
     # KC has 3 pass plays + 1 run play among the leaked-in rows.
     assert kc.pass_rate == pytest.approx(3 / 4)
+
+
+def _volume_pbp_rows():
+    """Synthetic pbp for one posteam (KC) across 2 games, covering pass/run/sack/
+    completion combinations, plus a leaked-in row at/after the cutoff with big
+    counts that must NOT affect the rates.
+
+    upto_season=2023, upto_week=3 -> strictly-before rows are weeks 1-2.
+    Game 1 (g1, week 1): 3 pass attempts (2 complete, 1 incomplete), 1 sack
+        (pass play, sack==1, must NOT count as an attempt), 2 runs.
+    Game 2 (g2, week 2): 1 pass attempt (complete), 1 sack, 1 run.
+    Leaked row (week 3, g3): huge counts, must be excluded entirely.
+    """
+    rows = [
+        # --- Game 1 (week 1, 2023) ---
+        dict(season=2023, week=1, posteam="KC", defteam="BUF", play_type="pass",
+             sack=0, complete_pass=1, fixed_drive_result="Touchdown", drive=1,
+             game_id="g1", yardline_100=50),
+        dict(season=2023, week=1, posteam="KC", defteam="BUF", play_type="pass",
+             sack=0, complete_pass=1, fixed_drive_result="Touchdown", drive=1,
+             game_id="g1", yardline_100=40),
+        dict(season=2023, week=1, posteam="KC", defteam="BUF", play_type="pass",
+             sack=0, complete_pass=0, fixed_drive_result="Touchdown", drive=1,
+             game_id="g1", yardline_100=30),
+        dict(season=2023, week=1, posteam="KC", defteam="BUF", play_type="pass",
+             sack=1, complete_pass=0, fixed_drive_result="Punt", drive=2,
+             game_id="g1", yardline_100=60),
+        dict(season=2023, week=1, posteam="KC", defteam="BUF", play_type="run",
+             sack=0, complete_pass=0, fixed_drive_result="Touchdown", drive=1,
+             game_id="g1", yardline_100=45),
+        dict(season=2023, week=1, posteam="KC", defteam="BUF", play_type="run",
+             sack=0, complete_pass=0, fixed_drive_result="Punt", drive=2,
+             game_id="g1", yardline_100=55),
+        # --- Game 2 (week 2, 2023) ---
+        dict(season=2023, week=2, posteam="KC", defteam="NE", play_type="pass",
+             sack=0, complete_pass=1, fixed_drive_result="Turnover", drive=4,
+             game_id="g2", yardline_100=55),
+        dict(season=2023, week=2, posteam="KC", defteam="NE", play_type="pass",
+             sack=1, complete_pass=0, fixed_drive_result="Turnover", drive=4,
+             game_id="g2", yardline_100=55),
+        dict(season=2023, week=2, posteam="KC", defteam="NE", play_type="run",
+             sack=0, complete_pass=0, fixed_drive_result="Turnover", drive=4,
+             game_id="g2", yardline_100=55),
+        # --- Leaked row: week 3 (== upto_week boundary), huge counts ---
+        dict(season=2023, week=3, posteam="KC", defteam="NE", play_type="pass",
+             sack=0, complete_pass=1, fixed_drive_result="Touchdown", drive=5,
+             game_id="g3", yardline_100=8),
+    ]
+    return pd.DataFrame(rows)
+
+
+def test_team_rates_volume_fields():
+    """pass_att_pg excludes sacks, rush_att_pg counts runs, sack_rate and
+    completion_pct are correct ratios, all per-game and leakage-free."""
+    pbp = _volume_pbp_rows()
+    rates = team_rates_from_pbp(pbp, upto_season=2023, upto_week=3)
+    kc = rates["KC"]
+
+    # n_games = 2 (g1, g2). Leaked g3 row excluded entirely.
+    # Pass plays (play_type=="pass") strictly-before-cutoff: g1 has 4 (3 non-sack
+    # + 1 sack), g2 has 2 (1 non-sack + 1 sack) -> 6 pass plays total.
+    # Attempts (pass & sack!=1): g1 has 3, g2 has 1 -> 4 attempts total.
+    assert kc.pass_att_pg == pytest.approx(4 / 2)
+    # Runs: g1 has 2, g2 has 1 -> 3 runs total.
+    assert kc.rush_att_pg == pytest.approx(3 / 2)
+    # Sacks: g1 has 1, g2 has 1 -> 2 sacks / 6 pass plays.
+    assert kc.sack_rate == pytest.approx(2 / 6)
+    # Completions: g1 has 2, g2 has 1 -> 3 completions / 4 attempts.
+    assert kc.completion_pct == pytest.approx(3 / 4)
+
+
+def test_team_rates_volume_fields_divide_by_zero_guarded():
+    """A team with no pass plays at all must not raise and must report 0.0
+    for sack_rate/completion_pct (denominators are zero)."""
+    rows = [
+        dict(season=2023, week=1, posteam="BUF", defteam="KC", play_type="run",
+             sack=0, complete_pass=0, fixed_drive_result="Field Goal", drive=1,
+             game_id="g1", yardline_100=12),
+    ]
+    pbp = pd.DataFrame(rows)
+    rates = team_rates_from_pbp(pbp, upto_season=2023, upto_week=3)
+    buf = rates["BUF"]
+
+    assert buf.pass_att_pg == pytest.approx(0.0)
+    assert buf.rush_att_pg == pytest.approx(1.0)
+    assert buf.sack_rate == pytest.approx(0.0)
+    assert buf.completion_pct == pytest.approx(0.0)
 
 
 def _weekly_rows():

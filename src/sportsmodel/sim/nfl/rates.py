@@ -175,11 +175,32 @@ def team_rates_from_pbp(
         else:
             rz_td_rate = 0.0
 
+        # Per-game volume + efficiency rates (B.3 Task 1).
+        is_pass = team_df["play_type"] == "pass"
+        is_run = team_df["play_type"] == "run"
+        is_sack = team_df["sack"] == 1
+        is_attempt = is_pass & ~is_sack
+
+        n_pass_plays = int(is_pass.sum())
+        n_attempts = int(is_attempt.sum())
+        n_runs = int(is_run.sum())
+        n_sacks = int(is_sack.sum())
+        n_completions = int((team_df["complete_pass"] == 1)[is_attempt].sum())
+
+        pass_att_pg = n_attempts / n_games if n_games > 0 else 0.0
+        rush_att_pg = n_runs / n_games if n_games > 0 else 0.0
+        sack_rate = n_sacks / n_pass_plays if n_pass_plays > 0 else 0.0
+        completion_pct = n_completions / n_attempts if n_attempts > 0 else 0.0
+
         result[team] = TeamRates(
             drive_outcomes=drive_outcomes,
             pass_rate=pass_rate,
             drives_per_game=drives_per_game,
             rz_td_rate=rz_td_rate,
+            pass_att_pg=pass_att_pg,
+            rush_att_pg=rush_att_pg,
+            sack_rate=sack_rate,
+            completion_pct=completion_pct,
         )
 
     return result
