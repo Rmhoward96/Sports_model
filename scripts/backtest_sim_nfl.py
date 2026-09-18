@@ -78,7 +78,7 @@ import numpy as np
 import pandas as pd
 
 from sportsmodel.nfl.data import load_schedules
-from sportsmodel.nfl.teams import normalize_team
+from sportsmodel.nfl.teams import TEAMS, normalize_team
 from sportsmodel.sim.engine import pred_scores
 from sportsmodel.sim.nfl.aggregate import nfl_player_prop_dists
 from sportsmodel.sim.nfl.inputs import build_spec_from_usage
@@ -275,6 +275,56 @@ def actual_qb_pass_yds(
     return stats.get("pass_yds")
 
 
+def _clean_codes(series) -> set[str]:
+    """A pandas Series -> {stripped str}, dropping NaN/blank values."""
+    out: set[str] = set()
+    for v in series:
+        if pd.isna(v):
+            continue
+        s = str(v).strip()
+        if s:
+            out.add(s)
+    return out
+
+
+def abbrev_alignment(
+    depth_df: pd.DataFrame,
+    injuries_df: pd.DataFrame,
+    game_teams: set[str],
+    known_teams: set[str],
+) -> dict[str, list[str]]:
+    """Sanity check: do the team-abbreviation conventions used by the
+    depth-chart, historical-injuries, and schedule sources all fall inside
+    `known_teams` (the canonical set `normalize_team` maps onto)? PURE.
+
+    A `depth_df["club_code"]` or `injuries_df["team"]` value NOT in
+    `known_teams` means `active_usage`'s depth-chart lookup (or
+    `out_names_by_team_week`'s per-team dict) can never match a game's
+    `normalize_team`-normalized team code, in which case `active_usage`
+    silently returns `([], None)` for that team -- no exception, no
+    warning -- rather than the mismatch being loud. `run_backtest`'s
+    `n_empty_active` counter is the runtime symptom of exactly this; this
+    helper is the "why" diagnostic, run once up front against the whole
+    fetched span rather than discovered game-by-game.
+
+    Returns `{"depth_unknown": [...], "injuries_unknown": [...],
+    "games_unknown": [...]}` (each sorted), where "games_unknown" are
+    `game_teams` entries (normalized schedule team codes) NOT in
+    `known_teams` -- normally empty, since `known_teams` should already be
+    `normalize_team`'s own codomain, but included for parity/defensiveness.
+    NaN/blank codes in either DataFrame column are dropped, not flagged
+    (they're absent data, not a naming mismatch).
+    """
+    depth_codes = _clean_codes(depth_df["club_code"]) if "club_code" in depth_df.columns else set()
+    injuries_codes = _clean_codes(injuries_df["team"]) if "team" in injuries_df.columns else set()
+
+    return {
+        "depth_unknown": sorted(depth_codes - known_teams),
+        "injuries_unknown": sorted(injuries_codes - known_teams),
+        "games_unknown": sorted(set(game_teams) - known_teams),
+    }
+
+
 # =============================================================================
 # Walk-forward harness (heavy IO -- not unit-tested; see module docstring)
 # =============================================================================
@@ -307,10 +357,12 @@ def run_backtest(seasons: list[int], n_sims: int, seed: int = SIM_SEED) -> dict:
 
     Returns a dict of raw sample lists for `report()` to summarize:
       game_probs/game_outcomes, margin_preds/margin_actuals,
-      total_preds/total_actuals, and per-market player_mean_pairs/
+      total_preds/total_actuals, per-market player_mean_pairs/
       player_p50_pairs/player_p90_pairs (each a list of (sim_value, actual)
       tuples, restricted to player-weeks that clear that market's
-      `is_propable` ACTUAL-usage gate).
+      `is_propable` ACTUAL-usage gate), and `n_empty_active` (count of games
+      where `active_usage` handed back an empty roster for either side --
+      see `abbrev_alignment`'s docstring for why this can happen silently).
     """
     fetch_seasons = list(range(min(seasons) - WARMUP_SEASONS_BACK, max(seasons) + 1))
     print(f"fetching nflverse seasons {fetch_seasons}")
@@ -334,6 +386,24 @@ def run_backtest(seasons: list[int], n_sims: int, seed: int = SIM_SEED) -> dict:
         & schedules["away_score"].notna()
     ].sort_values(["season", "week"])
 
+    game_teams: set[str] = set()
+    for row in games.itertuples(index=False):
+        for raw in (row.home_team, row.away_team):
+            try:
+                game_teams.add(normalize_team(raw))
+            except ValueError:
+                continue  # surfaces via the per-game try/except in the loop below
+
+    alignment = abbrev_alignment(usage_src["depth"], injuries_df, game_teams, TEAMS)
+    if alignment["depth_unknown"] or alignment["injuries_unknown"] or alignment["games_unknown"]:
+        print(
+            f"WARN abbrev mismatch: depth_unknown={alignment['depth_unknown']} "
+            f"injuries_unknown={alignment['injuries_unknown']} "
+            f"games_unknown={alignment['games_unknown']}"
+        )
+    else:
+        print("abbrev alignment: OK (depth/injuries/schedule codes all known)")
+
     rng = np.random.default_rng(seed)
 
     game_probs: list[float] = []
@@ -348,6 +418,7 @@ def run_backtest(seasons: list[int], n_sims: int, seed: int = SIM_SEED) -> dict:
 
     n_ok = 0
     n_skipped = 0
+    n_empty_active = 0
     cutoff_key = None
     rates: dict = {}
     actual_stats: dict = {}
@@ -387,6 +458,13 @@ def run_backtest(seasons: list[int], n_sims: int, seed: int = SIM_SEED) -> dict:
             away = normalize_team(row.away_team)
             home_players, home_qb = _active_for(home, season, week)
             away_players, away_qb = _active_for(away, season, week)
+            if not home_players or home_qb is None or not away_players or away_qb is None:
+                # A team-abbrev convention mismatch (depth_df/injuries_df vs.
+                # normalize_team) makes active_usage silently hand back an
+                # empty roster instead of raising -- see abbrev_alignment's
+                # docstring. Count it loudly rather than let it silently
+                # shrink/pollute the player-market sample while n_ok climbs.
+                n_empty_active += 1
             spec = build_spec_from_usage(
                 home, away, rates, home_players, away_players, home_qb, away_qb
             )
@@ -426,7 +504,10 @@ def run_backtest(seasons: list[int], n_sims: int, seed: int = SIM_SEED) -> dict:
 
         n_ok += 1
 
-    print(f"walk-forward: {n_ok} games scored, {n_skipped} skipped")
+    print(
+        f"walk-forward: {n_ok} games scored, {n_skipped} skipped, "
+        f"{n_empty_active} games had an empty active roster"
+    )
 
     return {
         "game_probs": game_probs,
@@ -438,6 +519,7 @@ def run_backtest(seasons: list[int], n_sims: int, seed: int = SIM_SEED) -> dict:
         "player_mean_pairs": player_mean_pairs,
         "player_p50_pairs": player_p50_pairs,
         "player_p90_pairs": player_p90_pairs,
+        "n_empty_active": n_empty_active,
     }
 
 

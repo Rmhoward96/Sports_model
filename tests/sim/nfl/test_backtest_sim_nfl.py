@@ -267,3 +267,79 @@ def test_actual_qb_pass_yds_returns_none_for_missing_gsis():
 def test_actual_qb_pass_yds_returns_none_when_qb_gsis_is_none():
     actual_stats = {"00-001": {"pass_yds": 275.0}}
     assert bsn.actual_qb_pass_yds(None, actual_stats) is None
+
+
+# =============================================================================
+# abbrev_alignment
+# =============================================================================
+
+_KNOWN_TEAMS = {"KC", "BUF", "SF"}
+
+
+def _depth_df_mismatched() -> pd.DataFrame:
+    return pd.DataFrame([
+        {"club_code": "KC"},
+        {"club_code": "BUF"},
+        {"club_code": "KAN"},  # not in _KNOWN_TEAMS -- deliberate mismatch
+        {"club_code": float("nan")},
+        {"club_code": "  "},
+    ])
+
+
+def _injuries_df_mismatched() -> pd.DataFrame:
+    return pd.DataFrame([
+        {"team": "KC"},
+        {"team": "SF"},
+        {"team": "JAC"},  # not in _KNOWN_TEAMS -- deliberate mismatch
+        {"team": float("nan")},
+        {"team": ""},
+    ])
+
+
+def test_abbrev_alignment_flags_unknown_depth_code():
+    result = bsn.abbrev_alignment(
+        _depth_df_mismatched(), _injuries_df_mismatched(), {"KC", "BUF"}, _KNOWN_TEAMS
+    )
+    assert result["depth_unknown"] == ["KAN"]
+
+
+def test_abbrev_alignment_flags_unknown_injuries_team():
+    result = bsn.abbrev_alignment(
+        _depth_df_mismatched(), _injuries_df_mismatched(), {"KC", "BUF"}, _KNOWN_TEAMS
+    )
+    assert result["injuries_unknown"] == ["JAC"]
+
+
+def test_abbrev_alignment_flags_unknown_game_team():
+    result = bsn.abbrev_alignment(
+        _depth_df_mismatched(), _injuries_df_mismatched(), {"KC", "XYZ"}, _KNOWN_TEAMS
+    )
+    assert result["games_unknown"] == ["XYZ"]
+
+
+def test_abbrev_alignment_matching_codes_not_flagged():
+    result = bsn.abbrev_alignment(
+        _depth_df_mismatched(), _injuries_df_mismatched(), {"KC", "BUF"}, _KNOWN_TEAMS
+    )
+    assert "KC" not in result["depth_unknown"]
+    assert "BUF" not in result["depth_unknown"]
+    assert "KC" not in result["injuries_unknown"]
+    assert "SF" not in result["injuries_unknown"]
+    assert result["games_unknown"] == []
+
+
+def test_abbrev_alignment_guards_nan_and_blank_values():
+    result = bsn.abbrev_alignment(
+        _depth_df_mismatched(), _injuries_df_mismatched(), {"KC", "BUF"}, _KNOWN_TEAMS
+    )
+    assert "nan" not in result["depth_unknown"]
+    assert "" not in result["depth_unknown"]
+    assert "nan" not in result["injuries_unknown"]
+    assert "" not in result["injuries_unknown"]
+
+
+def test_abbrev_alignment_all_clean_returns_empty_lists():
+    depth_df = pd.DataFrame([{"club_code": "KC"}, {"club_code": "BUF"}])
+    injuries_df = pd.DataFrame([{"team": "KC"}, {"team": "SF"}])
+    result = bsn.abbrev_alignment(depth_df, injuries_df, {"KC", "BUF"}, _KNOWN_TEAMS)
+    assert result == {"depth_unknown": [], "injuries_unknown": [], "games_unknown": []}
