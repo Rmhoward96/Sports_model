@@ -1,0 +1,34 @@
+name: generate-sim-nfl
+
+# Runs the NFL sim producer (Monte Carlo game simulations + player-level
+# distributions). Scheduled before desk-auto-nfl so the disagreement signal is
+# fresh when the desk reads it. Wed/Sat/Sun 21:00 UTC (Thor/Sun/Mon slates),
+# ~1 hour before desk-auto-nfl at 22:15 UTC. generate_sim_nfl.py is idempotent
+# (upsert on game keys), so duplicate or slightly-late runs just re-upsert the
+# same rows. Manual runs (workflow_dispatch) proceed the same way.
+on:
+  schedule:
+    - cron: "0 21 * * 0,3,6"  # Wed/Sat/Sun 21:00 UTC (~4-5pm ET)
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+jobs:
+  generate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v10.0.1
+
+      - name: Set up Python + sync deps
+        run: uv sync
+
+      - name: Generate NFL sim predictions (Monte Carlo + player distributions)
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+          SM_DATA_DIR: ${{ github.workspace }}/data
+        run: uv run python scripts/generate_sim_nfl.py

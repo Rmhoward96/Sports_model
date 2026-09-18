@@ -15,6 +15,15 @@ or app dependency:
 - `.github/workflows/desk-auto-nfl.yml` — Wed/Sat/Sun (Thu/Sun/Mon slates)
 - `.github/workflows/desk-auto-cfb.yml` — Wed/Thu/Fri (Thu/Fri/Sat slates)
 
+**NFL only:** The NFL desk also consumes an **analytic-vs-sim disagreement
+signal**. The workflow `.github/workflows/generate-sim-nfl.yml` runs at 21:00
+UTC (one hour before desk-auto-nfl) to populate `nfl_sim_current` and
+`nfl_player_sim_current` tables. During synthesis, `synthesize_desk_picks.apply_disagreement_cap`
+automatically caps conviction to medium when analytic and sim forecasts
+disagree by more than 0.15, preventing overconfident picks when the models
+conflict. One-time setup: run the migration `db/migration_nfl_sim.sql` in the
+Supabase SQL Editor.
+
 Each workflow runs the whole chain in one job: build the bundle
 (`desk_inputs.py`) → **synthesize picks via the Anthropic API**
 (`scripts/synthesize_desk_picks.py`, which embeds the methodology below) →
