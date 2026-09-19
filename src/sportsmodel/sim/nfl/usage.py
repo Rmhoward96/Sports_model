@@ -91,6 +91,29 @@ def build_pfr_to_gsis(ids_df: pd.DataFrame) -> dict[str, str]:
     return mapping
 
 
+def _latest_depth_week(
+    depth_df: pd.DataFrame, team: str, upto_season: int, upto_week: int
+) -> tuple[int, int] | None:
+    """Latest (season, week) <= (upto_season, upto_week) with `club_code ==
+    team` rows in `depth_df`. PURE. Returns None if the team has no rows at
+    or before the target at all.
+
+    The compare is the same compound (season, week) ordering used elsewhere
+    in this module: `season < upto_season OR (season == upto_season AND week
+    <= upto_week)`.
+    """
+    mask = (depth_df["club_code"] == team) & (
+        (depth_df["season"] < upto_season)
+        | ((depth_df["season"] == upto_season) & (depth_df["week"] <= upto_week))
+    )
+    rows = depth_df[mask]
+    if len(rows) == 0:
+        return None
+    best_season = int(rows["season"].max())
+    best_week = int(rows.loc[rows["season"] == best_season, "week"].max())
+    return (best_season, best_week)
+
+
 def _depth_team_int(value: object) -> int:
     """Coerce a depth-chart slot ("1"/"2"/2/…) to int; unknown -> 99 (deep backup)."""
     try:
@@ -126,6 +149,21 @@ def active_usage(
        is in ``injuries_out_names`` are dropped. The target-week depth chart and
        the injury list are pre-game info and ARE allowed to define who's active;
        everything else is strictly leakage-free.
+
+       **Fallback (depth-chart availability lag):** if ``depth_df`` has NO rows
+       for the team at the exact ``(upto_season, upto_week)`` (the current
+       week's chart hasn't been published yet -- common early in a week or
+       season), the active set is instead built from the team's most recent
+       AVAILABLE chart at or before the target, via
+       ``_latest_depth_week(depth_df, team, upto_season, upto_week)``. A prior
+       PUBLISHED depth chart is still pre-game info known before the target
+       week -- using it is not leakage, it's just a staler (but still
+       backward-looking) source for the same "who's active" question. If the
+       exact target week HAS rows, the fallback is never consulted. If the
+       team has no chart rows at or before the target at all, the active set
+       stays empty (graceful: returns ``([], None)``, same as before). Shares
+       and efficiency (item 2 below) are untouched by this fallback -- they
+       always come from the leakage-free recent weekly window.
 
     2. **Shares/efficiency** come from ``weekly_df`` rows STRICTLY before
        ``(upto_season, upto_week)`` — ``season < upto_season OR (season ==
@@ -178,6 +216,17 @@ def active_usage(
         & (depth_df["week"] == upto_week)
     )
     drows = depth_df[dmask]
+
+    if len(drows) == 0:
+        fallback = _latest_depth_week(depth_df, team, upto_season, upto_week)
+        if fallback is not None:
+            fb_season, fb_week = fallback
+            fmask = (
+                (depth_df["club_code"] == team)
+                & (depth_df["season"] == fb_season)
+                & (depth_df["week"] == fb_week)
+            )
+            drows = depth_df[fmask]
 
     # gsis_id -> {"pos", "name", "depth_team"}
     active: dict[str, dict] = {}

@@ -274,6 +274,76 @@ def test_weighted_usage_guards_nan_stat_column_no_crash_finite_shares():
     assert sum(p.target_share for p in players) == pytest.approx(1.0)
 
 
+def test_depth_chart_fallback_to_latest_available_week_when_target_missing():
+    """Target week (2026, wk1) has no depth-chart rows for the team at all
+    (chart not published yet). Fall back to the latest available chart AT OR
+    BEFORE the target -- here (2025, wk18) -- to build the active set. Shares
+    still come from the leakage-free recent weekly window (unchanged)."""
+    depth = _depth([
+        dict(season=2025, week=18, club_code="KC", depth_team="1", position="WR",
+             gsis_id="gA", full_name="Alpha Star", football_name=None),
+        dict(season=2025, week=18, club_code="KC", depth_team="2", position="WR",
+             gsis_id="gB", full_name="Beta Backup", football_name=None),
+    ])
+    weekly = _weekly([
+        _wrow("gA", "Alpha Star", "WR", "KC", 2025, 17, targets=10, receptions=8, rec_yds=120),
+        _wrow("gB", "Beta Backup", "WR", "KC", 2025, 17, targets=2, receptions=1, rec_yds=15),
+    ])
+    players, _qb = active_usage("KC", 2026, 1, depth, weekly, _EMPTY_SNAPS, {}, set())
+    ids = {p.player_id for p in players}
+    assert ids == {"gA", "gB"}
+    by_id = {p.player_id: p for p in players}
+    assert by_id["gA"].target_share == pytest.approx(10 / 12)
+    assert by_id["gB"].target_share == pytest.approx(2 / 12)
+
+
+def test_depth_chart_fallback_team_with_no_prior_rows_stays_empty_no_crash():
+    """A team with NO depth-chart rows at or before the target at all: the
+    fallback finds nothing, active set stays empty, no crash (existing
+    empty-roster path)."""
+    depth = _depth([
+        # Only a different team has any rows.
+        dict(season=2025, week=18, club_code="BUF", depth_team="1", position="WR",
+             gsis_id="gZ", full_name="Zulu Star", football_name=None),
+    ])
+    weekly = _weekly([])
+    players, qb = active_usage("KC", 2026, 1, depth, weekly, _EMPTY_SNAPS, {}, set())
+    assert players == []
+    assert qb is None
+
+
+def test_depth_chart_fallback_picks_latest_available_week_not_just_any():
+    """Two prior available charts exist -- (2025, wk10) and (2025, wk18).
+    The fallback must pick the LATEST (wk18), not the earliest."""
+    depth = _depth([
+        dict(season=2025, week=10, club_code="KC", depth_team="1", position="WR",
+             gsis_id="gOld", full_name="Old Starter", football_name=None),
+        dict(season=2025, week=18, club_code="KC", depth_team="1", position="WR",
+             gsis_id="gNew", full_name="New Starter", football_name=None),
+    ])
+    weekly = _weekly([])
+    players, _qb = active_usage("KC", 2026, 1, depth, weekly, _EMPTY_SNAPS, {}, set())
+    ids = {p.player_id for p in players}
+    assert ids == {"gNew"}
+    assert "gOld" not in ids
+
+
+def test_depth_chart_fallback_not_used_when_exact_target_week_has_rows():
+    """When the exact (upto_season, upto_week) chart has rows, the fallback
+    must NOT be used, even if an earlier chart also exists for the team."""
+    depth = _depth([
+        dict(season=2025, week=18, club_code="KC", depth_team="1", position="WR",
+             gsis_id="gOld", full_name="Old Starter", football_name=None),
+        dict(season=2026, week=1, club_code="KC", depth_team="1", position="WR",
+             gsis_id="gCurrent", full_name="Current Starter", football_name=None),
+    ])
+    weekly = _weekly([])
+    players, _qb = active_usage("KC", 2026, 1, depth, weekly, _EMPTY_SNAPS, {}, set())
+    ids = {p.player_id for p in players}
+    assert ids == {"gCurrent"}
+    assert "gOld" not in ids
+
+
 def test_returns_playerinput_instances():
     depth = _depth([
         dict(season=2023, week=5, club_code="KC", depth_team="1", position="WR",
