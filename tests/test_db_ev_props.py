@@ -256,3 +256,39 @@ def test_ev_prop_results_multiple_records_all_converted_and_commit_called(monkey
     assert n == 2
     assert len(sink["rows"]) == 2
     assert conn_holder["conn"].committed is True
+
+
+# ---------------------------------------------------------------------------
+# clear_stale_prop_line_picks -- demote a player's stale (shifted-off) lines
+# ---------------------------------------------------------------------------
+
+def test_clear_stale_prop_line_picks_empty_is_noop(monkeypatch):
+    def boom():
+        raise AssertionError("get_postgres should not be called for an empty list")
+    monkeypatch.setattr(db_module, "get_postgres", boom)
+    assert db.clear_stale_prop_line_picks([]) == 0
+
+
+def test_clear_stale_prop_line_picks_demotes_other_lines(monkeypatch):
+    sink = {}
+    monkeypatch.setattr(db_module, "get_postgres", lambda: FakeConn(sink))
+    n = db.clear_stale_prop_line_picks([
+        {"game_pk": 42, "player_id": "00-0033873", "market": "rec_yds",
+         "model_version": "props-sim-v1", "line": 69.5},
+    ])
+    assert n == 1
+    # demotes only OTHER lines of this exact (game, player, market), and
+    # only if still a pick
+    assert "UPDATE ev_prop_picks SET is_pick = false" in sink["sql"]
+    assert "line <> %s" in sink["sql"]
+    assert "is_pick = true" in sink["sql"]
+    assert sink["rows"] == [(42, "00-0033873", "rec_yds", "props-sim-v1", 69.5)]
+
+
+def test_clear_stale_prop_line_picks_defaults_model_version(monkeypatch):
+    sink = {}
+    monkeypatch.setattr(db_module, "get_postgres", lambda: FakeConn(sink))
+    db.clear_stale_prop_line_picks([
+        {"game_pk": 7, "player_id": "abc", "market": "receptions", "line": 5.5},
+    ])
+    assert sink["rows"] == [(7, "abc", "receptions", "props-sim-v1", 5.5)]

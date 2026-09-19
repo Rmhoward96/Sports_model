@@ -29,7 +29,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from sportsmodel import sports
-from sportsmodel.db import get_postgres, upsert_ev_prop_picks
+from sportsmodel.db import clear_stale_prop_line_picks, get_postgres, upsert_ev_prop_picks
 from sportsmodel.serving.props_ev import assemble_prop_rows
 
 MODEL_VERSION = "props-sim-v1"
@@ -102,8 +102,16 @@ def main() -> None:
     upsert_ev_prop_picks(rows)
 
     picks = [r for r in rows if r["is_pick"]]
+    # A player's main line can shift between builds (books move the number);
+    # since `line` is part of ev_prop_picks' primary key, the OLD line's row
+    # would otherwise persist with is_pick=true and surface as a phantom
+    # pick alongside the new line. Demote every other line for each player
+    # just picked.
+    cleared = clear_stale_prop_line_picks(picks)
+
     print(f"[build_ev_props_board] sport={args.sport} games={len(game_pks)} "
-          f"sim_rows={len(sim_rows)} prop_picks={len(rows)} plus_ev={len(picks)}")
+          f"sim_rows={len(sim_rows)} prop_picks={len(rows)} plus_ev={len(picks)} "
+          f"cleared_stale_lines={cleared}")
 
 
 if __name__ == "__main__":

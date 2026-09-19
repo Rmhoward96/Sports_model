@@ -244,6 +244,45 @@ def test_assemble_prop_rows_excludes_player_with_no_matching_odds():
     assert assemble_prop_rows(sim_rows, odds_rows, MODEL_VERSION) == []
 
 
+def test_assemble_prop_rows_picks_under_side_when_it_is_higher_ev():
+    # Low p_over (0.2) plus an attractive under price should make UNDER the
+    # +EV side. This discriminates the under branch from the over branch:
+    # if assemble_prop_rows wrongly reused p_over (instead of 1 - p_over)
+    # or novig_over (instead of 1 - novig_over) for the under side, these
+    # assertions would fail.
+    sim_rows = [{
+        "game_pk": 3003, "player_id": "p5", "name": "Underdog Back",
+        "market": "rush_yds", "mean": 40.0,
+        "dist": _pmf({30: 0.8, 60: 0.2}, 61),
+        "commence_time": "2026-09-21T17:00:00Z",
+    }]
+    odds_rows = [
+        {"game_pk": 3003, "market": "rush_yds", "side": "over",
+         "player_name": "Underdog Back", "book": "draftkings", "line": 45.5, "price": -110},
+        {"game_pk": 3003, "market": "rush_yds", "side": "under",
+         "player_name": "Underdog Back", "book": "fanduel", "line": 45.5, "price": -110},
+    ]
+
+    rows = assemble_prop_rows(sim_rows, odds_rows, MODEL_VERSION)
+
+    assert len(rows) == 1
+    row = rows[0]
+    p_over = 0.2  # P(X > 45.5) = pmf[60]
+    expected_novig_over = _novig(-110, -110)
+    expected_ev_over = _ev(p_over, -110)
+    expected_ev_under = _ev(1 - p_over, -110)
+    assert expected_ev_under > expected_ev_over  # under is the +EV side here
+
+    assert row["side"] == "under"
+    assert row["model_prob"] == pytest.approx(1 - p_over)
+    assert row["market_prob"] == pytest.approx(1 - expected_novig_over)
+    assert row["edge"] == pytest.approx((1 - p_over) - (1 - expected_novig_over))
+    assert row["ev_best"] == pytest.approx(expected_ev_under)
+    assert row["best_book"] == "fanduel"
+    assert row["best_price"] == -110
+    assert row["is_pick"] is True
+
+
 def test_assemble_prop_rows_picks_main_line_with_most_books():
     sim_rows = [{
         "game_pk": 2002, "player_id": "p4", "name": "Justin Jefferson",

@@ -417,6 +417,40 @@ def upsert_ev_prop_picks(records: list[dict]) -> int:
     return len(rows)
 
 
+def clear_stale_prop_line_picks(records: list[dict]) -> int:
+    """Demote every OTHER line of the same (game, player, market) just
+    written, so a shifted main line never leaves a stale pick behind.
+
+    `ev_prop_picks`' primary key is (game_pk, player_id, market, line,
+    model_version) -- line, not side -- so when a player's main line shifts
+    between builds (e.g. the book moves from 68.5 to 69.5), the OLD line's
+    row persists with is_pick=true because `line` is part of the primary key
+    rather than the conflict target changing it in place. `ev_prop_picks_current`
+    (DISTINCT ON game_pk, player_id, market, line) would then surface BOTH
+    lines as live picks -- a phantom pick that was never actually the current
+    board's line. After each board build, this sets is_pick=false on any row
+    for the same (game_pk, player_id, market, model_version) whose line
+    differs from the one just written. Idempotent; only touches rows still
+    flagged is_pick=true (same pattern as clear_other_side_picks)."""
+    if not records:
+        return 0
+    sql = (
+        "UPDATE ev_prop_picks SET is_pick = false "
+        "WHERE game_pk = %s AND player_id = %s AND market = %s "
+        "AND model_version = %s AND line <> %s AND is_pick = true"
+    )
+    params = [
+        (r.get("game_pk"), r.get("player_id"), r.get("market"),
+         r.get("model_version", _EV_PROP_DEFAULT_MODEL_VERSION), r.get("line"))
+        for r in records
+    ]
+    with get_postgres() as conn, conn.cursor() as cur:
+        cur.executemany(sql, params)
+        cleared = cur.rowcount if cur.rowcount and cur.rowcount > 0 else 0
+        conn.commit()
+    return cleared
+
+
 _EV_PROP_RESULTS_COLS = [
     "sport", "game_pk", "player_id", "player_name", "market", "side", "line",
     "model_version", "commence_time", "model_prob", "novig_close", "actual",
