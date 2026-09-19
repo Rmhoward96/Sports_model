@@ -33,7 +33,7 @@ from __future__ import annotations
 import re
 
 from ..model.distributions import prob_over_dist
-from .board import best_price, ev, novig
+from .board import best_price, decimal_odds, ev, novig
 
 # Sim aggregate market -> Odds API / SportConfig["nfl"].prop_market_map key.
 # The sim's markets are pass_yds/rush_yds/rec_yds/receptions; the odds side
@@ -257,3 +257,136 @@ def assemble_prop_rows(sim_rows: list[dict], odds_rows: list[dict], model_versio
             "is_pick": ev_best > 0,
         })
     return rows
+
+
+# =============================================================================
+# grade_prop_pick -- pure forward grading of an ev_prop_picks row against the
+# player's actual weekly stat + the closing Pinnacle price (Task 5).
+# =============================================================================
+
+# Sim/pick market -> nflverse `import_weekly_data` actual-stat column. Keys
+# are the SAME sim-side market codes `ev_prop_picks.market` stores (rush_yds/
+# rec_yds/receptions -- see SIM_TO_ODDS_MARKET above), not the odds-side
+# codes; values are the nflverse weekly column carrying the realized stat for
+# that market, joined by gsis player_id. pass_yds is intentionally absent
+# (excluded from C v1 -- see module docstring).
+SIM_MARKET_TO_WEEKLY: dict[str, str] = {
+    "rush_yds": "rushing_yards",
+    "rec_yds": "receiving_yards",
+    "receptions": "receptions",
+}
+
+
+def _implied_prob(american_price: int) -> float:
+    """Single-sided implied probability from an American price. Same formula
+    as grade_ev._implied_prob -- kept local here so this module stays pure
+    and import-free of scripts/grade_ev.py (which isn't a package module)."""
+    if american_price > 0:
+        return 100.0 / (american_price + 100.0)
+    return -american_price / (-american_price + 100.0)
+
+
+def grade_prop_pick(pick: dict, actual: float | None, closing_price: int | None) -> dict:
+    """Pure grading: one `ev_prop_picks` row (as a dict) + the player's
+    ACTUAL realized stat that week + the closing Pinnacle price for that same
+    (game, player, market, side) -> an `ev_prop_results` row (dict, columns
+    matching `db._EV_PROP_RESULTS_COLS`). No network, no DB.
+
+    `pick` = {sport, game_pk, player_id, player_name, market, side
+    ("over"/"under"), line, model_version, commence_time, model_prob,
+    best_price (the pick-time best-book American price the bet was placed
+    at), pinnacle_price (the pick-time Pinnacle American price for `side`)}.
+
+    `actual`: the player's realized stat value for `market` that week (e.g.
+    receiving yards), or None if it couldn't be resolved (caller skips
+    grading in that case -- this function still degrades gracefully and
+    returns result/profit=None rather than raising).
+
+    `closing_price`: the CLOSING Pinnacle American price for (game_pk,
+    market, side, player, line) -- the last odds_snapshot row at/before
+    commence_time. None if no such snapshot exists.
+
+    result: side=="over" -> "win" if actual > line, "loss" if actual < line,
+    "push" if actual == line. side=="under" -> mirrored (win if actual <
+    line). None if actual or line is missing, or side isn't "over"/"under".
+
+    profit: at the PICK-TIME price the bet was actually placed at
+    (`pick["best_price"]`) -- a placed bet's payout is fixed by the price
+    taken, not by where the price later moved. win -> decimal_odds(best_price)
+    - 1; loss -> -1.0; push -> 0.0. None if best_price is missing on a win
+    (no price to grade profit against) or if `result` itself is None.
+
+    novig_close: the single-sided implied probability of `closing_price`
+    (None if `closing_price` is None). Not de-vigged (mirrors grade_ev's
+    _implied_prob convention -- see its docstring) -- just the closing side's
+    own implied probability, useful as a standalone "how short did the market
+    close" reference alongside `clv`.
+
+    clv: signed closing-line value from the side the pick took --
+    `_implied_prob(closing_price) - _implied_prob(pick["pinnacle_price"])`,
+    computed only when BOTH prices are available (None otherwise; no
+    number-based fallback exists for props, unlike grade_ev_pick's
+    spread/total fallback, since there's no closing-line-NUMBER source for
+    props independent of odds_snapshot). Positive means the market moved
+    toward this side after the pick was placed (the pick-time price was the
+    cheaper, better one) -- same sign convention as grade_ev_pick's clv.
+    Computed regardless of `result`, same as grade_ev_pick.
+    """
+    market = pick.get("market")
+    side = pick.get("side")
+    line = pick.get("line")
+
+    # ---- result / profit ----
+    result = None
+    if actual is not None and line is not None and side in ("over", "under"):
+        if side == "over":
+            if actual > line:
+                result = "win"
+            elif actual < line:
+                result = "loss"
+            else:
+                result = "push"
+        else:  # under
+            if actual < line:
+                result = "win"
+            elif actual > line:
+                result = "loss"
+            else:
+                result = "push"
+
+    profit = None
+    if result == "push":
+        profit = 0.0
+    elif result == "win":
+        best_price = pick.get("best_price")
+        if best_price is not None:
+            profit = decimal_odds(best_price) - 1
+    elif result == "loss":
+        profit = -1.0
+
+    # ---- clv / novig_close ----
+    close_implied = _implied_prob(closing_price) if closing_price is not None else None
+    novig_close = close_implied
+
+    clv = None
+    pinnacle_price = pick.get("pinnacle_price")
+    if close_implied is not None and pinnacle_price is not None:
+        clv = close_implied - _implied_prob(pinnacle_price)
+
+    return {
+        "sport": pick.get("sport"),
+        "game_pk": pick.get("game_pk"),
+        "player_id": pick.get("player_id"),
+        "player_name": pick.get("player_name"),
+        "market": market,
+        "side": side,
+        "line": line,
+        "model_version": pick.get("model_version"),
+        "commence_time": pick.get("commence_time"),
+        "model_prob": pick.get("model_prob"),
+        "novig_close": novig_close,
+        "actual": actual,
+        "result": result,
+        "clv": clv,
+        "profit": profit,
+    }
