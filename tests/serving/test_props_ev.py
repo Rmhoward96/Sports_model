@@ -145,6 +145,7 @@ def test_projected_usage_gate_has_expected_thresholds():
 # assemble_prop_rows (Task 4)
 # =============================================================================
 
+from sportsmodel.serving.board import EV_CEILING  # noqa: E402
 from sportsmodel.serving.board import decimal_odds as _decimal_odds  # noqa: E402
 from sportsmodel.serving.board import ev as _ev  # noqa: E402
 from sportsmodel.serving.board import novig as _novig  # noqa: E402
@@ -166,7 +167,7 @@ def test_assemble_prop_rows_featured_player_matched_line_emits_higher_ev_side():
     sim_rows = [{
         "game_pk": 1001, "player_id": "p1", "name": "A.J. Brown",
         "market": "rec_yds", "mean": 70.0,
-        "dist": _pmf({50: 0.3, 75: 0.7}, 76),
+        "dist": _pmf({50: 0.31, 75: 0.69}, 76),
         "commence_time": "2026-09-21T17:00:00Z", "matchup": "PHI @ DAL",
     }]
     odds_rows = [
@@ -182,7 +183,7 @@ def test_assemble_prop_rows_featured_player_matched_line_emits_higher_ev_side():
 
     assert len(rows) == 1
     row = rows[0]
-    p_over = 0.7  # P(X > 68.5) = pmf[75]
+    p_over = 0.69  # P(X > 68.5) = pmf[75]; kept under EV_CEILING (0.25) at -125
     expected_novig_over = _novig(-125, 105)
     expected_ev_over = _ev(p_over, -125)
     expected_ev_under = _ev(1 - p_over, 105)
@@ -259,8 +260,10 @@ def test_assemble_prop_rows_picks_under_side_when_it_is_higher_ev():
     odds_rows = [
         {"game_pk": 3003, "market": "rush_yds", "side": "over",
          "player_name": "Underdog Back", "book": "draftkings", "line": 45.5, "price": -110},
+        # -200 (not -110) keeps ev_under under EV_CEILING (0.25) while still
+        # clearly the +EV side vs the over's -0.618 EV.
         {"game_pk": 3003, "market": "rush_yds", "side": "under",
-         "player_name": "Underdog Back", "book": "fanduel", "line": 45.5, "price": -110},
+         "player_name": "Underdog Back", "book": "fanduel", "line": 45.5, "price": -200},
     ]
 
     rows = assemble_prop_rows(sim_rows, odds_rows, MODEL_VERSION)
@@ -268,10 +271,11 @@ def test_assemble_prop_rows_picks_under_side_when_it_is_higher_ev():
     assert len(rows) == 1
     row = rows[0]
     p_over = 0.2  # P(X > 45.5) = pmf[60]
-    expected_novig_over = _novig(-110, -110)
+    expected_novig_over = _novig(-110, -200)
     expected_ev_over = _ev(p_over, -110)
-    expected_ev_under = _ev(1 - p_over, -110)
+    expected_ev_under = _ev(1 - p_over, -200)
     assert expected_ev_under > expected_ev_over  # under is the +EV side here
+    assert 0 < expected_ev_under <= EV_CEILING
 
     assert row["side"] == "under"
     assert row["model_prob"] == pytest.approx(1 - p_over)
@@ -279,7 +283,7 @@ def test_assemble_prop_rows_picks_under_side_when_it_is_higher_ev():
     assert row["edge"] == pytest.approx((1 - p_over) - (1 - expected_novig_over))
     assert row["ev_best"] == pytest.approx(expected_ev_under)
     assert row["best_book"] == "fanduel"
-    assert row["best_price"] == -110
+    assert row["best_price"] == -200
     assert row["is_pick"] is True
 
 
@@ -318,3 +322,95 @@ def test_assemble_prop_rows_picks_main_line_with_most_books():
     assert row["side"] == "over"
     assert row["best_book"] == "fanduel"
     assert row["best_price"] == -110
+
+
+# =============================================================================
+# EV_CEILING + Pinnacle-excluded-from-soft-shopping (C final-review fixes)
+# =============================================================================
+
+def test_assemble_prop_rows_ev_above_ceiling_is_not_a_pick():
+    # p_over=0.95 at an ordinary -110/-110 market is a wildly mispriced-line
+    # artifact (ev_over ~= 0.814, far above EV_CEILING=0.25) -- the row is
+    # still emitted (over is still the higher-EV side) but must NOT be
+    # flagged is_pick, same as the game pilot's EV_CEILING convention.
+    sim_rows = [{
+        "game_pk": 4004, "player_id": "p6", "name": "Way Too Good",
+        "market": "rec_yds", "mean": 70.0,
+        "dist": _pmf({40: 0.05, 75: 0.95}, 76),
+        "commence_time": "2026-09-21T17:00:00Z",
+    }]
+    odds_rows = [
+        {"game_pk": 4004, "market": "reception_yds", "side": "over",
+         "player_name": "Way Too Good", "book": "draftkings", "line": 68.5, "price": -110},
+        {"game_pk": 4004, "market": "reception_yds", "side": "under",
+         "player_name": "Way Too Good", "book": "fanduel", "line": 68.5, "price": -110},
+    ]
+
+    rows = assemble_prop_rows(sim_rows, odds_rows, MODEL_VERSION)
+
+    assert len(rows) == 1
+    row = rows[0]
+    p_over = 0.95  # P(X > 68.5) = pmf[75]
+    expected_ev_over = _ev(p_over, -110)
+    assert expected_ev_over > EV_CEILING  # confirm the scenario is actually above ceiling
+
+    assert row["side"] == "over"
+    assert row["ev_best"] == pytest.approx(expected_ev_over)
+    assert row["is_pick"] is False
+
+
+def test_assemble_prop_rows_best_price_shops_soft_book_not_pinnacle():
+    # Pinnacle (-105, decimal ~1.9524) is numerically the single best price
+    # on the over side, but it's the sharp reference, not a shoppable soft
+    # book -- best_book/best_price must come from draftkings (-140) instead,
+    # even though Pinnacle would "win" an unfiltered best_price() call.
+    sim_rows = [{
+        "game_pk": 5005, "player_id": "p7", "name": "Soft Shop Guy",
+        "market": "rec_yds", "mean": 70.0,
+        "dist": _pmf({50: 0.4, 75: 0.6}, 76),
+        "commence_time": "2026-09-21T17:00:00Z",
+    }]
+    odds_rows = [
+        {"game_pk": 5005, "market": "reception_yds", "side": "over",
+         "player_name": "Soft Shop Guy", "book": "pinnacle", "line": 68.5, "price": -105},
+        {"game_pk": 5005, "market": "reception_yds", "side": "over",
+         "player_name": "Soft Shop Guy", "book": "draftkings", "line": 68.5, "price": -140},
+        {"game_pk": 5005, "market": "reception_yds", "side": "under",
+         "player_name": "Soft Shop Guy", "book": "fanduel", "line": 68.5, "price": -110},
+    ]
+
+    rows = assemble_prop_rows(sim_rows, odds_rows, MODEL_VERSION)
+
+    assert len(rows) == 1
+    row = rows[0]
+    # Sanity: Pinnacle really is the numerically-better price here, so this
+    # test would pass trivially (and fail to discriminate) if it weren't.
+    assert _decimal_odds(-105) > _decimal_odds(-140)
+
+    assert row["side"] == "over"
+    assert row["best_book"] == "draftkings"
+    assert row["best_price"] == -140
+    # The sharp CLV anchor still comes from the Pinnacle entry, unaffected
+    # by the soft-book filtering above.
+    assert row["pinnacle_price"] == -105
+    assert row["open_pinnacle_price"] == -105
+
+
+def test_assemble_prop_rows_side_with_only_pinnacle_price_is_excluded():
+    # The over side has ONLY a Pinnacle quote -- no soft book to shop -- so
+    # best_price(soft) is None and the whole (player, market) is skipped,
+    # same as if the over side had no odds at all.
+    sim_rows = [{
+        "game_pk": 6006, "player_id": "p8", "name": "Sharp Only",
+        "market": "rec_yds", "mean": 70.0,
+        "dist": _pmf({50: 0.3, 75: 0.7}, 76),
+        "commence_time": "2026-09-21T17:00:00Z",
+    }]
+    odds_rows = [
+        {"game_pk": 6006, "market": "reception_yds", "side": "over",
+         "player_name": "Sharp Only", "book": "pinnacle", "line": 68.5, "price": -110},
+        {"game_pk": 6006, "market": "reception_yds", "side": "under",
+         "player_name": "Sharp Only", "book": "fanduel", "line": 68.5, "price": -110},
+    ]
+
+    assert assemble_prop_rows(sim_rows, odds_rows, MODEL_VERSION) == []

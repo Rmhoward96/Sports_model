@@ -33,7 +33,7 @@ from __future__ import annotations
 import re
 
 from ..model.distributions import prob_over_dist
-from .board import best_price, decimal_odds, ev, novig
+from .board import EV_CEILING, best_price, decimal_odds, ev, novig
 
 # Sim aggregate market -> Odds API / SportConfig["nfl"].prop_market_map key.
 # The sim's markets are pass_yds/rush_yds/rec_yds/receptions; the odds side
@@ -134,6 +134,12 @@ def is_propable_projected(market: str, dist_mean: float) -> bool:
 # prop rows, producing ev_prop_picks-shaped dicts (Task 4).
 # =============================================================================
 
+def _is_pinnacle(book: str | None) -> bool:
+    """True if `book` is Pinnacle (case-insensitive substring match, same
+    convention used elsewhere for this field)."""
+    return "pinnacle" in (book or "").lower()
+
+
 def assemble_prop_rows(sim_rows: list[dict], odds_rows: list[dict], model_version: str) -> list[dict]:
     """Join sim player-prop distributions to book prop odds and emit +EV pick
     rows shaped exactly like `sportsmodel.db._EV_PROP_PICKS_COLS`.
@@ -149,11 +155,18 @@ def assemble_prop_rows(sim_rows: list[dict], odds_rows: list[dict], model_versio
     apply the projected-usage deployment gate (`is_propable_projected`);
     find odds rows for the same game + market + (name-normalized) player;
     pick the MAIN line (offered by the most distinct books across over+under,
-    ties broken by the lowest line); no-vig the best over/under prices at
-    that line against the sim's own P(over); and keep the higher-EV side.
-    Rows failing any step (no odds match, missing one side, NaN prob, no
-    MAJOR_BOOKS price) are simply excluded -- this function never raises on
-    a single row's bad/missing data.
+    ties broken by the lowest line); no-vig the best NON-Pinnacle ("soft")
+    over/under prices at that line against the sim's own P(over); and keep
+    the higher-EV side. Pinnacle is the sharp reference (kept only as
+    `pinnacle_price`/`open_pinnacle_price` for CLV grading), never shopped as
+    a soft book -- a side offered only by Pinnacle is excluded, same as a
+    missing side. `is_pick` requires `0 < ev_best <= board.EV_CEILING`, same
+    convention as the game pilot, since an EV above that ceiling is almost
+    always a stale-line artifact rather than real value (props are more
+    stale-line-prone than game markets, not less). Rows failing any step (no
+    odds match, missing one side, NaN prob, no shoppable soft price) are
+    simply excluded -- this function never raises on a single row's bad/
+    missing data.
     """
     rows: list[dict] = []
     for sim_row in sim_rows:
@@ -209,8 +222,15 @@ def assemble_prop_rows(sim_rows: list[dict], odds_rows: list[dict], model_versio
         if p_over != p_over:  # NaN
             continue
 
-        ob = best_price(over_entries)
-        ub = best_price(under_entries)
+        # Pinnacle is the SHARP reference (kept for pinnacle_price/CLV below),
+        # not a shoppable soft book -- best_book/best_price (and the EV/no-vig
+        # math derived from them) are shopped only among non-Pinnacle books.
+        # A side offered ONLY by Pinnacle has no soft price to shop, so it's
+        # excluded via the ob/ub None check just like a missing side.
+        soft_over_entries = [(bk, p) for bk, p in over_entries if not _is_pinnacle(bk)]
+        soft_under_entries = [(bk, p) for bk, p in under_entries if not _is_pinnacle(bk)]
+        ob = best_price(soft_over_entries)
+        ub = best_price(soft_under_entries)
         if ob is None or ub is None:
             continue
 
@@ -231,7 +251,7 @@ def assemble_prop_rows(sim_rows: list[dict], odds_rows: list[dict], model_versio
 
         pinnacle_price = None
         for bk, price in side_entries:
-            if "pinnacle" in (bk or "").lower():
+            if _is_pinnacle(bk):
                 pinnacle_price = price
                 break
 
@@ -254,7 +274,12 @@ def assemble_prop_rows(sim_rows: list[dict], odds_rows: list[dict], model_versio
             "best_price": picked[1],
             "pinnacle_price": pinnacle_price,
             "open_pinnacle_price": pinnacle_price,
-            "is_pick": ev_best > 0,
+            # Same EV-ceiling convention as the game pilot (board.EV_CEILING):
+            # an EV above this is almost always a stale-line artifact, not
+            # real value, so it's excluded from the graded record. Props are
+            # MORE stale-line-prone than game markets, so this matters more
+            # here, not less.
+            "is_pick": 0 < ev_best <= EV_CEILING,
         })
     return rows
 
