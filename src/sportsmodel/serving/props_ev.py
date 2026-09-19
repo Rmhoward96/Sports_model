@@ -32,6 +32,9 @@ from __future__ import annotations
 
 import re
 
+from ..model.distributions import prob_over_dist
+from .board import best_price, ev, novig
+
 # Sim aggregate market -> Odds API / SportConfig["nfl"].prop_market_map key.
 # The sim's markets are pass_yds/rush_yds/rec_yds/receptions; the odds side
 # uses rush_yds/reception_yds/receptions/pass_yds. rec_yds <-> reception_yds
@@ -124,3 +127,133 @@ def is_propable_projected(market: str, dist_mean: float) -> bool:
     if threshold is None:
         return False
     return float(dist_mean) >= threshold
+
+
+# =============================================================================
+# assemble_prop_rows -- pure join of nfl_player_sim_current to odds_snapshot
+# prop rows, producing ev_prop_picks-shaped dicts (Task 4).
+# =============================================================================
+
+def assemble_prop_rows(sim_rows: list[dict], odds_rows: list[dict], model_version: str) -> list[dict]:
+    """Join sim player-prop distributions to book prop odds and emit +EV pick
+    rows shaped exactly like `sportsmodel.db._EV_PROP_PICKS_COLS`.
+
+    `sim_rows`: dicts from `nfl_player_sim_current` (game_pk, player_id, name,
+    market, mean, dist, commence_time, optional matchup). `odds_rows`: latest
+    prop `odds_snapshot` rows (game_pk, market, side, player_name, book, line,
+    price), where `market` is already the sim-side/prop_market_map CODE (e.g.
+    "reception_yds").
+
+    For each sim row: map its market to the odds-side market
+    (`odds_market_for`), skipping markets excluded from C v1 (e.g. pass_yds);
+    apply the projected-usage deployment gate (`is_propable_projected`);
+    find odds rows for the same game + market + (name-normalized) player;
+    pick the MAIN line (offered by the most distinct books across over+under,
+    ties broken by the lowest line); no-vig the best over/under prices at
+    that line against the sim's own P(over); and keep the higher-EV side.
+    Rows failing any step (no odds match, missing one side, NaN prob, no
+    MAJOR_BOOKS price) are simply excluded -- this function never raises on
+    a single row's bad/missing data.
+    """
+    rows: list[dict] = []
+    for sim_row in sim_rows:
+        sim_market = sim_row.get("market")
+        odds_market = odds_market_for(sim_market)
+        if odds_market is None:
+            continue
+        mean = sim_row.get("mean")
+        if mean is None:
+            continue
+        try:
+            propable = is_propable_projected(sim_market, mean)
+        except (TypeError, ValueError):
+            continue
+        if not propable:
+            continue
+
+        game_pk = sim_row.get("game_pk")
+        name_key = normalize_player_name(sim_row.get("name"))
+        candidates = [
+            o for o in odds_rows
+            if o.get("game_pk") == game_pk
+            and o.get("market") == odds_market
+            and normalize_player_name(o.get("player_name")) == name_key
+        ]
+        if not candidates:
+            continue
+
+        # Group by line, counting distinct books across both sides; the main
+        # line is the one the most books post, ties broken by the lowest line.
+        books_by_line: dict[float, set] = {}
+        for o in candidates:
+            line = o.get("line")
+            if line is None:
+                continue
+            books_by_line.setdefault(line, set()).add(o.get("book"))
+        if not books_by_line:
+            continue
+        main_line = min(books_by_line, key=lambda l: (-len(books_by_line[l]), l))
+
+        over_entries = [
+            (o.get("book"), o.get("price")) for o in candidates
+            if o.get("line") == main_line and o.get("side") == "over"
+        ]
+        under_entries = [
+            (o.get("book"), o.get("price")) for o in candidates
+            if o.get("line") == main_line and o.get("side") == "under"
+        ]
+        if not over_entries or not under_entries:
+            continue
+
+        p_over = prob_over_dist(sim_row.get("dist"), main_line)
+        if p_over != p_over:  # NaN
+            continue
+
+        ob = best_price(over_entries)
+        ub = best_price(under_entries)
+        if ob is None or ub is None:
+            continue
+
+        novig_over = novig(ob[1], ub[1])
+        ev_over = ev(p_over, ob[1])
+        ev_under = ev(1 - p_over, ub[1])
+
+        if ev_over >= ev_under:
+            side = "over"
+            model_prob, market_prob, ev_best, picked, side_entries = (
+                p_over, novig_over, ev_over, ob, over_entries,
+            )
+        else:
+            side = "under"
+            model_prob, market_prob, ev_best, picked, side_entries = (
+                1 - p_over, 1 - novig_over, ev_under, ub, under_entries,
+            )
+
+        pinnacle_price = None
+        for bk, price in side_entries:
+            if "pinnacle" in (bk or "").lower():
+                pinnacle_price = price
+                break
+
+        rows.append({
+            "sport": "nfl",
+            "game_pk": game_pk,
+            "player_id": sim_row.get("player_id"),
+            "player_name": sim_row.get("name"),
+            "market": sim_market,
+            "side": side,
+            "line": main_line,
+            "model_version": model_version,
+            "matchup": sim_row.get("matchup"),
+            "commence_time": sim_row.get("commence_time"),
+            "model_prob": model_prob,
+            "market_prob": market_prob,
+            "edge": model_prob - market_prob,
+            "ev_best": ev_best,
+            "best_book": picked[0],
+            "best_price": picked[1],
+            "pinnacle_price": pinnacle_price,
+            "open_pinnacle_price": pinnacle_price,
+            "is_pick": ev_best > 0,
+        })
+    return rows
