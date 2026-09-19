@@ -165,28 +165,48 @@ def _parse_iso(ts: str) -> datetime:
 # Recent-form computation (pure over an already-loaded schedule; no file IO)
 # =============================================================================
 
-def compute_recent_form(schedule: pd.DataFrame, teams: set[str], n: int = RECENT_FORM_N) -> dict[str, dict]:
-    """Last-N results + a simple pace/ATS-adjacent summary per team, from the
-    CFBD-home-margin-convention `schedules.parquet` (season, week, home_team,
-    away_team, home_score, away_score, game_type).
+def _current_season(now: datetime) -> int:
+    """The season year in progress at `now`.
 
-    Only `game_type == "REG"` games with both scores recorded are considered.
-    Rows are ordered by (season, week) and the trailing `n` games per team
-    are kept. Note: schedules.parquet has no per-game market line, so this is
-    a scoring/pace trend (points-for/against, W-L, avg margin), NOT a true
-    ATS record -- that would need historical lines joined in, which is out
-    of scope here (see task-2-report.md).
+    NFL and CFB seasons both start ~August and run through the following
+    January/February (bowls / Super Bowl), so games in Jan/Feb belong to the
+    PRIOR calendar year's season, and the spring/summer offseason belongs to
+    the last completed season. Aug onward is the new season. This matches the
+    `season` convention in schedules.parquet (the year the season started).
+    """
+    return now.year if now.month >= 8 else now.year - 1
+
+
+def compute_recent_form(
+    schedule: pd.DataFrame, teams: set[str], current_season: int, n: int = RECENT_FORM_N
+) -> dict[str, dict]:
+    """Current-season W-L record + a recent scoring/pace summary per team, from
+    the CFBD-home-margin-convention `schedules.parquet` (season, week,
+    home_team, away_team, home_score, away_score, game_type).
+
+    ONLY games in `current_season` are considered (`game_type == "REG"` with
+    both scores recorded). This is deliberate: the trailing games must never
+    span a season boundary, or a team that has played 2 games this season
+    would show a record built from last season's games (the desk once showed
+    CFB "Ole Miss 5-0 / LSU 2-3" for teams with only 2 current-season games,
+    because the schedule asset lagged the season and the trailing window
+    reached back into the prior year). A team with NO current-season games is
+    absent (build_bundle treats missing form as `None`) -- honest "no data
+    yet", never a prior-season record.
+
+    `record` is the FULL current-season W-L (all of the team's current-season
+    games). The recent-form metrics (`last_n`, `avg_margin`, `pace`) use the
+    trailing `n` current-season games. schedules.parquet has no per-game
+    market line, so this is a scoring/pace trend, NOT a true ATS record.
 
     Returns {team -> {"record": "W-L", "last_n": ["W"/"L", ...] most-recent
-    first, "avg_margin": float, "pace": float (avg combined points)}}, one
-    entry per team in `teams` that has at least one recorded game. Teams
-    with zero recorded games are simply absent (build_bundle already treats
-    a missing team as `None` form).
+    first, "avg_margin": float, "pace": float (avg combined points)}}.
     """
     df = schedule[
         (schedule["game_type"] == "REG")
         & schedule["home_score"].notna()
         & schedule["away_score"].notna()
+        & (schedule["season"] == current_season)
     ].sort_values(["season", "week"])
 
     out: dict[str, dict] = {}
@@ -196,10 +216,20 @@ def compute_recent_form(schedule: pd.DataFrame, teams: set[str], n: int = RECENT
         games = df[mask_home | mask_away]
         if games.empty:
             continue
-        recent = games.tail(n)
 
-        results, margins, totals = [], [], []
+        # record: full current-season W-L (every current-season game).
         wins = losses = 0
+        for _, row in games.iterrows():
+            is_home = row["home_team"] == team
+            margin = (row["home_score"] - row["away_score"]) if is_home else (row["away_score"] - row["home_score"])
+            if margin > 0:
+                wins += 1
+            elif margin < 0:
+                losses += 1
+
+        # recent-form metrics: trailing n current-season games.
+        recent = games.tail(n)
+        results, margins, totals = [], [], []
         for _, row in recent.iterrows():
             is_home = row["home_team"] == team
             pf = row["home_score"] if is_home else row["away_score"]
@@ -207,14 +237,7 @@ def compute_recent_form(schedule: pd.DataFrame, teams: set[str], n: int = RECENT
             margin = pf - pa
             margins.append(margin)
             totals.append(pf + pa)
-            if margin > 0:
-                wins += 1
-                results.append("W")
-            elif margin < 0:
-                losses += 1
-                results.append("L")
-            else:
-                results.append("T")
+            results.append("W" if margin > 0 else "L" if margin < 0 else "T")
 
         out[team] = {
             "record": f"{wins}-{losses}",
@@ -419,7 +442,7 @@ def main() -> None:
         home_team=schedule["home_team"].astype(str).map(lambda t: crosswalk.get(t, t)),
         away_team=schedule["away_team"].astype(str).map(lambda t: crosswalk.get(t, t)),
     )
-    form_rows = compute_recent_form(schedule_named, set(espn_names))
+    form_rows = compute_recent_form(schedule_named, set(espn_names), _current_season(now))
 
     # -- injuries, from the sport's injury_source (see the functions above) --
     # Each source returns {full team name -> rows} (CFB School / NFL FullName,
