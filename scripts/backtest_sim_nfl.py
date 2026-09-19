@@ -85,6 +85,7 @@ import pandas as pd
 
 from sportsmodel.nfl.data import load_schedules
 from sportsmodel.nfl.teams import TEAMS, normalize_team
+from sportsmodel.serving.props_ev import PROJECTED_USAGE_GATE, is_propable_projected
 from sportsmodel.sim.engine import pred_scores
 from sportsmodel.sim.nfl.aggregate import nfl_player_prop_dists
 from sportsmodel.sim.nfl.inputs import build_spec_from_usage
@@ -134,18 +135,9 @@ _MARKET_USAGE_GATE: dict[str, tuple[str, float]] = {
     "receptions": ("targets", 3.0),
 }
 
-# Per-market sim dist-mean thresholds approximating "the model projects this
-# player featured enough to have a line" -- i.e. the PROJECTED (pre-game,
-# no-selection-bias) counterpart to `_MARKET_USAGE_GATE`'s ACTUAL-usage gate.
-# This is the deployment population: it's what a shippability read should
-# grade against, since books set lines (and props get offered) off projected
-# usage, not off what a player ends up doing that week. Tunable.
-PROJECTED_USAGE_GATE: dict[str, float] = {
-    "pass_yds": 150.0,
-    "rush_yds": 25.0,
-    "rec_yds": 25.0,
-    "receptions": 2.5,
-}
+# PROJECTED_USAGE_GATE and is_propable_projected are relocated to
+# sportsmodel.serving.props_ev (Ruling C1 / Task 2) and imported above, so
+# this module and the upcoming prop board producer share one definition.
 
 
 # =============================================================================
@@ -237,28 +229,6 @@ def is_propable(market: str, actual_usage: dict) -> bool:
         return False
     usage_col, threshold = gate
     return float(actual_usage.get(usage_col, 0.0) or 0.0) >= threshold
-
-
-def is_propable_projected(market: str, dist_mean: float) -> bool:
-    """True if the sim's PROJECTED usage for a player that week -- i.e. the
-    sim's own dist mean for `market`, computed pre-game from leakage-free
-    rates/shares -- clears the threshold at which that market would
-    realistically have had a prop line offered.
-
-    This is the deployment-population counterpart to `is_propable`: that
-    function gates on ACTUAL (post-game, realized) usage, which is
-    selection-biased -- it only ever grades weeks the model could not have
-    foreseen, silently favoring weeks where a featured player happened to
-    stay featured. Gating on the sim's own PROJECTED usage instead reproduces
-    how books actually decide whether to post a line (pre-game, off
-    expectation, not off what happens to occur), so it's the metric that
-    should be read as the ship-gate's headline shippability number. Unknown
-    markets are never propable.
-    """
-    threshold = PROJECTED_USAGE_GATE.get(market)
-    if threshold is None:
-        return False
-    return float(dist_mean) >= threshold
 
 
 # Historical injury designations (nfl_data_py `import_injuries` `report_status`
