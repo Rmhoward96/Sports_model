@@ -1,10 +1,19 @@
-"""Snapshot current NFL + CFB game-line odds (moneyline/spread/total) from The Odds API.
+"""Snapshot current NFL + CFB game-line (and NFL player-prop) odds from The Odds API.
 
-Game lines only -- no player props. For each sport, events are joined to our
-ESPN game_pk by (home_team, away_team, US_game_date) via that sport's odds-event
-matcher (the Odds API carries no game_pk of its own), then stored to
-odds_snapshot tagged with a shared captured_at. Run repeatedly through the day;
-the last snapshot before a game's commence_time is its closing line.
+For each sport, events are joined to our ESPN game_pk by (home_team, away_team,
+US_game_date) via that sport's odds-event matcher (the Odds API carries no
+game_pk of its own), then stored to odds_snapshot tagged with a shared
+captured_at. Run repeatedly through the day; the last snapshot before a game's
+commence_time is its closing line.
+
+Player props are additionally captured, per event, for any sport whose
+`SportConfig.prop_market_map` is non-empty (currently NFL only -- CFB's map is
+empty and so no-ops) and only for events inside a post-lineup pre-kickoff
+window: `now < commence_time <= now + PROP_WINDOW_MIN minutes` (default 150).
+Props are one Odds-API call per in-window event, so credits scale with how many
+games are in that window at run time -- widening PROP_WINDOW_MIN or the cron
+cadence costs credits accordingly. Set INGEST_PROPS=false or PROP_WINDOW_MIN=0
+to disable prop capture entirely and fall back to game-lines-only behavior.
 
 Usage:
     uv run python scripts/ingest_odds.py
@@ -14,7 +23,7 @@ from __future__ import annotations
 
 import os
 import sys
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Callable
 
@@ -47,6 +56,41 @@ def build_game_lookup(
                resolved_game_date_fn(ev.get("commence_time")))
         lookup[key] = gp
     return lookup
+
+
+def events_in_prop_window(
+    events: list[dict],
+    matcher_fn: Callable[[dict, list[dict]], int | None],
+    espn_games: list[dict],
+    now: datetime,
+    window_min: int,
+) -> list[tuple[dict, int]]:
+    """Odds events matched to an ESPN game and commencing inside the prop-capture
+    window: upcoming (not yet started) and within `window_min` minutes from `now`.
+
+    Pure and network-free: `now` is passed in (tz-aware UTC) rather than read from
+    the clock, so this is unit-testable. Unmatched events and events with no
+    parseable commence_time are dropped, same as `build_game_lookup`.
+    """
+    result: list[tuple[dict, int]] = []
+    for ev in events:
+        gp = matcher_fn(ev, espn_games)
+        if gp is None:
+            continue
+        c = odds.parse_commence(ev.get("commence_time"))
+        if c is None:
+            continue
+        if now < c <= now + timedelta(minutes=window_min):
+            result.append((ev, gp))
+    return result
+
+
+def props_enabled(env: dict[str, str], window_min: int) -> bool:
+    """Whether prop capture is turned on: INGEST_PROPS isn't "false" and the
+    window is positive. Factored out (env passed in, not read from os.environ)
+    so it's testable without monkeypatching.
+    """
+    return env.get("INGEST_PROPS", "true").lower() != "false" and window_min > 0
 
 
 def _fetch_espn_games_nfl() -> list[dict]:
@@ -110,6 +154,25 @@ def run_sport(sport: str, captured_at: str) -> list[dict]:
 
     rows = odds.parse_game_odds(events, game_lookup, captured_at)
     print(f"[{sport}] rows: {len(rows)}")
+
+    window_min = int(os.getenv("PROP_WINDOW_MIN", "150") or 0)
+    if cfg.prop_market_map and props_enabled(os.environ, window_min):
+        prop_markets = list(cfg.prop_market_map.values())
+        in_window = events_in_prop_window(
+            events, matcher_fn, espn_games, datetime.now(timezone.utc), window_min
+        )
+        n_prop_rows = 0
+        for ev, gp in in_window:
+            try:
+                props = odds.fetch_event_props(ev["id"], prop_markets, cfg)
+                prop_rows = odds.parse_prop_odds(props, gp, captured_at, cfg)
+                rows += prop_rows
+                n_prop_rows += len(prop_rows)
+            except Exception as e:  # one event's failure shouldn't abort the sport
+                print(f"[{sport}] props: event {ev.get('id')} failed: {e}")
+                continue
+        print(f"[{sport}] props: {len(in_window)} events in window, {n_prop_rows} rows")
+
     return rows
 
 

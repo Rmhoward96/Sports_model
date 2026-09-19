@@ -4,7 +4,12 @@ name: capture-odds
 # INCLUDING Pinnacle (an EU bookmaker -- the ingester pulls regions=us,eu). The
 # last snapshot before a game's commence_time is its closing line, used for the
 # +EV engine's CLV grading, so we run several times across game days and let each
-# run capture the whole slate (one cheap bulk call per sport). No player props.
+# run capture the whole slate (one cheap bulk call per sport).
+#
+# Also captures NFL player-prop lines (one Odds-API call per in-window event) for
+# events inside the post-lineup pre-kickoff window controlled by the repo
+# variables below -- credits scale with how many games are in that window at run
+# time. CFB has no prop_market_map, so it's unaffected (game lines only).
 #
 # scripts/ingest_odds.py loops NFL + CFB internally and writes to odds_snapshot;
 # one sport failing does not abort the other. Crons are UTC; NFL plays Thu/Sun/Mon,
@@ -31,8 +36,10 @@ jobs:
         uses: astral-sh/setup-uv@v10.0.1
       - name: Sync deps
         run: uv sync
-      - name: Snapshot odds (NFL + CFB game lines)
+      - name: Snapshot odds (NFL + CFB game lines, NFL player props)
         env:
           DATABASE_URL: ${{ secrets.DATABASE_URL }}
           ODDS_API_KEY: ${{ secrets.ODDS_API_KEY }}
+          PROP_WINDOW_MIN: ${{ vars.PROP_WINDOW_MIN }}
+          INGEST_PROPS: ${{ vars.INGEST_PROPS }}
         run: uv run python scripts/ingest_odds.py

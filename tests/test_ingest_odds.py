@@ -1,13 +1,15 @@
-"""Pure/network-free tests for the NFL+CFB game-lines ingester's assembly logic.
+"""Pure/network-free tests for the NFL+CFB odds ingester's assembly logic.
 
-`build_game_lookup` and `parse_game_odds` are both pure functions of plain dicts,
-so these tests exercise the sport-loop's join logic without hitting the Odds API
-or ESPN -- no monkeypatching of network calls needed.
+`build_game_lookup`, `parse_game_odds`, and `events_in_prop_window` are all pure
+functions of plain dicts, so these tests exercise the sport-loop's join and
+prop-window logic without hitting the Odds API or ESPN -- no monkeypatching of
+network calls needed.
 """
 from __future__ import annotations
 
 import importlib.util
 import sys
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import pytest
@@ -20,6 +22,7 @@ _SPEC = importlib.util.spec_from_file_location(
 ingest_odds = importlib.util.module_from_spec(_SPEC)
 _SPEC.loader.exec_module(ingest_odds)
 
+from sportsmodel import sports
 from sportsmodel.ingest import odds
 
 
@@ -123,3 +126,78 @@ def test_parse_game_odds_drops_events_with_no_game_lookup_match():
     event = _pinnacle_game_event("A", "B", "2026-09-11T00:20:00Z")
     rows = odds.parse_game_odds([event], {}, "2026-09-10T12:00:00Z")
     assert rows == []
+
+
+# -- events_in_prop_window -----------------------------------------------------
+
+_NOW = datetime(2026, 9, 11, 0, 0, 0, tzinfo=timezone.utc)
+
+
+def _matcher_all_match(ev, games):
+    return {"e-in-window": 501, "e-too-far": 502, "e-started": 503}.get(ev["id"])
+
+
+def _iso(dt: datetime) -> str:
+    return dt.isoformat().replace("+00:00", "Z")
+
+
+def test_events_in_prop_window_includes_event_inside_window():
+    events = [{"id": "e-in-window", "commence_time": _iso(_NOW + timedelta(minutes=60))}]
+    result = ingest_odds.events_in_prop_window(events, _matcher_all_match, [], _NOW, 150)
+    assert result == [(events[0], 501)]
+
+
+def test_events_in_prop_window_excludes_event_beyond_window():
+    events = [{"id": "e-too-far", "commence_time": _iso(_NOW + timedelta(minutes=300))}]
+    result = ingest_odds.events_in_prop_window(events, _matcher_all_match, [], _NOW, 150)
+    assert result == []
+
+
+def test_events_in_prop_window_excludes_already_started_event():
+    events = [{"id": "e-started", "commence_time": _iso(_NOW - timedelta(minutes=5))}]
+    result = ingest_odds.events_in_prop_window(events, _matcher_all_match, [], _NOW, 150)
+    assert result == []
+
+
+def test_events_in_prop_window_drops_unmatched_event():
+    events = [{"id": "e-unmatched", "commence_time": _iso(_NOW + timedelta(minutes=60))}]
+    result = ingest_odds.events_in_prop_window(events, _matcher_all_match, [], _NOW, 150)
+    assert result == []
+
+
+def test_events_in_prop_window_mixed_batch():
+    events = [
+        {"id": "e-in-window", "commence_time": _iso(_NOW + timedelta(minutes=60))},
+        {"id": "e-too-far", "commence_time": _iso(_NOW + timedelta(minutes=300))},
+        {"id": "e-started", "commence_time": _iso(_NOW - timedelta(minutes=5))},
+        {"id": "e-unmatched", "commence_time": _iso(_NOW + timedelta(minutes=60))},
+    ]
+    result = ingest_odds.events_in_prop_window(events, _matcher_all_match, [], _NOW, 150)
+    assert result == [(events[0], 501)]
+
+
+def test_nfl_prop_markets_match_prop_market_map_values():
+    cfg = sports.get("nfl")
+    assert list(cfg.prop_market_map.values()) == [
+        "player_pass_yds", "player_pass_tds", "player_reception_yds",
+        "player_receptions", "player_rush_yds", "player_rush_reception_yds",
+        "player_anytime_td",
+    ]
+
+
+# -- prop-capture enable predicate ----------------------------------------------
+
+def test_props_enabled_default_true():
+    assert ingest_odds.props_enabled({}, 150) is True
+
+
+def test_props_enabled_false_when_ingest_props_false():
+    assert ingest_odds.props_enabled({"INGEST_PROPS": "false"}, 150) is False
+
+
+def test_props_enabled_false_when_ingest_props_false_mixed_case():
+    assert ingest_odds.props_enabled({"INGEST_PROPS": "False"}, 150) is False
+
+
+def test_props_enabled_false_when_window_zero():
+    assert ingest_odds.props_enabled({}, 0) is False
