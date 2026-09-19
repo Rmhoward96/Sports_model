@@ -356,6 +356,109 @@ def upsert_ev_results(records: list[dict]) -> int:
 
 
 # =============================================================================
+# +EV prop board (NFL player props) -- see db/migration_ev_prop_picks.sql
+# =============================================================================
+
+_EV_PROP_PICKS_COLS = [
+    "sport", "game_pk", "player_id", "player_name", "market", "side", "line",
+    "model_version", "matchup", "commence_time", "model_prob", "market_prob",
+    "edge", "ev_best", "best_book", "best_price", "pinnacle_price",
+    "open_pinnacle_price", "is_pick",
+]
+
+# Set once on first INSERT and NEVER overwritten on a later upsert -- the
+# pick-time (opening) Pinnacle price, so CLV grading measures the price the
+# pick was first surfaced at, not the refreshed near-closing price (same
+# pattern as _EV_PICKS_IMMUTABLE). created_at gets the same treatment via the
+# table DEFAULT and is excluded from the column list entirely.
+_EV_PROP_PICKS_IMMUTABLE = frozenset({"open_pinnacle_price"})
+
+_EV_PROP_DEFAULT_MODEL_VERSION = "props-sim-v1"
+
+
+def upsert_ev_prop_picks(records: list[dict]) -> int:
+    """Upsert +EV player-prop board rows into Supabase `ev_prop_picks`.
+
+    Idempotent on (game_pk, player_id, market, line, model_version) -- a
+    re-run of the same model_version for the same (game, player, market,
+    line) overwrites the row's fields in place. `created_at` is intentionally
+    excluded from both the column list and the DO UPDATE SET clause: it is
+    set once by the table's DEFAULT now() on the first INSERT and must NOT
+    change on a later update (same pattern as upsert_ev_picks).
+    `open_pinnacle_price` is excluded from DO UPDATE (but not the column
+    list) so it stays frozen at the pick-time price for CLV grading. A record
+    that omits `model_version` defaults to "props-sim-v1".
+    Requires DATABASE_URL and ev_prop_picks (db/migration_ev_prop_picks.sql).
+    """
+    if not records:
+        return 0
+    key = ("game_pk", "player_id", "market", "line", "model_version")
+    updates = ", ".join(
+        f"{c} = EXCLUDED.{c}"
+        for c in _EV_PROP_PICKS_COLS
+        if c not in key and c not in _EV_PROP_PICKS_IMMUTABLE
+    )
+    placeholders = ", ".join(["%s"] * len(_EV_PROP_PICKS_COLS))
+    sql = (
+        f"INSERT INTO ev_prop_picks ({', '.join(_EV_PROP_PICKS_COLS)}) "
+        f"VALUES ({placeholders}) "
+        f"ON CONFLICT (game_pk, player_id, market, line, model_version) DO UPDATE SET {updates}"
+    )
+    rows = [
+        tuple(
+            r.get(c, _EV_PROP_DEFAULT_MODEL_VERSION) if c == "model_version" else r.get(c)
+            for c in _EV_PROP_PICKS_COLS
+        )
+        for r in records
+    ]
+    with get_postgres() as conn, conn.cursor() as cur:
+        cur.executemany(sql, rows)
+        conn.commit()
+    return len(rows)
+
+
+_EV_PROP_RESULTS_COLS = [
+    "sport", "game_pk", "player_id", "player_name", "market", "side", "line",
+    "model_version", "commence_time", "model_prob", "novig_close", "actual",
+    "result", "clv", "profit",
+]
+
+
+def upsert_ev_prop_results(records: list[dict]) -> int:
+    """Upsert graded player-prop results into Supabase `ev_prop_results`.
+
+    Idempotent on (game_pk, player_id, market, line, model_version) -- a
+    re-grade overwrites in place. `created_at` is intentionally excluded from
+    both the column list and the DO UPDATE SET clause: it is set once by the
+    table's DEFAULT now() on the first INSERT and must NOT change on a later
+    update (same pattern as upsert_ev_prop_picks). A record that omits
+    `model_version` defaults to "props-sim-v1".
+    Requires DATABASE_URL and ev_prop_results (db/migration_ev_prop_picks.sql).
+    """
+    if not records:
+        return 0
+    key = ("game_pk", "player_id", "market", "line", "model_version")
+    updates = ", ".join(f"{c} = EXCLUDED.{c}" for c in _EV_PROP_RESULTS_COLS if c not in key)
+    placeholders = ", ".join(["%s"] * len(_EV_PROP_RESULTS_COLS))
+    sql = (
+        f"INSERT INTO ev_prop_results ({', '.join(_EV_PROP_RESULTS_COLS)}) "
+        f"VALUES ({placeholders}) "
+        f"ON CONFLICT (game_pk, player_id, market, line, model_version) DO UPDATE SET {updates}"
+    )
+    rows = [
+        tuple(
+            r.get(c, _EV_PROP_DEFAULT_MODEL_VERSION) if c == "model_version" else r.get(c)
+            for c in _EV_PROP_RESULTS_COLS
+        )
+        for r in records
+    ]
+    with get_postgres() as conn, conn.cursor() as cur:
+        cur.executemany(sql, rows)
+        conn.commit()
+    return len(rows)
+
+
+# =============================================================================
 # +EV parlays (auto-parlay of juiced-favorite legs) -- see serving/parlay.py
 # =============================================================================
 
