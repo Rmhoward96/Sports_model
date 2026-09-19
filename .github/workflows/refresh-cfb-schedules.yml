@@ -1,0 +1,48 @@
+name: refresh-cfb-schedules
+
+# Keeps assets/cfb/schedules.parquet current during the season. The CFB desk's
+# recent-form record reads this asset and filters to the CURRENT season, so if
+# the asset lags a season a team shows no form (or, before the current-season
+# filter, a stale prior-season record). This re-fetches the CURRENT season from
+# ESPN and MERGES it in (prior seasons untouched), then commits the refreshed
+# parquet back so the desk picks up completed games automatically. Weekly is
+# plenty (games are Saturdays); Sunday runs after the weekend slate is final.
+on:
+  schedule:
+    - cron: "0 12 * * 0"   # Sundays 12:00 UTC (~6-7 AM Central), after Saturday games
+  workflow_dispatch: {}
+
+permissions:
+  contents: write          # allow committing the refreshed schedule back
+
+jobs:
+  refresh:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v10.0.1
+
+      - name: Sync deps
+        run: uv sync
+
+      - name: Refresh current-season CFB schedule (merge, keep history)
+        run: |
+          Y=$(date -u +%Y); M=$(date -u +%m)
+          if [ "$M" -lt 08 ]; then Y=$((Y-1)); fi   # Jan-Jul belong to last season
+          echo "Refreshing CFB season $Y"
+          PYTHONPATH=src uv run --no-sync python scripts/build_cfb_schedules.py --seasons "$Y" --merge
+
+      - name: Commit refreshed schedule
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add assets/cfb/schedules.parquet
+          if git diff --staged --quiet; then
+            echo "No schedule changes this week."
+          else
+            git commit -m "chore: weekly CFB schedule refresh [skip ci]"
+            git push
+          fi
