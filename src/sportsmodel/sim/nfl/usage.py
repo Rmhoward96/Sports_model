@@ -384,8 +384,10 @@ def fetch_usage_sources(seasons: list[int]) -> dict:
     """
     import nfl_data_py as nfl
 
+    from sportsmodel.nfl.nflverse import import_by_season
+
     return {
-        "depth": nfl.import_depth_charts(seasons),
-        "snaps": nfl.import_snap_counts(seasons),
+        "depth": import_by_season(nfl.import_depth_charts, seasons, "depth"),
+        "snaps": import_by_season(nfl.import_snap_counts, seasons, "snaps"),
         "ids": nfl.import_ids(),
     }

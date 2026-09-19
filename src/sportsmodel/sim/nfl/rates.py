@@ -291,8 +291,10 @@ def fetch_nflverse(seasons: list[int]) -> dict:
     """
     import nfl_data_py as nfl
 
+    from sportsmodel.nfl.nflverse import import_by_season
+
     return {
-        "pbp": nfl.import_pbp_data(seasons),
-        "weekly": nfl.import_weekly_data(seasons),
-        "snaps": nfl.import_snap_counts(seasons),
+        "pbp": import_by_season(nfl.import_pbp_data, seasons, "pbp"),
+        "weekly": import_by_season(nfl.import_weekly_data, seasons, "weekly"),
+        "snaps": import_by_season(nfl.import_snap_counts, seasons, "snaps"),
     }

@@ -102,5 +102,11 @@ def current_injuries(now: datetime) -> dict[str, list[dict]]:
     """
     import nfl_data_py as nfl
 
-    df = nfl.import_injuries([nfl_season(now)])
+    from sportsmodel.nfl.nflverse import import_by_season
+
+    # The current season's injury report can 404 before it's published; treat
+    # "no report yet" as "no injuries" rather than failing the whole run.
+    df = import_by_season(nfl.import_injuries, [nfl_season(now)], "injuries", required=False)
+    if df.empty:
+        return {}
     return parse_injuries(df)
