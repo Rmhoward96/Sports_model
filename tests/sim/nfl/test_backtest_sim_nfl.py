@@ -204,6 +204,72 @@ def test_is_propable_ignores_irrelevant_usage_columns():
 
 
 # =============================================================================
+# is_propable_projected
+# =============================================================================
+
+def test_is_propable_projected_pass_yds_at_threshold_is_propable():
+    assert bsn.is_propable_projected("pass_yds", 150.0) is True
+
+
+def test_is_propable_projected_pass_yds_below_threshold_is_not_propable():
+    assert bsn.is_propable_projected("pass_yds", 149.9) is False
+
+
+def test_is_propable_projected_rush_yds_at_threshold_is_propable():
+    assert bsn.is_propable_projected("rush_yds", 25.0) is True
+
+
+def test_is_propable_projected_rush_yds_below_threshold_is_not_propable():
+    assert bsn.is_propable_projected("rush_yds", 24.9) is False
+
+
+def test_is_propable_projected_rec_yds_at_threshold_is_propable():
+    assert bsn.is_propable_projected("rec_yds", 25.0) is True
+
+
+def test_is_propable_projected_rec_yds_below_threshold_is_not_propable():
+    assert bsn.is_propable_projected("rec_yds", 24.9) is False
+
+
+def test_is_propable_projected_receptions_at_threshold_is_propable():
+    assert bsn.is_propable_projected("receptions", 2.5) is True
+
+
+def test_is_propable_projected_receptions_below_threshold_is_not_propable():
+    assert bsn.is_propable_projected("receptions", 2.4) is False
+
+
+def test_is_propable_projected_unknown_market_is_never_propable():
+    assert bsn.is_propable_projected("not_a_market", 9999.0) is False
+
+
+# =============================================================================
+# run_backtest / report expose the projected-usage gate's pairs dicts
+# =============================================================================
+
+def test_run_backtest_source_collects_projected_pairs_dicts():
+    """run_backtest is heavy IO (nflverse fetch + simulate_game) and not
+    unit-tested directly here (see module docstring), but we can still lock
+    in -- via a light source-level seam -- that it builds and returns the
+    three projected-usage-gated pairs dicts alongside the existing
+    actual-usage ones, so a regression that silently drops them is caught
+    without paying for a network-backed run."""
+    import inspect
+
+    src = inspect.getsource(bsn.run_backtest)
+    for name in ("player_mean_pairs_proj", "player_p50_pairs_proj", "player_p90_pairs_proj"):
+        assert name in src, f"run_backtest should build/return {name}"
+
+
+def test_report_source_prints_projected_usage_gate_section():
+    import inspect
+
+    src = inspect.getsource(bsn.report)
+    assert "player_mean_pairs_proj" in src
+    assert "projected-usage gate" in src.lower()
+
+
+# =============================================================================
 # out_names_by_team_week
 # =============================================================================
 

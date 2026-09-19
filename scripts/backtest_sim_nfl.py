@@ -16,9 +16,15 @@ simulates it, and compares the sim's outputs against what actually happened:
           check -- the share of actuals falling at/under the sim's p50 and
           p90 quantiles should be ~=0.50 and ~=0.90 if the sim's spread is
           well-calibrated. Each market's pairs are filtered to players who'd
-          realistically have a prop line that week (see `is_propable`) so the
-          metric isn't swamped by non-participants (e.g. a WR's pass_yds is
-          0-vs-0 every week and would otherwise dilute the pass_yds numbers).
+          realistically have a prop line that week, under TWO independent
+          gates: `is_propable` (ACTUAL usage that week -- realized,
+          selection-biased, kept for reference/visibility into that bias) and
+          `is_propable_projected` (the sim's own PROJECTED/pre-game usage --
+          the deployment population, since books set lines off expectation,
+          not off what happens to occur; this is the headline shippability
+          metric). Without either gate the metric would be swamped by
+          non-participants (e.g. a WR's pass_yds is 0-vs-0 every week and
+          would otherwise dilute the pass_yds numbers).
 
 PURE / IO split
 ----------------
@@ -128,6 +134,19 @@ _MARKET_USAGE_GATE: dict[str, tuple[str, float]] = {
     "receptions": ("targets", 3.0),
 }
 
+# Per-market sim dist-mean thresholds approximating "the model projects this
+# player featured enough to have a line" -- i.e. the PROJECTED (pre-game,
+# no-selection-bias) counterpart to `_MARKET_USAGE_GATE`'s ACTUAL-usage gate.
+# This is the deployment population: it's what a shippability read should
+# grade against, since books set lines (and props get offered) off projected
+# usage, not off what a player ends up doing that week. Tunable.
+PROJECTED_USAGE_GATE: dict[str, float] = {
+    "pass_yds": 150.0,
+    "rush_yds": 25.0,
+    "rec_yds": 25.0,
+    "receptions": 2.5,
+}
+
 
 # =============================================================================
 # PURE metric helpers (unit-tested)
@@ -218,6 +237,28 @@ def is_propable(market: str, actual_usage: dict) -> bool:
         return False
     usage_col, threshold = gate
     return float(actual_usage.get(usage_col, 0.0) or 0.0) >= threshold
+
+
+def is_propable_projected(market: str, dist_mean: float) -> bool:
+    """True if the sim's PROJECTED usage for a player that week -- i.e. the
+    sim's own dist mean for `market`, computed pre-game from leakage-free
+    rates/shares -- clears the threshold at which that market would
+    realistically have had a prop line offered.
+
+    This is the deployment-population counterpart to `is_propable`: that
+    function gates on ACTUAL (post-game, realized) usage, which is
+    selection-biased -- it only ever grades weeks the model could not have
+    foreseen, silently favoring weeks where a featured player happened to
+    stay featured. Gating on the sim's own PROJECTED usage instead reproduces
+    how books actually decide whether to post a line (pre-game, off
+    expectation, not off what happens to occur), so it's the metric that
+    should be read as the ship-gate's headline shippability number. Unknown
+    markets are never propable.
+    """
+    threshold = PROJECTED_USAGE_GATE.get(market)
+    if threshold is None:
+        return False
+    return float(dist_mean) >= threshold
 
 
 # Historical injury designations (nfl_data_py `import_injuries` `report_status`
@@ -326,9 +367,15 @@ def run_backtest(seasons: list[int], n_sims: int, seed: int = SIM_SEED) -> dict:
       total_preds/total_actuals, per-market player_mean_pairs/
       player_p50_pairs/player_p90_pairs (each a list of (sim_value, actual)
       tuples, restricted to player-weeks that clear that market's
-      `is_propable` ACTUAL-usage gate), and `n_empty_active` (count of games
-      where `active_usage` handed back an empty roster for either side --
-      see `abbrev_alignment`'s docstring for why this can happen silently).
+      `is_propable` ACTUAL-usage gate -- selection-biased, reference only),
+      the parallel player_mean_pairs_proj/player_p50_pairs_proj/
+      player_p90_pairs_proj (same shape, but restricted to player-weeks that
+      clear that market's `is_propable_projected` PROJECTED-usage gate --
+      the deployment/shippability population; a player-week can land in
+      either gate's pairs, both, or neither, since the two gates are
+      evaluated independently), and `n_empty_active` (count of games where
+      `active_usage` handed back an empty roster for either side -- see
+      `abbrev_alignment`'s docstring for why this can happen silently).
     """
     fetch_seasons = list(range(min(seasons) - WARMUP_SEASONS_BACK, max(seasons) + 1))
     print(f"fetching nflverse seasons {fetch_seasons}")
@@ -381,6 +428,12 @@ def run_backtest(seasons: list[int], n_sims: int, seed: int = SIM_SEED) -> dict:
     player_mean_pairs: dict[str, list[tuple[float, float]]] = {m: [] for m in PLAYER_MARKETS}
     player_p50_pairs: dict[str, list[tuple[float, float]]] = {m: [] for m in PLAYER_MARKETS}
     player_p90_pairs: dict[str, list[tuple[float, float]]] = {m: [] for m in PLAYER_MARKETS}
+    # Parallel projected-usage-gated pairs (see is_propable_projected) -- the
+    # deployment/shippability population. Independent of the actual-usage
+    # gate above: a player-week can be in one, both, or neither.
+    player_mean_pairs_proj: dict[str, list[tuple[float, float]]] = {m: [] for m in PLAYER_MARKETS}
+    player_p50_pairs_proj: dict[str, list[tuple[float, float]]] = {m: [] for m in PLAYER_MARKETS}
+    player_p90_pairs_proj: dict[str, list[tuple[float, float]]] = {m: [] for m in PLAYER_MARKETS}
 
     n_ok = 0
     n_skipped = 0
@@ -460,13 +513,16 @@ def run_backtest(seasons: list[int], n_sims: int, seed: int = SIM_SEED) -> dict:
             for market in PLAYER_MARKETS:
                 if market not in markets:
                     continue
-                if not is_propable(market, actual):
-                    continue
                 dist = markets[market]
                 a = actual[market]
-                player_mean_pairs[market].append((dist["mean"], a))
-                player_p50_pairs[market].append((quantile_from_pmf(dist, 0.50), a))
-                player_p90_pairs[market].append((quantile_from_pmf(dist, 0.90), a))
+                if is_propable(market, actual):
+                    player_mean_pairs[market].append((dist["mean"], a))
+                    player_p50_pairs[market].append((quantile_from_pmf(dist, 0.50), a))
+                    player_p90_pairs[market].append((quantile_from_pmf(dist, 0.90), a))
+                if is_propable_projected(market, dist["mean"]):
+                    player_mean_pairs_proj[market].append((dist["mean"], a))
+                    player_p50_pairs_proj[market].append((quantile_from_pmf(dist, 0.50), a))
+                    player_p90_pairs_proj[market].append((quantile_from_pmf(dist, 0.90), a))
 
         n_ok += 1
 
@@ -485,6 +541,9 @@ def run_backtest(seasons: list[int], n_sims: int, seed: int = SIM_SEED) -> dict:
         "player_mean_pairs": player_mean_pairs,
         "player_p50_pairs": player_p50_pairs,
         "player_p90_pairs": player_p90_pairs,
+        "player_mean_pairs_proj": player_mean_pairs_proj,
+        "player_p50_pairs_proj": player_p50_pairs_proj,
+        "player_p90_pairs_proj": player_p90_pairs_proj,
         "n_empty_active": n_empty_active,
     }
 
@@ -499,11 +558,27 @@ def report(results: dict) -> None:
     actual_corr = pearson_corr(results["margin_actuals"], results["total_actuals"])
     print(f"Margin<->Total corr:      sim={sim_corr:.3f}  actual={actual_corr:.3f}")
 
-    print("\n=== PLAYER ===")
+    print("\n=== PLAYER (actual-usage gate -- realized, selection-biased; reference only) ===")
     for market in PLAYER_MARKETS:
         means = results["player_mean_pairs"][market]
         p50s = results["player_p50_pairs"][market]
         p90s = results["player_p90_pairs"][market]
+        if not means:
+            print(f"{market:12s}  no data")
+            continue
+        mean_mae = mae([m for m, _ in means], [a for _, a in means])
+        cov50 = share_below([q for q, _ in p50s], [a for _, a in p50s])
+        cov90 = share_below([q for q, _ in p90s], [a for _, a in p90s])
+        print(
+            f"{market:12s}  n={len(means):6d}  mean_MAE={mean_mae:7.2f}  "
+            f"coverage_p50={cov50:.3f} (target ~0.50)  coverage_p90={cov90:.3f} (target ~0.90)"
+        )
+
+    print("\n=== PLAYER (projected-usage gate -- deployment/shippability) ===")
+    for market in PLAYER_MARKETS:
+        means = results["player_mean_pairs_proj"][market]
+        p50s = results["player_p50_pairs_proj"][market]
+        p90s = results["player_p90_pairs_proj"][market]
         if not means:
             print(f"{market:12s}  no data")
             continue
