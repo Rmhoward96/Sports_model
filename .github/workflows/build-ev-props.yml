@@ -1,0 +1,41 @@
+name: build-ev-props
+
+# Build the NFL player-prop +EV board -> ev_prop_picks / ev_prop_picks_current.
+# Joins nfl_player_sim_current (the sim's per-player prop distributions) to the
+# latest player-prop odds in odds_snapshot, computes P(over) at the book line +
+# no-vig market prob + EV, and writes one +EV row per projected-featured
+# (player, market, line). NFL only. DATABASE_URL lives here, not in the session.
+#
+# Run AFTER capture-odds' post-lineup prop windows (so prop lines are fresh) and
+# after generate-sim-nfl (so the sim distributions exist). The prop board is
+# assistive -- not a proven edge until grade-ev-props' forward CLV record
+# supports it (calibration was shown walk-forward; edge is a CLV question).
+#
+# PREREQ: db/migration_ev_prop_picks.sql must be run in Supabase, and NFL
+# player-prop capture must be enabled in capture-odds (PROP_WINDOW_MIN / the
+# prop markets in SportConfig["nfl"]).
+on:
+  workflow_dispatch:
+  schedule:
+    # A little after the capture-odds post-lineup windows on game days
+    # (Sun/Mon/Thu/Sat), mirroring build-ev-board. Crons are UTC.
+    - cron: "35 20 * * 0,1,4,6"
+    - cron: "35 23 * * 0,1,4,6"
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v5
+      - name: Install uv
+        uses: astral-sh/setup-uv@v10.0.1
+      - name: Sync deps
+        run: uv sync
+      - name: Build NFL prop +EV board
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+        run: uv run python scripts/build_ev_props_board.py --sport nfl

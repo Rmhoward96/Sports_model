@@ -1,0 +1,38 @@
+name: grade-ev-props
+
+# Forward-grade the NFL prop +EV board: for each finished game, grade every
+# surfaced prop pick against the player's actual (nflverse weekly) AND the
+# closing prop price (CLV) -> ev_prop_results. This is the honest scoreboard --
+# the prop board earns trust only once this record is positive. Reads DB +
+# nflverse only (no Odds API credits). DATABASE_URL lives here, not the session.
+on:
+  workflow_dispatch:
+    inputs:
+      days:
+        description: "Grade finished games within this many days"
+        type: string
+        default: "7"
+  schedule:
+    # Daily, 13:30 UTC (~10 min after grade-ev) -- after even a late West-coast
+    # game the prior evening is final. grade_ev_props is idempotent (only
+    # touches finished picks), so a daily run picks up each slate the morning
+    # after it finishes.
+    - cron: "30 13 * * *"
+
+permissions:
+  contents: read
+
+jobs:
+  grade:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v5
+      - name: Install uv
+        uses: astral-sh/setup-uv@v10.0.1
+      - name: Sync deps
+        run: uv sync
+      - name: Grade NFL prop picks (forward CLV)
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+        run: uv run python scripts/grade_ev_props.py --days "${{ github.event.inputs.days || '7' }}"
