@@ -1,0 +1,35 @@
+name: capture-player-actuals
+
+# Captures realized NFL player box stats (nflverse weekly) for finished games
+# into nfl_player_actuals, so the game page can show actuals next to the sim's
+# projected props. Reads Supabase + nflverse only -- NO Odds API calls, so it's
+# free to run often. Idempotent (upsert on game_pk/player_id/market) over a
+# rolling window, so a missed or late run self-heals. Scheduled a few hours
+# after game windows and the next morning (NFL games finalize late and nflverse
+# weekly data lands after). Manual runs (workflow_dispatch) proceed the same way.
+on:
+  schedule:
+    - cron: "0 4,15 * * 0,1,2,5,6"  # Tue/Wed/Sat/Sun/Mon mornings + afternoons UTC
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+jobs:
+  capture:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v10.0.1
+
+      - name: Set up Python + sync deps
+        run: uv sync
+
+      - name: Capture NFL player actuals for finished games
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+          SM_DATA_DIR: ${{ github.workspace }}/data
+        run: uv run python scripts/capture_nfl_player_actuals.py --days 8
