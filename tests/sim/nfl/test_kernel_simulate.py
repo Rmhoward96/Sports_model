@@ -114,7 +114,7 @@ def test_player_stats_keys_equal_full_roster():
     expected_ids = {p.player_id for p in (*spec.home_players, *spec.away_players)}
     assert set(sims.player_stats.keys()) == expected_ids
     for stats in sims.player_stats.values():
-        assert set(stats.keys()) == {"pass_yds", "rush_yds", "rec_yds", "receptions", "td"}
+        assert set(stats.keys()) == {"pass_yds", "rush_yds", "rec_yds", "receptions", "td", "pass_tds"}
 
 
 def test_reproducible_with_fixed_seed():

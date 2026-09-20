@@ -112,7 +112,7 @@ VALIDATION_SEASONS = [2021, 2022, 2023, 2024]
 # divide-by-zero landmine in kernel.sample_drive's renormalization).
 WARMUP_SEASONS_BACK = 2
 
-MARKET_MAX = {"pass_yds": 400, "rush_yds": 200, "rec_yds": 200, "receptions": 15}
+MARKET_MAX = {"pass_yds": 400, "rush_yds": 200, "rec_yds": 200, "receptions": 15, "pass_tds": 6}
 PLAYER_MARKETS: tuple[str, ...] = ("pass_yds", "rush_yds", "rec_yds", "receptions")
 _ACTUAL_COL = {
     "pass_yds": "passing_yards",

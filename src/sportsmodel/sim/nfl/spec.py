@@ -33,6 +33,7 @@ class TeamRates:
     rush_att_pg: float = 0.0
     sack_rate: float = 0.0
     completion_pct: float = 0.0
+    pass_td_share: float = 0.0  # fraction of the team's offensive TDs that are passing (receiving)
 
 
 @dataclass(frozen=True)
@@ -65,6 +66,8 @@ class PlayerInput:
     ypr: float
     catch_rate: float
     td_share: float
+    rec_td_share: float = 0.0   # share of the team's PASSING (receiving) TDs
+    rush_td_share: float = 0.0  # share of the team's RUSHING TDs
 
 
 @dataclass(frozen=True)

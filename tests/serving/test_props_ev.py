@@ -43,12 +43,15 @@ def test_odds_market_for_unknown_market_returns_none():
     assert odds_market_for("not_a_market") is None
 
 
-def test_sim_to_odds_market_has_exactly_three_entries():
+def test_sim_to_odds_market_entries():
     assert SIM_TO_ODDS_MARKET == {
         "rush_yds": "rush_yds",
         "rec_yds": "reception_yds",
         "receptions": "receptions",
+        "pass_tds": "pass_tds",
     }
+    assert "anytime_td" not in SIM_TO_ODDS_MARKET  # projection-only (single-sided)
+    assert "pass_yds" not in SIM_TO_ODDS_MARKET    # excluded from the board
 
 
 # =============================================================================
@@ -138,6 +141,7 @@ def test_projected_usage_gate_has_expected_thresholds():
         "rush_yds": 25.0,
         "rec_yds": 25.0,
         "receptions": 2.5,
+        "pass_tds": 1.0,
     }
 
 

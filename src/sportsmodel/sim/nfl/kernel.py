@@ -61,7 +61,7 @@ _GAME_ENV_K = 8.0
 _MIN_DRIVES_PER_GAME = 6
 _PLAYS_PER_DRIVE = 6.0
 
-_PLAYER_STAT_NAMES = ("pass_yds", "rush_yds", "rec_yds", "receptions", "td")
+_PLAYER_STAT_NAMES = ("pass_yds", "rush_yds", "rec_yds", "receptions", "td", "pass_tds")
 
 
 def sample_drive(off: TeamRates, deff: TeamRates, rng) -> tuple[str, int]:
@@ -180,6 +180,7 @@ def attribute_offense(
     n_rush: int,
     n_off_tds: int,
     rng,
+    pass_td_share: float = 0.58,
 ) -> dict[str, dict[str, int]]:
     """Attribute a drive-based offensive box score to individual players.
 
@@ -216,7 +217,7 @@ def attribute_offense(
         return {}
 
     stats: dict[str, dict[str, int]] = {
-        p.player_id: {"pass_yds": 0, "rush_yds": 0, "rec_yds": 0, "receptions": 0, "td": 0}
+        p.player_id: {"pass_yds": 0, "rush_yds": 0, "rec_yds": 0, "receptions": 0, "td": 0, "pass_tds": 0}
         for p in players
     }
 
@@ -226,11 +227,26 @@ def attribute_offense(
     carry_probs = _apply_usage_dispersion(
         _normalized_probs([p.carry_share for p in players]), rng
     )
-    td_probs = _normalized_probs([p.td_share for p in players])
+    # Split the game's offensive TDs into passing (receiving) vs rushing, then
+    # allocate each pool separately: passing TDs by receiving-TD share (credits
+    # the receiver AND the QB's pass_tds), rushing TDs by rushing-TD share. Each
+    # pool falls back to usage weights (targets*catch / carries) when a team has
+    # no recent TD history, and receiving TDs never go to a QB.
+    n_pass_td = int(rng.binomial(n_off_tds, pass_td_share)) if n_off_tds > 0 else 0
+    n_rush_td = n_off_tds - n_pass_td
+    rec_weights = [p.rec_td_share if p.pos != "QB" else 0.0 for p in players]
+    if sum(rec_weights) <= 0:
+        rec_weights = [p.target_share * p.catch_rate if p.pos != "QB" else 0.0 for p in players]
+    rush_weights = [p.rush_td_share for p in players]
+    if sum(rush_weights) <= 0:
+        rush_weights = [p.carry_share for p in players]
+    rec_td_probs = _normalized_probs(rec_weights)
+    rush_td_probs = _normalized_probs(rush_weights)
 
     target_counts = rng.multinomial(n_pass, target_probs)
     carry_counts = rng.multinomial(n_rush, carry_probs)
-    td_counts = rng.multinomial(n_off_tds, td_probs)
+    rec_td_counts = rng.multinomial(n_pass_td, rec_td_probs)
+    rush_td_counts = rng.multinomial(n_rush_td, rush_td_probs)
 
     for player, n_targets in zip(players, target_counts):
         pdata = stats[player.player_id]
@@ -246,8 +262,8 @@ def attribute_offense(
             yds = _skewed_play_yards(player.ypc, _RUSH_YDS_SHAPE, _MIN_PLAY_YDS, rng)
             pdata["rush_yds"] += int(round(yds))
 
-    for player, n_td in zip(players, td_counts):
-        stats[player.player_id]["td"] += int(n_td)
+    for player, n_rt, n_ru in zip(players, rec_td_counts, rush_td_counts):
+        stats[player.player_id]["td"] += int(n_rt) + int(n_ru)
 
     qb_candidates = [p for p in players if p.pos == "QB"]
     if qb_candidates:
@@ -261,6 +277,8 @@ def attribute_offense(
         qb = max(players, key=lambda p: p.target_share)
     team_rec_yds = sum(pdata["rec_yds"] for pdata in stats.values())
     stats[qb.player_id]["pass_yds"] = team_rec_yds
+    # Every passing (receiving) TD is a passing TD for the starting QB.
+    stats[qb.player_id]["pass_tds"] = int(n_pass_td)
 
     return stats
 
@@ -332,7 +350,7 @@ def _simulate_team_drives(
         n_pass = round(n_plays * off.pass_rate)
         n_rush = n_plays - n_pass
 
-    box = attribute_offense(players, n_pass, n_rush, n_off_tds, rng)
+    box = attribute_offense(players, n_pass, n_rush, n_off_tds, rng, pass_td_share=off.pass_td_share)
     return points, box
 
 

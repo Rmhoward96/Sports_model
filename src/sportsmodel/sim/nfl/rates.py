@@ -201,6 +201,14 @@ def team_rates_from_pbp(
         sack_rate = n_sacks / n_pass if n_pass > 0 else 0.0
         completion_pct = n_completions / n_attempts if n_attempts > 0 else 0.0
 
+        # Passing-TD share of offensive TDs (for the sim's TD split: passing TDs
+        # credit the QB + the receiver; rushing TDs credit the rusher). nflverse
+        # pbp flags pass_touchdown/rush_touchdown per play. League fallback ~0.58
+        # when a team has no offensive TDs yet in the window.
+        n_pass_td = int((team_df.get("pass_touchdown", 0) == 1).sum()) if "pass_touchdown" in team_df.columns else 0
+        n_rush_td = int((team_df.get("rush_touchdown", 0) == 1).sum()) if "rush_touchdown" in team_df.columns else 0
+        pass_td_share = n_pass_td / (n_pass_td + n_rush_td) if (n_pass_td + n_rush_td) > 0 else 0.58
+
         result[team] = TeamRates(
             drive_outcomes=drive_outcomes,
             pass_rate=pass_rate,
@@ -210,6 +218,7 @@ def team_rates_from_pbp(
             rush_att_pg=rush_att_pg,
             sack_rate=sack_rate,
             completion_pct=completion_pct,
+            pass_td_share=pass_td_share,
         )
 
     return result

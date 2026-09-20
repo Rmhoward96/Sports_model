@@ -297,12 +297,15 @@ def active_usage(
         w_rec = wsum("receptions")
         w_rec_yds = wsum("receiving_yards")
         w_rush_yds = wsum("rushing_yards")
-        w_tds = wsum("receiving_tds") + wsum("rushing_tds")
+        w_rec_tds = wsum("receiving_tds")
+        w_rush_tds = wsum("rushing_tds")
 
         return {
             "avg_targets": w_targets / sw if sw > 0 else 0.0,
             "avg_carries": w_carries / sw if sw > 0 else 0.0,
-            "avg_tds": w_tds / sw if sw > 0 else 0.0,
+            "avg_tds": (w_rec_tds + w_rush_tds) / sw if sw > 0 else 0.0,
+            "avg_rec_tds": w_rec_tds / sw if sw > 0 else 0.0,
+            "avg_rush_tds": w_rush_tds / sw if sw > 0 else 0.0,
             "ypt": w_rec_yds / w_targets if w_targets > 0 else 0.0,
             "ypc": w_rush_yds / w_carries if w_carries > 0 else 0.0,
             "ypr": w_rec_yds / w_rec if w_rec > 0 else 0.0,
@@ -342,10 +345,16 @@ def active_usage(
             metrics[gsis] = _weighted(pdf)
         else:
             ypt, ypc, ypr, catch_rate = _COLD_EFF.get(pos, (0.0, 0.0, 0.0, 0.0))
+            cold_td = _COLD_TDS.get((pos, is_starter), 0.0)
+            # Split the cold-start TD prior into receiving vs rushing by position:
+            # WR/TE score through the air, RBs mostly on the ground, QBs rushing.
+            rec_frac = {"WR": 1.0, "TE": 1.0, "RB": 0.25, "QB": 0.0}.get(pos, 0.0)
             metrics[gsis] = {
                 "avg_targets": _COLD_TARGETS.get((pos, is_starter), 0.0),
                 "avg_carries": _COLD_CARRIES.get((pos, is_starter), 0.0),
-                "avg_tds": _COLD_TDS.get((pos, is_starter), 0.0),
+                "avg_tds": cold_td,
+                "avg_rec_tds": cold_td * rec_frac,
+                "avg_rush_tds": cold_td * (1.0 - rec_frac),
                 "ypt": ypt, "ypc": ypc, "ypr": ypr, "catch_rate": catch_rate,
             }
 
@@ -353,6 +362,8 @@ def active_usage(
     tot_targets = sum(m["avg_targets"] for m in metrics.values())
     tot_carries = sum(m["avg_carries"] for m in metrics.values())
     tot_tds = sum(m["avg_tds"] for m in metrics.values())
+    tot_rec_tds = sum(m.get("avg_rec_tds", 0.0) for m in metrics.values())
+    tot_rush_tds = sum(m.get("avg_rush_tds", 0.0) for m in metrics.values())
 
     players: list[PlayerInput] = []
     for gsis, info in active.items():
@@ -369,6 +380,8 @@ def active_usage(
                 ypr=m["ypr"],
                 catch_rate=m["catch_rate"],
                 td_share=m["avg_tds"] / tot_tds if tot_tds > 0 else 0.0,
+                rec_td_share=m.get("avg_rec_tds", 0.0) / tot_rec_tds if tot_rec_tds > 0 else 0.0,
+                rush_td_share=m.get("avg_rush_tds", 0.0) / tot_rush_tds if tot_rush_tds > 0 else 0.0,
             )
         )
 

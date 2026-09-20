@@ -44,6 +44,8 @@ SIM_TO_ODDS_MARKET: dict[str, str] = {
     "rush_yds": "rush_yds",
     "rec_yds": "reception_yds",
     "receptions": "receptions",
+    "pass_tds": "pass_tds",  # QB passing TDs -- two-sided line (over/under X.5)
+    # anytime_td is projection-only (single-sided market) -- deliberately NOT here.
 }
 
 
@@ -104,6 +106,7 @@ PROJECTED_USAGE_GATE: dict[str, float] = {
     "rush_yds": 25.0,
     "rec_yds": 25.0,
     "receptions": 2.5,
+    "pass_tds": 1.0,  # a starting QB projected for >=1 passing TD is "propable"
 }
 
 
@@ -299,6 +302,7 @@ SIM_MARKET_TO_WEEKLY: dict[str, str] = {
     "rush_yds": "rushing_yards",
     "rec_yds": "receiving_yards",
     "receptions": "receptions",
+    "pass_tds": "passing_tds",
 }
 
 

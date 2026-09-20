@@ -276,3 +276,33 @@ def test_usage_dispersion_zero_shares_stay_zero_and_fall_back_when_all_zero():
     # (all-zero) input rather than crashing or fabricating a distribution.
     all_zero = np.array([0.0, 0.0])
     assert np.array_equal(_apply_usage_dispersion(all_zero, rng), all_zero)
+
+
+def test_td_split_credits_qb_passing_and_conserves_scorers():
+    # TD feature: each offensive TD is split into passing (receiving) vs rushing.
+    # Passing TDs credit the receiver's anytime `td` AND the QB's `pass_tds`;
+    # rushing TDs credit the rusher's `td`. Every TD is credited to exactly one
+    # scorer (conservation), and QB pass_tds ~ n_off_tds * pass_td_share.
+    qb = _player(player_id="qb", pos="QB", target_share=0.0, rec_td_share=0.0, rush_td_share=0.1)
+    wr = _player(player_id="wr", pos="WR", target_share=0.6, catch_rate=0.65, rec_td_share=0.7, rush_td_share=0.0)
+    rb = _player(player_id="rb", pos="RB", carry_share=0.7, rec_td_share=0.3, rush_td_share=0.9)
+    rng = np.random.default_rng(7)
+    n, pass_tds, wr_td, rb_td, qb_td = 6000, [], 0, 0, 0
+    for _ in range(n):
+        box = attribute_offense([qb, wr, rb], n_pass=30, n_rush=25, n_off_tds=3, rng=rng, pass_td_share=0.6)
+        assert sum(box[p]["td"] for p in box) == 3   # conservation: 3 TDs -> exactly 3 scorer credits
+        pass_tds.append(box["qb"]["pass_tds"])
+        wr_td += box["wr"]["td"]; rb_td += box["rb"]["td"]; qb_td += box["qb"]["td"]
+    assert abs(np.mean(pass_tds) - 3 * 0.6) < 0.12     # QB passing TDs track pass_td_share
+    assert wr_td > 0 and rb_td > 0                      # receivers and rushers both score
+    # WR (receiving-only) never gets a rushing TD credited beyond its share; the
+    # QB's own anytime `td` (rushing) is small vs its passing credit.
+    assert np.mean(pass_tds) > qb_td / n               # QB scores through the air far more than on the ground
+
+
+def test_no_offensive_tds_means_no_pass_tds():
+    qb = _player(player_id="qb", pos="QB")
+    wr = _player(player_id="wr", pos="WR", target_share=1.0, rec_td_share=1.0)
+    box = attribute_offense([qb, wr], n_pass=20, n_rush=10, n_off_tds=0, rng=np.random.default_rng(1), pass_td_share=0.6)
+    assert box["qb"]["pass_tds"] == 0
+    assert sum(box[p]["td"] for p in box) == 0
