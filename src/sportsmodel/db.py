@@ -631,6 +631,38 @@ def upsert_nfl_player_sim(records: list[dict]) -> int:
     return len(rows)
 
 
+_NFL_PLAYER_ACTUALS_COLS = [
+    "game_pk", "player_id", "player_name", "market", "actual", "season", "week",
+]
+
+
+def upsert_nfl_player_actuals(records: list[dict]) -> int:
+    """Upsert realized player box stats into Supabase `nfl_player_actuals`.
+
+    Idempotent on (game_pk, player_id, market) -- re-capturing a finished game
+    overwrites in place. `captured_at` is set by the table DEFAULT on the first
+    INSERT and refreshed to now() on update, so it is never a bound column
+    value. Requires DATABASE_URL and nfl_player_actuals
+    (db/migration_nfl_player_actuals.sql)."""
+    if not records:
+        return 0
+    key = ("game_pk", "player_id", "market")
+    updates = ", ".join(
+        f"{c} = EXCLUDED.{c}" for c in _NFL_PLAYER_ACTUALS_COLS if c not in key
+    )
+    placeholders = ", ".join(["%s"] * len(_NFL_PLAYER_ACTUALS_COLS))
+    sql = (
+        f"INSERT INTO nfl_player_actuals ({', '.join(_NFL_PLAYER_ACTUALS_COLS)}) "
+        f"VALUES ({placeholders}) "
+        f"ON CONFLICT (game_pk, player_id, market) DO UPDATE SET {updates}, captured_at = now()"
+    )
+    rows = [tuple(r.get(c) for c in _NFL_PLAYER_ACTUALS_COLS) for r in records]
+    with get_postgres() as conn, conn.cursor() as cur:
+        cur.executemany(sql, rows)
+        conn.commit()
+    return len(rows)
+
+
 def demote_stale_parlays(sport: str, keep_parlay_id: str | None,
                           model_version: str = _EV_PILOT_DEFAULT_MODEL_VERSION) -> int:
     """Set is_pick=false on any still-upcoming parlay for `sport` whose
