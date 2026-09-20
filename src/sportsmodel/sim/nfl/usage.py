@@ -335,28 +335,41 @@ def active_usage(
             if g != qb1:
                 del active[g]
 
+    def _cold_prior(pos: str, is_starter: bool) -> dict:
+        """The small positional pseudo-usage prior for a player with no usable
+        recent usage (see `_COLD_*`). Used both for players with no tape at all
+        and for rostered players whose recent window shows zero targets AND zero
+        carries -- a depth/special-teams role still merits a nonzero floor
+        rather than a hard zero ('no stats yet' != 'won't produce')."""
+        ypt, ypc, ypr, catch_rate = _COLD_EFF.get(pos, (0.0, 0.0, 0.0, 0.0))
+        cold_td = _COLD_TDS.get((pos, is_starter), 0.0)
+        # Split the cold-start TD prior into receiving vs rushing by position:
+        # WR/TE score through the air, RBs mostly on the ground, QBs rushing.
+        rec_frac = {"WR": 1.0, "TE": 1.0, "RB": 0.25, "QB": 0.0}.get(pos, 0.0)
+        return {
+            "avg_targets": _COLD_TARGETS.get((pos, is_starter), 0.0),
+            "avg_carries": _COLD_CARRIES.get((pos, is_starter), 0.0),
+            "avg_tds": cold_td,
+            "avg_rec_tds": cold_td * rec_frac,
+            "avg_rush_tds": cold_td * (1.0 - rec_frac),
+            "ypt": ypt, "ypc": ypc, "ypr": ypr, "catch_rate": catch_rate,
+        }
+
     # --- 4. Per-player metrics (recent tape or cold-start prior) ---
     metrics: dict[str, dict] = {}
     for gsis, info in active.items():
         pos = info["pos"]
         is_starter = info["depth_team"] == 1
         pdf = recent_by_pid.get(gsis)
-        if pdf is not None and len(pdf) > 0:
-            metrics[gsis] = _weighted(pdf)
+        w = _weighted(pdf) if (pdf is not None and len(pdf) > 0) else None
+        # Fall back to the cold-start floor when there's no tape at all OR the
+        # recent window carried zero targets and zero carries (a rostered player
+        # who simply didn't touch the ball recently still gets a small floor,
+        # not a hard zero that renders 0-yards-across-the-board).
+        if w is not None and (w["avg_targets"] > 0.0 or w["avg_carries"] > 0.0):
+            metrics[gsis] = w
         else:
-            ypt, ypc, ypr, catch_rate = _COLD_EFF.get(pos, (0.0, 0.0, 0.0, 0.0))
-            cold_td = _COLD_TDS.get((pos, is_starter), 0.0)
-            # Split the cold-start TD prior into receiving vs rushing by position:
-            # WR/TE score through the air, RBs mostly on the ground, QBs rushing.
-            rec_frac = {"WR": 1.0, "TE": 1.0, "RB": 0.25, "QB": 0.0}.get(pos, 0.0)
-            metrics[gsis] = {
-                "avg_targets": _COLD_TARGETS.get((pos, is_starter), 0.0),
-                "avg_carries": _COLD_CARRIES.get((pos, is_starter), 0.0),
-                "avg_tds": cold_td,
-                "avg_rec_tds": cold_td * rec_frac,
-                "avg_rush_tds": cold_td * (1.0 - rec_frac),
-                "ypt": ypt, "ypc": ypc, "ypr": ypr, "catch_rate": catch_rate,
-            }
+            metrics[gsis] = _cold_prior(pos, is_starter)
 
     # --- 5. Renormalize shares OVER THE ACTIVE SET ONLY ---
     tot_targets = sum(m["avg_targets"] for m in metrics.values())

@@ -249,6 +249,31 @@ def test_cold_start_active_player_gets_small_nonzero_share_no_crash():
     assert rookie.catch_rate > 0.0
 
 
+def test_active_player_with_zero_usage_tape_gets_cold_start_floor():
+    # A rostered WR who appears in recent weeks but recorded NO targets/carries
+    # (deep depth / special-teamer) must still get a small nonzero share -- not
+    # a hard zero -- just like a no-tape cold-start player. "No stats this year"
+    # doesn't mean "won't produce".
+    depth = _depth([
+        dict(season=2023, week=5, club_code="KC", depth_team="1", position="WR",
+             gsis_id="gA", full_name="Alpha Star", football_name=None),
+        dict(season=2023, week=5, club_code="KC", depth_team="3", position="WR",
+             gsis_id="gZero", full_name="Zero Usage", football_name=None),
+    ])
+    weekly = _weekly([
+        _wrow("gA", "Alpha Star", "WR", "KC", 2023, 4, targets=10, receptions=8, rec_yds=120),
+        # gZero played but recorded zero targets and zero carries in the window.
+        _wrow("gZero", "Zero Usage", "WR", "KC", 2023, 4, targets=0, carries=0),
+    ])
+    players, _qb = active_usage("KC", 2023, 5, depth, weekly, _EMPTY_SNAPS, {}, set())
+    by_id = {p.player_id: p for p in players}
+    assert "gZero" in by_id
+    z = by_id["gZero"]
+    assert z.target_share > 0.0                          # floored, not hard-zero
+    assert z.target_share < by_id["gA"].target_share     # but small vs the starter
+    assert z.ypr > 0.0                                   # positional efficiency default
+
+
 def test_weighted_usage_guards_nan_stat_column_no_crash_finite_shares():
     """A NaN in a recent weekly stat column (nflverse occasionally has one)
     must not propagate to a NaN share -- it should be treated as 0 for that

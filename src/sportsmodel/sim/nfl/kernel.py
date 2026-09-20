@@ -63,6 +63,17 @@ _PLAYS_PER_DRIVE = 6.0
 
 _PLAYER_STAT_NAMES = ("pass_yds", "rush_yds", "rec_yds", "receptions", "td", "pass_tds")
 
+# TD allocation blends each player's recent-window TD share with their
+# usage/opportunity share (targets*catch for receiving, carries for rushing).
+# Recent per-player TD counts over a ~5-game window are extremely noisy -- a
+# receiver can post real volume yet zero TDs by variance -- so a pure recent-TD
+# share hard-zeros the anytime-TD probability of anyone who simply hasn't scored
+# lately, which is wrong (a 5-catch receiver has a real TD chance). Shrinking
+# toward opportunity floors every player with real volume at a nonzero TD chance
+# while still crediting recent scorers. 0.0 = pure opportunity, 1.0 = pure
+# recent-TD share. Tunable -- retune against the walk-forward backtest.
+_TD_RECENCY_WEIGHT = 0.5
+
 
 def sample_drive(off: TeamRates, deff: TeamRates, rng) -> tuple[str, int]:
     """Sample a single drive outcome combining offense and defense rates.
@@ -155,6 +166,25 @@ def _apply_usage_dispersion(probs: np.ndarray, rng) -> np.ndarray:
     return raw / total
 
 
+def _blend_td_weights(td_shares: list[float], opp_weights: list[float]) -> np.ndarray:
+    """Blend a recent-TD share vector with an opportunity-weight vector into a
+    single normalized TD-allocation probability vector.
+
+    Each input is first normalized to a probability vector, then combined as
+    ``_TD_RECENCY_WEIGHT * td + (1 - _TD_RECENCY_WEIGHT) * opp`` and renormalized.
+    When the team has NO recent TD signal at all (``sum(td_shares) <= 0``) the
+    result is pure opportunity -- blending in a uniform-fallback TD vector there
+    would wrongly hand TD credit to zero-opportunity players (e.g. a receiving
+    TD to a QB). This floors any player with real opportunity at a nonzero TD
+    probability while still crediting recent scorers more.
+    """
+    opp = _normalized_probs(opp_weights)
+    if sum(s for s in td_shares if s > 0) <= 0:
+        return opp
+    td = _normalized_probs(td_shares)
+    return _normalized_probs(_TD_RECENCY_WEIGHT * td + (1.0 - _TD_RECENCY_WEIGHT) * opp)
+
+
 def _skewed_play_yards(mean: float, shape: float, floor: float, rng) -> float:
     """Draw a single play's yardage from a right-skewed Gamma with the given mean.
 
@@ -230,18 +260,19 @@ def attribute_offense(
     # Split the game's offensive TDs into passing (receiving) vs rushing, then
     # allocate each pool separately: passing TDs by receiving-TD share (credits
     # the receiver AND the QB's pass_tds), rushing TDs by rushing-TD share. Each
-    # pool falls back to usage weights (targets*catch / carries) when a team has
-    # no recent TD history, and receiving TDs never go to a QB.
+    # pool's recent-TD share is BLENDED with opportunity (targets*catch for
+    # receiving, carries for rushing) via `_blend_td_weights`, so a player with
+    # real volume but no recent TDs still gets a nonzero TD chance instead of a
+    # hard zero, while recent scorers keep the edge. Receiving TDs never go to a
+    # QB (its receiving opportunity and share are both zeroed here).
     n_pass_td = int(rng.binomial(n_off_tds, pass_td_share)) if n_off_tds > 0 else 0
     n_rush_td = n_off_tds - n_pass_td
-    rec_weights = [p.rec_td_share if p.pos != "QB" else 0.0 for p in players]
-    if sum(rec_weights) <= 0:
-        rec_weights = [p.target_share * p.catch_rate if p.pos != "QB" else 0.0 for p in players]
-    rush_weights = [p.rush_td_share for p in players]
-    if sum(rush_weights) <= 0:
-        rush_weights = [p.carry_share for p in players]
-    rec_td_probs = _normalized_probs(rec_weights)
-    rush_td_probs = _normalized_probs(rush_weights)
+    rec_shares = [p.rec_td_share if p.pos != "QB" else 0.0 for p in players]
+    rec_opp = [p.target_share * p.catch_rate if p.pos != "QB" else 0.0 for p in players]
+    rush_shares = [p.rush_td_share for p in players]
+    rush_opp = [p.carry_share for p in players]
+    rec_td_probs = _blend_td_weights(rec_shares, rec_opp)
+    rush_td_probs = _blend_td_weights(rush_shares, rush_opp)
 
     target_counts = rng.multinomial(n_pass, target_probs)
     carry_counts = rng.multinomial(n_rush, carry_probs)

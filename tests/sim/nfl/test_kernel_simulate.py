@@ -1,7 +1,7 @@
 import numpy as np
 
 from sportsmodel.sim.engine import home_win_prob
-from sportsmodel.sim.nfl.kernel import simulate_game
+from sportsmodel.sim.nfl.kernel import attribute_offense, simulate_game
 from sportsmodel.sim.nfl.spec import NflGameSpec, PlayerInput, TeamRates
 
 
@@ -251,6 +251,87 @@ def test_drive_box_volume_falls_back_to_legacy_without_volume_fields():
     # pass_att_pg-anchored value) is still exercised.
     legacy_expected = drives_per_game * 6.0 * pass_rate
     assert abs(mean_receptions - legacy_expected) < 5.0
+
+
+def _td_roster() -> list[PlayerInput]:
+    """A QB, a recent scorer, and an equal-volume receiver who has NOT scored
+    recently (rec_td_share == 0). Same story on the ground: a scoring RB and an
+    equal-volume RB with no recent rushing TDs."""
+    return [
+        PlayerInput(player_id="qb", name="QB", pos="QB",
+                    target_share=0.0, carry_share=0.1, ypt=0.0, ypc=3.0,
+                    ypr=0.0, catch_rate=0.0, td_share=0.05,
+                    rec_td_share=0.0, rush_td_share=0.2),
+        PlayerInput(player_id="wr_scorer", name="WR Scorer", pos="WR",
+                    target_share=0.4, carry_share=0.0, ypt=8.5, ypc=0.0,
+                    ypr=13.0, catch_rate=0.65, td_share=0.4,
+                    rec_td_share=1.0, rush_td_share=0.0),
+        PlayerInput(player_id="wr_volume", name="WR Volume", pos="WR",
+                    target_share=0.4, carry_share=0.0, ypt=8.0, ypc=0.0,
+                    ypr=12.0, catch_rate=0.62, td_share=0.0,
+                    rec_td_share=0.0, rush_td_share=0.0),
+        PlayerInput(player_id="rb_scorer", name="RB Scorer", pos="RB",
+                    target_share=0.1, carry_share=0.45, ypt=6.0, ypc=4.3,
+                    ypr=7.0, catch_rate=0.7, td_share=0.35,
+                    rec_td_share=0.0, rush_td_share=0.8),
+        PlayerInput(player_id="rb_volume", name="RB Volume", pos="RB",
+                    target_share=0.1, carry_share=0.45, ypt=6.0, ypc=4.1,
+                    ypr=7.0, catch_rate=0.7, td_share=0.0,
+                    rec_td_share=0.0, rush_td_share=0.0),
+    ]
+
+
+def test_receiving_td_not_hard_zero_for_volume_player_without_recent_tds():
+    # A receiver with real target volume but no recent receiving TDs must still
+    # earn some receiving TDs across many games -- a pure recent-TD share would
+    # hard-zero him (0% anytime-TD), which is the bug being fixed.
+    rng = np.random.default_rng(0)
+    players = _td_roster()
+    total = 0
+    for _ in range(3000):
+        box = attribute_offense(players, n_pass=35, n_rush=25, n_off_tds=3,
+                                rng=rng, pass_td_share=1.0)
+        total += box["wr_volume"]["td"]
+    assert total > 0, "volume receiver never scored -- TD credit is hard-zeroed"
+
+
+def test_rushing_td_not_hard_zero_for_volume_player_without_recent_tds():
+    # Same guarantee on the ground: an equal-carry RB with no recent rushing
+    # TDs must still get some when a teammate carries the recent-TD share.
+    rng = np.random.default_rng(1)
+    players = _td_roster()
+    total = 0
+    for _ in range(3000):
+        box = attribute_offense(players, n_pass=35, n_rush=25, n_off_tds=3,
+                                rng=rng, pass_td_share=0.0)
+        total += box["rb_volume"]["td"]
+    assert total > 0, "volume rusher never scored -- TD credit is hard-zeroed"
+
+
+def test_recent_scorer_still_outscores_equal_volume_non_scorer():
+    # The blend keeps the recent-TD signal: with equal volume, the recent
+    # scorer should still be credited clearly more TDs than the non-scorer.
+    rng = np.random.default_rng(2)
+    players = _td_roster()
+    scorer = volume = 0
+    for _ in range(3000):
+        box = attribute_offense(players, n_pass=35, n_rush=25, n_off_tds=3,
+                                rng=rng, pass_td_share=1.0)
+        scorer += box["wr_scorer"]["td"]
+        volume += box["wr_volume"]["td"]
+    assert scorer > volume * 1.3, "recent-TD signal lost -- blend leans too flat"
+
+
+def test_qb_never_credited_a_receiving_td():
+    # QBs throw, they don't catch: the receiving-TD pool must never land on a QB
+    # even through the opportunity fallback.
+    rng = np.random.default_rng(3)
+    players = _td_roster()
+    for _ in range(2000):
+        box = attribute_offense(players, n_pass=35, n_rush=0, n_off_tds=2,
+                                rng=rng, pass_td_share=1.0)
+        # all TDs are passing here; the QB earns pass_tds but no receiving td
+        assert box["qb"]["td"] == 0
 
 
 def test_all_fg_offense_scores_are_multiples_of_three_with_no_player_tds():
