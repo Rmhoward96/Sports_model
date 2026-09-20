@@ -583,28 +583,34 @@ _NFL_PLAYER_SIM_COLS = [
 
 
 def upsert_nfl_player_sim(records: list[dict]) -> int:
-    """Upsert NFL sim-engine player prop outputs into Supabase `nfl_player_sim`.
+    """Replace-per-game write of NFL sim player-prop outputs into `nfl_player_sim`.
 
-    Idempotent on (game_pk, player_id, market, model_version) -- a re-run of
-    the same model_version for the same (game, player, market) overwrites the
-    row's fields in place. `dist` is written as JSON. `created_at` is
-    intentionally excluded from both the column list and the DO UPDATE SET
-    clause: it is set once by the table's DEFAULT now() on the first INSERT
-    and must NOT change on a later update (same pattern as upsert_ev_picks).
-    A record that omits `model_version` defaults to "sim-nfl-v1".
-    Requires DATABASE_URL and nfl_player_sim (db/migration_nfl_sim.sql).
-    """
+    For each (game_pk, model_version) present in `records`, this first DELETEs
+    that game's existing rows for that model_version, then inserts the fresh
+    roster -- all in one transaction. A plain upsert-in-place would leave behind
+    ORPHAN rows for players who were on the roster in an earlier run but have
+    since dropped off (injury / depth change): those stale rows never get
+    rewritten and then surface on the game page with old (often 0) projections
+    for a player who isn't even active. Replacing the game's roster each run
+    keeps `nfl_player_sim` in sync with the current active set. The generator
+    only processes UPCOMING games, so a kicked-off game's stored pre-game sim is
+    never touched (it must persist for the sim-vs-actual view).
+
+    Idempotent per (game_pk, model_version). `dist` is written as JSON. A record
+    that omits `model_version` defaults to "sim-nfl-v1". `created_at` now
+    reflects the latest run for the game (the whole roster is rewritten
+    together, so it stays consistent within a game). Requires DATABASE_URL and
+    nfl_player_sim (db/migration_nfl_sim.sql)."""
     if not records:
         return 0
-    key = ("game_pk", "player_id", "market", "model_version")
-    updates = ", ".join(
-        f"{c} = EXCLUDED.{c}" for c in _NFL_PLAYER_SIM_COLS if c not in key
-    )
+    game_versions = {
+        (r.get("game_pk"), r.get("model_version", _NFL_SIM_DEFAULT_MODEL_VERSION))
+        for r in records
+    }
     placeholders = ", ".join(["%s"] * len(_NFL_PLAYER_SIM_COLS))
-    sql = (
+    insert_sql = (
         f"INSERT INTO nfl_player_sim ({', '.join(_NFL_PLAYER_SIM_COLS)}) "
-        f"VALUES ({placeholders}) "
-        f"ON CONFLICT (game_pk, player_id, market, model_version) DO UPDATE SET {updates}"
+        f"VALUES ({placeholders})"
     )
     rows = [
         tuple(
@@ -615,7 +621,12 @@ def upsert_nfl_player_sim(records: list[dict]) -> int:
         for r in records
     ]
     with get_postgres() as conn, conn.cursor() as cur:
-        cur.executemany(sql, rows)
+        for game_pk, model_version in game_versions:
+            cur.execute(
+                "DELETE FROM nfl_player_sim WHERE game_pk = %s AND model_version = %s",
+                (game_pk, model_version),
+            )
+        cur.executemany(insert_sql, rows)
         conn.commit()
     return len(rows)
 

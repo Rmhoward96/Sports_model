@@ -12,6 +12,11 @@ class FakeCursor:
         self.sink = sink
         self.rowcount = 0
 
+    def execute(self, sql, params=None):
+        # Captures the per-game DELETE(s) that upsert_nfl_player_sim issues
+        # before its bulk INSERT (replace-per-game semantics).
+        self.sink.setdefault("execs", []).append((sql, params))
+
     def executemany(self, sql, rows):
         self.sink["sql"] = sql
         self.sink["rows"] = list(rows)
@@ -184,15 +189,17 @@ def test_nfl_player_sim_tuple_built_in_column_order_with_dist_json(monkeypatch):
     assert tup[cols.index("player_id")] == "00-0033873"
     assert tup[cols.index("mean")] == 255.4
     assert "INSERT INTO nfl_player_sim" in sink["sql"]
-    assert (
-        "ON CONFLICT (game_pk, player_id, market, model_version) DO UPDATE"
-        in sink["sql"]
-    )
+    # Replace-per-game semantics: a plain INSERT (no upsert), preceded by a
+    # DELETE of this game's rows for the model_version, so orphaned players
+    # from a prior run don't linger.
+    assert "ON CONFLICT" not in sink["sql"]
     assert "created_at" not in sink["sql"]
-    assert "game_pk = EXCLUDED.game_pk" not in sink["sql"]
-    assert "player_id = EXCLUDED.player_id" not in sink["sql"]
-    assert "market = EXCLUDED.market" not in sink["sql"]
-    assert "model_version = EXCLUDED.model_version" not in sink["sql"]
+    deletes = sink.get("execs", [])
+    assert len(deletes) == 1
+    del_sql, del_params = deletes[0]
+    assert "DELETE FROM nfl_player_sim" in del_sql
+    assert "game_pk = %s" in del_sql and "model_version = %s" in del_sql
+    assert del_params == (12345, "sim-nfl-v1")
 
 
 def test_nfl_player_sim_missing_model_version_defaults_to_sim_nfl_v1(monkeypatch):
@@ -243,4 +250,7 @@ def test_nfl_player_sim_multiple_records_all_converted_and_commit_called(monkeyp
 
     assert n == 2
     assert len(sink["rows"]) == 2
+    # One DELETE per distinct (game_pk, model_version) before the bulk insert.
+    del_params = {p for (_sql, p) in sink.get("execs", [])}
+    assert del_params == {(1, "sim-nfl-v1"), (2, "sim-nfl-v1")}
     assert conn_holder["conn"].committed is True
