@@ -669,6 +669,38 @@ def upsert_nfl_player_actuals(records: list[dict]) -> int:
     return len(rows)
 
 
+_NFL_BETTING_SPLITS_COLS = [
+    "game_pk", "market", "side", "cash_pct", "ticket_pct", "commence_time", "captured_at",
+]
+
+
+def upsert_nfl_betting_splits(records: list[dict]) -> int:
+    """Upsert public betting splits into Supabase `nfl_betting_splits`.
+
+    Idempotent on (game_pk, market, side, captured_at) -- `captured_at` is a
+    real column here (each capture is a distinct snapshot over time, like
+    odds_snapshot), so a re-run of the same capture is a no-op and a later
+    capture is a new row. Requires DATABASE_URL and nfl_betting_splits
+    (db/migration_nfl_betting_splits.sql)."""
+    if not records:
+        return 0
+    key = ("game_pk", "market", "side", "captured_at")
+    updates = ", ".join(
+        f"{c} = EXCLUDED.{c}" for c in _NFL_BETTING_SPLITS_COLS if c not in key
+    )
+    placeholders = ", ".join(["%s"] * len(_NFL_BETTING_SPLITS_COLS))
+    sql = (
+        f"INSERT INTO nfl_betting_splits ({', '.join(_NFL_BETTING_SPLITS_COLS)}) "
+        f"VALUES ({placeholders}) "
+        f"ON CONFLICT (game_pk, market, side, captured_at) DO UPDATE SET {updates}"
+    )
+    rows = [tuple(r.get(c) for c in _NFL_BETTING_SPLITS_COLS) for r in records]
+    with get_postgres() as conn, conn.cursor() as cur:
+        cur.executemany(sql, rows)
+        conn.commit()
+    return len(rows)
+
+
 def demote_stale_parlays(sport: str, keep_parlay_id: str | None,
                           model_version: str = _EV_PILOT_DEFAULT_MODEL_VERSION) -> int:
     """Set is_pick=false on any still-upcoming parlay for `sport` whose
