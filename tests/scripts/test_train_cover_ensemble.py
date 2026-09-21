@@ -154,7 +154,16 @@ def _leakage_probe_frame(seasons):
                 "home_cover": int(rng.integers(0, 2)),
                 "ratings_cover_p": float(rng.uniform(0.3, 0.7)),
             })
-    return pd.DataFrame(rows)
+    df = pd.DataFrame(rows)
+    # Backfill any newer feature columns (e.g. Phase-2 market features) with
+    # random values so the frame has the current feature set. (Real values are
+    # irrelevant to this leakage test; using random floats rather than NaN
+    # avoids an all-NaN column degenerating HistGradientBoosting on this tiny
+    # synthetic frame.)
+    for col in tce.MARGIN_FEATURES:
+        if col not in df.columns:
+            df[col] = rng.normal(size=len(df))
+    return df
 
 
 def test_walk_forward_market_never_trains_on_the_test_season_or_later(monkeypatch):

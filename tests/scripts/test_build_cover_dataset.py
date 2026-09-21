@@ -103,6 +103,48 @@ def test_assemble_rows_normalizes_noncanonical_team_codes():
     assert 0.0 < row["ratings_cover_p"] < 1.0  # ratings_fn resolved on canonical key
 
 
+def test_assemble_rows_market_features_nan_when_absent():
+    # No odds_snapshots / splits supplied (the historical-tail default) -> every
+    # market feature is NaN (HistGradientBoosting will consume the NaNs).
+    rows = bcd.assemble_rows(_synthetic_schedule(), _game_epa(), _stub_ratings_fn())
+    row = rows[0]
+    for k in bcd._MKT_KEYS:
+        assert k in row and math.isnan(row[k]), k
+
+
+def test_assemble_rows_market_features_populated_when_present():
+    game_epa = _game_epa()
+    schedule_df = _schedule([
+        {"season": 2023, "week": 2, "home_team": "KC", "away_team": "DET",
+         "home_score": 27, "away_score": 20, "result": 7.0,
+         "spread_line": 3.0, "total_line": 45.0,
+         "espn": 999, "commence_time": "2026-09-20T20:00:00Z"},
+    ])
+    snaps = [
+        # spread home line moves -3.0 -> -3.5 (both before kickoff)
+        {"game_pk": 999, "market": "spread", "side": "home", "book": "dk",
+         "line": -3.0, "price": -110, "captured_at": "2026-09-20T12:00:00Z"},
+        {"game_pk": 999, "market": "spread", "side": "home", "book": "dk",
+         "line": -3.5, "price": -110, "captured_at": "2026-09-20T18:00:00Z"},
+        # two-way close for sharp_vs_soft (pinnacle vs soft dk)
+        {"game_pk": 999, "market": "spread", "side": "away", "book": "dk",
+         "line": 3.5, "price": -110, "captured_at": "2026-09-20T18:00:00Z"},
+        {"game_pk": 999, "market": "spread", "side": "home", "book": "pinnacle",
+         "line": -3.5, "price": -135, "captured_at": "2026-09-20T18:00:00Z"},
+        {"game_pk": 999, "market": "spread", "side": "away", "book": "pinnacle",
+         "line": 3.5, "price": +115, "captured_at": "2026-09-20T18:00:00Z"},
+    ]
+    splits = {(999, "spread", "home"): {"cash_pct": 62.0, "ticket_pct": 48.0}}
+    rows = bcd.assemble_rows(schedule_df, game_epa, _stub_ratings_fn(),
+                             odds_snapshots=snaps, splits=splits)
+    row = rows[0]
+    assert row["mkt_spread_dline"] == -0.5
+    assert row["mkt_spread_abs_dline"] == 0.5
+    assert row["mkt_spread_cash_minus_ticket"] == 14.0
+    assert not math.isnan(row["mkt_spread_sharp_home"])   # pinnacle vs soft resolved
+    assert not math.isnan(row["mkt_spread_rlm"])          # dline + home ticket% present
+
+
 def test_build_cover_dataset_labels_features_and_ratings_prob():
     schedule_df = _synthetic_schedule()
     game_epa = _game_epa()

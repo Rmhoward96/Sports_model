@@ -72,8 +72,19 @@ _EPS = 1e-6
 _GBM_KWARGS = dict(max_depth=3, min_samples_leaf=40, learning_rate=0.05, early_stopping=True)
 
 _EFF_FEATURES = ["eff_diff", "home_off_adj", "home_def_adj", "away_off_adj", "away_def_adj", "total_off"]
-MARGIN_FEATURES = _EFF_FEATURES + ["week", "home_field", "spread_line"]
-TOTAL_FEATURES = _EFF_FEATURES + ["week", "home_field", "total_line"]
+# Market-microstructure features (Phase 2). NaN for the historical tail (no
+# odds/splits capture yet); HistGradientBoosting handles NaN natively, so they
+# contribute only once capture accrues and the periodic re-gate can test them.
+_MKT_SPREAD_FEATURES = [
+    "mkt_spread_dline", "mkt_spread_abs_dline", "mkt_spread_sharp_home",
+    "mkt_spread_cash_minus_ticket", "mkt_spread_rlm",
+]
+_MKT_TOTAL_FEATURES = [
+    "mkt_total_dline", "mkt_total_abs_dline", "mkt_total_sharp_over",
+    "mkt_total_cash_minus_ticket",
+]
+MARGIN_FEATURES = _EFF_FEATURES + ["week", "home_field", "spread_line"] + _MKT_SPREAD_FEATURES
+TOTAL_FEATURES = _EFF_FEATURES + ["week", "home_field", "total_line"] + _MKT_TOTAL_FEATURES
 
 
 def _clip(p: float) -> float:

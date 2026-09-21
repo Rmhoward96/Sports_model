@@ -31,6 +31,7 @@ Usage:
 """
 from __future__ import annotations
 
+import math
 import sys
 from pathlib import Path
 
@@ -44,8 +45,50 @@ from sportsmodel.nfl.efficiency import (
     efficiency_features,
     team_game_epa,
 )
+from sportsmodel.nfl import market_features as mf
 from sportsmodel.nfl.teams import normalize_team
 from sportsmodel.serving.ensemble import gbm_prob
+
+# Market-microstructure feature columns (Phase 2). NaN for the historical tail
+# (no odds_snapshot/splits history); populated for games captured going forward.
+# HistGradientBoosting consumes the NaNs natively -- no imputation.
+_MKT_KEYS = [
+    "mkt_spread_dline", "mkt_spread_abs_dline", "mkt_spread_sharp_home",
+    "mkt_spread_cash_minus_ticket", "mkt_spread_rlm",
+    "mkt_total_dline", "mkt_total_abs_dline", "mkt_total_sharp_over",
+    "mkt_total_cash_minus_ticket",
+]
+
+
+def _nan_if_none(x):
+    return float("nan") if x is None else x
+
+
+def _market_feats(game_pk, decision_ts, odds_snapshots, splits) -> dict:
+    """The `_MKT_KEYS` market features for one game, all NaN when game_pk or the
+    decision timestamp is unknown, or the underlying data is absent (the common
+    case until capture accrues). Leakage-safe via `market_features` (only
+    snapshots at/before `decision_ts`)."""
+    nanrow = {k: float("nan") for k in _MKT_KEYS}
+    if game_pk is None or decision_ts is None:
+        return nanrow
+    snaps = odds_snapshots or []
+    splits = splits or {}
+    lm_s = mf.line_movement(snaps, game_pk, "spread", decision_ts)
+    lm_t = mf.line_movement(snaps, game_pk, "total", decision_ts)
+    sp_home = mf.split_features(splits.get((game_pk, "spread", "home")))
+    sp_over = mf.split_features(splits.get((game_pk, "total", "over")))
+    ht = sp_home.get("ticket_pct")
+    ht = None if (ht is None or (isinstance(ht, float) and math.isnan(ht))) else ht
+    return {
+        "mkt_spread_dline": lm_s["dline"], "mkt_spread_abs_dline": lm_s["abs_dline"],
+        "mkt_spread_sharp_home": _nan_if_none(mf.sharp_vs_soft(snaps, game_pk, "spread", "home", decision_ts)),
+        "mkt_spread_cash_minus_ticket": sp_home["cash_minus_ticket"],
+        "mkt_spread_rlm": _nan_if_none(mf.reverse_line_movement(lm_s["dline"], ht)),
+        "mkt_total_dline": lm_t["dline"], "mkt_total_abs_dline": lm_t["abs_dline"],
+        "mkt_total_sharp_over": _nan_if_none(mf.sharp_vs_soft(snaps, game_pk, "total", "over", decision_ts)),
+        "mkt_total_cash_minus_ticket": sp_over["cash_minus_ticket"],
+    }
 
 # Illustrative fallback dispersion for the "ratings base prob" conversion,
 # used only if a caller doesn't pass the real fitted sigmas. `main()` always
@@ -98,7 +141,9 @@ def sim_probs_from_dists(margin_dist: dict | None, total_dist: dict | None,
 def assemble_rows(schedule_df: pd.DataFrame, game_epa: dict, ratings_fn,
                    sigma_margin: float = _RATINGS_SIGMA_MARGIN,
                    sigma_total: float = _RATINGS_SIGMA_TOTAL,
-                   sim_lookup: dict[tuple[int, int, str, str], tuple[dict, dict]] | None = None) -> list[dict]:
+                   sim_lookup: dict[tuple[int, int, str, str], tuple[dict, dict]] | None = None,
+                   odds_snapshots: list[dict] | None = None,
+                   splits: dict | None = None) -> list[dict]:
     """Pure: build one training row per completed, non-push game.
 
     Args:
@@ -205,6 +250,18 @@ def assemble_rows(schedule_df: pd.DataFrame, game_epa: dict, ratings_fn,
         margin_dist, total_dist = (sim_lookup or {}).get((season, week, home, away), (None, None))
         sim_cover_p, sim_over_p = sim_probs_from_dists(margin_dist, total_dist, spread_line, total_line)
 
+        # Market-microstructure features (game_pk = ESPN id, keyed the same way
+        # odds_snapshot/nfl_betting_splits are). NaN when the id/decision-time or
+        # the captured data is absent (the whole historical tail today).
+        game_pk = None
+        if "espn" in g and pd.notna(g.get("espn")):
+            try:
+                game_pk = int(g["espn"])
+            except (ValueError, TypeError):
+                game_pk = None
+        decision_ts = g.get("commence_time") if pd.notna(g.get("commence_time", None)) else None
+        mkt = _market_feats(game_pk, decision_ts, odds_snapshots, splits)
+
         rows.append({
             "season": season,
             "week": week,
@@ -221,6 +278,7 @@ def assemble_rows(schedule_df: pd.DataFrame, game_epa: dict, ratings_fn,
             "ratings_over_p": ratings_over_p,
             "sim_cover_p": sim_cover_p,
             "sim_over_p": sim_over_p,
+            **mkt,
         })
 
     return rows
