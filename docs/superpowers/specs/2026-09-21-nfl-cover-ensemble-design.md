@@ -40,7 +40,7 @@ GBM(features)        ─► prob_cover / prob_over ─┘        │
 ### Base learners (each emits P(cover) for spread and P(over) for total)
 1. **Ratings** — `prob_cover(gameline.margin_dist, home_line)`, `prob_over_dist(gameline.total_dist, total_line)`.
 2. **Sim** — same functions on the sim's `margin_dist` / `total_dist`.
-3. **GBM** — `sklearn.ensemble.HistGradientBoostingRegressor` (predicts margin and total; no new heavy dependency — sklearn is already pulled in via scipy-adjacent tooling, to confirm at task 0) over the feature set below, converted to a probability against the line via a residual-sigma Normal (same `normal_to_*_pmf` path the ratings model uses). Regularized: shallow depth, high `min_samples_leaf`, early stopping.
+3. **GBM** — `sklearn.ensemble.HistGradientBoostingRegressor` (predicts margin and total) over the feature set below, converted to a probability against the line via a residual-sigma Normal (same `normal_to_*_pmf` path the ratings model uses). Regularized: shallow depth, high `min_samples_leaf`, early stopping. **scikit-learn is added as a project dependency** (also provides the meta-learner's logistic regression).
 
 ### Feature set (as-of decision time, leakage-safe)
 - **Efficiency (variable #1, trainable now):** opponent-adjusted off/def EPA per team → home/away **efficiency differential** (`(home_off_adj − away_def_adj) − (away_off_adj − home_def_adj)`), plus pace/total-oriented EPA sums for the total model. Built by extending `epa.py` with a schedule-strength adjustment (ridge/iterative opponent adjustment), computed from games strictly before the target week.
@@ -71,7 +71,11 @@ GBM(features)        ─► prob_cover / prob_over ─┘        │
 - **Phase 1 (now, both markets):** ratings + sim + GBM(efficiency + context + line) → stacked, calibrated, agreement-gated; walk-forward + CLV. Ships the fix using variable #1.
 - **Phase 2 (data-gated):** add SportsDataIO betting splits + live line-movement to the GBM; retrain as labeled history with splits accrues. Requires the Betting product tier on the SportsDataIO subscription.
 
-## New dependencies / open items
-- **sklearn** (HistGradientBoosting) — confirm it's installable in the Actions env at task 0; if undesirable, fall back to a regularized GBM already available or a pure-numpy gradient model.
-- **SportsDataIO Betting tier** — confirm the subscription includes betting splits and the exact endpoint (`/v3/nfl/odds/json/BettingSplitsByGameID` family) before Phase 2.
-- Training-data reconstruction cost: regenerating historical ratings + sim probabilities for 2015–2025 is the heaviest task; the sim backtest already exists to do it.
+## Decisions locked
+- **Provider:** staying on **SportsDataIO** (subscription upgraded to the **Betting tier** for splits); no Sportradar switch. CFB desk injuries keep flowing from SportsDataIO.
+- **Modeling library:** **scikit-learn** added as a dependency (HistGradientBoosting GBM + logistic-regression meta-learner).
+- **Scope:** spread **and** total, stacked ensemble, agreement-gated. Variables: opponent-adjusted EPA differential (Phase 1) + SportsDataIO betting splits & line movement (Phase 2, live-first).
+
+## Open items (implementation-time)
+- **SportsDataIO Betting endpoint** — confirm the exact path (`/v3/nfl/odds/json/BettingSplitsByGameID` family) and CFB equivalent once the Betting tier is active (Phase 2 only; does not block Phase 1).
+- Training-data reconstruction cost: regenerating historical ratings + sim probabilities for 2015–2025 is the heaviest task; the sim/gameline backtests already exist to do it.
