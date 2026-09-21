@@ -17,6 +17,7 @@ dependencies = [
     "numpy>=1.26",
     "nfl-data-py>=0.3.2",
     "anthropic>=0.40",
+    "scikit-learn>=1.4",
 ]
 
 [dependency-groups]
