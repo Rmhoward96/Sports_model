@@ -1,9 +1,12 @@
 """Tests for the pure helpers in scripts/train_cover_ensemble.py (Task 6).
 
-Covers `fit_gbm`, `residual_sigma`, and `fit_meta` -- the pure-ish wrappers
-around HistGradientBoostingRegressor / LogisticRegression that
-`evaluate()`'s walk-forward loop (IO-adjacent, not unit-tested here; see the
-module docstring) composes into the shipped cover/total ensemble.
+Covers `fit_gbm`, `residual_sigma`, `fit_meta`, and `calibration_curve` --
+the pure-ish wrappers around HistGradientBoostingRegressor / LogisticRegression
+/ a reliability-diagram binner that `evaluate()`'s walk-forward loop
+(IO-adjacent, not unit-tested end-to-end here; see the module docstring)
+composes into the shipped cover/total ensemble -- plus a regression test
+pinning `_walk_forward_market`'s leakage invariant (a test season is scored
+by a model fit ONLY on strictly earlier seasons; review finding, fix round 1).
 
 `evaluate()` itself, the season walk-forward + SHIP GATE + artifact writes,
 is exercised end-to-end by running `scripts/train_cover_ensemble.py` against
@@ -15,6 +18,7 @@ import importlib.util
 import pathlib
 
 import numpy as np
+import pandas as pd
 
 from sportsmodel.serving.ensemble import ensemble_prob
 
@@ -87,3 +91,97 @@ def test_fit_meta_coefficients_are_positive_for_agreeing_informative_bases():
     coef, intercept = tce.fit_meta(base, labels.tolist())
     assert coef[0] > 0
     assert coef[1] > 0
+
+
+def test_calibration_curve_reports_near_zero_ece_when_well_calibrated():
+    # Predictions generated as true Bernoulli(p) draws -- by construction,
+    # p should track the empirical rate in every bin, so ECE should be small.
+    rng = np.random.default_rng(3)
+    probs = rng.uniform(0.05, 0.95, 3000)
+    ys = (rng.uniform(0, 1, 3000) < probs).astype(int)
+
+    result = tce.calibration_curve(probs, ys, n_bins=10)
+
+    assert result["ece"] < 0.05
+    assert len(result["bins"]) > 0
+    total_count = sum(b["count"] for b in result["bins"])
+    assert total_count == 3000
+    for b in result["bins"]:
+        assert b["count"] > 0
+        assert 0.0 <= b["mean_pred"] <= 1.0
+        assert 0.0 <= b["empirical_rate"] <= 1.0
+
+
+def test_calibration_curve_flags_a_badly_miscalibrated_model():
+    # A model that always predicts 0.9 when the true rate is 0.1 should
+    # show a large gap in its one occupied bin and a large ECE.
+    probs = [0.9] * 200
+    ys = [0] * 180 + [1] * 20  # empirical rate 0.1
+    result = tce.calibration_curve(probs, ys, n_bins=10)
+    assert result["ece"] > 0.5
+    assert len(result["bins"]) == 1
+    assert result["bins"][0]["empirical_rate"] == 0.1
+
+
+def test_calibration_curve_empty_input_is_safe():
+    result = tce.calibration_curve([], [], n_bins=10)
+    assert result == {"bins": [], "ece": 0.0}
+
+
+def _leakage_probe_frame(seasons):
+    """Small synthetic multi-season frame with the columns
+    `_walk_forward_market` needs. `margin_actual` is set to the season
+    number itself so a spy on `fit_gbm` can read off, from `y_train`'s max
+    value, the latest season a given walk-forward iteration trained on --
+    a direct, non-statistical check of the leakage invariant (as opposed to
+    inferring it from noisy accuracy)."""
+    rng = np.random.default_rng(7)
+    rows = []
+    for season in seasons:
+        for i in range(20):
+            rows.append({
+                "season": season,
+                "eff_diff": rng.normal(),
+                "home_off_adj": rng.normal(),
+                "home_def_adj": rng.normal(),
+                "away_off_adj": rng.normal(),
+                "away_def_adj": rng.normal(),
+                "total_off": rng.normal(),
+                "week": (i % 17) + 1,
+                "home_field": 1,
+                "spread_line": rng.normal(0, 3),
+                "margin_actual": float(season),
+                "home_cover": int(rng.integers(0, 2)),
+                "ratings_cover_p": float(rng.uniform(0.3, 0.7)),
+            })
+    return pd.DataFrame(rows)
+
+
+def test_walk_forward_market_never_trains_on_the_test_season_or_later(monkeypatch):
+    seasons = [2015, 2016, 2017, 2018]
+    df = _leakage_probe_frame(seasons)
+
+    max_train_season_per_call = []
+    real_fit_gbm = tce.fit_gbm
+
+    def spy_fit_gbm(X, y, *args, **kwargs):
+        # margin_actual (== y here) was set to the season number itself, so
+        # its max over the training rows IS the latest season trained on.
+        max_train_season_per_call.append(float(np.max(y)))
+        return real_fit_gbm(X, y, *args, **kwargs)
+
+    monkeypatch.setattr(tce, "fit_gbm", spy_fit_gbm)
+
+    oof = tce._walk_forward_market(
+        df, tce.MARGIN_FEATURES, "spread_line", "margin_actual", "home_cover",
+        "ratings_cover_p", "margin", flip_line=True,
+    )
+
+    test_seasons = seasons[1:]  # 2015 has no prior season to train on
+    assert len(max_train_season_per_call) == len(test_seasons)
+    for test_season, max_train_season in zip(test_seasons, max_train_season_per_call):
+        # The whole invariant: nothing from the test season (or later) ever
+        # reaches fit_gbm's training rows.
+        assert max_train_season < test_season
+
+    assert sorted(oof["season"].unique().tolist()) == test_seasons

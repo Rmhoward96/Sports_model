@@ -155,6 +155,41 @@ def _brier_logloss(probs, ys) -> dict:
     return {"brier": brier, "logloss": logloss}
 
 
+def calibration_curve(probs, ys, n_bins: int = 10) -> dict:
+    """Reliability diagnostic (fix for the brief's "Brier/logloss/calibration"
+    interface -- `evaluate()` previously only reported Brier/logloss).
+
+    Bins predicted probabilities into `n_bins` equal-width bins over [0, 1]
+    and reports, per non-empty bin, the mean predicted probability, the
+    empirical event rate, and the bin count -- plus the overall expected
+    calibration error (ECE): the count-weighted mean absolute gap between
+    predicted and empirical rate across bins. A near-diagonal reliability
+    curve (mean_pred ~= empirical_rate in every bin) and a small ECE mean
+    the ensemble's stated probabilities are trustworthy even when its
+    Brier/log-loss skill is modest. Empty bins are omitted from `bins` and
+    contribute nothing to `ece`. Pure -- no IO.
+    """
+    probs = np.clip(np.asarray(probs, dtype=float), 0.0, 1.0)
+    ys = np.asarray(ys, dtype=float)
+    n = len(probs)
+    if n == 0:
+        return {"bins": [], "ece": 0.0}
+    edges = np.linspace(0.0, 1.0, n_bins + 1)
+    bin_idx = np.clip(np.digitize(probs, edges[1:-1], right=True), 0, n_bins - 1)
+    bins = []
+    ece = 0.0
+    for b in range(n_bins):
+        mask = bin_idx == b
+        count = int(mask.sum())
+        if count == 0:
+            continue
+        mean_pred = float(probs[mask].mean())
+        empirical = float(ys[mask].mean())
+        bins.append({"bin": b, "mean_pred": mean_pred, "empirical_rate": empirical, "count": count})
+        ece += (count / n) * abs(mean_pred - empirical)
+    return {"bins": bins, "ece": float(ece)}
+
+
 def check_gate(metrics: dict) -> tuple[bool, list[str]]:
     """SHIP GATE: ensemble must beat p50, ratings, and gbm on both Brier and
     log-loss, for both markets. Returns (passed, [reasons for each failure]).
@@ -281,6 +316,7 @@ def evaluate(df: pd.DataFrame) -> dict:
             "ratings": _brier_logloss(oof["ratings_p"], y),
             "gbm": _brier_logloss(oof["gbm_p"], y),
             "ensemble": _brier_logloss(oof["ensemble_p"], y),
+            "ensemble_calibration": calibration_curve(oof["ensemble_p"], y),
             "n": int(len(y)),
         }
 
@@ -368,6 +404,15 @@ def _print_metrics_table(metrics: dict) -> None:
             print(f"{market:<8} {baseline:<10} {m['brier']:>10.5f} {m['logloss']:>10.5f} {metrics[market]['n']:>6}")
 
 
+def _print_calibration(metrics: dict) -> None:
+    for market in ("cover", "total"):
+        cal = metrics[market]["ensemble_calibration"]
+        print(f"\n{market} ensemble reliability (ECE={cal['ece']:.5f}):")
+        print(f"  {'bin':>3} {'mean_pred':>10} {'empirical':>10} {'count':>6}")
+        for b in cal["bins"]:
+            print(f"  {b['bin']:>3} {b['mean_pred']:>10.4f} {b['empirical_rate']:>10.4f} {b['count']:>6}")
+
+
 def main() -> int:
     df = _load_training_frame()
     print(f"loaded {len(df)} rows, seasons {sorted(df['season'].unique().tolist())}")
@@ -376,6 +421,8 @@ def main() -> int:
     metrics = result["metrics"]
     print("\n=== walk-forward out-of-sample metrics ===")
     _print_metrics_table(metrics)
+    print("\n=== ensemble calibration (reliability curve, ~10 bins) ===")
+    _print_calibration(metrics)
 
     ref = three_way_reference_2024(df, result["oof"])
     print("\n=== 3-way [ratings, sim, gbm] reference on 2024 subset (NOT shipped) ===")
