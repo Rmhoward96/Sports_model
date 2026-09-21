@@ -73,7 +73,7 @@ from sportsmodel import config
 from sportsmodel.db import get_postgres, upsert_nfl_player_sim, upsert_nfl_sim
 from sportsmodel.nfl.injuries_nflverse import current_injuries, nfl_season
 from sportsmodel.nfl.teams import TEAMS
-from sportsmodel.sim.engine import pred_scores
+from sportsmodel.sim.engine import margin_pmf, pred_scores, stat_pmf, total_pmf
 from sportsmodel.sim.nfl.aggregate import disagreement, nfl_player_prop_dists
 from sportsmodel.sim.nfl.inputs import build_spec_from_usage
 from sportsmodel.sim.nfl.kernel import simulate_game
@@ -176,6 +176,13 @@ def assemble_sim_rows(
             "sim_margin": scores["pred_margin"],
             "sim_total": scores["pred_total"],
             "disagreement": disagreement(analytic_home_win_prob, sim_home_win_prob),
+            # Full simulated distributions for the game-page histograms
+            # (Spread / Total / each team's total). NflGameSims duck-types
+            # GameSims (home_score/away_score arrays) for these helpers.
+            "margin_dist": margin_pmf(sims, half_range=45),
+            "total_dist": {"kind": "pmf", "pmf": total_pmf(sims, max_total=90)},
+            "away_score_dist": {"kind": "pmf", "pmf": stat_pmf(sims.away_score, 70)},
+            "home_score_dist": {"kind": "pmf", "pmf": stat_pmf(sims.home_score, 70)},
         })
 
         identity_by_player_id: dict[str, tuple[str, str, str]] = {

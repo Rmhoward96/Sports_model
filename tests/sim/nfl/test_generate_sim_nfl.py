@@ -86,6 +86,20 @@ def test_assemble_sim_rows_returns_one_sim_row_per_game():
     assert row["commence_time"] == "2026-09-21T17:00:00+00:00"
 
 
+def test_assemble_sim_rows_carries_game_distributions():
+    games = [_game()]
+    sims = _sims([24, 27, 20, 17], [17, 20, 24, 27], ["qb_home", "wr_home", "qb_away"])
+    sim_rows, _ = gsn.assemble_sim_rows(games, {1: sims}, {1: _spec()}, {1: 0.5})
+    row = sim_rows[0]
+    assert row["margin_dist"]["kind"] == "margin"
+    assert "offset" in row["margin_dist"] and len(row["margin_dist"]["pmf"]) > 0
+    assert row["total_dist"]["kind"] == "pmf" and len(row["total_dist"]["pmf"]) > 0
+    assert row["away_score_dist"]["kind"] == "pmf" and len(row["away_score_dist"]["pmf"]) > 0
+    assert row["home_score_dist"]["kind"] == "pmf" and len(row["home_score_dist"]["pmf"]) > 0
+    # margin pmf sums to 1 (it is a probability mass function)
+    assert sum(row["margin_dist"]["pmf"]) == pytest.approx(1.0)
+
+
 def test_assemble_sim_rows_sim_fields_match_pred_scores():
     games = [_game()]
     sims = _sims([24, 27, 20, 17], [17, 20, 24, 27], ["qb_home", "wr_home", "qb_away"])

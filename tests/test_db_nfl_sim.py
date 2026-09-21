@@ -75,14 +75,24 @@ def test_nfl_sim_tuple_built_in_column_order_with_all_fields(monkeypatch):
         "sim_margin": 3.2,
         "sim_total": 44.5,
         "disagreement": 0.08,
+        "margin_dist": {"kind": "margin", "offset": 2, "pmf": [0.5, 0.5]},
+        "total_dist": {"kind": "pmf", "pmf": [0.3, 0.7]},
+        "away_score_dist": {"kind": "pmf", "pmf": [1.0]},
+        "home_score_dist": {"kind": "pmf", "pmf": [1.0]},
     }
     n = db.upsert_nfl_sim([row])
 
     assert n == 1
-    assert sink["rows"] == [(
-        12345, "sim-nfl-v1", "Bills @ Jets", "2026-09-14T17:00:00+00:00",
-        0.57, 3.2, 44.5, 0.08,
-    )]
+    (tup,) = sink["rows"]
+    cols = db._NFL_SIM_COLS
+    assert tup[cols.index("game_pk")] == 12345
+    assert tup[cols.index("matchup")] == "Bills @ Jets"
+    assert tup[cols.index("sim_total")] == 44.5
+    # dist columns are JSON STRINGS, not Python dicts
+    md = tup[cols.index("margin_dist")]
+    assert isinstance(md, str)
+    assert json.loads(md) == row["margin_dist"]
+    assert json.loads(tup[cols.index("total_dist")]) == row["total_dist"]
     assert "INSERT INTO nfl_sim" in sink["sql"]
     assert "ON CONFLICT (game_pk, model_version) DO UPDATE" in sink["sql"]
     # PK columns must not be reassigned in the DO UPDATE SET clause
@@ -90,6 +100,18 @@ def test_nfl_sim_tuple_built_in_column_order_with_all_fields(monkeypatch):
     assert "model_version = EXCLUDED.model_version" not in sink["sql"]
     # created_at must NOT be touched on conflict -- keeps the original insert time
     assert "created_at" not in sink["sql"]
+
+
+def test_nfl_sim_dist_columns_present_and_default_to_json_null(monkeypatch):
+    sink = {}
+    monkeypatch.setattr(db_module, "get_postgres", lambda: FakeConn(sink))
+    n = db.upsert_nfl_sim([{"game_pk": 7}])
+    assert n == 1
+    cols = db._NFL_SIM_COLS
+    for c in ("margin_dist", "total_dist", "away_score_dist", "home_score_dist"):
+        assert c in cols
+        # a missing dist serializes to JSON null (the string "null"), not None
+        assert sink["rows"][0][cols.index(c)] == json.dumps(None)
 
 
 def test_nfl_sim_missing_model_version_defaults_to_sim_nfl_v1(monkeypatch):
@@ -117,10 +139,15 @@ def test_nfl_sim_missing_keys_default_to_none_not_keyerror(monkeypatch):
     cols = db._NFL_SIM_COLS
     assert tup[cols.index("game_pk")] == 999
     assert tup[cols.index("model_version")] == "sim-nfl-v1"
-    other_positions = [
-        i for i, c in enumerate(cols) if c not in ("game_pk", "model_version")
+    dist_cols = {"margin_dist", "total_dist", "away_score_dist", "home_score_dist"}
+    scalar_positions = [
+        i for i, c in enumerate(cols)
+        if c not in ("game_pk", "model_version") and c not in dist_cols
     ]
-    assert all(tup[i] is None for i in other_positions)
+    assert all(tup[i] is None for i in scalar_positions)
+    # missing dist cols serialize to JSON null, not Python None
+    for c in dist_cols:
+        assert tup[cols.index(c)] == json.dumps(None)
 
 
 def test_nfl_sim_multiple_records_all_converted_and_commit_called(monkeypatch):

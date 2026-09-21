@@ -538,7 +538,12 @@ _NFL_SIM_DEFAULT_MODEL_VERSION = "sim-nfl-v1"
 _NFL_SIM_COLS = [
     "game_pk", "model_version", "matchup", "commence_time",
     "sim_home_win_prob", "sim_margin", "sim_total", "disagreement",
+    "margin_dist", "total_dist", "away_score_dist", "home_score_dist",
 ]
+# Distribution columns written as JSON (pmf objects); everything else is scalar.
+_NFL_SIM_DIST_COLS = frozenset(
+    {"margin_dist", "total_dist", "away_score_dist", "home_score_dist"}
+)
 
 
 def upsert_nfl_sim(records: list[dict]) -> int:
@@ -565,7 +570,8 @@ def upsert_nfl_sim(records: list[dict]) -> int:
     )
     rows = [
         tuple(
-            r.get(c, _NFL_SIM_DEFAULT_MODEL_VERSION) if c == "model_version" else r.get(c)
+            json.dumps(r.get(c)) if c in _NFL_SIM_DIST_COLS
+            else (r.get(c, _NFL_SIM_DEFAULT_MODEL_VERSION) if c == "model_version" else r.get(c))
             for c in _NFL_SIM_COLS
         )
         for r in records
