@@ -158,6 +158,114 @@ def test_build_cover_dataset_falls_back_when_team_absent_from_game_epa():
         assert math.isfinite(row[key])
 
 
+def _point_margin_dist(margin: float, half_range: int = 25) -> dict:
+    """A margin_dist ({"kind": "margin", ...}, see sim.engine.margin_pmf) with
+    ALL its mass on one integer margin value -- lets a test assert an exact
+    sim_cover_p (1.0 or 0.0) instead of reasoning about a real distribution's
+    shape."""
+    pmf = [0.0] * (2 * half_range + 1)
+    pmf[int(margin) + half_range] = 1.0
+    return {"kind": "margin", "offset": half_range, "pmf": pmf}
+
+
+def _point_total_dist(total: float, max_total: int = 90) -> dict:
+    """A total_dist ({"kind": "pmf", ...}, see sim.engine.total_pmf) with all
+    its mass on one integer total."""
+    pmf = [0.0] * (max_total + 1)
+    pmf[int(total)] = 1.0
+    return {"kind": "pmf", "pmf": pmf}
+
+
+def test_sim_probs_from_dists_matches_home_cover_label_sign_convention():
+    # assemble_rows' home_cover label is `int(result - spread_line > 0)` --
+    # nflverse sign, home covers iff the ACTUAL margin exceeds spread_line.
+    # sim_probs_from_dists must apply the same convention to the SIM's
+    # margin_dist (via prob_cover's ESPN-signed home_line = -spread_line,
+    # exactly like ratings_cover_p's `-float(spread_line)` conversion) so a
+    # sim that's certain the home team wins by more than the spread reports
+    # sim_cover_p == 1.0, not 0.0.
+    spread_line = 3.0  # nflverse sign: home favored by 3
+
+    covers = _point_margin_dist(7.0)  # home wins by 7 > 3 -> covers
+    sim_cover_p, _ = bcd.sim_probs_from_dists(covers, _point_total_dist(44.0), spread_line, 44.0)
+    assert sim_cover_p == 1.0
+
+    doesnt_cover = _point_margin_dist(1.0)  # home wins by 1 < 3 -> doesn't cover
+    sim_cover_p2, _ = bcd.sim_probs_from_dists(doesnt_cover, _point_total_dist(44.0), spread_line, 44.0)
+    assert sim_cover_p2 == 0.0
+
+
+def test_sim_probs_from_dists_over_under():
+    high = _point_total_dist(50.0)
+    _, sim_over_p = bcd.sim_probs_from_dists(_point_margin_dist(0.0), high, 0.0, 44.0)
+    assert sim_over_p == 1.0
+
+    low = _point_total_dist(30.0)
+    _, sim_over_p2 = bcd.sim_probs_from_dists(_point_margin_dist(0.0), low, 0.0, 44.0)
+    assert sim_over_p2 == 0.0
+
+
+def test_sim_probs_from_dists_nan_when_dist_missing_never_fabricates():
+    # Where a game's sim can't be reconstructed, the seam must return NaN --
+    # never a fabricated/default probability (controller ruling).
+    sim_cover_p, sim_over_p = bcd.sim_probs_from_dists(None, None, 3.0, 44.0)
+    assert math.isnan(sim_cover_p)
+    assert math.isnan(sim_over_p)
+
+    sim_cover_p2, sim_over_p2 = bcd.sim_probs_from_dists({}, {}, 3.0, 44.0)
+    assert math.isnan(sim_cover_p2)
+    assert math.isnan(sim_over_p2)
+
+    # One dist present, the other missing -> still NaN for both (a lone
+    # margin_dist with no total_dist can't safely be treated as "sim data
+    # available" -- assemble_rows' lookup always provides both together, but
+    # the seam itself shouldn't assume that).
+    sim_cover_p3, sim_over_p3 = bcd.sim_probs_from_dists(_point_margin_dist(0.0), None, 3.0, 44.0)
+    assert math.isnan(sim_cover_p3)
+    assert math.isnan(sim_over_p3)
+
+
+def test_assemble_rows_adds_sim_probs_from_sim_lookup():
+    schedule_df = _schedule([_synthetic_schedule().iloc[0].to_dict()])  # KC/DET
+    game_epa = _game_epa()
+    ratings_fn = _stub_ratings_fn()
+    sim_lookup = {
+        (2023, 2, "KC", "DET"): (_point_margin_dist(7.0), _point_total_dist(47.0)),
+    }
+
+    rows = bcd.assemble_rows(schedule_df, game_epa, ratings_fn, sim_lookup=sim_lookup)
+
+    assert len(rows) == 1
+    assert rows[0]["sim_cover_p"] == 1.0  # margin 7 > spread_line 3.0
+    assert rows[0]["sim_over_p"] == 1.0   # total 47 > total_line 45.0
+
+
+def test_assemble_rows_sim_probs_nan_without_sim_lookup():
+    # No sim_lookup passed at all (the default) -> NaN, not 0/fabricated.
+    schedule_df = _schedule([_synthetic_schedule().iloc[0].to_dict()])
+    game_epa = _game_epa()
+    ratings_fn = _stub_ratings_fn()
+
+    rows = bcd.assemble_rows(schedule_df, game_epa, ratings_fn)
+
+    assert math.isnan(rows[0]["sim_cover_p"])
+    assert math.isnan(rows[0]["sim_over_p"])
+
+
+def test_assemble_rows_sim_probs_nan_when_game_absent_from_lookup():
+    # sim_lookup provided but doesn't cover THIS game (e.g. bounded 2024-only
+    # backfill and this row is an earlier season) -> NaN for that row only.
+    schedule_df = _schedule([_synthetic_schedule().iloc[0].to_dict()])
+    game_epa = _game_epa()
+    ratings_fn = _stub_ratings_fn()
+    sim_lookup = {(2099, 1, "XX", "YY"): (_point_margin_dist(0.0), _point_total_dist(44.0))}
+
+    rows = bcd.assemble_rows(schedule_df, game_epa, ratings_fn, sim_lookup=sim_lookup)
+
+    assert math.isnan(rows[0]["sim_cover_p"])
+    assert math.isnan(rows[0]["sim_over_p"])
+
+
 def test_build_cover_dataset_uses_passed_in_sigmas_for_ratings_prob():
     # ratings_cover_p/ratings_over_p must actually respond to the
     # sigma_margin/sigma_total args (main() passes the FITTED

@@ -77,6 +77,7 @@ from __future__ import annotations
 import os
 import sys
 from pathlib import Path
+from typing import Callable
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
@@ -86,7 +87,7 @@ import pandas as pd
 from sportsmodel.nfl.data import load_schedules
 from sportsmodel.nfl.teams import TEAMS, normalize_team
 from sportsmodel.serving.props_ev import PROJECTED_USAGE_GATE, is_propable_projected
-from sportsmodel.sim.engine import pred_scores
+from sportsmodel.sim.engine import GameSims, pred_scores
 from sportsmodel.sim.nfl.aggregate import nfl_player_prop_dists
 from sportsmodel.sim.nfl.inputs import build_spec_from_usage
 from sportsmodel.sim.nfl.kernel import simulate_game
@@ -329,8 +330,23 @@ def _actual_player_stats(weekly_df, season: int, week: int) -> dict[str, dict[st
     return out
 
 
-def run_backtest(seasons: list[int], n_sims: int, seed: int = SIM_SEED) -> dict:
+def run_backtest(
+    seasons: list[int],
+    n_sims: int,
+    seed: int = SIM_SEED,
+    on_game: Callable[[int, int, str, str, GameSims], None] | None = None,
+) -> dict:
     """Walk forward over every completed REG-season game in `seasons`.
+
+    on_game: optional callback invoked once per successfully-simulated game
+        as `on_game(season, week, home, away, sims)` (`home`/`away` already
+        `normalize_team`-normalized, `sims` the raw `GameSims` from
+        `simulate_game`) -- lets a caller (e.g.
+        `scripts/build_cover_dataset.py`'s `_build_sim_lookup`) capture the
+        same leakage-free walk-forward's per-game margin/total distributions
+        (via `sim.engine.margin_pmf`/`total_pmf`) without duplicating this
+        function's rates/usage/spec-building wiring. Not called for a game
+        the per-game try/except below skips.
 
     Returns a dict of raw sample lists for `report()` to summarize:
       game_probs/game_outcomes, margin_preds/margin_actuals,
@@ -462,6 +478,9 @@ def run_backtest(seasons: list[int], n_sims: int, seed: int = SIM_SEED) -> dict:
             print(f"skipping {season} wk{week} {row.away_team}@{row.home_team}: {exc}")
             n_skipped += 1
             continue
+
+        if on_game is not None:
+            on_game(season, week, home, away, sims)
 
         scores = pred_scores(sims)
         home_score, away_score = float(row.home_score), float(row.away_score)

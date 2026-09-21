@@ -38,6 +38,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 import pandas as pd
 
+from sportsmodel.model.distributions import prob_cover, prob_over_dist
 from sportsmodel.nfl.efficiency import (
     adjusted_efficiency,
     efficiency_features,
@@ -58,10 +59,45 @@ _RATINGS_SIGMA_TOTAL = 10.0
 
 _SEASONS = list(range(2015, 2026))
 
+# Task 5 (bounded backfill, controller ruling in
+# .superpowers/sdd/2026-09-21-nfl-cover-ensemble/task-5-brief.md): a full
+# 2015-2025 sim backfill is ~2,900 walk-forward simulate_game runs and is
+# computationally impractical here. sim_cover_p/sim_over_p are only
+# populated for these seasons at a reduced n_sims; every other season gets
+# NaN sim columns (never a fabricated probability) -- Task 6's meta-learner
+# is designed to handle partial sim coverage (2-way [ratings, gbm] on rows
+# without sim, sim as a 3rd input where present).
+_SIM_SEASONS = [2024]
+_SIM_N_SIMS = 1000
+
+
+def sim_probs_from_dists(margin_dist: dict | None, total_dist: dict | None,
+                          spread_line: float, total_line: float) -> tuple[float, float]:
+    """Pure: a game's sim margin/total distributions + its closing lines ->
+    (sim_cover_p, sim_over_p).
+
+    Mirrors `ratings_cover_p`'s ESPN<->nflverse sign conversion exactly
+    (module docstring / assemble_rows below): `prob_cover`'s `home_line` is
+    ESPN-signed (home covers iff margin + home_line > 0), while `spread_line`
+    here is nflverse-signed (positive = home favored, home covers iff
+    margin > spread_line) -- negate to convert. `total_line` needs no sign
+    flip; `prob_over_dist` already takes it at face value.
+
+    Returns `(nan, nan)` if either dist is falsy/missing -- e.g. a game
+    outside the bounded sim backfill's seasons, or one the walk-forward
+    couldn't build a spec for. Never fabricates a probability.
+    """
+    if not margin_dist or not total_dist:
+        return float("nan"), float("nan")
+    sim_cover_p = prob_cover(margin_dist, -float(spread_line))
+    sim_over_p = prob_over_dist(total_dist, float(total_line))
+    return sim_cover_p, sim_over_p
+
 
 def assemble_rows(schedule_df: pd.DataFrame, game_epa: dict, ratings_fn,
                    sigma_margin: float = _RATINGS_SIGMA_MARGIN,
-                   sigma_total: float = _RATINGS_SIGMA_TOTAL) -> list[dict]:
+                   sigma_total: float = _RATINGS_SIGMA_TOTAL,
+                   sim_lookup: dict[tuple[int, int, str, str], tuple[dict, dict]] | None = None) -> list[dict]:
     """Pure: build one training row per completed, non-push game.
 
     Args:
@@ -82,6 +118,16 @@ def assemble_rows(schedule_df: pd.DataFrame, game_epa: dict, ratings_fn,
             `assets/nfl/gameline.json` instead so the ratings base prob
             reflects the model's actual calibrated dispersion, not a
             placeholder.
+        sim_lookup: optional `(season, week, home, away) ->
+            (margin_dist, total_dist)` map (see `sim_probs_from_dists`) --
+            each game's walk-forward Monte Carlo sim output, in the same
+            `{"kind": "margin", ...}` / `{"kind": "pmf", ...}` formats
+            `sim.engine.margin_pmf`/`total_pmf` produce. `main()` builds this
+            (Task 5, bounded backfill -- see `_SIM_SEASONS`/`_SIM_N_SIMS`)
+            via `_build_sim_lookup`, an IO helper that is NOT part of this
+            pure seam. A game absent from `sim_lookup` (including when
+            `sim_lookup` itself is None) gets NaN `sim_cover_p`/
+            `sim_over_p` -- never a fabricated probability.
 
     Returns:
         list of dicts, one per completed non-push game:
@@ -95,6 +141,9 @@ def assemble_rows(schedule_df: pd.DataFrame, game_epa: dict, ratings_fn,
             yet)
           - the line: `spread_line`, `total_line`
           - ratings base probs: `ratings_cover_p`, `ratings_over_p`
+          - sim base probs: `sim_cover_p`, `sim_over_p` (NaN where
+            `sim_lookup` has no entry for this game -- see `sim_lookup` arg
+            above and `sim_probs_from_dists`)
 
     A game is skipped (not just label-dropped) when it isn't finished yet
     (`home_score`/`away_score`/`result` missing) or has no closing line
@@ -147,6 +196,9 @@ def assemble_rows(schedule_df: pd.DataFrame, game_epa: dict, ratings_fn,
         ratings_cover_p = gbm_prob(margin, sigma_margin, "margin", -float(spread_line))
         ratings_over_p = gbm_prob(total, sigma_total, "total", float(total_line))
 
+        margin_dist, total_dist = (sim_lookup or {}).get((season, week, home, away), (None, None))
+        sim_cover_p, sim_over_p = sim_probs_from_dists(margin_dist, total_dist, spread_line, total_line)
+
         rows.append({
             "season": season,
             "week": week,
@@ -161,6 +213,8 @@ def assemble_rows(schedule_df: pd.DataFrame, game_epa: dict, ratings_fn,
             "total_line": float(total_line),
             "ratings_cover_p": ratings_cover_p,
             "ratings_over_p": ratings_over_p,
+            "sim_cover_p": sim_cover_p,
+            "sim_over_p": sim_over_p,
         })
 
     return rows
@@ -251,6 +305,50 @@ def _build_ratings_lookup(schedule_df: pd.DataFrame) -> dict[tuple[int, int, str
     return lookup
 
 
+def _build_sim_lookup(seasons: list[int], n_sims: int, seed: int = 42
+                       ) -> dict[tuple[int, int, str, str], tuple[dict, dict]]:
+    """IO: run `scripts/backtest_sim_nfl.py`'s leakage-free walk-forward sim
+    for `seasons` (reduced `n_sims`) and capture each game's margin/total
+    distributions for `assemble_rows`' `sim_lookup` -- keyed by
+    `(season, week, home, away)`, values `(margin_dist, total_dist)` in the
+    same formats `sim.engine.margin_pmf`/`total_pmf` (and
+    `scripts/generate_sim_nfl.py`'s persisted columns) use.
+
+    Reuses `backtest_sim_nfl.run_backtest`'s `on_game` hook (added alongside
+    this task) rather than re-implementing its rates/usage/spec-building --
+    that function's own per-game try/except already skips (and logs) any
+    game it can't build a spec for, so this lookup simply won't have an
+    entry for it; `assemble_rows` leaves that game's sim_cover_p/sim_over_p
+    NaN. `backtest_sim_nfl` is a script, not an importable package (see its
+    own module docstring), so it's loaded the same way
+    `tests/scripts/test_build_cover_dataset.py` loads THIS module: by file
+    path via importlib.
+
+    NOT unit-tested (heavy IO: nflverse fetch + thousands of
+    simulate_game calls) -- see this module's docstring for the pure/IO
+    split; `sim_probs_from_dists` is the unit-tested pure seam this feeds.
+    """
+    import importlib.util
+
+    from sportsmodel.sim.engine import margin_pmf, total_pmf
+
+    script_path = Path(__file__).resolve().parent / "backtest_sim_nfl.py"
+    spec = importlib.util.spec_from_file_location("backtest_sim_nfl", script_path)
+    bsn = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(bsn)
+
+    lookup: dict[tuple[int, int, str, str], tuple[dict, dict]] = {}
+
+    def _capture(season: int, week: int, home: str, away: str, sims) -> None:
+        lookup[(season, week, home, away)] = (
+            margin_pmf(sims, half_range=45),
+            {"kind": "pmf", "pmf": total_pmf(sims, max_total=90)},
+        )
+
+    bsn.run_backtest(seasons, n_sims, seed=seed, on_game=_capture)
+    return lookup
+
+
 def main() -> None:
     import nfl_data_py as nfl_data_py_import
 
@@ -281,8 +379,22 @@ def main() -> None:
     # ratings_over_p would be silently miscalibrated vs. the model's actual
     # walk-forward fit.
     gl_cfg = nfl_config.load_gameline()
+
+    # Task 5, bounded backfill (controller ruling -- see _SIM_SEASONS'
+    # comment above): sim_cover_p/sim_over_p only for _SIM_SEASONS, at
+    # reduced n_sims. Best-effort -- a fetch/sim failure degrades to an
+    # empty lookup (all-NaN sim columns for every row) rather than aborting
+    # the whole dataset build; ratings_cover_p/gbm are unaffected.
+    try:
+        sim_lookup = _build_sim_lookup(_SIM_SEASONS, _SIM_N_SIMS)
+        print(f"sim lookup: {len(sim_lookup)} games ({_SIM_SEASONS}, n_sims={_SIM_N_SIMS})")
+    except Exception as exc:  # noqa: BLE001 -- sim backfill is best-effort; NaN sim beats no dataset
+        print(f"WARN sim backfill failed ({exc!r}); sim_cover_p/sim_over_p will be all-NaN")
+        sim_lookup = {}
+
     rows = assemble_rows(reg, game_epa, ratings_fn,
-                         sigma_margin=gl_cfg.sigma_margin, sigma_total=gl_cfg.sigma_total)
+                         sigma_margin=gl_cfg.sigma_margin, sigma_total=gl_cfg.sigma_total,
+                         sim_lookup=sim_lookup)
     out = pd.DataFrame(rows)
     out_path = assets / "cover_dataset.parquet"
     out.to_parquet(out_path, index=False)
@@ -291,6 +403,7 @@ def main() -> None:
     if len(out):
         print("home_cover rate:", round(out["home_cover"].mean(), 4))
         print("over rate:", round(out["over"].mean(), 4))
+        print("sim_cover_p coverage:", int(out["sim_cover_p"].notna().sum()), "/", len(out))
         print("seasons:", sorted(out["season"].unique().tolist()))
         print("columns:", out.columns.tolist())
 
