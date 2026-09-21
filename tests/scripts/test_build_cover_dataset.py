@@ -78,6 +78,31 @@ def _synthetic_schedule():
     ])
 
 
+def test_assemble_rows_normalizes_noncanonical_team_codes():
+    # schedule uses the alias "WSH"; game_epa and ratings are keyed by the
+    # canonical "WAS". Without normalization, adj["WSH"] misses -> the 0.0
+    # fallback (wrong features) and ratings_fn("WSH", ...) misses too.
+    game_epa = {
+        (2023, 1, "WAS"): {"off": 0.25, "def": -0.15, "n": 10, "opp": "DAL"},
+        (2023, 1, "DAL"): {"off": -0.15, "def": 0.25, "n": 10, "opp": "WAS"},
+    }
+    schedule_df = _schedule([
+        {"season": 2023, "week": 2, "home_team": "WSH", "away_team": "DAL",
+         "home_score": 27, "away_score": 20, "result": 7.0,
+         "spread_line": 3.0, "total_line": 45.0},
+    ])
+
+    def ratings_fn(home, away, season, week):
+        return {("WAS", "DAL"): (5.0, 44.0)}[(home, away)]  # canonical keys only
+
+    rows = bcd.assemble_rows(schedule_df, game_epa, ratings_fn)
+    assert len(rows) == 1
+    row = rows[0]
+    assert row["home_team"] == "WAS"          # normalized in the row
+    assert row["home_off_adj"] != 0.0         # real WAS efficiency, not 0.0 fallback
+    assert 0.0 < row["ratings_cover_p"] < 1.0  # ratings_fn resolved on canonical key
+
+
 def test_build_cover_dataset_labels_features_and_ratings_prob():
     schedule_df = _synthetic_schedule()
     game_epa = _game_epa()

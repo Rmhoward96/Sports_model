@@ -44,6 +44,7 @@ from sportsmodel.nfl.efficiency import (
     efficiency_features,
     team_game_epa,
 )
+from sportsmodel.nfl.teams import normalize_team
 from sportsmodel.serving.ensemble import gbm_prob
 
 # Illustrative fallback dispersion for the "ratings base prob" conversion,
@@ -166,7 +167,12 @@ def assemble_rows(schedule_df: pd.DataFrame, game_epa: dict, ratings_fn,
             continue  # unfinished game or no closing line -> unlabelable
 
         season, week = int(g["season"]), int(g["week"])
-        home, away = g["home_team"], g["away_team"]
+        # Normalize to canonical codes so every downstream lookup agrees:
+        # adjusted_efficiency/team_game_epa and _build_sim_lookup key on
+        # normalize_team's output, and _build_ratings_lookup is now keyed the
+        # same way. A raw alias (e.g. "WSH") would otherwise silently miss and
+        # fall back to 0.0 efficiency features + NaN sim.
+        home, away = normalize_team(g["home_team"]), normalize_team(g["away_team"])
         total_points = home_score + away_score
 
         if result == spread_line or total_points == total_line:
@@ -294,7 +300,12 @@ def _build_ratings_lookup(schedule_df: pd.DataFrame) -> dict[tuple[int, int, str
                       "total_line": _clean_market(g.get("total_line"))}
             week = int(g["week"])
             row = build_gameline(model_margin, model_total, market, week, gl_cfg)
-            lookup[(int(season), week, h, a)] = (row["pred_margin"], row["pred_total"])
+            # Key the OUTPUT by canonical codes so assemble_rows' normalized
+            # (season, week, home, away) lookup resolves. Internal caches above
+            # keep raw codes to stay byte-identical to backtest_nfl_gameline
+            # (canonical == raw for today's schedules; see SYNC NOTE).
+            lookup[(int(season), week, normalize_team(h), normalize_team(a))] = (
+                row["pred_margin"], row["pred_total"])
 
             counts[h] = gh + 1
             counts[a] = ga + 1
