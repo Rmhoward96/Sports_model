@@ -17,6 +17,7 @@ frame entirely -- a push is neither a cover nor a non-cover, and
 `assemble_rows` returns one row per completed, NON-PUSH game.
 """
 import importlib.util
+import math
 import pathlib
 
 import pandas as pd
@@ -126,3 +127,51 @@ def test_build_cover_dataset_excludes_push_rows():
     assert ("BUF", "NYJ") not in kept   # cover push (result == spread_line)
     assert ("SF", "LA") not in kept     # total push (total == total_line)
     assert ("KC", "DET") in kept        # clean game retained
+
+
+def test_build_cover_dataset_falls_back_when_team_absent_from_game_epa():
+    # DET has NO entries anywhere in game_epa (e.g. a data gap) -- so
+    # adjusted_efficiency's returned dict won't even have a "DET" key.
+    # assemble_rows must fall back to {"off_adj": 0.0, "def_adj": 0.0}
+    # rather than raising KeyError out of efficiency_features.
+    schedule_df = _schedule([
+        {"season": 2023, "week": 2, "home_team": "KC", "away_team": "DET",
+         "home_score": 27, "away_score": 20, "result": 7.0,
+         "spread_line": 3.0, "total_line": 45.0},
+    ])
+    game_epa = {
+        (2023, 1, "KC"): {"off": 0.30, "def": -0.10, "n": 10, "opp": "DET"},
+        # (2023, 1, "DET") intentionally omitted.
+    }
+    ratings_fn = _stub_ratings_fn()
+
+    rows = bcd.assemble_rows(schedule_df, game_epa, ratings_fn)
+
+    assert len(rows) == 1
+    row = rows[0]
+    # Away team (DET) fell back to the 0.0 stub rather than blowing up.
+    assert row["away_off_adj"] == 0.0
+    assert row["away_def_adj"] == 0.0
+    # Every efficiency feature is a finite float, not NaN/inf.
+    for key in ("eff_diff", "home_off_adj", "home_def_adj",
+                "away_off_adj", "away_def_adj", "total_off"):
+        assert math.isfinite(row[key])
+
+
+def test_build_cover_dataset_uses_passed_in_sigmas_for_ratings_prob():
+    # ratings_cover_p/ratings_over_p must actually respond to the
+    # sigma_margin/sigma_total args (main() passes the FITTED
+    # gameline.json sigmas here rather than the illustrative defaults) --
+    # a tighter sigma should push a probability further from 0.5 for the
+    # same off-center point prediction.
+    schedule_df = _schedule([_synthetic_schedule().iloc[0].to_dict()])
+    game_epa = _game_epa()
+    ratings_fn = _stub_ratings_fn()  # KC/DET -> margin=5.0, total=44.0
+
+    tight = bcd.assemble_rows(schedule_df, game_epa, ratings_fn,
+                              sigma_margin=1.0, sigma_total=1.0)[0]
+    wide = bcd.assemble_rows(schedule_df, game_epa, ratings_fn,
+                             sigma_margin=50.0, sigma_total=50.0)[0]
+
+    assert abs(tight["ratings_cover_p"] - 0.5) > abs(wide["ratings_cover_p"] - 0.5)
+    assert abs(tight["ratings_over_p"] - 0.5) > abs(wide["ratings_over_p"] - 0.5)

@@ -45,18 +45,23 @@ from sportsmodel.nfl.efficiency import (
 )
 from sportsmodel.serving.ensemble import gbm_prob
 
-# Fixed dispersion for the "ratings base prob" conversion (Task 4's seam
-# only receives a margin/total point estimate from `ratings_fn`, not a
-# sigma) -- these match GameLineConfig's illustrative defaults
-# (sportsmodel.nfl.gameline.GameLineConfig), which is the same sigma scale
-# the gameline path itself falls back to before a walk-forward fit exists.
+# Illustrative fallback dispersion for the "ratings base prob" conversion,
+# used only if a caller doesn't pass the real fitted sigmas. `main()` always
+# passes the FITTED `gl_cfg.sigma_margin`/`gl_cfg.sigma_total` (read from the
+# committed, walk-forward-fit `assets/nfl/gameline.json` -- see
+# `_build_ratings_lookup`) through to `assemble_rows` explicitly, so these
+# constants only matter for a caller (e.g. a quick script or REPL check)
+# that doesn't have a fitted GameLineConfig handy. They match
+# `sportsmodel.nfl.gameline.GameLineConfig`'s own illustrative defaults.
 _RATINGS_SIGMA_MARGIN = 13.2
 _RATINGS_SIGMA_TOTAL = 10.0
 
 _SEASONS = list(range(2015, 2026))
 
 
-def assemble_rows(schedule_df: pd.DataFrame, game_epa: dict, ratings_fn) -> list[dict]:
+def assemble_rows(schedule_df: pd.DataFrame, game_epa: dict, ratings_fn,
+                   sigma_margin: float = _RATINGS_SIGMA_MARGIN,
+                   sigma_total: float = _RATINGS_SIGMA_TOTAL) -> list[dict]:
     """Pure: build one training row per completed, non-push game.
 
     Args:
@@ -70,6 +75,13 @@ def assemble_rows(schedule_df: pd.DataFrame, game_epa: dict, ratings_fn) -> list
             POINT-IN-TIME model prediction (must not see this game's own
             result) used to derive the ratings base cover/over prob via
             `gbm_prob`.
+        sigma_margin, sigma_total: dispersion used to convert `ratings_fn`'s
+            point margin/total into `ratings_cover_p`/`ratings_over_p` via
+            `gbm_prob`. Defaults are the illustrative `GameLineConfig`
+            values; `main()` passes the real FITTED sigmas from
+            `assets/nfl/gameline.json` instead so the ratings base prob
+            reflects the model's actual calibrated dispersion, not a
+            placeholder.
 
     Returns:
         list of dicts, one per completed non-push game:
@@ -132,8 +144,8 @@ def assemble_rows(schedule_df: pd.DataFrame, game_epa: dict, ratings_fn) -> list
         # covers iff margin + line > 0, i.e. margin > -line); spread_line
         # here is nflverse-signed (positive = home favored, home covers iff
         # margin > spread_line) -- negate to convert conventions.
-        ratings_cover_p = gbm_prob(margin, _RATINGS_SIGMA_MARGIN, "margin", -float(spread_line))
-        ratings_over_p = gbm_prob(total, _RATINGS_SIGMA_TOTAL, "total", float(total_line))
+        ratings_cover_p = gbm_prob(margin, sigma_margin, "margin", -float(spread_line))
+        ratings_over_p = gbm_prob(total, sigma_total, "total", float(total_line))
 
         rows.append({
             "season": season,
@@ -187,6 +199,12 @@ def _build_ratings_lookup(schedule_df: pd.DataFrame) -> dict[tuple[int, int, str
     only from games strictly earlier in the walk (identical invariant to
     `_raw_model_predictions`).
     """
+    # SYNC NOTE: this intentionally mirrors backtest_nfl_gameline.py's
+    # _raw_model_predictions + _apply_gl step-for-step (same Elo/SRS/points/
+    # build_gameline call sequence) -- if that walk-forward's logic changes,
+    # this copy must be updated to match (de-duplication deferred by
+    # controller ruling; see the module docstring above for why a local
+    # reimplementation exists instead of importing the original).
     from sportsmodel.nfl import config as nfl_config
     from sportsmodel.nfl.elo import run_elo
     from sportsmodel.nfl.gameline import build_gameline
@@ -236,6 +254,7 @@ def _build_ratings_lookup(schedule_df: pd.DataFrame) -> dict[tuple[int, int, str
 def main() -> None:
     import nfl_data_py as nfl_data_py_import
 
+    from sportsmodel.nfl import config as nfl_config
     from sportsmodel.nfl.nflverse import import_by_season
 
     assets = Path(__file__).resolve().parents[1] / "assets" / "nfl"
@@ -257,7 +276,13 @@ def main() -> None:
     def ratings_fn(home: str, away: str, season: int, week: int) -> tuple[float, float]:
         return ratings_lookup.get((season, week, home, away), (0.0, 44.0))
 
-    rows = assemble_rows(reg, game_epa, ratings_fn)
+    # Use the real FITTED sigmas (assets/nfl/gameline.json), not the
+    # illustrative assemble_rows() defaults -- otherwise ratings_cover_p/
+    # ratings_over_p would be silently miscalibrated vs. the model's actual
+    # walk-forward fit.
+    gl_cfg = nfl_config.load_gameline()
+    rows = assemble_rows(reg, game_epa, ratings_fn,
+                         sigma_margin=gl_cfg.sigma_margin, sigma_total=gl_cfg.sigma_total)
     out = pd.DataFrame(rows)
     out_path = assets / "cover_dataset.parquet"
     out.to_parquet(out_path, index=False)
