@@ -145,6 +145,26 @@ def test_assemble_rows_market_features_populated_when_present():
     assert not math.isnan(row["mkt_spread_rlm"])          # dline + home ticket% present
 
 
+def test_assemble_rows_market_features_use_gameday_when_no_commence_time():
+    # schedules.parquet has no commence_time column; the decision timestamp is
+    # derived from `gameday` (end-of-day UTC), which still resolves pre-kickoff
+    # odds snapshots into line-movement features.
+    schedule_df = _schedule([
+        {"season": 2023, "week": 2, "home_team": "KC", "away_team": "DET",
+         "home_score": 27, "away_score": 20, "result": 7.0,
+         "spread_line": 3.0, "total_line": 45.0,
+         "espn": 555, "gameday": "2023-09-14"},  # no commence_time
+    ])
+    snaps = [
+        {"game_pk": 555, "market": "spread", "side": "home", "book": "dk",
+         "line": -3.0, "price": -110, "captured_at": "2023-09-14T12:00:00+00:00"},
+        {"game_pk": 555, "market": "spread", "side": "home", "book": "dk",
+         "line": -3.5, "price": -110, "captured_at": "2023-09-14T18:00:00+00:00"},
+    ]
+    rows = bcd.assemble_rows(schedule_df, _game_epa(), _stub_ratings_fn(), odds_snapshots=snaps)
+    assert rows[0]["mkt_spread_dline"] == -0.5   # gameday-derived decision_ts included both snaps
+
+
 def test_build_cover_dataset_labels_features_and_ratings_prob():
     schedule_df = _synthetic_schedule()
     game_epa = _game_epa()

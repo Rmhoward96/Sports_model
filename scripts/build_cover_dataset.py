@@ -33,6 +33,7 @@ from __future__ import annotations
 
 import math
 import sys
+from datetime import datetime, timezone
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
@@ -46,6 +47,7 @@ from sportsmodel.nfl.efficiency import (
     team_game_epa,
 )
 from sportsmodel.nfl import market_features as mf
+from sportsmodel.nfl.injuries_nflverse import nfl_season
 from sportsmodel.nfl.teams import normalize_team
 from sportsmodel.serving.ensemble import gbm_prob
 
@@ -101,7 +103,11 @@ def _market_feats(game_pk, decision_ts, odds_snapshots, splits) -> dict:
 _RATINGS_SIGMA_MARGIN = 13.2
 _RATINGS_SIGMA_TOTAL = 10.0
 
-_SEASONS = list(range(2015, 2026))
+# Through the CURRENT NFL season so games with odds/splits capture (this season
+# onward) enter the training frame as they finish -- that's the only overlap
+# where the Phase-2 market features are non-NaN. Earlier seasons (no capture)
+# keep NaN market columns. 2015 is the EPA floor (nflverse pbp).
+_SEASONS = list(range(2015, nfl_season(datetime.now(timezone.utc)) + 1))
 
 # Task 5 (bounded backfill, controller ruling in
 # .superpowers/sdd/2026-09-21-nfl-cover-ensemble/task-5-brief.md): a full
@@ -259,7 +265,15 @@ def assemble_rows(schedule_df: pd.DataFrame, game_epa: dict, ratings_fn,
                 game_pk = int(g["espn"])
             except (ValueError, TypeError):
                 game_pk = None
+        # Decision timestamp for leakage-safe market features. Prefer an
+        # explicit commence_time; else derive from the schedule's gameday as
+        # end-of-day UTC. That's safe because odds_snapshot only ever holds
+        # PRE-kickoff snapshots (The Odds API drops live/finished games), so no
+        # post-game line move can be included. As ISO strings to compare
+        # lexicographically with the loader's isoformat()'d captured_at.
         decision_ts = g.get("commence_time") if pd.notna(g.get("commence_time", None)) else None
+        if decision_ts is None and pd.notna(g.get("gameday", None)):
+            decision_ts = f"{g['gameday']}T23:59:59+00:00"
         mkt = _market_feats(game_pk, decision_ts, odds_snapshots, splits)
 
         rows.append({
@@ -418,6 +432,55 @@ def _build_sim_lookup(seasons: list[int], n_sims: int, seed: int = 42
     return lookup
 
 
+def _load_odds_snapshots(game_pks) -> list[dict]:
+    """odds_snapshot rows for the given ESPN game_pks (best-effort). captured_at/
+    commence_time are ISO strings so market_features compares them
+    lexicographically against assemble_rows' ISO decision_ts. Empty list when
+    there's no DB or nothing captured -> market line-move/sharp features stay NaN."""
+    from sportsmodel import config
+    if not game_pks or not config.DATABASE_URL:
+        return []
+    cols = ["game_pk", "market", "side", "book", "line", "price", "commence_time", "captured_at"]
+    try:
+        from sportsmodel.db import get_postgres
+        with get_postgres() as conn, conn.cursor() as cur:
+            cur.execute(
+                "SELECT game_pk, market, side, book, line, price, commence_time, captured_at "
+                "FROM odds_snapshot WHERE game_pk = ANY(%s)", (list(game_pks),))
+            out = []
+            for r in cur.fetchall():
+                d = dict(zip(cols, r))
+                for k in ("commence_time", "captured_at"):
+                    if d[k] is not None and hasattr(d[k], "isoformat"):
+                        d[k] = d[k].isoformat()
+                out.append(d)
+            return out
+    except Exception as exc:  # noqa: BLE001 -- best-effort; NaN market features beat no dataset
+        print(f"WARN odds_snapshot load failed ({exc!r}); line-move/sharp features will be NaN")
+        return []
+
+
+def _load_splits(game_pks) -> dict:
+    """Latest nfl_betting_splits per (game_pk, market, side) (best-effort)."""
+    from sportsmodel import config
+    if not game_pks or not config.DATABASE_URL:
+        return {}
+    try:
+        from sportsmodel.db import get_postgres
+        with get_postgres() as conn, conn.cursor() as cur:
+            cur.execute(
+                "SELECT game_pk, market, side, cash_pct, ticket_pct "
+                "FROM nfl_betting_splits WHERE game_pk = ANY(%s) ORDER BY captured_at ASC",
+                (list(game_pks),))
+            latest = {}
+            for gp, market, side, cash, tick in cur.fetchall():
+                latest[(gp, market, side)] = {"cash_pct": cash, "ticket_pct": tick}  # ASC -> last wins
+            return latest
+    except Exception as exc:  # noqa: BLE001 -- best-effort
+        print(f"WARN nfl_betting_splits load failed ({exc!r}); split features will be NaN")
+        return {}
+
+
 def main() -> None:
     import nfl_data_py as nfl_data_py_import
 
@@ -461,9 +524,20 @@ def main() -> None:
         print(f"WARN sim backfill failed ({exc!r}); sim_cover_p/sim_over_p will be all-NaN")
         sim_lookup = {}
 
+    # Market-microstructure inputs (line movement from odds_snapshot, splits
+    # from nfl_betting_splits), keyed by ESPN game_pk. Best-effort: absent/empty
+    # -> NaN market columns. Overlaps the training frame only for games with
+    # capture coverage (this season onward), so earlier seasons stay NaN.
+    game_pks = ([int(x) for x in reg["espn"].dropna().unique()] if "espn" in reg.columns else [])
+    odds_snapshots = _load_odds_snapshots(game_pks)
+    splits = _load_splits(game_pks)
+    print(f"market inputs: {len(odds_snapshots)} odds rows, {len(splits)} split entries "
+          f"across {len(game_pks)} games")
+
     rows = assemble_rows(reg, game_epa, ratings_fn,
                          sigma_margin=gl_cfg.sigma_margin, sigma_total=gl_cfg.sigma_total,
-                         sim_lookup=sim_lookup)
+                         sim_lookup=sim_lookup,
+                         odds_snapshots=odds_snapshots, splits=splits)
     out = pd.DataFrame(rows)
     out_path = assets / "cover_dataset.parquet"
     out.to_parquet(out_path, index=False)
