@@ -1,0 +1,37 @@
+name: capture-betting-splits
+
+# Snapshot NFL public betting splits (cash%/ticket%) near close into
+# nfl_betting_splits -- training-side input for the cover/total ensemble's
+# market-microstructure features (Phase 2). DORMANT by default: the script is a
+# no-op unless the `INGEST_SPLITS` repo variable is "true" (and the SportsDataIO
+# Betting tier is active). Splits are meaningful post-lineup, so the cadence
+# mirrors capture-odds' near-close windows. scripts/capture_betting_splits.py is
+# idempotent per (game_pk, market, side, captured_at).
+on:
+  schedule:
+    - cron: "0 16 * * 0,1,4,6"
+    - cron: "0 20 * * 0,1,4,6"
+    - cron: "0 23 * * 0,1,4,6"   # near close for late-afternoon/primetime kicks
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+jobs:
+  splits:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v5
+      - name: Install uv
+        uses: astral-sh/setup-uv@v10.0.1
+      - name: Sync deps
+        run: uv sync
+      - name: Capture NFL betting splits (dormant unless INGEST_SPLITS=true)
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+          SPORTSDATA_API_KEY: ${{ secrets.SPORTSDATA_API_KEY }}
+          INGEST_SPLITS: ${{ vars.INGEST_SPLITS }}
+          SPLIT_WINDOW_MIN: ${{ vars.SPLIT_WINDOW_MIN }}
+          SM_DATA_DIR: ${{ github.workspace }}/data
+        run: uv run python scripts/capture_betting_splits.py
