@@ -43,6 +43,19 @@ _BASE = "https://api.sportsdata.io/v3/nfl"
 # NFL injuries path is under /projections/, unlike CFB's /scores/.
 INJURED_PLAYERS_PATH = "/projections/json/InjuredPlayers"
 TEAMS_PATH = "/scores/json/Teams"
+# Betting splits (public cash%/ticket%). SportsDataIO's Betting product; the
+# per-game splits feed. Path templated by the provider's game id, resolved by
+# the capture script. NOTE: this endpoint + its field names are written to
+# SportsDataIO's published Betting swagger but MUST be confirmed against a live
+# payload once the Betting tier is active (the tier is not yet enabled).
+BETTING_SPLITS_PATH = "/odds/json/BettingSplitsByScoreID/{score_id}"
+
+# BettingMarketType (SportsDataIO) -> our market code.
+_SPLIT_MARKET_MAP = {"point spread": "spread", "spread": "spread",
+                     "total points": "total", "total": "total", "over/under": "total",
+                     "moneyline": "moneyline"}
+# BettingOutcomeType/label -> our side code.
+_SPLIT_SIDE_MAP = {"home": "home", "away": "away", "over": "over", "under": "under"}
 
 
 @retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=0.5, max=8))
@@ -88,6 +101,44 @@ def parse_injuries(payload) -> dict[str, list[dict]]:
             "status": row.get("InjuryStatus"),
             "note": note,
         })
+    return out
+
+
+def parse_betting_splits(payload) -> list[dict]:
+    """Public betting splits for ONE game, from SportsDataIO's Betting-splits
+    feed. PURE. Returns rows ``{market, side, cash_pct, ticket_pct}`` where
+    ``market`` in {spread,total,moneyline}, ``side`` in {home,away,over,under},
+    ``cash_pct`` = MoneyPercentage (% of money) and ``ticket_pct`` =
+    BetPercentage (% of tickets). The caller (capture script) attaches
+    ``game_pk``/``commence_time``/``captured_at``.
+
+    Accepts either the game object ``{"BettingMarketSplits": [...]}`` or the
+    bare ``BettingMarketSplits`` list. Each market split carries
+    ``BettingMarketType`` and a list of per-outcome splits (``BettingBetSplits``
+    or ``BettingSplits``) with ``BettingOutcomeType``/``Name`` +
+    ``MoneyPercentage`` + ``BetPercentage``. Markets/outcomes we don't map are
+    skipped, and a split missing both percentages is skipped.
+
+    CAVEAT: field names follow SportsDataIO's published Betting swagger but are
+    UNVERIFIED against a live payload (the Betting tier is not yet active) --
+    confirm and adjust the key names here once a real response is available."""
+    splits = payload.get("BettingMarketSplits", payload) if isinstance(payload, dict) else payload
+    out: list[dict] = []
+    for ms in splits or []:
+        market = _SPLIT_MARKET_MAP.get(str(ms.get("BettingMarketType", "")).strip().lower())
+        if market is None:
+            continue
+        outcomes = ms.get("BettingBetSplits") or ms.get("BettingSplits") or []
+        for o in outcomes:
+            label = str(o.get("BettingOutcomeType") or o.get("Name") or "").strip().lower()
+            side = _SPLIT_SIDE_MAP.get(label)
+            if side is None:
+                continue
+            cash, tickets = o.get("MoneyPercentage"), o.get("BetPercentage")
+            if cash is None and tickets is None:
+                continue
+            out.append({"market": market, "side": side,
+                        "cash_pct": cash, "ticket_pct": tickets})
     return out
 
 
