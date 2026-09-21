@@ -12,6 +12,8 @@ from __future__ import annotations
 
 import pandas as pd
 
+from .teams import normalize_team
+
 
 def team_game_epa(pbp: pd.DataFrame) -> dict[tuple[int, int, str], dict]:
     """Aggregate per-(season, week, team) offensive/defensive EPA.
@@ -40,7 +42,12 @@ def team_game_epa(pbp: pd.DataFrame) -> dict[tuple[int, int, str], dict]:
     """
     valid = pbp[
         pd.notna(pbp["epa"]) & pd.notna(pbp["posteam"]) & pd.notna(pbp["defteam"])
-    ]
+    ].copy()
+    # Canonicalize team codes up front (matching epa.py's convention) so
+    # historical/alternate abbreviations (e.g. "WSH" vs "WAS") don't
+    # silently fragment a team's off/def/opp lookups within a season.
+    valid["posteam"] = valid["posteam"].map(normalize_team)
+    valid["defteam"] = valid["defteam"].map(normalize_team)
 
     off_group = valid.groupby(["season", "week", "posteam"])
     off_mean = off_group["epa"].mean()

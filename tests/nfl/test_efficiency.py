@@ -30,6 +30,21 @@ def test_adjusted_efficiency_is_leakage_free():
     assert adj["KC"]["off_adj"] == 0.3 or abs(adj["KC"]["off_adj"] - 0.3) < 0.5
 
 
+def test_team_game_epa_normalizes_team_codes():
+    # WSH is an alternate/historical code for WAS; LA plays under its
+    # canonical code already. Without normalization these would fragment
+    # into separate keys instead of aggregating as one team.
+    pbp = _pbp([
+        [2023,1,"WSH","LA",0.2],[2023,1,"WAS","LA",0.4],
+        [2023,1,"LA","WSH",-0.1],[2023,1,"LA","WAS",-0.3],
+    ])
+    g = team_game_epa(pbp)
+    assert set(k[2] for k in g) == {"WAS", "LA"}
+    assert g[(2023,1,"WAS")]["off"] == 0.3
+    assert g[(2023,1,"WAS")]["opp"] == "LA"
+    assert g[(2023,1,"LA")]["def"] == 0.3
+
+
 def test_efficiency_features_differential_sign():
     adj = {"KC":{"off_adj":0.3,"def_adj":-0.2}, "DET":{"off_adj":0.0,"def_adj":0.1}}
     f = efficiency_features(adj, home="KC", away="DET")
