@@ -79,7 +79,9 @@ def slate_index(games: list[dict]) -> dict:
 
 
 def main() -> None:
-    window_min = int(os.getenv("SPLIT_WINDOW_MIN", "180") or 0)
+    # An unset repo variable arrives as "" (present-but-empty), so a default
+    # arg to getenv wouldn't apply -- `or 180` covers both unset and empty.
+    window_min = int(os.getenv("SPLIT_WINDOW_MIN") or 180)
     if not splits_enabled(os.environ, window_min):
         print("betting-splits capture disabled "
               "(set INGEST_SPLITS=true and APIFY_TOKEN to enable)")
