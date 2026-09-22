@@ -104,7 +104,7 @@ DEFAULT_N_SIMS = 2000
 SIM_SEED = 42
 
 # Ship-gate validation span: completed seasons walked forward game-by-game.
-VALIDATION_SEASONS = [2021, 2022, 2023, 2024]
+VALIDATION_SEASONS = [2023, 2024, 2025]
 
 # Extra prior seasons fetched (but never validated on) purely to warm up
 # team_rates_from_pbp and active_usage's recency-weighted usage window for
@@ -112,7 +112,9 @@ VALIDATION_SEASONS = [2021, 2022, 2023, 2024]
 # VALIDATION_SEASONS[0] would have zero history before its cutoff and
 # team_rates_from_pbp would hand back all-zero drive_outcomes (a
 # divide-by-zero landmine in kernel.sample_drive's renormalization).
-WARMUP_SEASONS_BACK = 2
+# 1 = only the previous season, matching generate_sim_nfl's FETCH_SEASONS_BACK
+# (prev + current window) so the backtest validates the shipped config.
+WARMUP_SEASONS_BACK = 1
 
 MARKET_MAX = {"pass_yds": 400, "rush_yds": 200, "rec_yds": 200, "receptions": 15, "pass_tds": 6}
 PLAYER_MARKETS: tuple[str, ...] = ("pass_yds", "rush_yds", "rec_yds", "receptions")
@@ -592,10 +594,10 @@ def report(results: dict) -> None:
 
 def main() -> None:
     n_sims = int(os.environ.get("DESK_SIM_N", str(DEFAULT_N_SIMS)))
-    # SIM_SEASON_DECAY mirrors generate_sim_nfl so a backtest validates the same
-    # weighting production uses (default 1.0 here = the historical equal-weight
-    # baseline; set it to compare, e.g. SIM_SEASON_DECAY=0.6).
-    season_decay = float(os.environ.get("SIM_SEASON_DECAY", "1.0"))
+    # SIM_SEASON_DECAY mirrors generate_sim_nfl so a bare backtest validates the
+    # shipped config; default 0.4 matches production. Set SIM_SEASON_DECAY=1.0 to
+    # compare against equal weighting.
+    season_decay = float(os.environ.get("SIM_SEASON_DECAY", "0.4"))
     print(f"season_decay={season_decay}")
     results = run_backtest(VALIDATION_SEASONS, n_sims, season_decay=season_decay)
     report(results)

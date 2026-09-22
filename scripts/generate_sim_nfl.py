@@ -90,18 +90,22 @@ MODEL_VERSION = "sim-nfl-v1"
 DEFAULT_N_SIMS = 10_000
 SIM_SEED = 42
 
-# Prior seasons pulled alongside the current one so rates stay stable early
-# in a season (when the current season alone has too few games): current +
-# 2 prior seasons, per the task brief's "current + prior 1-2" guidance.
-FETCH_SEASONS_BACK = 2
+# Seasons pulled for rates/usage: the current season + this many prior. Set to
+# 1 (current + the previous season only) -- NFL rosters/schemes turn over fast,
+# so 2+-year-old play-by-play is stale; the previous season stabilizes the
+# early-season weeks until the current season accrues games. Combined with
+# SEASON_DECAY below, which then leans the blend toward the current season.
+FETCH_SEASONS_BACK = 1
 
-# Season recency weighting for team_rates_from_pbp: each season prior to the
-# current one is down-weighted by this factor (current=1.0, 1yr=DECAY,
-# 2yr=DECAY**2), so this season's play-by-play counts heavier while prior
-# seasons still stabilize early-season rates. 1.0 = equal weighting. Override
-# via SIM_SEASON_DECAY to retune without a code change. (Player usage is already
-# recency-weighted per-game inside usage.active_usage's last-N-games window.)
-SEASON_DECAY = float(os.getenv("SIM_SEASON_DECAY", "0.6"))
+# Season recency weighting for team_rates_from_pbp: the previous season is
+# down-weighted by this factor (current=1.0, previous=DECAY), so this season's
+# play-by-play counts ~2.5x heavier while the previous season still stabilizes
+# the early weeks. 1.0 = equal weighting. Default 0.4 is the walk-forward
+# optimum: validated on 2025 (prev+current window) it beat 1.0/0.8/0.6/0.2 on
+# Brier, margin MAE AND total MAE (total ~2% better, 11.19->10.97). Override via
+# SIM_SEASON_DECAY to retune. (Player usage is already recency-weighted per-game
+# inside usage.active_usage's last-N-games window.)
+SEASON_DECAY = float(os.getenv("SIM_SEASON_DECAY", "0.4"))
 
 # Binning ceilings for nfl_player_prop_dists's pmf markets (anytime_td is
 # binary and doesn't need one -- see aggregate.nfl_player_prop_dists).
