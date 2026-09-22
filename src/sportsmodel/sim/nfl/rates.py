@@ -239,6 +239,23 @@ def team_rates_from_pbp(
     return result
 
 
+# Scoring-tilt per point of margin, from the home-field calibration: a 0.07 tilt
+# produced ~2.07 pts of mean home margin on the 2025 walk-forward.
+_TILT_PER_POINT = 0.07 / 2.07
+
+
+def ratings_tilt(elo_home: float, elo_away: float, weight: float,
+                 points_per_elo: float = 25.0) -> float:
+    """PURE. Signed per-team scoring tilt from a NEUTRAL (no-HFA) Elo power
+    margin. ``neutral_pts = (elo_home - elo_away) / points_per_elo`` is scaled to
+    the kernel's score_tilt lever (calibrated so ~2 pts of edge ~= the 0.07
+    home-field tilt) and multiplied by ``weight``. Positive => home stronger;
+    weight 0 disables it. `simulate_game` clamps the combined tilt, so an extreme
+    Elo gap can't run away."""
+    neutral_pts = (elo_home - elo_away) / points_per_elo
+    return weight * neutral_pts * _TILT_PER_POINT
+
+
 def team_defense_rates_from_pbp(
     pbp_df: pd.DataFrame, upto_season: int, upto_week: int, season_decay: float = 1.0
 ) -> dict[str, TeamRates]:

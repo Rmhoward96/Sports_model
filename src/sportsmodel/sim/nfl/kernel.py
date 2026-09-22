@@ -61,6 +61,11 @@ _GAME_ENV_K = 8.0
 _MIN_DRIVES_PER_GAME = 6
 _PLAYS_PER_DRIVE = 6.0
 
+# Clamp for the combined home-field + power-rating per-team scoring tilt, so even
+# a lopsided matchup keeps a sane drive-outcome mix (no all-TD / all-punt games).
+_MIN_TILT = 0.4
+_MAX_TILT = 1.6
+
 _PLAYER_STAT_NAMES = ("pass_yds", "rush_yds", "rec_yds", "receptions", "td", "pass_tds")
 
 # TD allocation blends each player's recent-window TD share with their
@@ -396,7 +401,8 @@ def _simulate_team_drives(
     return points, box
 
 
-def simulate_game(spec: NflGameSpec, n_sims: int, rng, home_field: float = 0.0) -> NflGameSims:
+def simulate_game(spec: NflGameSpec, n_sims: int, rng, home_field: float = 0.0,
+                  ratings_tilt: float = 0.0) -> NflGameSims:
     """Simulate n_sims independent NFL games from a full game spec.
 
     Each team's scoring is drawn against the OPPONENT'S DEFENSE (spec.away_def
@@ -404,7 +410,12 @@ def simulate_game(spec: NflGameSpec, n_sims: int, rng, home_field: float = 0.0) 
     the defensive rates the engine falls back to the opponent's offensive rates
     (legacy behavior). `home_field` (>=0) tilts the home offense's scoring up by
     (1+home_field) and the away offense's down by (1-home_field) -- the sim's
-    home-field edge, 0.0 = neutral.
+    home-field edge, 0.0 = neutral. `ratings_tilt` (signed, positive = home
+    stronger) is an additional power-rating scoring tilt for the matchup on top
+    of home_field, letting a top team separate from a weak one more than the
+    bottom-up drive rates alone do; the caller derives it from Elo/SRS. Both
+    combine into per-team score tilts, clamped to [_MIN_TILT, _MAX_TILT] so a
+    huge mismatch can't produce a degenerate all-scoring/all-punting drive mix.
 
     Per simulation, a single shared `game_env` multiplier is drawn (Gamma,
     mean 1, concentration `_GAME_ENV_K`) and applied to BOTH teams' expected
@@ -439,8 +450,9 @@ def simulate_game(spec: NflGameSpec, n_sims: int, rng, home_field: float = 0.0) 
     # Opponent defense for each offense; fall back to opponent offense (legacy).
     home_deff = spec.away_def if spec.away_def is not None else spec.away
     away_deff = spec.home_def if spec.home_def is not None else spec.home
-    home_tilt = 1.0 + home_field
-    away_tilt = 1.0 - home_field
+    # Home-field + power-rating tilt (positive ratings_tilt favors home), clamped.
+    home_tilt = min(_MAX_TILT, max(_MIN_TILT, 1.0 + home_field + ratings_tilt))
+    away_tilt = min(_MAX_TILT, max(_MIN_TILT, 1.0 - home_field - ratings_tilt))
 
     for i in range(n_sims):
         game_env = rng.gamma(_GAME_ENV_K, 1.0 / _GAME_ENV_K)

@@ -91,7 +91,8 @@ from sportsmodel.sim.engine import GameSims, pred_scores
 from sportsmodel.sim.nfl.aggregate import nfl_player_prop_dists
 from sportsmodel.sim.nfl.inputs import build_spec_from_usage
 from sportsmodel.sim.nfl.kernel import simulate_game
-from sportsmodel.sim.nfl.rates import (fetch_nflverse, team_rates_from_pbp,
+from sportsmodel.nfl.elo import EloConfig, run_elo
+from sportsmodel.sim.nfl.rates import (fetch_nflverse, ratings_tilt, team_rates_from_pbp,
                                        team_defense_rates_from_pbp)
 from sportsmodel.sim.nfl.usage import (
     abbrev_alignment,
@@ -116,6 +117,8 @@ VALIDATION_SEASONS = [2023, 2024, 2025]
 # 1 = only the previous season, matching generate_sim_nfl's FETCH_SEASONS_BACK
 # (prev + current window) so the backtest validates the shipped config.
 WARMUP_SEASONS_BACK = 1
+
+_ELO_BASE = EloConfig().base  # neutral Elo for a team with no rating yet
 
 MARKET_MAX = {"pass_yds": 400, "rush_yds": 200, "rec_yds": 200, "receptions": 15, "pass_tds": 6}
 PLAYER_MARKETS: tuple[str, ...] = ("pass_yds", "rush_yds", "rec_yds", "receptions")
@@ -366,6 +369,7 @@ def run_backtest(
     questionable_weight: float = 1.0,
     home_field: float = 0.0,
     use_defense: bool = True,
+    ratings_weight: float = 0.0,
 ) -> dict:
     """Walk forward over every completed REG-season game in `seasons`.
 
@@ -417,6 +421,18 @@ def run_backtest(
     injuries_df = nfl.import_injuries(fetch_seasons)
 
     schedules = load_schedules(fetch_seasons)
+
+    # Leakage-free per-game pre-game Elo from the full committed schedule (well
+    # warmed). run_elo records elo_home/elo_away as the ratings BEFORE each game,
+    # so using them to tilt that game's sim introduces no leakage.
+    elo_by_game: dict = {}
+    if ratings_weight:
+        full_sched = pd.read_parquet(
+            Path(__file__).resolve().parents[1] / "assets" / "nfl" / "schedules.parquet")
+        for gr in run_elo(full_sched, EloConfig()).games.itertuples(index=False):
+            elo_by_game[(int(gr.season), int(gr.week), gr.home_team, gr.away_team)] = (
+                float(gr.elo_home), float(gr.elo_away))
+
     games = schedules[
         schedules["season"].isin(seasons)
         & (schedules["game_type"] == "REG")
@@ -519,7 +535,9 @@ def run_backtest(
                 home, away, rates, home_players, away_players, home_qb, away_qb,
                 def_rates=def_rates,
             )
-            sims = simulate_game(spec, n_sims, rng, home_field=home_field)
+            eh, ea = elo_by_game.get((season, week, home, away), (_ELO_BASE, _ELO_BASE))
+            rtilt = ratings_tilt(eh, ea, ratings_weight)
+            sims = simulate_game(spec, n_sims, rng, home_field=home_field, ratings_tilt=rtilt)
         except Exception as exc:  # noqa: BLE001 -- one bad game must not abort the walk
             print(f"skipping {season} wk{week} {row.away_team}@{row.home_team}: {exc}")
             n_skipped += 1
@@ -634,9 +652,12 @@ def main() -> None:
     season_decay = float(os.environ.get("SIM_SEASON_DECAY", "0.4"))
     q_weight = float(os.environ.get("SIM_QUESTIONABLE_WEIGHT", "0.75"))
     home_field = float(os.environ.get("SIM_HOME_FIELD", "0.07"))
-    print(f"season_decay={season_decay} questionable_weight={q_weight} home_field={home_field}")
+    ratings_weight = float(os.environ.get("SIM_RATINGS_WEIGHT", "0.5"))
+    print(f"season_decay={season_decay} questionable_weight={q_weight} "
+          f"home_field={home_field} ratings_weight={ratings_weight}")
     results = run_backtest(VALIDATION_SEASONS, n_sims, season_decay=season_decay,
-                           questionable_weight=q_weight, home_field=home_field)
+                           questionable_weight=q_weight, home_field=home_field,
+                           ratings_weight=ratings_weight)
     report(results)
 
 

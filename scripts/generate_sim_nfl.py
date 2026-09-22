@@ -77,7 +77,8 @@ from sportsmodel.sim.engine import margin_pmf, pred_scores, stat_pmf, total_pmf
 from sportsmodel.sim.nfl.aggregate import disagreement, nfl_player_prop_dists
 from sportsmodel.sim.nfl.inputs import build_spec_from_usage
 from sportsmodel.sim.nfl.kernel import simulate_game
-from sportsmodel.sim.nfl.rates import (fetch_nflverse, team_rates_from_pbp,
+from sportsmodel.nfl.elo import EloConfig, run_elo
+from sportsmodel.sim.nfl.rates import (fetch_nflverse, ratings_tilt, team_rates_from_pbp,
                                        team_defense_rates_from_pbp)
 from sportsmodel.sim.nfl.usage import (
     abbrev_alignment,
@@ -115,6 +116,15 @@ SEASON_DECAY = float(os.getenv("SIM_SEASON_DECAY", "0.4"))
 # sim had NO home edge (predicted home margin ~-0.03). Env-tunable via
 # SIM_HOME_FIELD.
 HOME_FIELD = float(os.getenv("SIM_HOME_FIELD", "0.07"))
+
+# Power-ranking weight: how strongly the Elo power gap tilts sim scoring on top
+# of the bottom-up drive rates (0 = off). Default 0.5 is the 2025 walk-forward
+# optimum -- it improved BOTH win-prob Brier (0.2316->0.2248) and margin MAE
+# (best of the sweep) while widening strong-vs-weak separation (avg predicted
+# margin 3.2->5.2 pts). Higher (1.0+) separates more but costs margin accuracy.
+# Env-tunable via SIM_RATINGS_WEIGHT. See sim.nfl.rates.ratings_tilt.
+RATINGS_WEIGHT = float(os.getenv("SIM_RATINGS_WEIGHT", "0.5"))
+_ELO_BASE = EloConfig().base
 
 # Binning ceilings for nfl_player_prop_dists's pmf markets (anytime_td is
 # binary and doesn't need one -- see aggregate.nfl_player_prop_dists).
@@ -345,6 +355,18 @@ def main() -> None:
                                             season_decay=SEASON_DECAY)
     print(f"team rates: season_decay={SEASON_DECAY} home_field={HOME_FIELD} "
           f"def_rates={len(def_rates)} teams")
+
+    # Current Elo power ratings from the committed schedule (completed games only
+    # feed ratings, so this is leakage-free for the upcoming slate). Missing team
+    # -> base 1500 (neutral). Used to tilt sim scoring toward the power gap.
+    try:
+        sched = pd.read_parquet(TEAMS_CROSSWALK_PATH.parent / "schedules.parquet")
+        elo = run_elo(sched, EloConfig()).final
+    except Exception as exc:  # noqa: BLE001 -- ratings tilt is additive; degrade to none
+        print(f"WARN elo unavailable ({exc!r}); ratings_tilt disabled")
+        elo = {}
+    print(f"power ratings: ratings_weight={RATINGS_WEIGHT} elo={len(elo)} teams")
+
     injuries = current_injuries(now)
     out_names_by_team = _out_names_by_team(injuries)
     q_names_by_team = _questionable_names_by_team(injuries)
@@ -429,7 +451,9 @@ def main() -> None:
                 home_abbrev, away_abbrev, rates, home_players, away_players, home_qb, away_qb,
                 def_rates=def_rates,
             )
-            sims = simulate_game(spec, n_sims, rng, home_field=HOME_FIELD)
+            rtilt = ratings_tilt(elo.get(home_abbrev, _ELO_BASE),
+                                 elo.get(away_abbrev, _ELO_BASE), RATINGS_WEIGHT)
+            sims = simulate_game(spec, n_sims, rng, home_field=HOME_FIELD, ratings_tilt=rtilt)
         except Exception as exc:  # noqa: BLE001 -- one bad game must not abort the slate
             print(f"skipping game_pk={game_pk} ({g['matchup']}): {exc}")
             continue

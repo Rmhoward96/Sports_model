@@ -2,8 +2,8 @@
 import pandas as pd
 import pytest
 
-from sportsmodel.sim.nfl.rates import (player_inputs_from_weekly, team_rates_from_pbp,
-                                       team_defense_rates_from_pbp)
+from sportsmodel.sim.nfl.rates import (player_inputs_from_weekly, ratings_tilt,
+                                       team_rates_from_pbp, team_defense_rates_from_pbp)
 
 
 def _pbp_rows():
@@ -305,6 +305,18 @@ def test_player_inputs_divide_by_zero_guarded():
 
 
 # --- season weighting (current season heavier than prior) ---
+
+def test_ratings_tilt_sign_scale_and_off_switch():
+    # Stronger home -> positive tilt; symmetric when teams swap; weight 0 = off.
+    assert ratings_tilt(1600, 1400, weight=1.0) > 0
+    assert ratings_tilt(1400, 1600, weight=1.0) == pytest.approx(
+        -ratings_tilt(1600, 1400, weight=1.0))
+    assert ratings_tilt(1600, 1400, weight=0.0) == 0.0
+    assert ratings_tilt(1500, 1500, weight=1.0) == 0.0
+    # Bigger Elo gap -> bigger tilt; heavier weight -> bigger tilt.
+    assert ratings_tilt(1700, 1400, 1.0) > ratings_tilt(1600, 1400, 1.0)
+    assert ratings_tilt(1600, 1400, 2.0) == pytest.approx(2 * ratings_tilt(1600, 1400, 1.0))
+
 
 def test_team_defense_rates_group_by_defteam():
     # DEN is on defense for two drives it faced: one TD, one punt -> allowed
