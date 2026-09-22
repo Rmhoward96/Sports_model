@@ -1,0 +1,62 @@
+name: train-cover-ensemble
+
+# Accumulate-then-re-gate loop for the NFL cover/total stacked ensemble
+# (docs/cover-ensemble-runbook.md). Rebuilds assets/nfl/cover_dataset.parquet
+# WITH the database attached -- so the market-microstructure features
+# (odds_snapshot line movement + nfl_betting_splits) actually populate, unlike a
+# local no-DB build where they are all NaN -- then runs the walk-forward ship
+# gate. train_cover_ensemble writes the ensemble artifacts ONLY IF the gate
+# passes (beats each base learner AND p=0.5 OOS on Brier+logloss for both
+# markets); a failed gate is expected while signal accrues and exits 0 (job stays
+# green, nothing shipped). Whatever artifacts changed get committed back.
+#
+# Runs weekly, after refresh-nfl-snapshots (Tue) has refreshed schedules with the
+# latest completed games and after the weekend's odds/splits captures.
+on:
+  schedule:
+    - cron: "0 14 * * 3"   # Wednesdays 14:00 UTC
+  workflow_dispatch: {}
+
+permissions:
+  contents: write          # allow committing refreshed dataset / passed artifacts
+
+jobs:
+  regate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v10.0.1
+
+      - name: Sync deps
+        run: uv sync
+
+      - name: Rebuild cover dataset (with DB -> market features populate)
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+          SM_DATA_DIR: ${{ github.workspace }}/data
+        run: uv run python scripts/build_cover_dataset.py
+
+      - name: Run walk-forward ship gate (writes artifacts only if it passes)
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+          SM_DATA_DIR: ${{ github.workspace }}/data
+        run: uv run python scripts/train_cover_ensemble.py
+
+      - name: Commit refreshed dataset + any shipped artifacts
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add assets/nfl/cover_dataset.parquet \
+                  assets/nfl/cover_ensemble.json \
+                  assets/nfl/cover_gbm_margin.joblib \
+                  assets/nfl/cover_gbm_total.joblib \
+                  assets/calibration.json 2>/dev/null || true
+          if git diff --staged --quiet; then
+            echo "No dataset/artifact changes this run."
+          else
+            git commit -m "chore: weekly cover-ensemble re-gate [skip ci]"
+            git push
+          fi

@@ -19,8 +19,11 @@ CONTROLLER RULINGS THIS SCRIPT IMPLEMENTS (see
 2. SHIP GATE: artifacts are written ONLY IF the 2-way ensemble beats BOTH
    base learners (ratings-only, gbm-only) AND the naive p=0.5, out-of-sample,
    on BOTH Brier and log-loss, for BOTH markets. If the gate fails, `main()`
-   prints the full metrics table and exits non-zero WITHOUT writing any
-   artifact -- the gate is never weakened to force a pass.
+   prints the full metrics table and the "SHIP GATE: FAIL" verdict WITHOUT
+   writing any artifact -- the gate is never weakened to force a pass. It exits
+   0 (a failed gate is an expected outcome of the accumulate-then-re-gate loop,
+   so the CI job stays green and ships nothing); only a real error exits
+   non-zero.
 
 Pure/IO split (mirrors build_cover_dataset.py's own docstring convention):
 `fit_gbm`, `residual_sigma`, `fit_meta`, `_oof_predict`, `_brier_logloss`,
@@ -461,7 +464,11 @@ def main() -> int:
 
     if not passed:
         print("\nGate failed -- NOT writing cover_ensemble.json / GBM artifacts / calibration update.")
-        return 1
+        # Exit 0: a failed gate is an EXPECTED outcome of the accumulate-then-
+        # re-gate loop (see docs/cover-ensemble-runbook.md), not an error -- the
+        # CI job should stay green and simply ship nothing. A real crash still
+        # exits non-zero. Read the "SHIP GATE: PASS/FAIL" line for the verdict.
+        return 0
 
     # Final artifacts: fit on ALL data.
     gbm_margin, sigma_margin, coef_cover, intercept_cover, feats_cover = _fit_final(
