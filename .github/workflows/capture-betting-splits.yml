@@ -12,7 +12,12 @@ on:
     - cron: "0 16 * * 0,1,4,6"
     - cron: "0 20 * * 0,1,4,6"
     - cron: "0 23 * * 0,1,4,6"   # near close for late-afternoon/primetime kicks
-  workflow_dispatch: {}
+  workflow_dispatch:
+    inputs:
+      window_min:
+        description: "Override SPLIT_WINDOW_MIN for this run (minutes before kickoff; widen to smoke-test the actor when no game is near close)"
+        required: false
+        default: ""
 
 permissions:
   contents: read
@@ -32,6 +37,6 @@ jobs:
           DATABASE_URL: ${{ secrets.DATABASE_URL }}
           APIFY_TOKEN: ${{ secrets.APIFY_TOKEN }}
           INGEST_SPLITS: ${{ vars.INGEST_SPLITS }}
-          SPLIT_WINDOW_MIN: ${{ vars.SPLIT_WINDOW_MIN }}
+          SPLIT_WINDOW_MIN: ${{ github.event.inputs.window_min || vars.SPLIT_WINDOW_MIN }}
           SM_DATA_DIR: ${{ github.workspace }}/data
         run: uv run python scripts/capture_betting_splits.py
