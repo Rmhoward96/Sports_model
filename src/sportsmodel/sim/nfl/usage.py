@@ -452,10 +452,60 @@ def abbrev_alignment(
     }
 
 
+def normalize_depth_charts(raw: pd.DataFrame, upto_season: int, upto_week: int) -> pd.DataFrame:
+    """Map nflverse's CURRENT depth-chart schema onto the OLD columns
+    `active_usage`/`abbrev_alignment` consume, so the roster/QB1 logic is
+    unchanged. PURE.
+
+    nflverse switched `import_depth_charts` (~2025): the current feed is
+    snapshot-based with columns `dt` (an update timestamp), `team`,
+    `player_name`, `gsis_id`, `pos_abb` (QB/RB/WR/TE/...), `pos_rank`
+    (1 = starter), `pos_slot`. It has no `season`/`week`/`club_code`/
+    `depth_team`/`full_name`. This keeps each team's LATEST `dt` snapshot (the
+    current depth chart) and stamps it with the target `(upto_season,
+    upto_week)` so active_usage's exact-week filter matches it.
+
+    Back-compatible: a frame already in the OLD schema (has `club_code`) is
+    returned unchanged -- so this is safe whether a given environment's
+    nfl_data_py returns the old (now frozen/stale) or the new feed. An empty or
+    unrecognized frame is returned as-is (active_usage then yields an empty
+    roster gracefully).
+
+    NOTE: the new feed only carries RECENT snapshots, so historical
+    walk-forwards get the latest chart applied to every week (a limitation of
+    the upstream source, not this mapping) -- fine for the live/current-week
+    sim, which is what this fixes.
+    """
+    if raw is None or len(raw) == 0:
+        return raw
+    if "club_code" in raw.columns:
+        return raw  # already the old schema
+    if not {"team", "pos_abb", "gsis_id"}.issubset(raw.columns):
+        return raw  # unrecognized -> let active_usage yield empty gracefully
+    df = raw.copy()
+    if "dt" in df.columns:
+        df["_dt"] = pd.to_datetime(df["dt"], errors="coerce")
+        df = df[df["_dt"] == df.groupby("team")["_dt"].transform("max")]
+    name = df["player_name"].astype("string")
+    return pd.DataFrame({
+        "season": upto_season,
+        "week": upto_week,
+        "club_code": df["team"].astype("string"),
+        "depth_team": pd.to_numeric(df.get("pos_rank"), errors="coerce"),
+        "position": df["pos_abb"].astype("string"),
+        "gsis_id": df["gsis_id"].astype("string"),
+        "full_name": name,
+        "football_name": name,
+    }).reset_index(drop=True)
+
+
 def fetch_usage_sources(seasons: list[int]) -> dict:
     """Thin IO wrapper around nfl_data_py imports. Not unit-tested.
 
-    Returns {"depth": DataFrame, "snaps": DataFrame, "ids": DataFrame}.
+    Returns {"depth": DataFrame, "snaps": DataFrame, "ids": DataFrame}. The
+    depth frame may be nflverse's OLD or NEW schema depending on the installed
+    nfl_data_py -- callers pass it through `normalize_depth_charts(...,
+    upto_season, upto_week)` before `active_usage`/`abbrev_alignment`.
     """
     import nfl_data_py as nfl
 

@@ -83,6 +83,7 @@ from sportsmodel.sim.nfl.usage import (
     active_usage,
     build_pfr_to_gsis,
     fetch_usage_sources,
+    normalize_depth_charts,
 )
 
 MODEL_VERSION = "sim-nfl-v1"
@@ -304,6 +305,12 @@ def main() -> None:
     print(f"fetching usage sources for seasons {seasons}")
     usage_src = fetch_usage_sources(seasons)
     pfr2gsis = build_pfr_to_gsis(usage_src["ids"])
+    # nflverse's depth-chart schema changed (~2025); normalize the current
+    # snapshot-based feed onto the old columns active_usage expects (see
+    # usage.normalize_depth_charts). Back-compatible with the old schema.
+    depth_df = normalize_depth_charts(usage_src["depth"], upto_season, upto_week)
+    print(f"depth chart: {len(depth_df)} rows after normalize "
+          f"({depth_df['club_code'].nunique() if 'club_code' in depth_df.columns else 0} teams)")
 
     # Same silent-failure mode `backtest_sim_nfl.py`'s `n_empty_active` guards
     # against: an ESPN->abbrev crosswalk code that doesn't match nflverse
@@ -319,7 +326,7 @@ def main() -> None:
             if abbrev:
                 game_teams.add(abbrev)
     injuries_df_like = pd.DataFrame({"team": list(injuries.keys())})
-    alignment = abbrev_alignment(usage_src["depth"], injuries_df_like, game_teams, TEAMS)
+    alignment = abbrev_alignment(depth_df, injuries_df_like, game_teams, TEAMS)
     if alignment["depth_unknown"] or alignment["injuries_unknown"] or alignment["games_unknown"]:
         print(
             f"WARN abbrev mismatch: depth_unknown={alignment['depth_unknown']} "
@@ -346,7 +353,7 @@ def main() -> None:
                 home_abbrev,
                 upto_season,
                 upto_week,
-                usage_src["depth"],
+                depth_df,
                 nflverse["weekly"],
                 usage_src["snaps"],
                 pfr2gsis,
@@ -356,7 +363,7 @@ def main() -> None:
                 away_abbrev,
                 upto_season,
                 upto_week,
-                usage_src["depth"],
+                depth_df,
                 nflverse["weekly"],
                 usage_src["snaps"],
                 pfr2gsis,

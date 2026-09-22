@@ -17,7 +17,59 @@ import pandas as pd
 import pytest
 
 from sportsmodel.sim.nfl.spec import PlayerInput
-from sportsmodel.sim.nfl.usage import active_usage
+from sportsmodel.sim.nfl.usage import active_usage, normalize_depth_charts
+
+
+def _new_depth(rows):
+    """nflverse's CURRENT (post-2025) depth-chart schema."""
+    cols = ["dt", "team", "player_name", "gsis_id", "pos_abb", "pos_rank", "pos_slot"]
+    return pd.DataFrame(rows, columns=cols)
+
+
+def test_normalize_depth_new_schema_keeps_latest_snapshot_and_maps_columns():
+    raw = _new_depth([
+        # stale snapshot: Drew Lock listed QB1
+        ["2026-09-01T12:00:00Z", "NYG", "Drew Lock", "gLOCK", "QB", 1, 9],
+        # current snapshot (later dt): Jaxson Dart QB1, Winston QB2
+        ["2026-09-21T13:00:00Z", "NYG", "Jaxson Dart", "gDART", "QB", 1, 9],
+        ["2026-09-21T13:00:00Z", "NYG", "Jameis Winston", "gWINS", "QB", 2, 9],
+    ])
+    out = normalize_depth_charts(raw, 2026, 3)
+    assert {"season", "week", "club_code", "depth_team", "position",
+            "gsis_id", "full_name", "football_name"}.issubset(out.columns)
+    names = set(out["full_name"])
+    assert "Jaxson Dart" in names and "Drew Lock" not in names   # stale snapshot dropped
+    dart = out[out["gsis_id"] == "gDART"].iloc[0]
+    assert dart["position"] == "QB" and dart["depth_team"] == 1
+    assert dart["club_code"] == "NYG" and dart["season"] == 2026 and dart["week"] == 3
+
+
+def test_normalize_depth_old_schema_passthrough():
+    old = _depth([
+        dict(season=2023, week=5, club_code="KC", depth_team="1", position="WR",
+             gsis_id="gA", full_name="Alpha", football_name="A"),
+    ])
+    out = normalize_depth_charts(old, 2026, 3)
+    assert out is old   # already old schema -> returned unchanged
+
+
+def test_active_usage_qb1_from_new_schema_depth_chart():
+    # End-to-end: the new-schema chart flows through normalize -> active_usage
+    # picks the correct QB1 (Dart, rank 1), not the stale Lock, and RB2 (Corum,
+    # rank 2) is in the active set.
+    raw = _new_depth([
+        ["2026-09-21T13:00:00Z", "NYG", "Jaxson Dart", "gDART", "QB", 1, 9],
+        ["2026-09-21T13:00:00Z", "NYG", "Jameis Winston", "gWINS", "QB", 2, 9],
+        ["2026-09-21T13:00:00Z", "NYG", "Cam Skattebo", "gSKAT", "RB", 1, 11],
+        ["2026-09-21T13:00:00Z", "NYG", "Blake Corum", "gCORUM", "RB", 2, 11],
+        ["2026-09-21T13:00:00Z", "NYG", "Ronnie Rivers", "gRIV", "RB", 3, 11],
+    ])
+    depth = normalize_depth_charts(raw, 2026, 3)
+    players, qb1 = active_usage("NYG", 2026, 3, depth, _weekly([]), _EMPTY_SNAPS, {}, set())
+    assert qb1 == "gDART"                       # rank-1 QB, not a stale name
+    ids = {p.player_id for p in players}
+    assert "gCORUM" in ids                      # RB2 present in the active set
+    assert len([p for p in players if p.pos == "QB"]) == 1   # exactly QB1 kept
 
 
 def _depth(rows):

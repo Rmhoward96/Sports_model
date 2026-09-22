@@ -97,6 +97,7 @@ from sportsmodel.sim.nfl.usage import (
     active_usage,
     build_pfr_to_gsis,
     fetch_usage_sources,
+    normalize_depth_charts,
 )
 
 DEFAULT_N_SIMS = 2000
@@ -371,6 +372,14 @@ def run_backtest(
     print(f"fetching usage sources for seasons {fetch_seasons}")
     usage_src = fetch_usage_sources(fetch_seasons)
     pfr2gsis = build_pfr_to_gsis(usage_src["ids"])
+    # Normalize nflverse's current (snapshot-based) depth schema onto the old
+    # columns active_usage expects. Stamped at (earliest fetch season, week 1)
+    # so active_usage's _latest_depth_week fallback resolves it for EVERY
+    # walk-forward (season, week). LIMITATION: the new feed carries only recent
+    # snapshots, so every historical week gets the CURRENT chart (upstream has
+    # no depth history) -- acceptable for this rough/bounded backfill; a
+    # no-op passthrough when the old (frozen) schema is what's installed.
+    depth_df = normalize_depth_charts(usage_src["depth"], min(fetch_seasons), 1)
 
     print(f"fetching historical injuries for seasons {fetch_seasons}")
     import nfl_data_py as nfl
@@ -393,7 +402,7 @@ def run_backtest(
             except ValueError:
                 continue  # surfaces via the per-game try/except in the loop below
 
-    alignment = abbrev_alignment(usage_src["depth"], injuries_df, game_teams, TEAMS)
+    alignment = abbrev_alignment(depth_df, injuries_df, game_teams, TEAMS)
     if alignment["depth_unknown"] or alignment["injuries_unknown"] or alignment["games_unknown"]:
         print(
             f"WARN abbrev mismatch: depth_unknown={alignment['depth_unknown']} "
@@ -441,7 +450,7 @@ def run_backtest(
                 team,
                 season,
                 week,
-                usage_src["depth"],
+                depth_df,
                 weekly,
                 usage_src["snaps"],
                 pfr2gsis,
