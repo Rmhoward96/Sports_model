@@ -674,31 +674,36 @@ _NFL_BETTING_SPLITS_COLS = [
 ]
 
 
-def upsert_nfl_betting_splits(records: list[dict]) -> int:
-    """Upsert public betting splits into Supabase `nfl_betting_splits`.
-
-    Idempotent on (game_pk, market, side, captured_at) -- `captured_at` is a
-    real column here (each capture is a distinct snapshot over time, like
-    odds_snapshot), so a re-run of the same capture is a no-op and a later
-    capture is a new row. Requires DATABASE_URL and nfl_betting_splits
-    (db/migration_nfl_betting_splits.sql)."""
+def _upsert_betting_splits(table: str, records: list[dict]) -> int:
+    """Upsert betting-splits rows into `table` ({nfl,cfb}_betting_splits, same
+    schema). Idempotent on (game_pk, market, side, captured_at) -- captured_at is
+    a real column (each capture is a distinct snapshot over time), so a re-run of
+    the same capture is a no-op and a later capture is a new row."""
     if not records:
         return 0
     key = ("game_pk", "market", "side", "captured_at")
-    updates = ", ".join(
-        f"{c} = EXCLUDED.{c}" for c in _NFL_BETTING_SPLITS_COLS if c not in key
-    )
-    placeholders = ", ".join(["%s"] * len(_NFL_BETTING_SPLITS_COLS))
+    cols = _NFL_BETTING_SPLITS_COLS  # both tables share this column list
+    updates = ", ".join(f"{c} = EXCLUDED.{c}" for c in cols if c not in key)
+    placeholders = ", ".join(["%s"] * len(cols))
     sql = (
-        f"INSERT INTO nfl_betting_splits ({', '.join(_NFL_BETTING_SPLITS_COLS)}) "
-        f"VALUES ({placeholders}) "
+        f"INSERT INTO {table} ({', '.join(cols)}) VALUES ({placeholders}) "
         f"ON CONFLICT (game_pk, market, side, captured_at) DO UPDATE SET {updates}"
     )
-    rows = [tuple(r.get(c) for c in _NFL_BETTING_SPLITS_COLS) for r in records]
+    rows = [tuple(r.get(c) for c in cols) for r in records]
     with get_postgres() as conn, conn.cursor() as cur:
         cur.executemany(sql, rows)
         conn.commit()
     return len(rows)
+
+
+def upsert_nfl_betting_splits(records: list[dict]) -> int:
+    """Upsert into `nfl_betting_splits` (db/migration_nfl_betting_splits.sql)."""
+    return _upsert_betting_splits("nfl_betting_splits", records)
+
+
+def upsert_cfb_betting_splits(records: list[dict]) -> int:
+    """Upsert into `cfb_betting_splits` (db/migration_cfb_betting_splits.sql)."""
+    return _upsert_betting_splits("cfb_betting_splits", records)
 
 
 def demote_stale_parlays(sport: str, keep_parlay_id: str | None,

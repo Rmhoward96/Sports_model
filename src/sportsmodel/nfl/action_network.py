@@ -53,8 +53,15 @@ def parse_action_network_splits(items) -> list[dict]:
     caller resolves game_pk (team+date) and attaches captured_at."""
     out: list[dict] = []
     for item in items or []:
-        home = _norm_abbr((item.get("homeTeam") or {}).get("abbreviation"))
-        away = _norm_abbr((item.get("awayTeam") or {}).get("abbreviation"))
+        home_team = item.get("homeTeam") or {}
+        away_team = item.get("awayTeam") or {}
+        home = _norm_abbr(home_team.get("abbreviation"))
+        away = _norm_abbr(away_team.get("abbreviation"))
+        # Team display names too: NFL resolves game_pk by normalized abbrev, but
+        # CFB's ESPN slate keys on team ID (not abbrev), so the CFB capture
+        # matches on name instead. Additive -- NFL ignores these.
+        home_name = home_team.get("displayName") or home_team.get("name")
+        away_name = away_team.get("displayName") or away_team.get("name")
         start = item.get("startTime")
         consensus = item.get("consensus") or {}
         for an_market, market in _MARKETS.items():
@@ -67,7 +74,9 @@ def parse_action_network_splits(items) -> list[dict]:
                 if cash is None and tickets is None:
                     continue
                 out.append({
-                    "away_abbr": away, "home_abbr": home, "start_time": start,
+                    "away_abbr": away, "home_abbr": home,
+                    "away_name": away_name, "home_name": home_name,
+                    "start_time": start,
                     "market": market, "side": side,
                     "cash_pct": cash, "ticket_pct": tickets,
                 })
@@ -83,6 +92,27 @@ def attach_game_pks(rows: list[dict], index: dict) -> list[dict]:
     for r in rows:
         date = (r.get("start_time") or "")[:10]
         gp = index.get((r.get("home_abbr"), r.get("away_abbr"), date))
+        if gp is None:
+            continue
+        out.append({**r, "game_pk": gp})
+    return out
+
+
+def _norm_name(name) -> str:
+    """Lowercased, whitespace-collapsed team name for cross-source matching."""
+    return " ".join(str(name or "").lower().split())
+
+
+def attach_game_pks_by_name(rows: list[dict], index: dict) -> list[dict]:
+    """PURE. Like `attach_game_pks` but matches on normalized team NAMES + UTC
+    date: ``index[(home_name_norm, away_name_norm, date)] -> game_pk``. Used for
+    CFB, whose ESPN slate keys on team ID (not the actor's abbreviations), so the
+    display names are the reliable join key. Rows with no match are dropped."""
+    out: list[dict] = []
+    for r in rows:
+        date = (r.get("start_time") or "")[:10]
+        key = (_norm_name(r.get("home_name")), _norm_name(r.get("away_name")), date)
+        gp = index.get(key)
         if gp is None:
             continue
         out.append({**r, "game_pk": gp})

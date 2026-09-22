@@ -1,11 +1,12 @@
 name: capture-betting-splits
 
-# Snapshot NFL public betting splits (cash%/ticket%) near close into
-# nfl_betting_splits -- training-side input for the cover/total ensemble's
-# market-microstructure features (Phase 2). DORMANT by default: the script is a
-# no-op unless the `INGEST_SPLITS` repo variable is "true" (and the APIFY_TOKEN
-# secret is set for the Action Network actor). Splits are meaningful post-lineup, so the cadence
-# mirrors capture-odds' near-close windows. scripts/capture_betting_splits.py is
+# Snapshot NFL + CFB public betting splits (cash%/ticket%) near close into
+# nfl_betting_splits / cfb_betting_splits -- the game pages' Public Betting
+# section (and NFL cover-ensemble market features). DORMANT by default: the
+# script is a no-op unless the `INGEST_SPLITS` repo variable is "true" (and the
+# APIFY_TOKEN secret is set for the Action Network actor). capture_betting_splits
+# captures both sports by default (SPORTS var overrides). Splits are meaningful
+# post-lineup, so the cadence mirrors capture-odds' near-close windows;
 # idempotent per (game_pk, market, side, captured_at).
 on:
   schedule:

@@ -78,3 +78,31 @@ def test_attach_game_pks_drops_unmatched_games():
     assert an.attach_game_pks(rows, {("LA", "NYG", "2026-09-23"): 1}) == []
     # empty index -> nothing matches
     assert an.attach_game_pks(rows, {}) == []
+
+
+def _cfb_item():
+    return {
+        "startTime": "2026-10-03T16:00:00.000Z",
+        "homeTeam": {"abbreviation": "UGA", "displayName": "Georgia Bulldogs"},
+        "awayTeam": {"abbreviation": "BAMA", "displayName": "Alabama Crimson Tide"},
+        "consensus": {"spread": {"sides": [
+            {"side": "home", "ticketPercent": 58, "moneyPercent": 62},
+            {"side": "away", "ticketPercent": 42, "moneyPercent": 38},
+        ]}},
+    }
+
+
+def test_parse_emits_team_names():
+    rows = an.parse_action_network_splits([_cfb_item()])
+    assert rows and rows[0]["home_name"] == "Georgia Bulldogs"
+    assert rows[0]["away_name"] == "Alabama Crimson Tide"
+
+
+def test_attach_game_pks_by_name_matches_on_normalized_name_and_date():
+    rows = an.parse_action_network_splits([_cfb_item()])
+    idx = {("georgia bulldogs", "alabama crimson tide", "2026-10-03"): 401800001}
+    out = an.attach_game_pks_by_name(rows, idx)
+    assert out and all(r["game_pk"] == 401800001 for r in out)
+    # wrong date / empty -> dropped
+    assert an.attach_game_pks_by_name(rows, {("georgia bulldogs", "alabama crimson tide", "2026-10-04"): 1}) == []
+    assert an.attach_game_pks_by_name(rows, {}) == []
