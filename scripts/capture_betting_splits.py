@@ -30,7 +30,9 @@ import sys
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
+_ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(_ROOT / "src"))
+sys.path.insert(0, str(_ROOT))  # so `scripts.*` imports work when run as a file
 
 from sportsmodel import config
 from sportsmodel.db import upsert_nfl_betting_splits
