@@ -38,6 +38,9 @@ from sportsmodel import config
 from sportsmodel.db import upsert_nfl_betting_splits
 from sportsmodel.nfl import action_network
 
+# ESPN season_type int -> Action Network actor seasonType enum.
+_ESPN_SEASONTYPE_TO_AN = {1: "pre", 2: "reg", 3: "post"}
+
 
 def splits_enabled(env: dict[str, str], window_min: int) -> bool:
     """On only when explicitly enabled, a token is present, AND the window is
@@ -101,14 +104,18 @@ def main() -> None:
         print("no games in window; nothing to capture")
         return
 
-    # Optional actor scoping (manual smoke tests): AN_SEASON/AN_WEEK pull a
-    # specific week's scheduled slate even when the current week is already
-    # complete. Unset in normal operation -- the actor defaults to the live week.
-    extra = {}
-    if os.getenv("AN_SEASON"):
-        extra["season"] = int(os.environ["AN_SEASON"])
-    if os.getenv("AN_WEEK"):
-        extra["week"] = int(os.environ["AN_WEEK"])
+    # Scope the actor to the current NFL target week: its default date logic
+    # returned 0 games off-day, so we pass season/week explicitly (near kickoff
+    # this is the slate whose consensus is populated and whose games sit in the
+    # ESPN window). AN_SEASON/AN_WEEK override for smoke tests.
+    if os.getenv("AN_SEASON") and os.getenv("AN_WEEK"):
+        extra = {"season": int(os.environ["AN_SEASON"]),
+                 "week": int(os.environ["AN_WEEK"])}
+    else:
+        from sportsmodel.nfl import espn
+        cur = espn.resolve_target_week()
+        extra = {"season": cur["season"], "week": cur["week"],
+                 "seasonType": _ESPN_SEASONTYPE_TO_AN.get(cur["season_type"], "reg")}
 
     status = tuple(s.strip() for s in (os.getenv("AN_STATUS") or "scheduled").split(",") if s.strip())
     try:
