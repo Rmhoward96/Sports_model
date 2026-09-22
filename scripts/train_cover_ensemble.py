@@ -109,6 +109,17 @@ def fit_gbm(X, y, random_state: int = 0) -> HistGradientBoostingRegressor:
     return model
 
 
+def usable_features(frame: pd.DataFrame, features: list[str]) -> list[str]:
+    """Features with >=1 non-NaN value in `frame`. HistGradientBoosting's
+    binning fails ("window shape cannot be larger than input array shape") on a
+    column that is 100% NaN, which is exactly the state of a market-microstructure
+    feature before any odds/splits have been captured for the training rows. Such
+    a feature carries no signal anyway, so drop it for this fit; partial-NaN
+    columns are kept (HGB handles NaN natively). This is what lets the gate run in
+    the accumulate-then-re-gate loop while mkt_* are still filling in."""
+    return [f for f in features if frame[f].notna().any()]
+
+
 def _oof_predict(model, X, y, n_splits: int = 5, random_state: int = 0) -> np.ndarray:
     """Out-of-fold predictions from K-fold CV, re-fitting a clone of `model`
     (same hyperparameters) per fold so no fold's prediction ever sees its
@@ -267,9 +278,10 @@ def _walk_forward_market(df: pd.DataFrame, features: list[str], line_col: str,
         if train_df.empty or test_df.empty:
             continue
 
-        X_train = train_df[features].to_numpy(dtype=float)
+        feats = usable_features(train_df, features)
+        X_train = train_df[feats].to_numpy(dtype=float)
         y_train = train_df[target_col].to_numpy(dtype=float)
-        X_test = test_df[features].to_numpy(dtype=float)
+        X_test = test_df[feats].to_numpy(dtype=float)
 
         gbm = fit_gbm(X_train, y_train)
         sigma = residual_sigma(gbm, X_train, y_train)
@@ -391,7 +403,8 @@ def _fit_final(df: pd.DataFrame, features: list[str], line_col: str, target_col:
     walk-forward loop: don't let the meta learn to over-trust an in-sample
     fit).
     """
-    X = df[features].to_numpy(dtype=float)
+    feats = usable_features(df, features)
+    X = df[feats].to_numpy(dtype=float)
     y = df[target_col].to_numpy(dtype=float)
     gbm = fit_gbm(X, y)
     sigma = residual_sigma(gbm, X, y)
@@ -404,7 +417,7 @@ def _fit_final(df: pd.DataFrame, features: list[str], line_col: str, target_col:
     gbm_p = [_to_prob(p, ln) for p, ln in zip(oof_pred, df[line_col])]
     base = list(zip(df[ratings_col].tolist(), gbm_p))
     coef, intercept = fit_meta(base, df[label_col].tolist())
-    return gbm, sigma, coef, intercept
+    return gbm, sigma, coef, intercept, feats
 
 
 def _print_metrics_table(metrics: dict) -> None:
@@ -451,11 +464,11 @@ def main() -> int:
         return 1
 
     # Final artifacts: fit on ALL data.
-    gbm_margin, sigma_margin, coef_cover, intercept_cover = _fit_final(
+    gbm_margin, sigma_margin, coef_cover, intercept_cover, feats_cover = _fit_final(
         df, MARGIN_FEATURES, "spread_line", "margin_actual", "home_cover",
         "ratings_cover_p", "margin", flip_line=True,
     )
-    gbm_total, sigma_total, coef_total, intercept_total = _fit_final(
+    gbm_total, sigma_total, coef_total, intercept_total, feats_total = _fit_final(
         df, TOTAL_FEATURES, "total_line", "total_actual", "over",
         "ratings_over_p", "total", flip_line=False,
     )
@@ -470,7 +483,7 @@ def main() -> int:
             "coef": coef_cover,
             "intercept": intercept_cover,
             "sigma": sigma_margin,
-            "features": MARGIN_FEATURES,
+            "features": feats_cover,
             "gbm_model_path": "assets/nfl/cover_gbm_margin.joblib",
             "dist_kind": "margin",
         },
@@ -478,7 +491,7 @@ def main() -> int:
             "coef": coef_total,
             "intercept": intercept_total,
             "sigma": sigma_total,
-            "features": TOTAL_FEATURES,
+            "features": feats_total,
             "gbm_model_path": "assets/nfl/cover_gbm_total.joblib",
             "dist_kind": "total",
         },

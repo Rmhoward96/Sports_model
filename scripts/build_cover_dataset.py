@@ -482,23 +482,21 @@ def _load_splits(game_pks) -> dict:
 
 
 def main() -> None:
-    import nfl_data_py as nfl_data_py_import
-
     from sportsmodel.nfl import config as nfl_config
-    from sportsmodel.nfl.nflverse import import_by_season
+    from sportsmodel.nfl.nflverse import load_release
 
     assets = Path(__file__).resolve().parents[1] / "assets" / "nfl"
     sched = pd.read_parquet(assets / "schedules.parquet")
     reg = sched[sched["game_type"] == "REG"] if "game_type" in sched.columns else sched
     reg = reg[reg["season"].isin(_SEASONS)].copy()
 
-    pbp = import_by_season(
-        lambda yrs: nfl_data_py_import.import_pbp_data(yrs)[
-            ["season", "week", "posteam", "defteam", "epa"]
-        ],
-        _SEASONS,
-        "pbp",
-    )
+    # Read pbp via the canonical release URLs (load_release), not nfl_data_py's
+    # import_pbp_data -- the pinned 0.3.2 404s on the current season's pbp and
+    # masks it as a NameError, which would silently drop 2026 (NaN EPA for this
+    # season's games). load_release fetches the current season correctly.
+    pbp = load_release("pbp", _SEASONS)[
+        ["season", "week", "posteam", "defteam", "epa"]
+    ]
     game_epa = team_game_epa(pbp)
 
     ratings_lookup = _build_ratings_lookup(reg)
