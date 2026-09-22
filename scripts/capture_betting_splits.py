@@ -117,6 +117,11 @@ def main() -> None:
     except Exception as exc:  # noqa: BLE001 -- a failed actor run must exit cleanly
         sys.exit(f"Action Network actor run failed: {exc}")
 
+    if os.getenv("AN_DEBUG") and items:
+        import json
+        print("AN_DEBUG first raw item (truncated):")
+        print(json.dumps(items[0], indent=1, default=str)[:3500])
+
     parsed = action_network.parse_action_network_splits(items)
     rows = action_network.attach_game_pks(parsed, index)
     print(f"parsed {len(parsed)} split rows from {len(items)} actor games; "

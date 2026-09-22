@@ -26,6 +26,10 @@ on:
         description: "Smoke test only: actor week (e.g. 4). Requires season."
         required: false
         default: ""
+      debug:
+        description: "Smoke test only: set to 1 to dump the first raw actor item to the log."
+        required: false
+        default: ""
 
 permissions:
   contents: read
@@ -48,5 +52,6 @@ jobs:
           SPLIT_WINDOW_MIN: ${{ github.event.inputs.window_min || vars.SPLIT_WINDOW_MIN }}
           AN_SEASON: ${{ github.event.inputs.season }}
           AN_WEEK: ${{ github.event.inputs.week }}
+          AN_DEBUG: ${{ github.event.inputs.debug }}
           SM_DATA_DIR: ${{ github.workspace }}/data
         run: uv run python scripts/capture_betting_splits.py
