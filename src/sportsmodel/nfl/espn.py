@@ -82,6 +82,30 @@ def parse_inactives(payload) -> list[str]:
                     names.append(ath["displayName"])
     return names
 
+def parse_injuries(payload) -> list[dict]:
+    """ESPN league-wide injuries (/injuries) -> ``[{team, player, status}]``.
+    PURE. `team` is ESPN's team displayName (maps to our abbrev via the same
+    crosswalk as predictions team names); `status` is ESPN's designation
+    ("Out"/"Doubtful"/"Questionable"/"Injured Reserve"/...). ESPN updates these
+    far faster than nflverse's weekly report parquet, so it catches a
+    recently-injured starter mid-week before nflverse lists them."""
+    out: list[dict] = []
+    for team in payload.get("injuries", []) or []:
+        name = team.get("displayName")
+        if not name:
+            continue
+        for it in team.get("injuries", []) or []:
+            ath = (it.get("athlete") or {}).get("displayName")
+            status = it.get("status")
+            if ath and status:
+                out.append({"team": name, "player": ath, "status": str(status)})
+    return out
+
+
+def fetch_injuries() -> list[dict]:
+    return parse_injuries(_get("/injuries"))
+
+
 def fetch_schedule(season: int, week: int, season_type: int = 2) -> list[dict]:
     return parse_schedule(_get("/scoreboard",
                                {"dates": season, "seasontype": season_type, "week": week}))

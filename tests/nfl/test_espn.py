@@ -1,6 +1,6 @@
 import json, pathlib
 from sportsmodel.nfl.espn import (parse_schedule, parse_final, parse_current_week,
-                                  target_week, advance_if_complete)
+                                  target_week, advance_if_complete, parse_injuries)
 
 FIX = json.loads((pathlib.Path(__file__).parent.parent
                   / "fixtures/nfl/espn_scoreboard.json").read_text())
@@ -73,3 +73,21 @@ def test_advance_if_complete_holds_on_empty_or_postseason():
 def test_advance_if_complete_caps_at_week_18():
     tw = {"season": 2026, "week": 18, "season_type": 2}
     assert advance_if_complete(tw, [_g("STATUS_FINAL")]) == tw  # let ESPN roll to postseason
+
+
+def test_parse_injuries_flattens_team_player_status():
+    payload = {"injuries": [
+        {"id": "19", "displayName": "New York Giants", "injuries": [
+            {"status": "Doubtful", "athlete": {"displayName": "Jaxson Dart"}},
+            {"status": "Active", "athlete": {"displayName": "Malik Nabers"}},
+            {"status": "Out", "athlete": {}},  # no athlete name -> skipped
+        ]},
+        {"displayName": None, "injuries": [  # no team name -> skipped
+            {"status": "Out", "athlete": {"displayName": "Nobody"}}]},
+    ]}
+    rows = parse_injuries(payload)
+    assert {"team": "New York Giants", "player": "Jaxson Dart", "status": "Doubtful"} in rows
+    assert any(r["player"] == "Malik Nabers" for r in rows)
+    assert all(r["player"] != "Nobody" for r in rows)   # team-less entry dropped
+    assert len(rows) == 2                                 # the no-athlete row dropped
+    assert parse_injuries({}) == []

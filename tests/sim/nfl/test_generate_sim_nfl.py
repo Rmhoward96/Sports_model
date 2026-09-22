@@ -217,3 +217,21 @@ def test_assemble_sim_rows_analytic_zero_is_not_treated_as_missing():
     sim_rows, _ = gsn.assemble_sim_rows(games, {1: sims}, {1: _spec()}, {1: 0.0})
     assert len(sim_rows) == 1
     assert sim_rows[0]["disagreement"] == pytest.approx(sim_rows[0]["sim_home_win_prob"])
+
+
+def test_espn_injury_names_categorizes_and_maps_teams():
+    crosswalk = {"New York Giants": "NYG", "Denver Broncos": "DEN"}
+    espn = [
+        {"team": "New York Giants", "player": "Jaxson Dart", "status": "Doubtful"},
+        {"team": "New York Giants", "player": "Malik Nabers", "status": "Questionable"},
+        {"team": "New York Giants", "player": "Someone Active", "status": "Active"},
+        {"team": "Denver Broncos", "player": "Injured Guy", "status": "Injured Reserve"},
+        {"team": "Unknown Team", "player": "Nobody", "status": "Out"},  # no crosswalk -> skipped
+    ]
+    out, q = gsn._espn_injury_names(espn, crosswalk)
+    assert out["NYG"] == {"jaxson dart"}          # Doubtful -> OUT
+    assert out["DEN"] == {"injured guy"}          # Injured Reserve -> OUT
+    assert q["NYG"] == {"malik nabers"}           # Questionable -> down-weight
+    assert "Unknown Team" not in out and all(k in ("NYG", "DEN") for k in out)  # unknown skipped
+    # Active is neither dropped nor down-weighted.
+    assert not any("someone active" in s for s in out.get("NYG", set()) | q.get("NYG", set()))

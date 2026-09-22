@@ -71,6 +71,7 @@ import pandas as pd
 
 from sportsmodel import config
 from sportsmodel.db import get_postgres, upsert_nfl_player_sim, upsert_nfl_sim
+from sportsmodel.nfl import espn as nfl_espn
 from sportsmodel.nfl.injuries_nflverse import current_injuries, nfl_season
 from sportsmodel.nfl.teams import TEAMS
 from sportsmodel.sim.engine import margin_pmf, pred_scores, stat_pmf, total_pmf
@@ -316,6 +317,31 @@ def _out_names_by_team(injuries: dict[str, list[dict]]) -> dict[str, set[str]]:
     return out
 
 
+def _espn_injury_names(espn_list: list[dict], crosswalk: dict[str, str]
+                       ) -> tuple[dict[str, set[str]], dict[str, set[str]]]:
+    """ESPN injury list (nfl_espn.fetch_injuries) -> ({abbrev -> OUT names},
+    {abbrev -> QUESTIONABLE names}), lowercased to match active_usage. ESPN
+    designations meaning "won't play this game" (Out/Doubtful/IR/PUP/Suspension/
+    NFI) go to OUT; Questionable is down-weighted. Team displayName -> abbrev via
+    the same crosswalk as predictions team names; unknown teams are skipped."""
+    out: dict[str, set[str]] = {}
+    q: dict[str, set[str]] = {}
+    for e in espn_list:
+        abbr = crosswalk.get(e.get("team"))
+        if not abbr:
+            continue
+        st = str(e.get("status", "")).strip().lower()
+        nm = str(e.get("player", "")).strip().lower()
+        if not nm:
+            continue
+        if st == "questionable":
+            q.setdefault(abbr, set()).add(nm)
+        elif (st in ("out", "doubtful") or "injured reserve" in st or "reserve" in st
+              or "suspension" in st or "physically unable" in st or "non football" in st):
+            out.setdefault(abbr, set()).add(nm)
+    return out, q
+
+
 def _questionable_names_by_team(injuries: dict[str, list[dict]]) -> dict[str, set[str]]:
     """{team_abbrev -> {lowercased player name}} for Questionable entries, for
     active_usage's `questionable_names` (down-weighted, not dropped)."""
@@ -370,6 +396,19 @@ def main() -> None:
     injuries = current_injuries(now)
     out_names_by_team = _out_names_by_team(injuries)
     q_names_by_team = _questionable_names_by_team(injuries)
+    # Supplement nflverse's weekly report (finalized Wed-Fri, so it lags mid-week)
+    # with ESPN's near-real-time injuries, so a recently-injured starter is
+    # dropped before nflverse lists them. UNION the name sets.
+    try:
+        espn_out, espn_q = _espn_injury_names(nfl_espn.fetch_injuries(), crosswalk)
+        for abbr, s in espn_out.items():
+            out_names_by_team.setdefault(abbr, set()).update(s)
+        for abbr, s in espn_q.items():
+            q_names_by_team.setdefault(abbr, set()).update(s)
+        print(f"espn injuries merged: {sum(len(v) for v in espn_out.values())} out, "
+              f"{sum(len(v) for v in espn_q.values())} questionable")
+    except Exception as exc:  # noqa: BLE001 -- ESPN is a supplement; degrade to nflverse only
+        print(f"WARN espn injuries unavailable ({exc!r}); using nflverse report only")
     print(f"injuries: questionable_weight={QUESTIONABLE_WEIGHT}")
 
     print(f"fetching usage sources for seasons {seasons}")
