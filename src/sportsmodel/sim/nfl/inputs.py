@@ -131,6 +131,7 @@ def build_spec_from_usage(
     away_players: list[PlayerInput],
     home_qb_gsis: str | None,
     away_qb_gsis: str | None,
+    def_rates: dict[str, TeamRates] | None = None,
 ) -> NflGameSpec:
     """Assemble an NflGameSpec from active-usage PlayerInputs (usage.active_usage).
 
@@ -170,6 +171,7 @@ def build_spec_from_usage(
     _assert_qb_attribution(home_players, home_qb_gsis, home_team)
     _assert_qb_attribution(away_players, away_qb_gsis, away_team)
 
+    def_rates = def_rates or {}
     return NflGameSpec(
         home_team=home_team,
         away_team=away_team,
@@ -177,4 +179,6 @@ def build_spec_from_usage(
         away=rates[away_team],
         home_players=home_players,
         away_players=away_players,
+        home_def=def_rates.get(home_team),
+        away_def=def_rates.get(away_team),
     )

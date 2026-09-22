@@ -239,6 +239,46 @@ def team_rates_from_pbp(
     return result
 
 
+def team_defense_rates_from_pbp(
+    pbp_df: pd.DataFrame, upto_season: int, upto_week: int, season_decay: float = 1.0
+) -> dict[str, TeamRates]:
+    """Per-DEFENSE-team allowed drive-outcome rates (grouped by `defteam`).
+
+    The mirror of `team_rates_from_pbp` from the defense's side: the season-
+    weighted distribution of how the drives FACED by this team ended. Only
+    `drive_outcomes` is meaningful (that's all `kernel.sample_drive` reads from
+    the `deff` argument); the other TeamRates fields are set to 0.0. Feeding this
+    as `deff` lets a stout defense (few TD/FG drives allowed) suppress an
+    opponent's scoring and a leaky one inflate it -- unlike the old behavior of
+    proxying defense with the opponent's OFFENSIVE rates, which perversely let a
+    high-powered offense raise the points it "allowed". Same leakage guard and
+    season weighting as the offensive aggregation.
+    """
+    df = _before_cutoff(pbp_df, upto_season, upto_week).copy()
+    df["_w"] = season_weights(df["season"], upto_season, season_decay)
+    result: dict[str, TeamRates] = {}
+
+    for team, team_df in df.groupby("defteam"):
+        if pd.isna(team) or team == "":
+            continue
+        drives = team_df.drop_duplicates(subset=["game_id", "drive"]).copy()
+        drives["_k"] = (
+            drives["fixed_drive_result"].astype(str).str.strip().str.lower()
+            .map(lambda r: _DRIVE_RESULT_MAP.get(r, "end"))
+        )
+        by_key = drives.groupby("_k")["_w"].sum()
+        counts = {k: float(by_key.get(k, 0.0)) for k in _DRIVE_KEYS}
+        total = sum(counts.values())
+        drive_outcomes = ({k: v / total for k, v in counts.items()} if total > 0
+                          else dict.fromkeys(_DRIVE_KEYS, 0.0))
+        result[team] = TeamRates(
+            drive_outcomes=drive_outcomes,
+            pass_rate=0.0, drives_per_game=0.0, rz_td_rate=0.0,
+        )
+
+    return result
+
+
 def player_inputs_from_weekly(
     weekly_df: pd.DataFrame,
     snaps_df: pd.DataFrame,

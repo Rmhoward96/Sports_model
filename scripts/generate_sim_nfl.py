@@ -77,7 +77,8 @@ from sportsmodel.sim.engine import margin_pmf, pred_scores, stat_pmf, total_pmf
 from sportsmodel.sim.nfl.aggregate import disagreement, nfl_player_prop_dists
 from sportsmodel.sim.nfl.inputs import build_spec_from_usage
 from sportsmodel.sim.nfl.kernel import simulate_game
-from sportsmodel.sim.nfl.rates import fetch_nflverse, team_rates_from_pbp
+from sportsmodel.sim.nfl.rates import (fetch_nflverse, team_rates_from_pbp,
+                                       team_defense_rates_from_pbp)
 from sportsmodel.sim.nfl.usage import (
     abbrev_alignment,
     active_usage,
@@ -106,6 +107,14 @@ FETCH_SEASONS_BACK = 1
 # SIM_SEASON_DECAY to retune. (Player usage is already recency-weighted per-game
 # inside usage.active_usage's last-N-games window.)
 SEASON_DECAY = float(os.getenv("SIM_SEASON_DECAY", "0.4"))
+
+# Home-field edge: tilts the home offense's per-drive scoring up by (1+HOME_FIELD)
+# and the away offense's down by (1-HOME_FIELD). 0.0 = neutral. Default 0.07 is
+# the backtested value (2025 walk-forward): it lands the predicted mean home
+# margin on the actual +2.07 while margin/total MAE stay flat-optimal. The old
+# sim had NO home edge (predicted home margin ~-0.03). Env-tunable via
+# SIM_HOME_FIELD.
+HOME_FIELD = float(os.getenv("SIM_HOME_FIELD", "0.07"))
 
 # Binning ceilings for nfl_player_prop_dists's pmf markets (anytime_td is
 # binary and doesn't need one -- see aggregate.nfl_player_prop_dists).
@@ -332,7 +341,10 @@ def main() -> None:
 
     rates = team_rates_from_pbp(nflverse["pbp"], upto_season, upto_week,
                                 season_decay=SEASON_DECAY)
-    print(f"team rates: season_decay={SEASON_DECAY}")
+    def_rates = team_defense_rates_from_pbp(nflverse["pbp"], upto_season, upto_week,
+                                            season_decay=SEASON_DECAY)
+    print(f"team rates: season_decay={SEASON_DECAY} home_field={HOME_FIELD} "
+          f"def_rates={len(def_rates)} teams")
     injuries = current_injuries(now)
     out_names_by_team = _out_names_by_team(injuries)
     q_names_by_team = _questionable_names_by_team(injuries)
@@ -414,9 +426,10 @@ def main() -> None:
                 # player-less team -- see the abbrev_alignment note above.
                 n_empty_active += 1
             spec = build_spec_from_usage(
-                home_abbrev, away_abbrev, rates, home_players, away_players, home_qb, away_qb
+                home_abbrev, away_abbrev, rates, home_players, away_players, home_qb, away_qb,
+                def_rates=def_rates,
             )
-            sims = simulate_game(spec, n_sims, rng)
+            sims = simulate_game(spec, n_sims, rng, home_field=HOME_FIELD)
         except Exception as exc:  # noqa: BLE001 -- one bad game must not abort the slate
             print(f"skipping game_pk={game_pk} ({g['matchup']}): {exc}")
             continue

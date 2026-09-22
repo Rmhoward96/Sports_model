@@ -2,7 +2,8 @@
 import pandas as pd
 import pytest
 
-from sportsmodel.sim.nfl.rates import player_inputs_from_weekly, team_rates_from_pbp
+from sportsmodel.sim.nfl.rates import (player_inputs_from_weekly, team_rates_from_pbp,
+                                       team_defense_rates_from_pbp)
 
 
 def _pbp_rows():
@@ -304,6 +305,23 @@ def test_player_inputs_divide_by_zero_guarded():
 
 
 # --- season weighting (current season heavier than prior) ---
+
+def test_team_defense_rates_group_by_defteam():
+    # DEN is on defense for two drives it faced: one TD, one punt -> allowed
+    # drive_outcomes should be td=0.5, punt=0.5 (grouped by defteam, not posteam).
+    pbp = pd.DataFrame([
+        dict(season=2023, week=1, posteam="KC", defteam="DEN", play_type="pass",
+             sack=0, complete_pass=1, fixed_drive_result="Touchdown",
+             drive=1, game_id="g1", yardline_100=15),
+        dict(season=2023, week=1, posteam="KC", defteam="DEN", play_type="run",
+             sack=0, complete_pass=0, fixed_drive_result="Punt",
+             drive=2, game_id="g1", yardline_100=60),
+    ])
+    d = team_defense_rates_from_pbp(pbp, upto_season=2023, upto_week=2)
+    assert "DEN" in d
+    assert d["DEN"].drive_outcomes["td"] == pytest.approx(0.5)
+    assert d["DEN"].drive_outcomes["punt"] == pytest.approx(0.5)
+
 
 def test_season_weights_decay():
     from sportsmodel.sim.nfl.rates import season_weights

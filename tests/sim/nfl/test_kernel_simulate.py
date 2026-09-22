@@ -63,6 +63,34 @@ def _spec(home=None, away=None) -> NflGameSpec:
     )
 
 
+def test_home_field_gives_home_a_scoring_edge():
+    # Identical teams: with home_field>0 the home team should average more points
+    # than the away team; at 0.0 they should be ~even.
+    rng = np.random.default_rng(7)
+    n = 4000
+    neutral = simulate_game(_spec(), n, rng, home_field=0.0)
+    assert abs(float(neutral.home_score.mean() - neutral.away_score.mean())) < 0.7
+    edge = simulate_game(_spec(), n, rng, home_field=0.08)
+    assert float(edge.home_score.mean()) > float(edge.away_score.mean()) + 0.5
+
+
+def test_defense_rates_used_as_deff_suppress_scoring():
+    # A stout away DEFENSE (few TD/FG allowed) should hold the home offense
+    # below what it scores against a league-average defense.
+    rng = np.random.default_rng(8)
+    n = 4000
+    stout = _tr(td=0.03, fg=0.05, punt=0.72, turnover=0.15, downs=0.03, end=0.02)
+    base_spec = _spec()
+    tough = NflGameSpec(
+        home_team="Home", away_team="Away", home=base_spec.home, away=base_spec.away,
+        home_players=base_spec.home_players, away_players=base_spec.away_players,
+        away_def=stout,  # home offense now faces this defense
+    )
+    plain = simulate_game(base_spec, n, rng, home_field=0.0)
+    held = simulate_game(tough, n, rng, home_field=0.0)
+    assert float(held.home_score.mean()) < float(plain.home_score.mean()) - 1.0
+
+
 def test_shapes_match_n_sims():
     rng = np.random.default_rng(0)
     n_sims = 500

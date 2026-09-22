@@ -75,31 +75,41 @@ _PLAYER_STAT_NAMES = ("pass_yds", "rush_yds", "rec_yds", "receptions", "td", "pa
 _TD_RECENCY_WEIGHT = 0.5
 
 
-def sample_drive(off: TeamRates, deff: TeamRates, rng) -> tuple[str, int]:
+def sample_drive(off: TeamRates, deff: TeamRates, rng, score_tilt: float = 1.0) -> tuple[str, int]:
     """Sample a single drive outcome combining offense and defense rates.
 
-    Combines the offense and defense drive-outcome probabilities by averaging
-    them element-wise, then draws a single outcome from the resulting
-    multinomial distribution.
+    Combines the offense's drive-outcome probabilities with the DEFENSE's
+    drives-allowed probabilities by averaging them element-wise, then draws a
+    single outcome from the resulting multinomial distribution.
 
     Args:
         off: Offensive team rates.
-        deff: Defensive team rates.
+        deff: Defensive (drives-allowed) team rates -- see
+            `rates.team_defense_rates_from_pbp`. (Historically this was the
+            opponent's OFFENSIVE rates; that mismodeled defense.)
         rng: numpy random Generator (e.g., np.random.default_rng()).
+        score_tilt: multiplies the TD+FG mass before renormalizing (>1 => more
+            scoring, <1 => less). 1.0 is a no-op; the home-field edge passes
+            1+home_field for the home offense and 1-home_field for the away.
 
     Returns:
         Tuple of (outcome_key, points) where outcome_key is one of
         'td', 'fg', 'punt', 'turnover', 'downs', 'end' and points is
         7 for TD, 3 for FG, 0 otherwise.
     """
-    # Average the drive outcome rates element-wise
+    # Average the offense's drive outcomes with the defense's drives-allowed.
     combined = {}
     for key in off.drive_outcomes:
         combined[key] = (off.drive_outcomes[key] + deff.drive_outcomes[key]) / 2.0
 
+    # Home-field / environment tilt: scale scoring outcomes, clip to >=0.
+    if score_tilt != 1.0:
+        combined["td"] = max(0.0, combined.get("td", 0.0) * score_tilt)
+        combined["fg"] = max(0.0, combined.get("fg", 0.0) * score_tilt)
+
     # Renormalize to sum to 1
     total = sum(combined.values())
-    combined = {k: v / total for k, v in combined.items()}
+    combined = {k: v / total for k, v in combined.items()} if total > 0 else combined
 
     # Prepare for multinomial draw
     outcome_keys = list(combined.keys())
@@ -320,6 +330,7 @@ def _simulate_team_drives(
     players: list[PlayerInput],
     rng,
     game_env: float = 1.0,
+    score_tilt: float = 1.0,
 ) -> tuple[int, dict[str, dict[str, int]]]:
     """Simulate one team's possessions for a single game and attribute stats.
 
@@ -359,7 +370,7 @@ def _simulate_team_drives(
     points = 0
     n_off_tds = 0
     for _ in range(n_drives):
-        outcome, pts = sample_drive(off, deff, rng)
+        outcome, pts = sample_drive(off, deff, rng, score_tilt=score_tilt)
         points += pts
         if outcome == "td":
             n_off_tds += 1
@@ -385,8 +396,15 @@ def _simulate_team_drives(
     return points, box
 
 
-def simulate_game(spec: NflGameSpec, n_sims: int, rng) -> NflGameSims:
+def simulate_game(spec: NflGameSpec, n_sims: int, rng, home_field: float = 0.0) -> NflGameSims:
     """Simulate n_sims independent NFL games from a full game spec.
+
+    Each team's scoring is drawn against the OPPONENT'S DEFENSE (spec.away_def
+    for the home offense, spec.home_def for the away offense); when a spec omits
+    the defensive rates the engine falls back to the opponent's offensive rates
+    (legacy behavior). `home_field` (>=0) tilts the home offense's scoring up by
+    (1+home_field) and the away offense's down by (1-home_field) -- the sim's
+    home-field edge, 0.0 = neutral.
 
     Per simulation, a single shared `game_env` multiplier is drawn (Gamma,
     mean 1, concentration `_GAME_ENV_K`) and applied to BOTH teams' expected
@@ -418,13 +436,19 @@ def simulate_game(spec: NflGameSpec, n_sims: int, rng) -> NflGameSims:
         for p in all_players
     }
 
+    # Opponent defense for each offense; fall back to opponent offense (legacy).
+    home_deff = spec.away_def if spec.away_def is not None else spec.away
+    away_deff = spec.home_def if spec.home_def is not None else spec.home
+    home_tilt = 1.0 + home_field
+    away_tilt = 1.0 - home_field
+
     for i in range(n_sims):
         game_env = rng.gamma(_GAME_ENV_K, 1.0 / _GAME_ENV_K)
         h_points, h_box = _simulate_team_drives(
-            spec.home, spec.away, spec.home_players, rng, game_env=game_env
+            spec.home, home_deff, spec.home_players, rng, game_env=game_env, score_tilt=home_tilt
         )
         a_points, a_box = _simulate_team_drives(
-            spec.away, spec.home, spec.away_players, rng, game_env=game_env
+            spec.away, away_deff, spec.away_players, rng, game_env=game_env, score_tilt=away_tilt
         )
         home_score[i] = h_points
         away_score[i] = a_points

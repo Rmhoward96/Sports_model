@@ -91,7 +91,8 @@ from sportsmodel.sim.engine import GameSims, pred_scores
 from sportsmodel.sim.nfl.aggregate import nfl_player_prop_dists
 from sportsmodel.sim.nfl.inputs import build_spec_from_usage
 from sportsmodel.sim.nfl.kernel import simulate_game
-from sportsmodel.sim.nfl.rates import fetch_nflverse, team_rates_from_pbp
+from sportsmodel.sim.nfl.rates import (fetch_nflverse, team_rates_from_pbp,
+                                       team_defense_rates_from_pbp)
 from sportsmodel.sim.nfl.usage import (
     abbrev_alignment,
     active_usage,
@@ -363,6 +364,8 @@ def run_backtest(
     on_game: Callable[[int, int, str, str, GameSims], None] | None = None,
     season_decay: float = 1.0,
     questionable_weight: float = 1.0,
+    home_field: float = 0.0,
+    use_defense: bool = True,
 ) -> dict:
     """Walk forward over every completed REG-season game in `seasons`.
 
@@ -493,6 +496,8 @@ def run_backtest(
         key = (season, week)
         if key != cutoff_key:
             rates = team_rates_from_pbp(pbp, season, week, season_decay=season_decay)
+            def_rates = (team_defense_rates_from_pbp(pbp, season, week, season_decay=season_decay)
+                         if use_defense else {})
             actual_stats = _actual_player_stats(weekly, season, week)
             out_by_team = out_names_by_team_week(injuries_df, season, week)
             q_by_team = questionable_names_by_team_week(injuries_df, season, week)
@@ -511,9 +516,10 @@ def run_backtest(
                 # shrink/pollute the player-market sample while n_ok climbs.
                 n_empty_active += 1
             spec = build_spec_from_usage(
-                home, away, rates, home_players, away_players, home_qb, away_qb
+                home, away, rates, home_players, away_players, home_qb, away_qb,
+                def_rates=def_rates,
             )
-            sims = simulate_game(spec, n_sims, rng)
+            sims = simulate_game(spec, n_sims, rng, home_field=home_field)
         except Exception as exc:  # noqa: BLE001 -- one bad game must not abort the walk
             print(f"skipping {season} wk{week} {row.away_team}@{row.home_team}: {exc}")
             n_skipped += 1
@@ -627,9 +633,10 @@ def main() -> None:
     # compare against equal weighting.
     season_decay = float(os.environ.get("SIM_SEASON_DECAY", "0.4"))
     q_weight = float(os.environ.get("SIM_QUESTIONABLE_WEIGHT", "0.75"))
-    print(f"season_decay={season_decay} questionable_weight={q_weight}")
+    home_field = float(os.environ.get("SIM_HOME_FIELD", "0.07"))
+    print(f"season_decay={season_decay} questionable_weight={q_weight} home_field={home_field}")
     results = run_backtest(VALIDATION_SEASONS, n_sims, season_decay=season_decay,
-                           questionable_weight=q_weight)
+                           questionable_weight=q_weight, home_field=home_field)
     report(results)
 
 

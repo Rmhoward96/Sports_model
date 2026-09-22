@@ -88,6 +88,11 @@ class NflGameSpec:
     away: TeamRates
     home_players: list[PlayerInput]
     away_players: list[PlayerInput]
+    # Defensive (drives-allowed) rates, used as the opponent's `deff` in the
+    # kernel. Only drive_outcomes is read. When None, the engine falls back to
+    # the opponent's OFFENSIVE rates (legacy behavior) so older specs still run.
+    home_def: TeamRates | None = None
+    away_def: TeamRates | None = None
 
 
 @dataclass
