@@ -101,9 +101,19 @@ def main() -> None:
         print("no games in window; nothing to capture")
         return
 
+    # Optional actor scoping (manual smoke tests): AN_SEASON/AN_WEEK pull a
+    # specific week's scheduled slate even when the current week is already
+    # complete. Unset in normal operation -- the actor defaults to the live week.
+    extra = {}
+    if os.getenv("AN_SEASON"):
+        extra["season"] = int(os.environ["AN_SEASON"])
+    if os.getenv("AN_WEEK"):
+        extra["week"] = int(os.environ["AN_WEEK"])
+
     try:
         items = action_network.fetch_splits(token, leagues=("nfl",),
-                                             game_status=("scheduled",))
+                                             game_status=("scheduled",),
+                                             extra_input=extra or None)
     except Exception as exc:  # noqa: BLE001 -- a failed actor run must exit cleanly
         sys.exit(f"Action Network actor run failed: {exc}")
 
@@ -111,6 +121,13 @@ def main() -> None:
     rows = action_network.attach_game_pks(parsed, index)
     print(f"parsed {len(parsed)} split rows from {len(items)} actor games; "
           f"{len(rows)} matched a game in the window")
+    if parsed and not rows:
+        # Actor returned games but none are in the near-close window -- print a
+        # sample so a smoke test can eyeball the parsed shape without upserting.
+        s = parsed[0]
+        print(f"  sample parsed row: {s['away_abbr']}@{s['home_abbr']} "
+              f"{s['market']}/{s['side']} cash={s['cash_pct']} ticket={s['ticket_pct']} "
+              f"start={s['start_time']}")
 
     for row in rows:
         row["commence_time"] = row.pop("start_time", None)

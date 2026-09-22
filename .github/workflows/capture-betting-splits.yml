@@ -18,6 +18,14 @@ on:
         description: "Override SPLIT_WINDOW_MIN for this run (minutes before kickoff; widen to smoke-test the actor when no game is near close)"
         required: false
         default: ""
+      season:
+        description: "Smoke test only: actor season (e.g. 2026). Pulls a specific week's scheduled slate."
+        required: false
+        default: ""
+      week:
+        description: "Smoke test only: actor week (e.g. 4). Requires season."
+        required: false
+        default: ""
 
 permissions:
   contents: read
@@ -38,5 +46,7 @@ jobs:
           APIFY_TOKEN: ${{ secrets.APIFY_TOKEN }}
           INGEST_SPLITS: ${{ vars.INGEST_SPLITS }}
           SPLIT_WINDOW_MIN: ${{ github.event.inputs.window_min || vars.SPLIT_WINDOW_MIN }}
+          AN_SEASON: ${{ github.event.inputs.season }}
+          AN_WEEK: ${{ github.event.inputs.week }}
           SM_DATA_DIR: ${{ github.workspace }}/data
         run: uv run python scripts/capture_betting_splits.py
