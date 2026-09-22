@@ -2,19 +2,26 @@
 `nfl_betting_splits` -- training-side input for the cover/total ensemble's
 market-microstructure features (Phase 2).
 
-DORMANT by default: this is a no-op unless `INGEST_SPLITS` is truthy (and
-`SPORTSDATA_API_KEY` + `DATABASE_URL` are set). It stays off until the
-SportsDataIO **Betting tier** is active, because the exact splits endpoint,
-field names, and the SportsDataIO->ESPN game-id resolution must be confirmed
-against a live payload first (see the marked spots below and
-`sportsdata.parse_betting_splits`'s caveat).
+Source: the Action Network public consensus via the Apify actor
+`zen-studio/action-network-odds` (see `sportsmodel.nfl.action_network`). Action
+Network has no first-party API, so this is a scraper run through Apify's
+run-sync-get-dataset-items endpoint (needs `APIFY_TOKEN`).
+
+DORMANT by default: a no-op unless `INGEST_SPLITS` is truthy AND `APIFY_TOKEN`
++ `DATABASE_URL` are set. Turn it on only when the actor + token are ready and
+after a one-time smoke test against a live payload.
 
 Window: like capture-odds, only games commencing within `SPLIT_WINDOW_MIN`
 minutes (default 180) and not yet started -- splits are meaningful post-lineup,
 near close. Idempotent per (game_pk, market, side, captured_at).
 
+game_pk resolution: the actor returns team abbreviations + a UTC start time; we
+match those (normalized) against the same ESPN game source capture-odds uses, so
+game_pk is the ESPN event id our other tables key on. Any split row whose game
+isn't in the near-close ESPN window is dropped.
+
 Usage:
-    INGEST_SPLITS=true uv run python scripts/capture_betting_splits.py
+    INGEST_SPLITS=true APIFY_TOKEN=... uv run python scripts/capture_betting_splits.py
 """
 from __future__ import annotations
 
@@ -27,23 +34,24 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from sportsmodel import config
 from sportsmodel.db import upsert_nfl_betting_splits
-from sportsmodel.nfl import sportsdata
+from sportsmodel.nfl import action_network
 
 
 def splits_enabled(env: dict[str, str], window_min: int) -> bool:
-    """On only when explicitly enabled AND the window is positive. Default OFF
-    (unlike odds' INGEST_PROPS which defaults on) -- the Betting tier is not
-    yet active, so this must not run until deliberately switched on."""
-    return env.get("INGEST_SPLITS", "false").lower() == "true" and window_min > 0
+    """On only when explicitly enabled, a token is present, AND the window is
+    positive. Default OFF (unlike odds' INGEST_PROPS which defaults on) -- the
+    actor path must not run until deliberately switched on with a live token."""
+    return (env.get("INGEST_SPLITS", "false").lower() == "true"
+            and bool(env.get("APIFY_TOKEN"))
+            and window_min > 0)
 
 
 def _in_window_games(now: datetime, window_min: int) -> list[dict]:
-    """Upcoming NFL games within the near-close window, as
-    {game_pk, home_team, away_team, commence_time}. Reuses the same ESPN game
-    source as scripts/ingest_odds.py so game_pk is the ESPN event id our other
-    tables key on."""
+    """Upcoming NFL games within the near-close window, as returned by the ESPN
+    schedule (game_pk, home_team, away_team, commence_time, ...). Reuses the same
+    ESPN game source as scripts/ingest_odds.py so game_pk is the ESPN event id
+    our other tables key on."""
     from scripts.ingest_odds import _fetch_espn_games_nfl  # local import: IO
-    from sportsmodel.nfl import espn as nfl_espn  # noqa: F401 (kept for parity)
     out = []
     for g in _fetch_espn_games_nfl():
         c = g.get("commence_time")
@@ -55,49 +63,59 @@ def _in_window_games(now: datetime, window_min: int) -> list[dict]:
     return out
 
 
-def _fetch_and_parse_splits(game: dict, api_key: str) -> list[dict]:
-    """Fetch + parse one game's splits. CONFIRM-AT-TIER: the SportsDataIO
-    score-id resolution and BETTING_SPLITS_PATH templating below are written to
-    the documented Betting swagger and must be verified against a live payload.
-    Returns rows shaped for `upsert_nfl_betting_splits` (game_pk/commence/
-    captured_at attached by the caller)."""
-    score_id = game.get("sportsdata_score_id")  # CONFIRM: resolve via a SportsDataIO
-    if score_id is None:                         # scores-by-date lookup once the tier is live.
-        return []
-    payload = sportsdata._get(sportsdata.BETTING_SPLITS_PATH.format(score_id=score_id), api_key)
-    return sportsdata.parse_betting_splits(payload)
+def slate_index(games: list[dict]) -> dict:
+    """PURE. Map ``(home_team, away_team, utc_date) -> game_pk`` from ESPN games.
+    Team codes are already normalized by the ESPN parser, so they line up with
+    `action_network.parse_action_network_splits`' normalized abbreviations; the
+    date is the UTC day of `commence_time` (ESPN emits Zulu times, as does the
+    actor's `startTime`, so the two dates agree)."""
+    idx: dict = {}
+    for g in games:
+        c, pk = g.get("commence_time"), g.get("game_pk")
+        if not c or pk is None:
+            continue
+        idx[(g.get("home_team"), g.get("away_team"), str(c)[:10])] = pk
+    return idx
 
 
 def main() -> None:
     window_min = int(os.getenv("SPLIT_WINDOW_MIN", "180") or 0)
     if not splits_enabled(os.environ, window_min):
-        print("betting-splits capture disabled (set INGEST_SPLITS=true to enable)")
+        print("betting-splits capture disabled "
+              "(set INGEST_SPLITS=true and APIFY_TOKEN to enable)")
         return
-    api_key = os.environ.get("SPORTSDATA_API_KEY")
-    if not api_key:
-        sys.exit("SPORTSDATA_API_KEY required when INGEST_SPLITS=true.")
     if not config.DATABASE_URL:
         sys.exit("DATABASE_URL required.")
+    token = os.environ["APIFY_TOKEN"]
 
     now = datetime.now(timezone.utc)
     captured_at = now.isoformat()
     games = _in_window_games(now, window_min)
+    index = slate_index(games)
     print(f"nfl betting splits: {len(games)} games in the {window_min}m window")
+    if not index:
+        print("no games in window; nothing to capture")
+        return
 
-    records: list[dict] = []
-    for g in games:
-        try:
-            for row in _fetch_and_parse_splits(g, api_key):
-                row.update({"game_pk": g["game_pk"], "commence_time": g.get("commence_time"),
-                            "captured_at": captured_at})
-                records.append(row)
-        except Exception as exc:  # noqa: BLE001 -- one bad game must not abort the batch
-            print(f"  splits fetch failed for {g.get('game_pk')}: {exc}; skipping")
+    try:
+        items = action_network.fetch_splits(token, leagues=("nfl",),
+                                             game_status=("upcoming",))
+    except Exception as exc:  # noqa: BLE001 -- a failed actor run must exit cleanly
+        sys.exit(f"Action Network actor run failed: {exc}")
 
-    if records:
-        print(f"Upserted {upsert_nfl_betting_splits(records)} nfl_betting_splits rows.")
+    parsed = action_network.parse_action_network_splits(items)
+    rows = action_network.attach_game_pks(parsed, index)
+    print(f"parsed {len(parsed)} split rows from {len(items)} actor games; "
+          f"{len(rows)} matched a game in the window")
+
+    for row in rows:
+        row["commence_time"] = row.pop("start_time", None)
+        row["captured_at"] = captured_at
+
+    if rows:
+        print(f"Upserted {upsert_nfl_betting_splits(rows)} nfl_betting_splits rows.")
     else:
-        print("no splits captured (window empty, or resolution not yet confirmed for the live tier)")
+        print("no splits captured (no actor game matched a window game)")
 
 
 if __name__ == "__main__":

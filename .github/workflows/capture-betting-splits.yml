@@ -3,8 +3,8 @@ name: capture-betting-splits
 # Snapshot NFL public betting splits (cash%/ticket%) near close into
 # nfl_betting_splits -- training-side input for the cover/total ensemble's
 # market-microstructure features (Phase 2). DORMANT by default: the script is a
-# no-op unless the `INGEST_SPLITS` repo variable is "true" (and the SportsDataIO
-# Betting tier is active). Splits are meaningful post-lineup, so the cadence
+# no-op unless the `INGEST_SPLITS` repo variable is "true" (and the APIFY_TOKEN
+# secret is set for the Action Network actor). Splits are meaningful post-lineup, so the cadence
 # mirrors capture-odds' near-close windows. scripts/capture_betting_splits.py is
 # idempotent per (game_pk, market, side, captured_at).
 on:
@@ -30,7 +30,7 @@ jobs:
       - name: Capture NFL betting splits (dormant unless INGEST_SPLITS=true)
         env:
           DATABASE_URL: ${{ secrets.DATABASE_URL }}
-          SPORTSDATA_API_KEY: ${{ secrets.SPORTSDATA_API_KEY }}
+          APIFY_TOKEN: ${{ secrets.APIFY_TOKEN }}
           INGEST_SPLITS: ${{ vars.INGEST_SPLITS }}
           SPLIT_WINDOW_MIN: ${{ vars.SPLIT_WINDOW_MIN }}
           SM_DATA_DIR: ${{ github.workspace }}/data
