@@ -1,0 +1,45 @@
+name: refresh-nfl-snapshots
+
+# Keeps the committed NFL asset snapshots (assets/nfl/schedules|rosters|injuries|
+# weekly.parquet) current during the season. schedules.parquet is what the
+# cover/total training frame reads for labels + spread_line/total_line, so if it
+# lags a season the current year's completed games never enter the model. This
+# rebuilds the snapshots through the CURRENT season (build_nfl_snapshots.py has
+# dynamic ranges and skips weekly seasons nflverse hasn't published yet) and
+# commits them back. Tuesday runs land after the Thu/Sun/Mon slate is final.
+on:
+  schedule:
+    - cron: "0 12 * * 2"   # Tuesdays 12:00 UTC, after Monday Night Football
+  workflow_dispatch: {}
+
+permissions:
+  contents: write          # allow committing the refreshed snapshots back
+
+jobs:
+  refresh:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v10.0.1
+
+      - name: Sync deps
+        run: uv sync
+
+      - name: Rebuild NFL snapshots through the current season
+        run: PYTHONPATH=src uv run --no-sync python scripts/build_nfl_snapshots.py
+
+      - name: Commit refreshed snapshots
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add assets/nfl/schedules.parquet assets/nfl/rosters.parquet \
+                  assets/nfl/injuries.parquet assets/nfl/weekly.parquet
+          if git diff --staged --quiet; then
+            echo "No snapshot changes this week."
+          else
+            git commit -m "chore: weekly NFL snapshot refresh [skip ci]"
+            git push
+          fi
