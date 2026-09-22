@@ -21,7 +21,8 @@ from __future__ import annotations
 from typing import Any
 
 import httpx
-from tenacity import retry, stop_after_attempt, wait_exponential
+from tenacity import (retry, retry_if_exception_type, stop_after_attempt,
+                      wait_exponential)
 
 from sportsmodel.nfl.teams import normalize_team
 
@@ -88,12 +89,18 @@ def attach_game_pks(rows: list[dict], index: dict) -> list[dict]:
     return out
 
 
-@retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=0.5, max=8))
+@retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=0.5, max=8),
+       retry=retry_if_exception_type(httpx.TransportError), reraise=True)
 def fetch_splits(token: str, leagues=("nfl",), game_status=("upcoming",),
                  extra_input: dict | None = None) -> list[Any]:
     """Run the actor synchronously and return its dataset items (a list). IO;
     not unit tested. Splits are cheap consensus data (no props/line movement
-    pulled) to keep actor cost/quota down."""
+    pulled) to keep actor cost/quota down.
+
+    Only transient transport errors are retried; an HTTP error status is raised
+    immediately as a RuntimeError carrying the status code AND the actor's
+    response body, which is where Apify explains a bad token/quota/input (a bare
+    raise_for_status hides that behind a generic message)."""
     payload = {
         "leagues": list(leagues),
         "gameStatus": list(game_status),
@@ -106,5 +113,7 @@ def fetch_splits(token: str, leagues=("nfl",), game_status=("upcoming",),
     if extra_input:
         payload.update(extra_input)
     r = httpx.post(_RUN_SYNC_URL, params={"token": token}, json=payload, timeout=120)
-    r.raise_for_status()
+    if r.status_code >= 400:
+        raise RuntimeError(
+            f"Apify actor {ACTOR_ID} returned HTTP {r.status_code}: {r.text[:800]}")
     return r.json()
