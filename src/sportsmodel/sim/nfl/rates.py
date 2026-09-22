@@ -124,90 +124,105 @@ def _before_cutoff(df: pd.DataFrame, upto_season: int, upto_week: int) -> pd.Dat
     return df[mask]
 
 
+def season_weights(seasons, upto_season: int, decay: float):
+    """Per-row recency weight ``decay ** (upto_season - season)``.
+
+    The current season (``upto_season``) gets weight 1.0 and each earlier season
+    is multiplied by an extra factor of ``decay`` (0 < decay <= 1). ``decay == 1``
+    is uniform weighting (every season equal); ``decay == 0.5`` makes each
+    current-season game count double a one-year-old game and quadruple a
+    two-year-old one. The exponent is clipped at 0 so any stray post-cutoff row
+    can never exceed weight 1.0.
+    """
+    exponent = (upto_season - pd.to_numeric(seasons)).clip(lower=0)
+    return pd.Series(float(decay), index=seasons.index).pow(exponent)
+
+
 def team_rates_from_pbp(
-    pbp_df: pd.DataFrame, upto_season: int, upto_week: int
+    pbp_df: pd.DataFrame, upto_season: int, upto_week: int, season_decay: float = 1.0
 ) -> dict[str, TeamRates]:
     """Per-offense-team `TeamRates` aggregated from plays strictly before the cutoff.
 
-    See module docstring for expected `pbp_df` columns.
+    Every count/rate below is a season-weighted sum: each play (or drive, or
+    game) is weighted by ``season_weights(...)`` so recent seasons count more
+    heavily. ``season_decay=1.0`` (default) recovers the original equal-weight
+    aggregation. See module docstring for expected `pbp_df` columns.
     """
-    df = _before_cutoff(pbp_df, upto_season, upto_week)
+    df = _before_cutoff(pbp_df, upto_season, upto_week).copy()
+    df["_w"] = season_weights(df["season"], upto_season, season_decay)
     result: dict[str, TeamRates] = {}
 
     for team, team_df in df.groupby("posteam"):
         if pd.isna(team) or team == "":
             continue
 
-        # Drive-outcome distribution: one row per (game_id, drive) using its
-        # fixed_drive_result (constant within a drive).
-        drives = team_df.drop_duplicates(subset=["game_id", "drive"])
-        counts = dict.fromkeys(_DRIVE_KEYS, 0.0)
-        for raw_result in drives["fixed_drive_result"]:
-            key = _DRIVE_RESULT_MAP.get(str(raw_result).strip().lower(), "end")
-            counts[key] += 1.0
-        total_drives = sum(counts.values())
+        w = team_df["_w"]
+
+        # Drive-outcome distribution: one weight-carrying row per (game_id,
+        # drive) using its fixed_drive_result (constant within a drive).
+        drives = team_df.drop_duplicates(subset=["game_id", "drive"]).copy()
+        drives["_k"] = (
+            drives["fixed_drive_result"].astype(str).str.strip().str.lower()
+            .map(lambda r: _DRIVE_RESULT_MAP.get(r, "end"))
+        )
+        by_key = drives.groupby("_k")["_w"].sum()
+        counts = {k: float(by_key.get(k, 0.0)) for k in _DRIVE_KEYS}
+        total_drives = float(drives["_w"].sum())
         if total_drives > 0:
             drive_outcomes = {k: v / total_drives for k, v in counts.items()}
         else:
             drive_outcomes = dict.fromkeys(_DRIVE_KEYS, 0.0)
 
-        # Pass rate over pass/run plays only.
-        n_pass = int((team_df["play_type"] == "pass").sum())
-        n_run = int((team_df["play_type"] == "run").sum())
-        pass_rate = n_pass / (n_pass + n_run) if (n_pass + n_run) > 0 else 0.0
+        # Pass rate over pass/run plays only (weighted).
+        is_pass = team_df["play_type"] == "pass"
+        is_run = team_df["play_type"] == "run"
+        w_pass = float(w[is_pass].sum())
+        w_run = float(w[is_run].sum())
+        pass_rate = w_pass / (w_pass + w_run) if (w_pass + w_run) > 0 else 0.0
 
-        # Drives per game.
-        n_games = team_df["game_id"].nunique()
-        drives_per_game = total_drives / n_games if n_games > 0 else 0.0
+        # Weighted game count (a game's plays share one season -> one weight).
+        w_games = float(team_df.drop_duplicates("game_id")["_w"].sum())
+        drives_per_game = total_drives / w_games if w_games > 0 else 0.0
 
-        # Red-zone TD rate: of drives that ever reached yardline_100 <= 20,
-        # fraction ending in a touchdown.
+        # Red-zone TD rate: of drives that ever reached yardline_100 <= 20, the
+        # weighted fraction ending in a touchdown.
         if "yardline_100" in team_df.columns:
             rz_drive_ids = team_df.loc[
                 team_df["yardline_100"] <= _RED_ZONE_YARDLINE, ["game_id", "drive"]
             ].drop_duplicates()
             if len(rz_drive_ids) > 0:
                 rz_drives = drives.merge(rz_drive_ids, on=["game_id", "drive"])
-                n_rz = len(rz_drives)
-                n_rz_td = int(
-                    rz_drives["fixed_drive_result"]
-                    .astype(str)
-                    .str.strip()
-                    .str.lower()
-                    .eq("touchdown")
-                    .sum()
-                )
+                n_rz = float(rz_drives["_w"].sum())
+                n_rz_td = float(rz_drives.loc[rz_drives["_k"] == "td", "_w"].sum())
                 rz_td_rate = n_rz_td / n_rz if n_rz > 0 else 0.0
             else:
                 rz_td_rate = 0.0
         else:
             rz_td_rate = 0.0
 
-        # Per-game volume + efficiency rates (B.3 Task 1). Reuses n_pass/n_run
-        # (the play_type=="pass"/"run" counts computed above for pass_rate);
-        # `n_pass` counts all pass PLAYS including sacks, so attempts subtract
-        # sacks. nflverse passing_yards is gross, so sacks affect target counts
-        # only -- never a yardage subtraction.
-        is_pass = team_df["play_type"] == "pass"
+        # Per-game volume + efficiency rates (B.3 Task 1), weighted. Reuses
+        # is_pass/is_run/w_pass/w_run from above; `is_pass` counts all pass
+        # PLAYS including sacks, so attempts subtract sacks. nflverse
+        # passing_yards is gross, so sacks affect target counts only.
         is_sack = team_df["sack"] == 1
         is_attempt = is_pass & ~is_sack
 
-        n_attempts = int(is_attempt.sum())
-        n_sacks = int(is_sack.sum())
-        n_completions = int((team_df["complete_pass"] == 1)[is_attempt].sum())
+        w_attempts = float(w[is_attempt].sum())
+        w_sacks = float(w[is_sack].sum())
+        w_completions = float(w[is_attempt & (team_df["complete_pass"] == 1)].sum())
 
-        pass_att_pg = n_attempts / n_games if n_games > 0 else 0.0
-        rush_att_pg = n_run / n_games if n_games > 0 else 0.0
-        sack_rate = n_sacks / n_pass if n_pass > 0 else 0.0
-        completion_pct = n_completions / n_attempts if n_attempts > 0 else 0.0
+        pass_att_pg = w_attempts / w_games if w_games > 0 else 0.0
+        rush_att_pg = w_run / w_games if w_games > 0 else 0.0
+        sack_rate = w_sacks / w_pass if w_pass > 0 else 0.0
+        completion_pct = w_completions / w_attempts if w_attempts > 0 else 0.0
 
         # Passing-TD share of offensive TDs (for the sim's TD split: passing TDs
         # credit the QB + the receiver; rushing TDs credit the rusher). nflverse
         # pbp flags pass_touchdown/rush_touchdown per play. League fallback ~0.58
         # when a team has no offensive TDs yet in the window.
-        n_pass_td = int((team_df.get("pass_touchdown", 0) == 1).sum()) if "pass_touchdown" in team_df.columns else 0
-        n_rush_td = int((team_df.get("rush_touchdown", 0) == 1).sum()) if "rush_touchdown" in team_df.columns else 0
-        pass_td_share = n_pass_td / (n_pass_td + n_rush_td) if (n_pass_td + n_rush_td) > 0 else 0.58
+        w_pass_td = float(w[team_df.get("pass_touchdown", 0) == 1].sum()) if "pass_touchdown" in team_df.columns else 0.0
+        w_rush_td = float(w[team_df.get("rush_touchdown", 0) == 1].sum()) if "rush_touchdown" in team_df.columns else 0.0
+        pass_td_share = w_pass_td / (w_pass_td + w_rush_td) if (w_pass_td + w_rush_td) > 0 else 0.58
 
         result[team] = TeamRates(
             drive_outcomes=drive_outcomes,
@@ -229,38 +244,45 @@ def player_inputs_from_weekly(
     snaps_df: pd.DataFrame,
     upto_season: int,
     upto_week: int,
+    season_decay: float = 1.0,
 ) -> dict[str, list[PlayerInput]]:
     """Per-team list of `PlayerInput` aggregated from weekly stats strictly
     before the cutoff.
 
-    `snaps_df` is accepted for interface symmetry (nflverse `import_snap_counts`)
-    but is not currently consumed by any computed field. See module docstring
-    for expected `weekly_df` columns.
+    Each weekly (per-game) row is season-weighted via ``season_weights(...)`` so
+    a player's recent-season usage/efficiency counts more heavily; shares stay
+    consistent because numerator and denominator carry the same weights.
+    ``season_decay=1.0`` (default) recovers equal weighting. `snaps_df` is
+    accepted for interface symmetry (nflverse `import_snap_counts`) but is not
+    currently consumed by any computed field. See module docstring for expected
+    `weekly_df` columns.
     """
     del snaps_df  # not currently used; kept for interface symmetry
-    df = _before_cutoff(weekly_df, upto_season, upto_week)
+    df = _before_cutoff(weekly_df, upto_season, upto_week).copy()
+    df["_w"] = season_weights(df["season"], upto_season, season_decay)
     result: dict[str, list[PlayerInput]] = {}
+
+    def _wsum(frame: pd.DataFrame, col) -> float:
+        """Weighted sum of `col` (a column name or a precomputed Series)."""
+        series = frame[col] if isinstance(col, str) else col
+        return float((series * frame["_w"]).sum())
 
     for team, team_df in df.groupby("recent_team"):
         if pd.isna(team) or team == "":
             continue
 
-        team_targets = float(team_df["targets"].sum())
-        team_carries = float(team_df["carries"].sum())
-        team_tds = float(
-            (team_df["receiving_tds"] + team_df["rushing_tds"]).sum()
-        )
+        team_targets = _wsum(team_df, "targets")
+        team_carries = _wsum(team_df, "carries")
+        team_tds = _wsum(team_df, team_df["receiving_tds"] + team_df["rushing_tds"])
 
         players: list[PlayerInput] = []
         for player_id, p_df in team_df.groupby("player_id"):
-            targets = float(p_df["targets"].sum())
-            carries = float(p_df["carries"].sum())
-            receptions = float(p_df["receptions"].sum())
-            rec_yards = float(p_df["receiving_yards"].sum())
-            rush_yards = float(p_df["rushing_yards"].sum())
-            player_tds = float(
-                (p_df["receiving_tds"] + p_df["rushing_tds"]).sum()
-            )
+            targets = _wsum(p_df, "targets")
+            carries = _wsum(p_df, "carries")
+            receptions = _wsum(p_df, "receptions")
+            rec_yards = _wsum(p_df, "receiving_yards")
+            rush_yards = _wsum(p_df, "rushing_yards")
+            player_tds = _wsum(p_df, p_df["receiving_tds"] + p_df["rushing_tds"])
 
             target_share = targets / team_targets if team_targets > 0 else 0.0
             carry_share = carries / team_carries if team_carries > 0 else 0.0

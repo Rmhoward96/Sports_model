@@ -336,6 +336,7 @@ def run_backtest(
     n_sims: int,
     seed: int = SIM_SEED,
     on_game: Callable[[int, int, str, str, GameSims], None] | None = None,
+    season_decay: float = 1.0,
 ) -> dict:
     """Walk forward over every completed REG-season game in `seasons`.
 
@@ -462,7 +463,7 @@ def run_backtest(
         season, week = int(row.season), int(row.week)
         key = (season, week)
         if key != cutoff_key:
-            rates = team_rates_from_pbp(pbp, season, week)
+            rates = team_rates_from_pbp(pbp, season, week, season_decay=season_decay)
             actual_stats = _actual_player_stats(weekly, season, week)
             out_by_team = out_names_by_team_week(injuries_df, season, week)
             cutoff_key = key
@@ -591,7 +592,12 @@ def report(results: dict) -> None:
 
 def main() -> None:
     n_sims = int(os.environ.get("DESK_SIM_N", str(DEFAULT_N_SIMS)))
-    results = run_backtest(VALIDATION_SEASONS, n_sims)
+    # SIM_SEASON_DECAY mirrors generate_sim_nfl so a backtest validates the same
+    # weighting production uses (default 1.0 here = the historical equal-weight
+    # baseline; set it to compare, e.g. SIM_SEASON_DECAY=0.6).
+    season_decay = float(os.environ.get("SIM_SEASON_DECAY", "1.0"))
+    print(f"season_decay={season_decay}")
+    results = run_backtest(VALIDATION_SEASONS, n_sims, season_decay=season_decay)
     report(results)
 
 

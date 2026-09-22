@@ -301,3 +301,65 @@ def test_player_inputs_divide_by_zero_guarded():
     assert no_usage.ypr == 0.0
     assert no_usage.catch_rate == 0.0
     assert no_usage.td_share == 0.0
+
+
+# --- season weighting (current season heavier than prior) ---
+
+def test_season_weights_decay():
+    from sportsmodel.sim.nfl.rates import season_weights
+    s = pd.Series([2022, 2023, 2024])
+    w = season_weights(s, upto_season=2024, decay=0.5)
+    assert list(w) == [0.25, 0.5, 1.0]           # current=1, each prior *0.5
+    w1 = season_weights(s, upto_season=2024, decay=1.0)
+    assert list(w1) == [1.0, 1.0, 1.0]           # uniform
+
+
+def _two_season_pbp():
+    """KC: prior season (2023) all runs/punts, current (2024) all passes/TDs."""
+    common = dict(sack=0, defteam="X")
+    return pd.DataFrame([
+        dict(season=2023, week=1, posteam="KC", play_type="run", complete_pass=0,
+             fixed_drive_result="Punt", drive=1, game_id="a", yardline_100=60, **common),
+        dict(season=2023, week=1, posteam="KC", play_type="run", complete_pass=0,
+             fixed_drive_result="Punt", drive=2, game_id="a", yardline_100=55, **common),
+        dict(season=2024, week=1, posteam="KC", play_type="pass", complete_pass=1,
+             fixed_drive_result="Touchdown", drive=1, game_id="b", yardline_100=15, **common),
+        dict(season=2024, week=1, posteam="KC", play_type="pass", complete_pass=1,
+             fixed_drive_result="Touchdown", drive=2, game_id="b", yardline_100=10, **common),
+    ])
+
+
+def test_team_rates_weighting_pulls_toward_current_season():
+    pbp = _two_season_pbp()
+    uniform = team_rates_from_pbp(pbp, 2024, 2, season_decay=1.0)["KC"]
+    weighted = team_rates_from_pbp(pbp, 2024, 2, season_decay=0.5)["KC"]
+    # Uniform: equal pass/run -> 0.5. Weighted: 2024(pass) w=1 vs 2023(run) w=0.5 -> 2/3.
+    assert uniform.pass_rate == pytest.approx(0.5)
+    assert weighted.pass_rate == pytest.approx(2 / 3)
+    # Current season is all TD drives -> weighting raises the TD-drive share.
+    assert weighted.drive_outcomes["td"] > uniform.drive_outcomes["td"]
+
+
+def _two_season_weekly():
+    """P1 breaks out in the current season (2024); P2 fades."""
+    def r(season, pid, name, tgt, tds):
+        return dict(season=season, week=1, recent_team="KC", player_id=pid,
+                    player_display_name=name, position="WR", targets=tgt, carries=0,
+                    receptions=tgt, receiving_yards=tgt * 10, rushing_yards=0,
+                    receiving_tds=tds, rushing_tds=0)
+    return pd.DataFrame([
+        r(2023, "P1", "P One", 2, 0), r(2023, "P2", "P Two", 8, 1),
+        r(2024, "P1", "P One", 10, 1), r(2024, "P2", "P Two", 2, 0),
+    ])
+
+
+def test_player_inputs_weighting_emphasizes_recent_usage():
+    weekly = _two_season_weekly()
+    snaps = pd.DataFrame(columns=["player_id", "season", "week", "offense_pct"])
+    uniform = {p.player_id: p for p in
+               player_inputs_from_weekly(weekly, snaps, 2024, 2, season_decay=1.0)["KC"]}
+    weighted = {p.player_id: p for p in
+                player_inputs_from_weekly(weekly, snaps, 2024, 2, season_decay=0.5)["KC"]}
+    # P1's current-season breakout gets more weight -> higher target share.
+    assert weighted["P1"].target_share > uniform["P1"].target_share
+    assert weighted["P1"].target_share == pytest.approx(11 / 17)  # (2*.5+10)/((2+8)*.5+(10+2))

@@ -95,6 +95,14 @@ SIM_SEED = 42
 # 2 prior seasons, per the task brief's "current + prior 1-2" guidance.
 FETCH_SEASONS_BACK = 2
 
+# Season recency weighting for team_rates_from_pbp: each season prior to the
+# current one is down-weighted by this factor (current=1.0, 1yr=DECAY,
+# 2yr=DECAY**2), so this season's play-by-play counts heavier while prior
+# seasons still stabilize early-season rates. 1.0 = equal weighting. Override
+# via SIM_SEASON_DECAY to retune without a code change. (Player usage is already
+# recency-weighted per-game inside usage.active_usage's last-N-games window.)
+SEASON_DECAY = float(os.getenv("SIM_SEASON_DECAY", "0.6"))
+
 # Binning ceilings for nfl_player_prop_dists's pmf markets (anytime_td is
 # binary and doesn't need one -- see aggregate.nfl_player_prop_dists).
 MARKET_MAX = {"pass_yds": 400, "rush_yds": 200, "rec_yds": 200, "receptions": 15, "pass_tds": 6}
@@ -298,7 +306,9 @@ def main() -> None:
     upto_week = _determine_upto_week(nflverse["pbp"], upto_season)
     print(f"leakage cutoff: upto_season={upto_season} upto_week={upto_week}")
 
-    rates = team_rates_from_pbp(nflverse["pbp"], upto_season, upto_week)
+    rates = team_rates_from_pbp(nflverse["pbp"], upto_season, upto_week,
+                                season_decay=SEASON_DECAY)
+    print(f"team rates: season_decay={SEASON_DECAY}")
     injuries = current_injuries(now)
     out_names_by_team = _out_names_by_team(injuries)
 
