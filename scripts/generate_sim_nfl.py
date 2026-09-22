@@ -117,6 +117,13 @@ TEAMS_CROSSWALK_PATH = config.PROJECT_ROOT / "assets" / "nfl" / "nfl_teams.json"
 # active_usage's per-team injuries_out_names set.
 _OUT_STATUSES = frozenset({"out", "doubtful"})
 
+# "questionable" players are NOT ruled out -- they stay active but have their
+# volume scaled by QUESTIONABLE_WEIGHT (freed share redistributes to healthy
+# teammates). Historically a Questionable tag suppresses a player's expected
+# workload modestly; 1.0 disables the adjustment. Env-tunable + backtested.
+_QUESTIONABLE_STATUS = "questionable"
+QUESTIONABLE_WEIGHT = float(os.getenv("SIM_QUESTIONABLE_WEIGHT", "0.75"))
+
 
 # =============================================================================
 # PURE seam
@@ -290,6 +297,19 @@ def _out_names_by_team(injuries: dict[str, list[dict]]) -> dict[str, set[str]]:
     return out
 
 
+def _questionable_names_by_team(injuries: dict[str, list[dict]]) -> dict[str, set[str]]:
+    """{team_abbrev -> {lowercased player name}} for Questionable entries, for
+    active_usage's `questionable_names` (down-weighted, not dropped)."""
+    out: dict[str, set[str]] = {}
+    for team, entries in injuries.items():
+        out[team] = {
+            str(entry["player"]).strip().lower()
+            for entry in entries
+            if str(entry.get("status", "")).strip().lower() == _QUESTIONABLE_STATUS
+        }
+    return out
+
+
 def main() -> None:
     n_sims = int(os.environ.get("DESK_SIM_N", str(DEFAULT_N_SIMS)))
     now = datetime.now(timezone.utc)
@@ -315,6 +335,8 @@ def main() -> None:
     print(f"team rates: season_decay={SEASON_DECAY}")
     injuries = current_injuries(now)
     out_names_by_team = _out_names_by_team(injuries)
+    q_names_by_team = _questionable_names_by_team(injuries)
+    print(f"injuries: questionable_weight={QUESTIONABLE_WEIGHT}")
 
     print(f"fetching usage sources for seasons {seasons}")
     usage_src = fetch_usage_sources(seasons)
@@ -372,6 +394,8 @@ def main() -> None:
                 usage_src["snaps"],
                 pfr2gsis,
                 out_names_by_team.get(home_abbrev, set()),
+                questionable_names=q_names_by_team.get(home_abbrev, set()),
+                questionable_weight=QUESTIONABLE_WEIGHT,
             )
             away_players, away_qb = active_usage(
                 away_abbrev,
@@ -382,6 +406,8 @@ def main() -> None:
                 usage_src["snaps"],
                 pfr2gsis,
                 out_names_by_team.get(away_abbrev, set()),
+                questionable_names=q_names_by_team.get(away_abbrev, set()),
+                questionable_weight=QUESTIONABLE_WEIGHT,
             )
             if not home_players or home_qb is None or not away_players or away_qb is None:
                 # Count it loudly rather than let it silently simulate a

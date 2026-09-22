@@ -272,6 +272,29 @@ def out_names_by_team_week(
     return out
 
 
+def questionable_names_by_team_week(
+    injuries_df: pd.DataFrame, season: int, week: int
+) -> dict[str, set[str]]:
+    """team -> {lowercased full_name} of players tagged QUESTIONABLE for one
+    (season, week), for active_usage's `questionable_names` (down-weighted, not
+    dropped). Same source/shape as out_names_by_team_week but matches only
+    "questionable". PURE."""
+    out: dict[str, set[str]] = {}
+    rows = injuries_df[
+        (injuries_df["season"] == season) & (injuries_df["week"] == week)
+    ]
+    for row in rows.itertuples(index=False):
+        status = getattr(row, "report_status", None)
+        if pd.isna(status) or str(status).strip().lower() != "questionable":
+            continue
+        name = getattr(row, "full_name", None)
+        if pd.isna(name) or not str(name).strip():
+            continue
+        team = str(getattr(row, "team", "")).strip()
+        out.setdefault(team, set()).add(str(name).strip().lower())
+    return out
+
+
 def actual_qb_pass_yds(
     qb_gsis: str | None, actual_stats: dict[str, dict[str, float]]
 ) -> float | None:
@@ -339,6 +362,7 @@ def run_backtest(
     seed: int = SIM_SEED,
     on_game: Callable[[int, int, str, str, GameSims], None] | None = None,
     season_decay: float = 1.0,
+    questionable_weight: float = 1.0,
 ) -> dict:
     """Walk forward over every completed REG-season game in `seasons`.
 
@@ -440,6 +464,7 @@ def run_backtest(
     rates: dict = {}
     actual_stats: dict = {}
     out_by_team: dict[str, set[str]] = {}
+    q_by_team: dict[str, set[str]] = {}
     # (team, season, week) -> active_usage's (players, qb_gsis) result.
     # Memoized so each team's active roster for a given week is computed
     # ONCE (active_usage does a league-wide weekly groupby internally) even
@@ -458,6 +483,8 @@ def run_backtest(
                 usage_src["snaps"],
                 pfr2gsis,
                 out_by_team.get(team, set()),
+                questionable_names=q_by_team.get(team, set()),
+                questionable_weight=questionable_weight,
             )
         return active_cache[key]
 
@@ -468,6 +495,7 @@ def run_backtest(
             rates = team_rates_from_pbp(pbp, season, week, season_decay=season_decay)
             actual_stats = _actual_player_stats(weekly, season, week)
             out_by_team = out_names_by_team_week(injuries_df, season, week)
+            q_by_team = questionable_names_by_team_week(injuries_df, season, week)
             cutoff_key = key
 
         try:
@@ -598,8 +626,10 @@ def main() -> None:
     # shipped config; default 0.4 matches production. Set SIM_SEASON_DECAY=1.0 to
     # compare against equal weighting.
     season_decay = float(os.environ.get("SIM_SEASON_DECAY", "0.4"))
-    print(f"season_decay={season_decay}")
-    results = run_backtest(VALIDATION_SEASONS, n_sims, season_decay=season_decay)
+    q_weight = float(os.environ.get("SIM_QUESTIONABLE_WEIGHT", "0.75"))
+    print(f"season_decay={season_decay} questionable_weight={q_weight}")
+    results = run_backtest(VALIDATION_SEASONS, n_sims, season_decay=season_decay,
+                           questionable_weight=q_weight)
     report(results)
 
 

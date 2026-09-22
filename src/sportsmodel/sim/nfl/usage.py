@@ -132,6 +132,8 @@ def active_usage(
     pfr2gsis: dict[str, str],
     injuries_out_names: set[str],
     n_recent: int = 5,
+    questionable_names: set[str] | None = None,
+    questionable_weight: float = 1.0,
 ) -> tuple[list[PlayerInput], str | None]:
     """Per-week active-roster usage: the dilution fix over season averages.
 
@@ -208,6 +210,16 @@ def active_usage(
         str(n).strip().lower()
         for n in (injuries_out_names or set())
     }
+    # Questionable players stay ACTIVE but get their volume (targets/carries/TDs)
+    # scaled by questionable_weight (<1 => reduced expected usage; freed share
+    # redistributes to healthy teammates via the step-5 renorm). weight 1.0 or an
+    # empty set is a no-op. Efficiency (ypt/ypc/...) is untouched -- a hobbled
+    # player isn't worse per touch, just gets fewer.
+    questionable = {
+        str(n).strip().lower()
+        for n in (questionable_names or set())
+    }
+    questionable_gsis: set[str] = set()
 
     # --- 1. Active set from the target-week depth chart ---
     dmask = (
@@ -260,6 +272,9 @@ def active_usage(
         prior = active.get(gsis)
         if prior is None or dt < prior["depth_team"]:
             active[gsis] = {"pos": pos, "name": display_name, "depth_team": dt}
+
+        if names_lower & questionable:
+            questionable_gsis.add(gsis)
 
     # --- 2. Recent (leakage-free) weekly rows, grouped by player_id (== gsis) ---
     if len(weekly_df) > 0:
@@ -370,6 +385,17 @@ def active_usage(
             metrics[gsis] = w
         else:
             metrics[gsis] = _cold_prior(pos, is_starter)
+
+    # --- 4b. Down-weight Questionable players' volume (shares redistribute in
+    # step 5). Only volume is scaled; per-touch efficiency is left intact. ---
+    if questionable_weight != 1.0 and questionable_gsis:
+        for gsis in questionable_gsis:
+            m = metrics.get(gsis)
+            if m is None:
+                continue
+            for k in ("avg_targets", "avg_carries", "avg_tds",
+                      "avg_rec_tds", "avg_rush_tds"):
+                m[k] *= questionable_weight
 
     # --- 5. Renormalize shares OVER THE ACTIVE SET ONLY ---
     tot_targets = sum(m["avg_targets"] for m in metrics.values())

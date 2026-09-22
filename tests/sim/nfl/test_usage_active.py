@@ -142,6 +142,49 @@ def test_shares_renormalize_over_active_set_not_full_roster():
     assert sum(p.carry_share for p in players) == pytest.approx(1.0)
 
 
+def test_questionable_player_downweighted_and_share_redistributes():
+    depth = _depth([
+        dict(season=2023, week=5, club_code="KC", depth_team="1", position="WR",
+             gsis_id="gA", full_name="Alpha Star", football_name=None),
+        dict(season=2023, week=5, club_code="KC", depth_team="1", position="WR",
+             gsis_id="gB", full_name="Beta Star", football_name=None),
+    ])
+    weekly = _weekly([
+        _wrow("gA", "Alpha Star", "WR", "KC", 2023, 4, targets=8, receptions=6, rec_yds=90),
+        _wrow("gB", "Beta Star", "WR", "KC", 2023, 4, targets=8, receptions=6, rec_yds=90),
+    ])
+    base = {p.player_id: p for p in
+            active_usage("KC", 2023, 5, depth, weekly, _EMPTY_SNAPS, {}, set())[0]}
+    assert base["gA"].target_share == pytest.approx(0.5)  # equal usage baseline
+
+    q = {p.player_id: p for p in active_usage(
+        "KC", 2023, 5, depth, weekly, _EMPTY_SNAPS, {}, set(),
+        questionable_names={"beta star"}, questionable_weight=0.5)[0]}
+    assert set(q) == {"gA", "gB"}                       # Q player NOT dropped
+    assert q["gA"].target_share == pytest.approx(8 / 12)   # healthy player gains
+    assert q["gB"].target_share == pytest.approx(4 / 12)   # questionable loses
+    assert q["gA"].target_share + q["gB"].target_share == pytest.approx(1.0)
+    assert q["gB"].ypt == pytest.approx(base["gB"].ypt)    # efficiency untouched
+
+
+def test_questionable_weight_one_is_noop():
+    depth = _depth([
+        dict(season=2023, week=5, club_code="KC", depth_team="1", position="WR",
+             gsis_id="gA", full_name="Alpha Star", football_name=None),
+        dict(season=2023, week=5, club_code="KC", depth_team="1", position="WR",
+             gsis_id="gB", full_name="Beta Star", football_name=None),
+    ])
+    weekly = _weekly([
+        _wrow("gA", "Alpha Star", "WR", "KC", 2023, 4, targets=8, receptions=6, rec_yds=90),
+        _wrow("gB", "Beta Star", "WR", "KC", 2023, 4, targets=8, receptions=6, rec_yds=90),
+    ])
+    got = {p.player_id: p for p in active_usage(
+        "KC", 2023, 5, depth, weekly, _EMPTY_SNAPS, {}, set(),
+        questionable_names={"beta star"}, questionable_weight=1.0)[0]}
+    assert got["gA"].target_share == pytest.approx(0.5)  # weight 1.0 changes nothing
+    assert got["gB"].target_share == pytest.approx(0.5)
+
+
 def test_high_recent_usage_gets_proportionally_high_share():
     depth = _depth([
         dict(season=2023, week=5, club_code="KC", depth_team="1", position="WR",
