@@ -49,11 +49,17 @@ jobs:
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add assets/nfl/cover_dataset.parquet \
-                  assets/nfl/cover_ensemble.json \
-                  assets/nfl/cover_gbm_margin.joblib \
-                  assets/nfl/cover_gbm_total.joblib \
-                  assets/calibration.json 2>/dev/null || true
+          # Stage each path only if it exists -- the ensemble artifacts are
+          # absent when the gate fails (the common case), and a single missing
+          # pathspec would make `git add` abort and stage NOTHING (including the
+          # always-present refreshed dataset).
+          for f in assets/nfl/cover_dataset.parquet \
+                   assets/nfl/cover_ensemble.json \
+                   assets/nfl/cover_gbm_margin.joblib \
+                   assets/nfl/cover_gbm_total.joblib \
+                   assets/calibration.json; do
+            [ -f "$f" ] && git add "$f"
+          done
           if git diff --staged --quiet; then
             echo "No dataset/artifact changes this run."
           else
