@@ -294,16 +294,20 @@ def player_inputs_from_weekly(
 
 
 def fetch_nflverse(seasons: list[int]) -> dict:
-    """Thin IO wrapper around nfl_data_py imports. Not unit-tested.
+    """Thin IO wrapper reading nflverse release parquets directly. Not unit-tested.
 
     Returns {"pbp": DataFrame, "weekly": DataFrame, "snaps": DataFrame}.
-    """
-    import nfl_data_py as nfl
 
-    from sportsmodel.nfl.nflverse import import_by_season
+    Uses `nflverse.load_release` (canonical release URLs) rather than
+    nfl_data_py, whose pinned 0.3.2 can't fetch the current season's weekly
+    (retired URL) or pbp (participation-sidecar bug). snaps is optional -- it's
+    accepted for interface symmetry but not required by any computed field -- so
+    a missing snaps season degrades to empty instead of aborting the build.
+    """
+    from sportsmodel.nfl.nflverse import load_release
 
     return {
-        "pbp": import_by_season(nfl.import_pbp_data, seasons, "pbp"),
-        "weekly": import_by_season(nfl.import_weekly_data, seasons, "weekly"),
-        "snaps": import_by_season(nfl.import_snap_counts, seasons, "snaps"),
+        "pbp": load_release("pbp", seasons),
+        "weekly": load_release("weekly", seasons),
+        "snaps": load_release("snaps", seasons, required=False),
     }
