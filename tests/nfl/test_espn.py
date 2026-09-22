@@ -1,5 +1,6 @@
 import json, pathlib
-from sportsmodel.nfl.espn import parse_schedule, parse_final, parse_current_week, target_week
+from sportsmodel.nfl.espn import (parse_schedule, parse_final, parse_current_week,
+                                  target_week, advance_if_complete)
 
 FIX = json.loads((pathlib.Path(__file__).parent.parent
                   / "fixtures/nfl/espn_scoreboard.json").read_text())
@@ -44,3 +45,31 @@ def test_target_week_preseason_looks_ahead_to_regular_week1():
 def test_target_week_offseason_targets_regular_week1():
     assert target_week({"season": 2026, "week": 1, "season_type": 4}) == \
         {"season": 2026, "week": 1, "season_type": 2}
+
+
+def _g(status):
+    return {"status": status}
+
+
+def test_advance_if_complete_advances_when_all_final():
+    tw = {"season": 2026, "week": 2, "season_type": 2}
+    games = [_g("STATUS_FINAL"), _g("STATUS_FINAL")]
+    assert advance_if_complete(tw, games) == {"season": 2026, "week": 3, "season_type": 2}
+
+
+def test_advance_if_complete_holds_when_a_game_pending():
+    tw = {"season": 2026, "week": 2, "season_type": 2}
+    games = [_g("STATUS_FINAL"), _g("STATUS_SCHEDULED")]
+    assert advance_if_complete(tw, games) == tw
+
+
+def test_advance_if_complete_holds_on_empty_or_postseason():
+    tw = {"season": 2026, "week": 2, "season_type": 2}
+    assert advance_if_complete(tw, []) == tw            # schedule not posted -> no move
+    post = {"season": 2026, "week": 2, "season_type": 3}
+    assert advance_if_complete(post, [_g("STATUS_FINAL")]) == post
+
+
+def test_advance_if_complete_caps_at_week_18():
+    tw = {"season": 2026, "week": 18, "season_type": 2}
+    assert advance_if_complete(tw, [_g("STATUS_FINAL")]) == tw  # let ESPN roll to postseason

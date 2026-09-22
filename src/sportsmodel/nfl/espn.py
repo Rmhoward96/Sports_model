@@ -118,8 +118,31 @@ def target_week(cur: dict) -> dict:
         return {"season": int(cur["season"]), "week": int(cur["week"]), "season_type": st}
     return {"season": int(cur["season"]), "week": 1, "season_type": 2}
 
+def advance_if_complete(tw: dict, games: list[dict]) -> dict:
+    """PURE. If `tw` is a regular-season week whose every game in `games` is
+    STATUS_FINAL, return the NEXT regular-season week (capped at 18); otherwise
+    return `tw` unchanged.
+
+    ESPN keeps its "current week" on the just-played week from Monday night until
+    it rolls forward mid-week, so without this the pipeline re-prices a finished
+    week (0 upcoming games -> stale sims/props) for a day or two after MNF. Once
+    the week is complete we look ahead so the next week's upcoming games get
+    priced/simmed right away. An empty `games` list (schedule not posted) leaves
+    `tw` untouched.
+    """
+    if int(tw["season_type"]) != 2 or not games:
+        return tw
+    if tw["week"] < 18 and all(g.get("status") == "STATUS_FINAL" for g in games):
+        return {"season": int(tw["season"]), "week": int(tw["week"]) + 1, "season_type": 2}
+    return tw
+
+
 def resolve_target_week() -> dict:
-    return target_week(fetch_current_week())
+    tw = target_week(fetch_current_week())
+    if int(tw["season_type"]) == 2:
+        tw = advance_if_complete(
+            tw, fetch_schedule(tw["season"], tw["week"], season_type=2))
+    return tw
 
 def fetch_final(event_id: int) -> dict | None:
     data = _get("/summary", {"event": event_id})
