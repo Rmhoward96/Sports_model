@@ -30,6 +30,10 @@ on:
         description: "Smoke test only: set to 1 to dump the first raw actor item to the log."
         required: false
         default: ""
+      status:
+        description: "Smoke test only: actor gameStatus (scheduled|inprogress|complete). Default scheduled."
+        required: false
+        default: ""
 
 permissions:
   contents: read
@@ -53,5 +57,6 @@ jobs:
           AN_SEASON: ${{ github.event.inputs.season }}
           AN_WEEK: ${{ github.event.inputs.week }}
           AN_DEBUG: ${{ github.event.inputs.debug }}
+          AN_STATUS: ${{ github.event.inputs.status }}
           SM_DATA_DIR: ${{ github.workspace }}/data
         run: uv run python scripts/capture_betting_splits.py

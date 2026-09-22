@@ -110,9 +110,10 @@ def main() -> None:
     if os.getenv("AN_WEEK"):
         extra["week"] = int(os.environ["AN_WEEK"])
 
+    status = tuple(s.strip() for s in (os.getenv("AN_STATUS") or "scheduled").split(",") if s.strip())
     try:
         items = action_network.fetch_splits(token, leagues=("nfl",),
-                                             game_status=("scheduled",),
+                                             game_status=status,
                                              extra_input=extra or None)
     except Exception as exc:  # noqa: BLE001 -- a failed actor run must exit cleanly
         sys.exit(f"Action Network actor run failed: {exc}")
