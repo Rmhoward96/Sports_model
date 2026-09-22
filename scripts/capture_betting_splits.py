@@ -103,7 +103,7 @@ def main() -> None:
 
     try:
         items = action_network.fetch_splits(token, leagues=("nfl",),
-                                             game_status=("upcoming",))
+                                             game_status=("scheduled",))
     except Exception as exc:  # noqa: BLE001 -- a failed actor run must exit cleanly
         sys.exit(f"Action Network actor run failed: {exc}")
 

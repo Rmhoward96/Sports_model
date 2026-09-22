@@ -91,7 +91,7 @@ def attach_game_pks(rows: list[dict], index: dict) -> list[dict]:
 
 @retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=0.5, max=8),
        retry=retry_if_exception_type(httpx.TransportError), reraise=True)
-def fetch_splits(token: str, leagues=("nfl",), game_status=("upcoming",),
+def fetch_splits(token: str, leagues=("nfl",), game_status=("scheduled",),
                  extra_input: dict | None = None) -> list[Any]:
     """Run the actor synchronously and return its dataset items (a list). IO;
     not unit tested. Splits are cheap consensus data (no props/line movement
