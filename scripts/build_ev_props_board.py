@@ -35,7 +35,11 @@ from sportsmodel.db import (
     upsert_ev_prop_picks,
     upsert_nfl_prop_lines,
 )
-from sportsmodel.serving.props_ev import assemble_prop_line_rows, assemble_prop_rows
+from sportsmodel.serving.props_ev import (
+    assemble_prop_line_rows,
+    assemble_prop_rows,
+    latest_capture_only,
+)
 
 MODEL_VERSION = "props-sim-v1"
 
@@ -45,23 +49,6 @@ SIM_COLS = [
 ]
 
 ODDS_COLS = ["game_pk", "market", "side", "player_name", "book", "line", "price", "captured_at"]
-
-
-def latest_capture_only(rows: list[dict]) -> list[dict]:
-    """Keep only rows from each book's most recent pre-kickoff capture per
-    (game_pk, market, player_name, book). odds_snapshot retains every capture,
-    so without this a book's superseded line (moved since) would still count
-    toward the main line and be shopped as a live price."""
-    latest_at: dict[tuple, object] = {}
-    for r in rows:
-        key = (r["game_pk"], r["market"], r["player_name"], r["book"])
-        ts = r["captured_at"]
-        if key not in latest_at or ts > latest_at[key]:
-            latest_at[key] = ts
-    return [
-        r for r in rows
-        if r["captured_at"] == latest_at[(r["game_pk"], r["market"], r["player_name"], r["book"])]
-    ]
 
 
 def load_sim_rows(sport: str) -> list[dict]:
