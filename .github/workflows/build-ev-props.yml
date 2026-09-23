@@ -52,3 +52,8 @@ jobs:
         env:
           DATABASE_URL: ${{ secrets.DATABASE_URL }}
         run: uv run python scripts/build_ev_props_board.py --sport nfl ${{ (github.event.schedule == '35 15 * * *' || github.event.schedule == '35 16,18 * * 0,1,4,6' || github.event.inputs.lines_only == 'true') && '--lines-only' || '' }}
+      - name: Build +EV parlays
+        if: ${{ !(github.event.schedule == '35 15 * * *' || github.event.schedule == '35 16,18 * * 0,1,4,6' || github.event.inputs.lines_only == 'true') }}
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+        run: uv run python scripts/build_best_parlays.py
