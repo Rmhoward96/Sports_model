@@ -81,7 +81,7 @@ def situations_for(team, is_home, team_line, kickoff_et, log_before, *, opp, sea
                 s.append("off_bye")
     if NFL_DIVISIONS.get(team) and NFL_DIVISIONS.get(team) == NFL_DIVISIONS.get(opp):
         s.append("division")
-    if kickoff_et and kickoff_et[-5:] >= PRIMETIME_ET:
+    if kickoff_et and (kickoff_et[-5:] if not pd.isna(kickoff_et[-5:]) else "") >= PRIMETIME_ET:
         s.append("primetime")
     return s
 

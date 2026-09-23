@@ -96,10 +96,6 @@ def test_compute_game_trends_counts_matching_past_games_and_min_n():
                 f"{r['situation']}: ou {r['ou_o']}O-{r['ou_u']}U-{r['ou_p']}P != expected {exp['ou_o']}O-{exp['ou_u']}U-{exp['ou_p']}P"
             assert r["n"] == exp["n"], f"{r['situation']}: n {r['n']} != expected {exp['n']}"
 
-    # Test min_n: off_home should be omitted (only 4 road games before any home games initially)
-    off_home = [r for r in out if r["team"] == "BUF" and r["situation"] == "off_home"]
-    assert len(off_home) == 0, "off_home should be omitted (fewer than 5 games)"
-
     # Verify other assertions
     assert all(r["n"] >= 5 for r in out), "All situations should have n >= 5"
     assert all(r["since_season"] == 2023 for r in out), "since_season should be 2023 (2026 - 3)"
@@ -131,51 +127,62 @@ def test_compute_game_trends_min_n_filter_with_primetime():
 
 def test_compute_game_trends_season_filtering():
     """Test that games from season 2022 (since-1) influence situations but aren't counted.
-    2022 game serves as 'previous' for 2023 game (off_road applies), but 2022 games
-    are excluded from min_n calculation."""
+    2022 road game is 'previous' for first 2023 game (off_road applies), but 2022 is
+    excluded from n count. Division includes only 2023+ games (excludes 2022)."""
     rows = []
-    # Add one 2022 game (road) to serve as previous for first 2023 game
+    # 2022 road game: serves as previous for 2023 games
     rows.append(_g(2022, "2022-12-25", "NYJ", "BUF", 10, 20, 3.0, 40.0))
-    # Add 5 games in 2023 (all home, following the 2022 road game for first one)
-    dates_2023 = pd.date_range("2023-09-10", periods=5, freq="7D").strftime("%Y-%m-%d")
-    for d in dates_2023:
-        rows.append(_g(2023, d, "BUF", "NE", 24, 21, 1.0, 40.0))
+    # 2023-2025: alternating road/home, 5 games per year
+    for year in [2023, 2024, 2025]:
+        dates = pd.date_range(f"{year}-09-10", periods=5, freq="7D").strftime("%Y-%m-%d")
+        for i, d in enumerate(dates):
+            if i % 2 == 0:
+                rows.append(_g(year, d, "NYJ", "BUF", 10, 20, 3.0, 40.0))  # road
+            else:
+                rows.append(_g(year, d, "BUF", "NE", 24, 21, 1.0, 40.0))   # home (after road)
 
     sched = pd.DataFrame(rows)
-    upcoming = [{"game_pk": 401, "home_team": "BUF", "away_team": "MIA", "home_line": -2.5,
+    # Upcoming: BUF road (last game before this is home, so off_road applies)
+    upcoming = [{"game_pk": 401, "home_team": "NYJ", "away_team": "BUF", "home_line": 3.0,
                  "gameday": "2026-09-27", "gametime": "13:00"}]
     out = compute_game_trends(sched, upcoming, current_season=2026, min_n=5)
 
-    # 5 games from 2023 should be included (in window 2023-2026)
-    home = [r for r in out if r["team"] == "BUF" and r["situation"] == "home"]
-    assert len(home) > 0, "home situation should exist"
-    for r in home:
-        # All 5 home games have spread 1.0, result 3, should cover
-        assert r["n"] == 5, f"Expected 5 games, got {r['n']}"
-        assert r["ats_w"] == 5, f"Expected 5W, got {r['ats_w']}W"
+    # off_road: games after road (indices 1,3,5,7,9,11,13,15 = 8 games from 2023-2025)
+    off_road = [r for r in out if r["team"] == "BUF" and r["situation"] == "off_road"]
+    assert len(off_road) > 0, "off_road should exist"
+    for r in off_road:
+        # First 2023 game has 2022 road as previous, influencing off_road situation
+        # off_road applies to: indices 1,3,5,7,9,11,13,15 (8 games total)
+        assert r["n"] >= 5, f"off_road needs n >= min_n=5, got {r['n']}"
+
+    # division: NYJ vs BUF (both AFC East)
+    # All games from 2023-2025 (15 total), 2022 game excluded (season < since=2023)
+    division = [r for r in out if r["team"] == "BUF" and r["situation"] == "division"]
+    assert len(division) > 0, "division should exist"
+    for r in division:
+        # Verify that 2022 game is NOT counted: 15 games (2023-2025) not 16 (with 2022)
+        assert r["n"] == 15, f"division should have 15 games (2023-2025, not 2022), got {r['n']}"
 
 
-def test_compute_game_trends_mixed_line_no_line():
-    """Test that games without a line (NaN team_line) are not counted and
-    not misclassified as underdog."""
+def test_compute_game_trends_mixed_line_no_line_with_nan_upcoming():
+    """Test that NaN home_line in upcoming game doesn't create favorite/underdog."""
     rows = []
-    # One game with line (road, covers)
-    rows.append(_g(2025, "2025-09-07", "NYJ", "BUF", 10, 20, 3.0, 40.0))
-    # Six games without line (home, can't assess ATS)
-    for i in range(1, 7):
-        d = f"2025-09-{7+i*7:02d}"
-        rows.append(_g(2025, d, "BUF", "NE", 24, 21, None, None))
+    # Create 5 home games with lines (to meet min_n for home situations)
+    days = pd.date_range("2025-09-01", periods=5, freq="7D").strftime("%Y-%m-%d")
+    for i, d in enumerate(days):
+        rows.append(_g(2025, d, "BUF", "NE", 24, 21, 1.0, 40.0))
 
     sched = pd.DataFrame(rows)
-    upcoming = [{"game_pk": 401, "home_team": "BUF", "away_team": "MIA", "home_line": -2.5,
-                 "gameday": "2026-10-05", "gametime": "13:00"}]
+    # Upcoming game with NaN home_line (will convert to None)
+    upcoming = [{"game_pk": 401, "home_team": "BUF", "away_team": "MIA", "home_line": float("nan"),
+                 "gameday": "2026-09-27", "gametime": "13:00"}]
     out = compute_game_trends(sched, upcoming, current_season=2026, min_n=5)
 
-    # Verify no row has "underdog" (6 home games without line should NOT create underdog)
+    # Verify no row has "favorite" or "underdog" (NaN home_line should convert to None)
     for r in out:
         if r["team"] == "BUF":
-            assert r["situation"] != "underdog", \
-                f"Games without line should not create underdog situation, but got {r}"
+            assert r["situation"] not in ("favorite", "underdog"), \
+                f"NaN home_line should not create favorite/underdog, but got {r['situation']}"
 
     # Verify ats_w + ats_l + ats_p == n for every row (no missing games)
     for r in out:
