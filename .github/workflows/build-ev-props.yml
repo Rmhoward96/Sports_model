@@ -26,6 +26,10 @@ on:
     # (Sun/Mon/Thu/Sat), mirroring build-ev-board. Crons are UTC.
     - cron: "35 20 * * 0,1,4,6"
     - cron: "35 23 * * 0,1,4,6"
+    # Lines-only refresh for early (1pm/4pm ET) kickoffs: without this, their
+    # graded line would freeze at the 15:35 UTC daily pull, up to 5h stale by
+    # kickoff.
+    - cron: "35 16,18 * * 0,1,4,6"
     # Daily lines-only run: writes nfl_prop_lines for every sim projection
     # with a line (no usage gate, no +EV filter), independent of the +EV
     # board's game-day schedule above.
@@ -47,4 +51,4 @@ jobs:
       - name: Build NFL prop +EV board
         env:
           DATABASE_URL: ${{ secrets.DATABASE_URL }}
-        run: uv run python scripts/build_ev_props_board.py --sport nfl ${{ (github.event.schedule == '35 15 * * *' || github.event.inputs.lines_only == 'true') && '--lines-only' || '' }}
+        run: uv run python scripts/build_ev_props_board.py --sport nfl ${{ (github.event.schedule == '35 15 * * *' || github.event.schedule == '35 16,18 * * 0,1,4,6' || github.event.inputs.lines_only == 'true') && '--lines-only' || '' }}
