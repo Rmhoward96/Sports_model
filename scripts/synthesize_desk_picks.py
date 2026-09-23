@@ -73,7 +73,7 @@ METHODOLOGY (load-bearing -- follow exactly):
   impact position -- QB, top WR/RB, multiple starters in one unit) and
   early-season form (record + avg margin the market may underweight). Every
   spread lean's rationale MUST cite a concrete fact (a named injury, a specific
-  record/avg-margin, or the model-vs-line numbers).
+  straight-up record/avg-margin, or the model-vs-line numbers).
 - Decline totals entirely: set "total_side" to null on every game.
 - `ml_pick_team` is REQUIRED on every game: the exact team name (must equal this
   game's `home_team` or `away_team`) you think wins. Independent of the spread
@@ -96,7 +96,11 @@ METHODOLOGY (load-bearing -- follow exactly):
   units -- overall, by venue, by favorite/underdog role, last 5) and, for NFL,
   situational trends ("7-2-0 ATS off a road game since 2023"). The SPORTS-ANALYST
   note (`agent_notes.analyst`) MUST cite every trend given for BOTH teams and say
-  which way each points. Trends are SUPPORTING EVIDENCE: they may raise or lower
+  which way each points. Use a COMPACT citation format -- one short line per
+  team, no prose restating each trend, e.g. "Trends: BUF ATS 2-1, ATS road 1-0,
+  O/U 2-1; MIA ATS 0-3 as dog, 7-2 ATS off a road game since 2023 -- favors
+  BUF". O/U trends are context only because totals are declined. Trends are
+  SUPPORTING EVIDENCE: they may raise or lower
   conviction or tip a close call, but they are never the sole basis for a spread
   lean -- a lean still needs a concrete edge (injury, form, model-vs-line). Most
   ATS trends are small-sample noise; weigh lopsided, larger-sample ones more. If
@@ -159,6 +163,33 @@ def _enrich(game: dict) -> dict:
             "model_pick_team": model_pick_team}
 
 
+DEFAULT_MAX_TOKENS = 32000  # a CFB bundle (~50-65 games) citing every trend needs headroom
+
+
+def _max_tokens() -> int:
+    """DESK_SYNTH_MAX_TOKENS, else DEFAULT_MAX_TOKENS (an empty env var -- an
+    unset `${{ vars.* }}` in CI -- also falls back)."""
+    return int(os.environ.get("DESK_SYNTH_MAX_TOKENS") or DEFAULT_MAX_TOKENS)
+
+
+def _response_text(resp, max_tokens: int) -> str:
+    """The text of a Messages API response. Raises a clear RuntimeError when the
+    response was cut off at max_tokens (a truncated array would otherwise
+    surface as a confusing JSON parse error)."""
+    if getattr(resp, "stop_reason", None) == "max_tokens":
+        raise RuntimeError(
+            f"desk response truncated at max_tokens={max_tokens}; raise DESK_SYNTH_MAX_TOKENS")
+    return "".join(b.text for b in resp.content if getattr(b, "type", None) == "text")
+
+
+def _create_message(client, **kw):
+    """messages.create, but STREAMED: at max_tokens above ~21k the SDK refuses a
+    non-streaming request client-side ("Streaming is required for operations
+    that may take longer than 10 minutes"). Returns the final Message."""
+    with client.messages.stream(**kw) as stream:
+        return stream.get_final_message()
+
+
 def _model_decisions(bundle: list[dict], model: str, max_tokens: int) -> list[dict]:
     """Call the Anthropic API and return the parsed decision array. Raises on
     an unparseable response."""
@@ -170,14 +201,14 @@ def _model_decisions(bundle: list[dict], model: str, max_tokens: int) -> list[di
         "methodology and return only the JSON array.\n\n"
         + json.dumps([_enrich(g) for g in bundle], default=str)
     )
-    resp = client.messages.create(
+    resp = _create_message(
+        client,
         model=model,
         max_tokens=max_tokens,
         system=SYSTEM_PROMPT,
         messages=[{"role": "user", "content": user}],
     )
-    text = "".join(b.text for b in resp.content if getattr(b, "type", None) == "text")
-    return _parse_array(text)
+    return _parse_array(_response_text(resp, max_tokens))
 
 
 def _parse_array(text: str) -> list[dict]:
@@ -392,7 +423,7 @@ def main() -> None:
     # unset `${{ vars.DESK_SYNTH_MODEL }}` in CI, which expands to "" -- still
     # falls back rather than sending an empty model id.
     model = os.environ.get("DESK_SYNTH_MODEL") or DEFAULT_MODEL
-    max_tokens = int(os.environ.get("DESK_SYNTH_MAX_TOKENS") or "16000")
+    max_tokens = _max_tokens()
 
     bundle = json.loads(args.bundle.read_text())
     if not bundle:
@@ -425,14 +456,14 @@ def main() -> None:
             + "\n\nReturn a corrected JSON array (same schema, only the "
             "judgment fields)."
         )
-        resp = client.messages.create(
+        resp = _create_message(
+            client,
             model=model,
             max_tokens=max_tokens,
             system=SYSTEM_PROMPT,
             messages=[{"role": "user", "content": repair}],
         )
-        text = "".join(b.text for b in resp.content if getattr(b, "type", None) == "text")
-        decisions = _parse_array(text)
+        decisions = _parse_array(_response_text(resp, max_tokens))
         picks = assemble_picks(bundle, decisions, args.sport)
         problems = validate_picks(picks)
         flags = flag_pick_issues(picks, bundle)
