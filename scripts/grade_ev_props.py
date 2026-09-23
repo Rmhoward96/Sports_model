@@ -13,7 +13,7 @@ nflverse (weekly stats, schedules) only, same "no live network odds fetch"
 posture as grade_ev.py.
 
 Actual-stat resolution: the player's realized stat for the pick's market
-that week, from nflverse `import_weekly_data`, joined by
+that week, from the live nflverse weekly player-stats release, joined by
 `player_id == gsis_id`. The game's WEEK is resolved by matching
 `ev_prop_picks.game_pk` (an ESPN event id, same convention as grade_ev.py's
 FINAL_PROVIDERS) against nflverse `import_schedules`' own `espn` column for

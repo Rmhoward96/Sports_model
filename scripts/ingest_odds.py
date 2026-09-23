@@ -9,7 +9,7 @@ commence_time is its closing line.
 Player props are additionally captured, per event, for any sport whose
 `SportConfig.prop_market_map` is non-empty (currently NFL only -- CFB's map is
 empty and so no-ops) and only for events inside a post-lineup pre-kickoff
-window: `now < commence_time <= now + prop_window_minutes() minutes`. The window
+window: `now < commence_time <= now + prop_window_minutes(env) minutes`. The window
 is controlled by PROP_SCOPE (slate → a full week so every upcoming game's props
 are captured) or PROP_WINDOW_MIN (default 150 minutes; blank → 0 = disabled).
 Props are one Odds-API call per in-window event, so credits scale with how many
