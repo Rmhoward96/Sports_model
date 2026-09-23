@@ -50,15 +50,35 @@ def _nfl_name_from_abbr(abbr, by_abbr: dict[str, str]) -> str | None:
         return None
 
 
+# Action Network CFB names that are the same school under a different name in
+# assets/cfb/fbs_teams.json (from the first live capture's unmatched list,
+# 2026-09-23). Applied before normalized matching.
+CFB_ALIASES = {
+    "Miami (FL) Hurricanes": "Miami Hurricanes",
+    "North Carolina State Wolfpack": "NC State Wolfpack",
+    "UMass Minutemen": "Massachusetts Minutemen",
+    "Hawai'i Warriors": "Hawai'i Rainbow Warriors",
+    "UL-Monroe Warhawks": "UL Monroe Warhawks",
+    "Appalachian State Mountaineers": "App State Mountaineers",
+    "Delaware Fightin Blue Hens": "Delaware Blue Hens",
+    "Sam Houston State Bearkats": "Sam Houston Bearkats",
+}
+
+
 def resolve_names(rows: list[dict], ours: list[str]) -> tuple[list[dict], list[str]]:
-    """Attach team_name (our name when matched; for NFL rows whose name doesn't
-    match, our name via the row's `abbr`; else the AN name); return the
-    unmatched AN names for logging. PURE (reads the NFL crosswalk asset)."""
-    m = match_team_names([r["an_team_name"] for r in rows], ours)
+    """Attach team_name (our name when matched -- CFB via CFB_ALIASES first; for
+    NFL rows whose name doesn't match, our name via the row's `abbr`; else the AN
+    name); return the unmatched AN names for logging. PURE (reads the NFL
+    crosswalk asset)."""
+    def key(r: dict) -> str:
+        a = r["an_team_name"]
+        return CFB_ALIASES.get(a, a) if r.get("sport") == "cfb" else a
+
+    m = match_team_names([key(r) for r in rows], ours)
     by_abbr = _nfl_abbr_names() if any(r.get("sport") == "nfl" for r in rows) else {}
     out, unmatched = [], []
     for r in rows:
-        name = m.get(r["an_team_name"])
+        name = m.get(key(r))
         if name is None and r.get("sport") == "nfl":
             name = _nfl_name_from_abbr(r.get("abbr"), by_abbr)
         if name is None:

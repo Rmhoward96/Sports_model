@@ -138,3 +138,26 @@ def test_main_both_ok_no_exit_and_rows_stamped_with_requested_season(monkeypatch
     capture_team_records.main()  # must not raise
     assert len(upserted) == 2
     assert all(r["season"] == 2026 for rows in upserted for r in rows)
+
+
+def test_resolve_names_cfb_aliases_from_first_live_run():
+    # Action Network names seen unmatched on the first live capture (2026-09-23)
+    # that are the same schools under a different name in fbs_teams.json.
+    ours = ["Miami Hurricanes", "Miami (OH) RedHawks", "NC State Wolfpack", "Massachusetts Minutemen",
+            "Hawai'i Rainbow Warriors", "UL Monroe Warhawks", "App State Mountaineers",
+            "Delaware Blue Hens", "Sam Houston Bearkats"]
+    an = ["Miami (FL) Hurricanes", "North Carolina State Wolfpack", "UMass Minutemen",
+          "Hawai'i Warriors", "UL-Monroe Warhawks", "Appalachian State Mountaineers",
+          "Delaware Fightin Blue Hens", "Sam Houston State Bearkats", "Sacramento State Hornets"]
+    rows = [{"sport": "cfb", "an_team_name": n, "abbr": None} for n in an]
+    out, unmatched = capture_team_records.resolve_names(rows, ours)
+    got = {r["an_team_name"]: r["team_name"] for r in out}
+    assert got["Miami (FL) Hurricanes"] == "Miami Hurricanes"
+    assert got["North Carolina State Wolfpack"] == "NC State Wolfpack"
+    assert got["UMass Minutemen"] == "Massachusetts Minutemen"
+    assert got["Hawai'i Warriors"] == "Hawai'i Rainbow Warriors"
+    assert got["UL-Monroe Warhawks"] == "UL Monroe Warhawks"
+    assert got["Appalachian State Mountaineers"] == "App State Mountaineers"
+    assert got["Delaware Fightin Blue Hens"] == "Delaware Blue Hens"
+    assert got["Sam Houston State Bearkats"] == "Sam Houston Bearkats"
+    assert unmatched == ["Sacramento State Hornets"]   # not an FBS team in our list
