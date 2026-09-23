@@ -30,6 +30,7 @@ from one place, instead of duplicating/drifting thresholds.
 """
 from __future__ import annotations
 
+import json
 import re
 
 from ..model.distributions import prob_over_dist
@@ -283,6 +284,84 @@ def assemble_prop_rows(sim_rows: list[dict], odds_rows: list[dict], model_versio
             # MORE stale-line-prone than game markets, so this matters more
             # here, not less.
             "is_pick": 0 < ev_best <= EV_CEILING,
+        })
+    return rows
+
+
+# =============================================================================
+# assemble_prop_line_rows -- pure prop-LINE builder (Task 4): one row per sim
+# (game, player, market) projection that has a book line, no usage gate, no
+# EV filter. Feeds nfl_prop_lines, tracking every sim projection's accuracy
+# against the market line rather than only the +EV board's picks.
+# =============================================================================
+
+# Sim market -> odds-side code for the prop-LINES table (every projection with a
+# book line, tracked for accuracy). Separate from SIM_TO_ODDS_MARKET so the +EV
+# board's market scope is untouched: this one includes pass_yds and rush_att.
+LINE_MARKETS: dict[str, str] = {
+    "pass_yds": "pass_yds",
+    "rush_yds": "rush_yds",
+    "rec_yds": "reception_yds",
+    "receptions": "receptions",
+    "rush_att": "rush_att",
+}
+
+
+def _best_any(entries: list[tuple]) -> tuple | None:
+    """(book, price) at the highest decimal odds across ALL books (the line
+    display shows the best available price, not only MAJOR_BOOKS)."""
+    entries = [(bk, p) for bk, p in entries if p]
+    return max(entries, key=lambda e: decimal_odds(e[1])) if entries else None
+
+
+def assemble_prop_line_rows(sim_rows: list[dict], odds_rows: list[dict]) -> list[dict]:
+    """PURE. One nfl_prop_lines row per sim (game, player, market) in
+    LINE_MARKETS that has a book line: the main line (most books, ties ->
+    lowest), best over/under price across books (either may be None), the
+    sim mean as `projection`, P(over) from the sim distribution at the line,
+    and the sim's `lean` ("over" iff p_over > 0.5). No usage gate, no EV
+    filter. Rows with no odds match or a NaN P(over) are skipped.
+
+    `dist` may arrive as a JSON string (as stored/retrieved from the DB) or
+    already as a dict -- both are handled.
+    """
+    by_key: dict[tuple, list[dict]] = {}
+    for o in odds_rows:
+        by_key.setdefault(
+            (o.get("game_pk"), o.get("market"), normalize_player_name(o.get("player_name"))), []
+        ).append(o)
+    rows: list[dict] = []
+    for s in sim_rows:
+        odds_market = LINE_MARKETS.get(s.get("market"))
+        if odds_market is None or s.get("mean") is None:
+            continue
+        cands = [o for o in by_key.get((s.get("game_pk"), odds_market,
+                                        normalize_player_name(s.get("name"))), [])
+                 if o.get("line") is not None]
+        if not cands:
+            continue
+        books_by_line: dict[float, set] = {}
+        for o in cands:
+            books_by_line.setdefault(o["line"], set()).add(o.get("book"))
+        line = min(books_by_line, key=lambda l: (-len(books_by_line[l]), l))
+        at = [o for o in cands if o["line"] == line]
+        over = _best_any([(o.get("book"), o.get("price")) for o in at if o.get("side") == "over"])
+        under = _best_any([(o.get("book"), o.get("price")) for o in at if o.get("side") == "under"])
+        dist = s.get("dist")
+        if isinstance(dist, str):
+            dist = json.loads(dist)
+        p_over = prob_over_dist(dist, line)
+        if p_over != p_over:  # NaN
+            continue
+        rows.append({
+            "game_pk": s.get("game_pk"), "player_id": s.get("player_id"),
+            "player_name": s.get("name"), "team": s.get("team"), "market": s.get("market"),
+            "line": line,
+            "over_price": over[1] if over else None, "over_book": over[0] if over else None,
+            "under_price": under[1] if under else None, "under_book": under[0] if under else None,
+            "projection": float(s["mean"]), "p_over": float(p_over),
+            "lean": "over" if p_over > 0.5 else "under",
+            "n_books": len(books_by_line[line]), "commence_time": s.get("commence_time"),
         })
     return rows
 

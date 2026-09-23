@@ -9,8 +9,10 @@ import math
 import pytest
 
 from sportsmodel.serving.props_ev import (
+    LINE_MARKETS,
     PROJECTED_USAGE_GATE,
     SIM_TO_ODDS_MARKET,
+    assemble_prop_line_rows,
     assemble_prop_rows,
     is_propable_projected,
     normalize_player_name,
@@ -418,3 +420,84 @@ def test_assemble_prop_rows_side_with_only_pinnacle_price_is_excluded():
     ]
 
     assert assemble_prop_rows(sim_rows, odds_rows, MODEL_VERSION) == []
+
+
+# =============================================================================
+# assemble_prop_line_rows (Task 4) -- pure prop-LINE builder, every sim
+# projection with a book line, no usage gate, no EV filter.
+# =============================================================================
+
+import json  # noqa: E402
+
+
+def _sim(market="rec_yds", mean=40.0, pmf=None, name="A.J. Brown", dist=None):
+    if dist is None:
+        pmf = pmf or [0.0] * 30 + [0.02] * 50   # mass on 30..79
+        dist = {"kind": "pmf", "pmf": pmf}
+    return {"game_pk": 1, "player_id": "00-1", "name": name, "team": "PHI",
+            "market": market, "mean": mean, "dist": dist,
+            "commence_time": "2026-09-27T17:00:00Z"}
+
+
+def _o(market, side, line, book, price, name="AJ Brown"):
+    return {"game_pk": 1, "market": market, "side": side, "player_name": name,
+            "book": book, "line": line, "price": price}
+
+
+def test_line_markets_cover_tracked_markets():
+    assert LINE_MARKETS == {"pass_yds": "pass_yds", "rush_yds": "rush_yds",
+                            "rec_yds": "reception_yds", "receptions": "receptions",
+                            "rush_att": "rush_att"}
+
+
+def test_line_row_main_line_best_prices_and_lean():
+    # Ruling (overrides brief fixture): pmf mass on 30..69 (40 bins of 0.025),
+    # so P(over 54.5) = bins 55..69 = 15 * 0.025 = 0.375 exactly in floating
+    # point -- the brief's original fixture (25 bins of 0.02 above 54.5) sums
+    # to ~0.5000000000000001 in float, which can flip the lean assertion.
+    pmf = [0.0] * 30 + [0.025] * 40  # mass on 30..69
+    odds = [_o("reception_yds", "over", 54.5, "draftkings", -110),
+            _o("reception_yds", "under", 54.5, "draftkings", -110),
+            _o("reception_yds", "over", 54.5, "fanduel", -105),
+            _o("reception_yds", "under", 54.5, "fanduel", -120),
+            _o("reception_yds", "over", 60.5, "fanatics", +100)]
+    [r] = assemble_prop_line_rows([_sim(pmf=pmf)], odds)
+    assert r["line"] == 54.5 and r["n_books"] == 2
+    assert (r["over_book"], r["over_price"]) == ("fanduel", -105)
+    assert (r["under_book"], r["under_price"]) == ("draftkings", -110)
+    assert r["projection"] == 40.0 and r["market"] == "rec_yds"
+    assert abs(r["p_over"] - 0.375) < 1e-9 and r["lean"] == "under"
+
+
+def test_line_row_lean_over_when_mass_above_line():
+    # Mass clearly above the line -> p_over > 0.5 -> lean "over".
+    pmf = [0.0] * 30 + [0.025] * 40  # mass on 30..69
+    odds = [_o("reception_yds", "over", 34.5, "draftkings", -110),
+            _o("reception_yds", "under", 34.5, "draftkings", -110)]
+    [r] = assemble_prop_line_rows([_sim(pmf=pmf)], odds)
+    # P(over 34.5) = bins 35..69 = 35 * 0.025 = 0.875
+    assert abs(r["p_over"] - 0.875) < 1e-9
+    assert r["lean"] == "over"
+
+
+def test_line_row_dist_as_json_string_is_handled():
+    pmf = [0.0] * 30 + [0.025] * 40
+    dist_str = json.dumps({"kind": "pmf", "pmf": pmf})
+    odds = [_o("reception_yds", "over", 54.5, "draftkings", -110),
+            _o("reception_yds", "under", 54.5, "draftkings", -110)]
+    [r] = assemble_prop_line_rows([_sim(dist=dist_str)], odds)
+    assert abs(r["p_over"] - 0.375) < 1e-9 and r["lean"] == "under"
+
+
+def test_line_row_no_usage_gate_and_pass_yds_included():
+    sim = _sim(market="pass_yds", mean=12.0, name="Backup QB")
+    odds = [_o("pass_yds", "over", 10.5, "draftkings", -110, "Backup QB"),
+            _o("pass_yds", "under", 10.5, "draftkings", -110, "Backup QB")]
+    assert len(assemble_prop_line_rows([sim], odds)) == 1
+
+
+def test_line_row_skips_unmatched_untracked_and_one_sided_ok():
+    assert assemble_prop_line_rows([_sim(market="anytime_td")], []) == []
+    assert assemble_prop_line_rows([_sim()], []) == []
+    [r] = assemble_prop_line_rows([_sim()], [_o("reception_yds", "over", 54.5, "draftkings", -110)])
+    assert r["under_price"] is None and r["over_price"] == -110
