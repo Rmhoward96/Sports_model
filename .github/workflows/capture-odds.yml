@@ -17,11 +17,17 @@ name: capture-odds
 # says where the closing snapshots need to land.
 on:
   schedule:
+    - cron: "0 15 * * *"          # daily full-slate prop pull (PROP_SCOPE=slate)
     - cron: "0 16 * * 0,1,4,6"   # ~pre-kick window (Sun/Mon/Thu/Sat)
     - cron: "0 18 * * 0,1,4,6"
     - cron: "0 20 * * 0,1,4,6"
     - cron: "0 23 * * 0,1,4,6"   # ~near close for late-afternoon/primetime kicks
   workflow_dispatch:
+    inputs:
+      prop_scope:
+        type: string
+        default: ""
+        description: "Prop capture scope: 'slate' for full-week prop capture, or empty for default PROP_WINDOW_MIN"
 
 permissions:
   contents: read
@@ -42,4 +48,5 @@ jobs:
           ODDS_API_KEY: ${{ secrets.ODDS_API_KEY }}
           PROP_WINDOW_MIN: ${{ vars.PROP_WINDOW_MIN }}
           INGEST_PROPS: ${{ vars.INGEST_PROPS }}
+          PROP_SCOPE: ${{ github.event.inputs.prop_scope || (github.event.schedule == '0 15 * * *' && 'slate' || '') }}
         run: uv run python scripts/ingest_odds.py

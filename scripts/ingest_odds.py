@@ -9,10 +9,11 @@ commence_time is its closing line.
 Player props are additionally captured, per event, for any sport whose
 `SportConfig.prop_market_map` is non-empty (currently NFL only -- CFB's map is
 empty and so no-ops) and only for events inside a post-lineup pre-kickoff
-window: `now < commence_time <= now + PROP_WINDOW_MIN minutes` (default 150).
+window: `now < commence_time <= now + prop_window_minutes() minutes`. The window
+is controlled by PROP_SCOPE (slate → a full week so every upcoming game's props
+are captured) or PROP_WINDOW_MIN (default 150 minutes; blank → 0 = disabled).
 Props are one Odds-API call per in-window event, so credits scale with how many
-games are in that window at run time -- widening PROP_WINDOW_MIN or the cron
-cadence costs credits accordingly. Set INGEST_PROPS=false or PROP_WINDOW_MIN=0
+games are in that window at run time. Set INGEST_PROPS=false or PROP_WINDOW_MIN=0
 to disable prop capture entirely and fall back to game-lines-only behavior.
 
 Usage:
@@ -34,6 +35,16 @@ from sportsmodel.db import upsert_odds_snapshot
 from sportsmodel.ingest import odds
 
 SPORTS = ("nfl", "cfb")
+SLATE_WINDOW_MIN = 7 * 24 * 60
+
+
+def prop_window_minutes(env: dict[str, str]) -> int:
+    """Prop-capture window in minutes. PROP_SCOPE=slate (the daily full-slate
+    pull) widens it to a week so every upcoming game's props are captured;
+    otherwise PROP_WINDOW_MIN (default 150; blank -> 0 = disabled)."""
+    if env.get("PROP_SCOPE", "").lower() == "slate":
+        return SLATE_WINDOW_MIN
+    return int(env.get("PROP_WINDOW_MIN", "150") or 0)
 
 
 def build_game_lookup(
@@ -155,7 +166,7 @@ def run_sport(sport: str, captured_at: str) -> list[dict]:
     rows = odds.parse_game_odds(events, game_lookup, captured_at)
     print(f"[{sport}] rows: {len(rows)}")
 
-    window_min = int(os.getenv("PROP_WINDOW_MIN", "150") or 0)
+    window_min = prop_window_minutes(os.environ)
     if cfg.prop_market_map and props_enabled(os.environ, window_min):
         prop_markets = list(cfg.prop_market_map.values())
         in_window = events_in_prop_window(

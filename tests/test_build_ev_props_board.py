@@ -24,7 +24,7 @@ def test_nfl_prop_market_codes_match_sport_config_prop_market_map_keys():
     expected = set(sports.get("nfl").prop_market_map.keys())
     assert expected == {
         "pass_yds", "pass_tds", "reception_yds", "receptions",
-        "rush_yds", "rush_reception_yds", "anytime_td",
+        "rush_yds", "rush_reception_yds", "rush_att", "anytime_td",
     }
 
 

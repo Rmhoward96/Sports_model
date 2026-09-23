@@ -40,6 +40,7 @@ SPORTS: dict[str, SportConfig] = {
             "receptions": "player_receptions",
             "rush_yds": "player_rush_yds",
             "rush_reception_yds": "player_rush_reception_yds",
+            "rush_att": "player_rush_attempts",
             "anytime_td": "player_anytime_td",
         },
         commence_shift_hours=0,

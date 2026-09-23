@@ -181,8 +181,19 @@ def test_nfl_prop_markets_match_prop_market_map_values():
     assert list(cfg.prop_market_map.values()) == [
         "player_pass_yds", "player_pass_tds", "player_reception_yds",
         "player_receptions", "player_rush_yds", "player_rush_reception_yds",
-        "player_anytime_td",
+        "player_rush_attempts", "player_anytime_td",
     ]
+
+
+def test_prop_window_minutes_default_and_env():
+    assert ingest_odds.prop_window_minutes({}) == 150
+    assert ingest_odds.prop_window_minutes({"PROP_WINDOW_MIN": "90"}) == 90
+    assert ingest_odds.prop_window_minutes({"PROP_WINDOW_MIN": ""}) == 0
+
+
+def test_prop_window_minutes_slate_scope_covers_a_week():
+    assert ingest_odds.prop_window_minutes({"PROP_SCOPE": "slate"}) == 7 * 24 * 60
+    assert ingest_odds.prop_window_minutes({"PROP_SCOPE": "SLATE", "PROP_WINDOW_MIN": "90"}) == 7 * 24 * 60
 
 
 # -- prop-capture enable predicate ----------------------------------------------
