@@ -37,3 +37,7 @@ jobs:
         env:
           DATABASE_URL: ${{ secrets.DATABASE_URL }}
         run: uv run python scripts/build_ev_board.py --sport cfb
+      - name: Build +EV parlays
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+        run: uv run python scripts/build_best_parlays.py

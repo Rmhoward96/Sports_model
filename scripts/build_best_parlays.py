@@ -8,6 +8,7 @@ Usage: DATABASE_URL=... uv run python scripts/build_best_parlays.py
 from __future__ import annotations
 
 import sys
+from datetime import datetime, timezone
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
@@ -75,6 +76,9 @@ def main() -> None:
     legs = (assemble_game_legs(game_picks, load_game_odds(sorted({p["game_pk"] for p in game_picks})))
             + assemble_prop_legs(prop_picks, load_prop_odds(sorted({p["game_pk"] for p in prop_picks}))))
     tickets = build_best_parlays(legs, excluded_keys=locked_leg_keys())
+    # Drop tickets whose first leg has already commenced (compare as aware datetimes)
+    now = datetime.now(timezone.utc)
+    tickets = [t for t in tickets if not _is_ticket_locked(t, now)]
     for t in tickets:
         t["model_version"] = MODEL_VERSION
     n = replace_unlocked_best_parlays(tickets)
@@ -82,6 +86,22 @@ def main() -> None:
     print(f"[build_best_parlays] legs={len(legs)} priced={priced} tickets={n}")
     for t in tickets:
         print("  " + ticket_summary(t))
+
+
+def _is_ticket_locked(ticket: dict, now: datetime) -> bool:
+    """Check if a ticket's first leg has already commenced."""
+    first_commence = ticket.get("first_commence")
+    if first_commence is None:
+        return False
+    # Normalize to aware datetime
+    if isinstance(first_commence, datetime):
+        commence_dt = first_commence
+    else:
+        commence_dt = datetime.fromisoformat(str(first_commence).replace("Z", "+00:00"))
+    # Ensure UTC aware
+    if commence_dt.tzinfo is None:
+        commence_dt = commence_dt.replace(tzinfo=timezone.utc)
+    return commence_dt <= now
 
 
 if __name__ == "__main__":

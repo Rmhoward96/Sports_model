@@ -4,6 +4,7 @@ Loads the script module directly (it isn't a package) via importlib.
 Tests the pure `ticket_summary` helper and `main` with loaders monkeypatched.
 """
 import importlib.util
+from datetime import datetime, timezone, timedelta
 from pathlib import Path
 from unittest.mock import patch, MagicMock
 
@@ -65,13 +66,14 @@ def test_main_no_legs_short_circuits():
 
 def test_main_with_legs():
     """main() assembles legs, builds tickets, adds model_version, and replaces parlays."""
+    future_time = (datetime.now(timezone.utc) + timedelta(hours=2)).isoformat().replace("+00:00", "Z")
     mock_game_pick = {
         "sport": "nfl",
         "game_pk": 123,
         "market": "moneyline",
         "side": "home",
         "matchup": "NYY @ BOS",
-        "commence_time": "2025-01-01T20:00:00Z",
+        "commence_time": future_time,
         "true_prob": 0.55,
         "line": None,
     }
@@ -84,7 +86,7 @@ def test_main_with_legs():
         "line": 45.5,
         "model_prob": 0.60,
         "matchup": "NYY @ BOS",
-        "commence_time": "2025-01-01T20:00:00Z",
+        "commence_time": future_time,
     }
 
     # Simulated legs from assemble functions
@@ -98,7 +100,7 @@ def test_main_with_legs():
         "prob": 0.55,
         "label": "NYY ML",
         "matchup": "NYY @ BOS",
-        "commence_time": "2025-01-01T20:00:00Z",
+        "commence_time": future_time,
         "player_id": None,
         "player_name": None,
         "book_prices": {"dk": -110},
@@ -113,7 +115,7 @@ def test_main_with_legs():
         "prob": 0.60,
         "label": "Aaron Judge Rec Yds Over 45.5",
         "matchup": "NYY @ BOS",
-        "commence_time": "2025-01-01T20:00:00Z",
+        "commence_time": future_time,
         "player_id": 456,
         "player_name": "Aaron Judge",
         "book_prices": {"dk": -110},
@@ -129,7 +131,7 @@ def test_main_with_legs():
         "parlay_price": 250,
         "ev": 0.057,
         "sport": "nfl",
-        "first_commence": "2025-01-01T20:00:00Z",
+        "first_commence": future_time,
     }
     mock_tickets = [mock_ticket]
     mock_locked_keys = frozenset()
@@ -152,3 +154,75 @@ def test_main_with_legs():
         assert len(called_tickets) == 1
         # Verify model_version was added
         assert called_tickets[0]["model_version"] == "ev-parlays-v1"
+
+
+def test_main_drops_locked_tickets_with_past_first_commence():
+    """main() drops tickets whose first_commence is at/before now (game started)."""
+    now = datetime.now(timezone.utc)
+    past_time = (now - timedelta(hours=1)).isoformat().replace("+00:00", "Z")
+    future_time = (now + timedelta(hours=2)).isoformat().replace("+00:00", "Z")
+
+    mock_game_pick = {
+        "sport": "nfl",
+        "game_pk": 123,
+        "market": "moneyline",
+        "side": "home",
+        "matchup": "NYY @ BOS",
+        "commence_time": future_time,
+        "true_prob": 0.55,
+        "line": None,
+    }
+    mock_game_leg = {
+        "key": "g:123:moneyline:home",
+        "kind": "game",
+        "sport": "nfl",
+        "game_pk": 123,
+        "market": "moneyline",
+        "side": "home",
+        "prob": 0.55,
+        "label": "NYY ML",
+        "matchup": "NYY @ BOS",
+        "commence_time": future_time,
+        "player_id": None,
+        "player_name": None,
+        "book_prices": {"dk": -110},
+    }
+
+    # Ticket with past first_commence (leg kicked off)
+    locked_ticket = {
+        "parlay_id": "dk|g:123:moneyline:home",
+        "book": "dk",
+        "legs": [mock_game_leg],
+        "parlay_price": -110,
+        "ev": 0.01,
+        "sport": "nfl",
+        "first_commence": past_time,
+    }
+    # Ticket with future first_commence (good to lock in)
+    good_ticket = {
+        "parlay_id": "dk|g:123:moneyline:home_2",
+        "book": "dk",
+        "legs": [mock_game_leg],
+        "parlay_price": -110,
+        "ev": 0.01,
+        "sport": "nfl",
+        "first_commence": future_time,
+    }
+    mock_replace = MagicMock(return_value=1)
+
+    with patch.object(build_best_parlays, "load_game_picks", return_value=[mock_game_pick]), \
+         patch.object(build_best_parlays, "load_prop_picks", return_value=[]), \
+         patch.object(build_best_parlays, "load_game_odds", return_value=[]), \
+         patch.object(build_best_parlays, "load_prop_odds", return_value=[]), \
+         patch.object(build_best_parlays, "locked_leg_keys", return_value=frozenset()), \
+         patch.object(build_best_parlays, "assemble_game_legs", return_value=[mock_game_leg]), \
+         patch.object(build_best_parlays, "assemble_prop_legs", return_value=[]), \
+         patch.object(build_best_parlays, "build_best_parlays", return_value=[locked_ticket, good_ticket]), \
+         patch.object(build_best_parlays, "replace_unlocked_best_parlays", mock_replace), \
+         patch("builtins.print"):
+        build_best_parlays.main()
+        # Only the good_ticket should be passed to replace
+        mock_replace.assert_called_once()
+        called_tickets = mock_replace.call_args[0][0]
+        assert len(called_tickets) == 1
+        assert called_tickets[0] == good_ticket

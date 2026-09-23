@@ -48,6 +48,9 @@ def assemble_game_legs(picks: list[dict], odds_rows: list[dict]) -> list[dict]:
     legs. A book's price counts only at the pick's line (moneyline: any)."""
     legs = []
     for p in picks:
+        # Skip picks with None probability
+        if p.get("true_prob") is None:
+            continue
         line = p.get("line")
         if p["market"] != "moneyline" and line is None:
             continue
@@ -73,6 +76,9 @@ def assemble_prop_legs(picks: list[dict], odds_rows: list[dict]) -> list[dict]:
     only for the same player (normalized name), odds market, side and line."""
     legs = []
     for p in picks:
+        # Skip picks with None probability
+        if p.get("model_prob") is None:
+            continue
         odds_market = SIM_TO_ODDS_MARKET.get(p["market"])
         if odds_market is None:
             continue

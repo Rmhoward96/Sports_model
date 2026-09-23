@@ -70,6 +70,15 @@ def test_assemble_game_legs_matches_line_and_skips_pinnacle():
     assert leg["label"] == "Packers -3.5" and leg["key"] == "g:1:spread:home" and leg["prob"] == 0.57
 
 
+def test_assemble_game_legs_skips_none_probability():
+    """assemble_game_legs skips picks with None true_prob."""
+    picks = [{"sport": "nfl", "game_pk": 1, "market": "moneyline", "side": "home",
+              "matchup": "A @ B", "commence_time": "t", "true_prob": None, "line": None}]
+    odds = [{"game_pk": 1, "market": "moneyline", "side": "home", "book": "draftkings", "price": -110}]
+    legs = assemble_game_legs(picks, odds)
+    assert legs == []
+
+
 def test_assemble_game_legs_moneyline_and_total_labels():
     picks = [{"sport": "cfb", "game_pk": 2, "market": "moneyline", "side": "away", "matchup": "Oregon Ducks @ USC Trojans",
               "commence_time": "t", "true_prob": 0.6, "line": None},
@@ -91,6 +100,15 @@ def test_assemble_prop_legs_matches_player_market_side_line():
     assert leg["book_prices"] == {"fanduel": -112}
     assert leg["key"] == "p:9:00-1:rec_yds:under" and leg["kind"] == "prop" and leg["sport"] == "nfl"
     assert leg["label"] == "A.J. Brown Rec Yds Under 66.5"
+
+
+def test_assemble_prop_legs_skips_none_probability():
+    """assemble_prop_legs skips picks with None model_prob."""
+    picks = [{"game_pk": 9, "player_id": "00-1", "player_name": "A.J. Brown", "market": "rec_yds",
+              "side": "under", "line": 66.5, "model_prob": None, "matchup": "M", "commence_time": "t"}]
+    odds = [{"game_pk": 9, "market": "reception_yds", "side": "under", "player_name": "AJ Brown", "book": "fanduel", "line": 66.5, "price": -112}]
+    legs = assemble_prop_legs(picks, odds)
+    assert legs == []
 
 
 def _g(market, side, line=None):
