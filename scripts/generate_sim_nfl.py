@@ -129,7 +129,7 @@ _ELO_BASE = EloConfig().base
 
 # Binning ceilings for nfl_player_prop_dists's pmf markets (anytime_td is
 # binary and doesn't need one -- see aggregate.nfl_player_prop_dists).
-MARKET_MAX = {"pass_yds": 400, "rush_yds": 200, "rec_yds": 200, "receptions": 15, "pass_tds": 6}
+MARKET_MAX = {"pass_yds": 400, "rush_yds": 200, "rec_yds": 200, "receptions": 15, "pass_tds": 6, "rush_att": 40}
 
 TEAMS_CROSSWALK_PATH = config.PROJECT_ROOT / "assets" / "nfl" / "nfl_teams.json"
 

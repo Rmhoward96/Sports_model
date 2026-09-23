@@ -30,9 +30,9 @@ def nfl_player_prop_dists(sims: NflGameSims, market_max: dict) -> dict[str, dict
     for player_id, stats in sims.player_stats.items():
         player_dists: dict[str, dict] = {}
 
-        # Standard pmf markets: yards/receptions plus QB passing TDs (a small
-        # count, 0..market_max["pass_tds"]).
-        for market in ["pass_yds", "rush_yds", "rec_yds", "receptions", "pass_tds"]:
+        # Standard pmf markets: yards/receptions plus QB passing TDs and rush attempts
+        # (small counts, 0..market_max["pass_tds"] and 0..market_max["rush_att"]).
+        for market in ["pass_yds", "rush_yds", "rec_yds", "receptions", "pass_tds", "rush_att"]:
             if market in stats and market in market_max:
                 player_dists[market] = _pmf_mean(stats[market], market_max[market])
 

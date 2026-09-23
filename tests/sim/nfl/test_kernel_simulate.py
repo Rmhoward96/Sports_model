@@ -142,7 +142,7 @@ def test_player_stats_keys_equal_full_roster():
     expected_ids = {p.player_id for p in (*spec.home_players, *spec.away_players)}
     assert set(sims.player_stats.keys()) == expected_ids
     for stats in sims.player_stats.values():
-        assert set(stats.keys()) == {"pass_yds", "rush_yds", "rec_yds", "receptions", "td", "pass_tds"}
+        assert set(stats.keys()) == {"pass_yds", "rush_yds", "rec_yds", "receptions", "td", "pass_tds", "rush_att"}
 
 
 def test_reproducible_with_fixed_seed():
@@ -375,3 +375,13 @@ def test_all_fg_offense_scores_are_multiples_of_three_with_no_player_tds():
     assert np.all(sims.away_score % 3 == 0)
     for stats in sims.player_stats.values():
         assert np.all(stats["td"] == 0)
+
+
+def test_rush_att_counts_carries_and_bounds_rush_yds_volume():
+    sims = simulate_game(_spec(), 400, np.random.default_rng(7))
+    total_att = sum(s["rush_att"].sum() for s in sims.player_stats.values())
+    assert total_att > 0
+    for s in sims.player_stats.values():
+        assert (s["rush_att"] >= 0).all()
+        # a player with zero carries in a sim has zero rush yards that sim
+        assert (s["rush_yds"][s["rush_att"] == 0] == 0).all()

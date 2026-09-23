@@ -120,7 +120,7 @@ WARMUP_SEASONS_BACK = 1
 
 _ELO_BASE = EloConfig().base  # neutral Elo for a team with no rating yet
 
-MARKET_MAX = {"pass_yds": 400, "rush_yds": 200, "rec_yds": 200, "receptions": 15, "pass_tds": 6}
+MARKET_MAX = {"pass_yds": 400, "rush_yds": 200, "rec_yds": 200, "receptions": 15, "pass_tds": 6, "rush_att": 40}
 PLAYER_MARKETS: tuple[str, ...] = ("pass_yds", "rush_yds", "rec_yds", "receptions")
 _ACTUAL_COL = {
     "pass_yds": "passing_yards",

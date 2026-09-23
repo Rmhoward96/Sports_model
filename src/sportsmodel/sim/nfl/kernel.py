@@ -66,7 +66,7 @@ _PLAYS_PER_DRIVE = 6.0
 _MIN_TILT = 0.4
 _MAX_TILT = 1.6
 
-_PLAYER_STAT_NAMES = ("pass_yds", "rush_yds", "rec_yds", "receptions", "td", "pass_tds")
+_PLAYER_STAT_NAMES = ("pass_yds", "rush_yds", "rec_yds", "receptions", "td", "pass_tds", "rush_att")
 
 # TD allocation blends each player's recent-window TD share with their
 # usage/opportunity share (targets*catch for receiving, carries for rushing).
@@ -256,13 +256,13 @@ def attribute_offense(
 
     Returns:
         Dict mapping player_id -> {"pass_yds", "rush_yds", "rec_yds",
-        "receptions", "td"}, all ints.
+        "receptions", "td", "pass_tds", "rush_att"}, all ints.
     """
     if not players:
         return {}
 
     stats: dict[str, dict[str, int]] = {
-        p.player_id: {"pass_yds": 0, "rush_yds": 0, "rec_yds": 0, "receptions": 0, "td": 0, "pass_tds": 0}
+        p.player_id: {"pass_yds": 0, "rush_yds": 0, "rec_yds": 0, "receptions": 0, "td": 0, "pass_tds": 0, "rush_att": 0}
         for p in players
     }
 
@@ -304,6 +304,7 @@ def attribute_offense(
 
     for player, n_carries in zip(players, carry_counts):
         pdata = stats[player.player_id]
+        pdata["rush_att"] += int(n_carries)
         for _ in range(int(n_carries)):
             yds = _skewed_play_yards(player.ypc, _RUSH_YDS_SHAPE, _MIN_PLAY_YDS, rng)
             pdata["rush_yds"] += int(round(yds))
@@ -368,7 +369,8 @@ def _simulate_team_drives(
 
     Returns:
         Tuple of (points, box) where box is attribute_offense's per-player
-        stat dict for this team.
+        stat dict for this team (containing "pass_yds", "rush_yds", "rec_yds",
+        "receptions", "td", "pass_tds", "rush_att").
     """
     n_drives = max(_MIN_DRIVES_PER_GAME, int(rng.poisson(off.drives_per_game * game_env)))
 
@@ -436,7 +438,8 @@ def simulate_game(spec: NflGameSpec, n_sims: int, rng, home_field: float = 0.0,
 
     Returns:
         NflGameSims with home_score/away_score (length n_sims int arrays)
-        and player_stats keyed by player_id.
+        and player_stats keyed by player_id, with per-stat arrays for each of
+        "pass_yds", "rush_yds", "rec_yds", "receptions", "td", "pass_tds", "rush_att".
     """
     home_score = np.zeros(n_sims, dtype=np.int64)
     away_score = np.zeros(n_sims, dtype=np.int64)
