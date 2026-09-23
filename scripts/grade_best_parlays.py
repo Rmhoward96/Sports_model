@@ -58,17 +58,19 @@ def load_captured_games(game_pks: list[int]) -> set[int]:
     return {r["game_pk"] for r in rows}
 
 
+def _legs(ticket: dict) -> list:
+    """Extract and decode ticket's legs (handles JSON string from DB driver)."""
+    legs = ticket["legs"]
+    return json.loads(legs) if isinstance(legs, str) else legs
+
+
 def grade_ticket(ticket: dict, finals: dict[int, dict], actuals: dict[tuple, float],
                  captured_games: set[int]) -> dict | None:
     """Grade a parlay ticket. Per-leg results from game finals or prop actuals;
     settle_parlay handles any loss -> immediate loss, any pending -> None, else payout.
     Returns a results row {parlay_id, sport, book, parlay_price, first_commence,
     result, pnl, payout_dec, legs: [leg + {result}]} or None if pending."""
-    legs = ticket["legs"]
-    # Decode legs if it's a JSON string (from DB driver)
-    if isinstance(legs, str):
-        legs = json.loads(legs)
-        ticket = {**ticket, "legs": legs}
+    legs = _legs(ticket)
 
     results = []
     for leg in legs:
@@ -108,7 +110,7 @@ def main() -> None:
         print("[grade_best_parlays] no ungraded locked parlays")
         return
 
-    game_pks = sorted({leg["game_pk"] for t in tickets for leg in (json.loads(t["legs"]) if isinstance(t["legs"], str) else t["legs"])})
+    game_pks = sorted({leg["game_pk"] for t in tickets for leg in _legs(t)})
     finals = load_finals(game_pks)
     actuals = load_actuals(game_pks)
     captured_games = load_captured_games(game_pks)

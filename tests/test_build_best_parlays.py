@@ -7,8 +7,6 @@ import importlib.util
 from pathlib import Path
 from unittest.mock import patch, MagicMock
 
-import pytest
-
 _SCRIPT_PATH = Path(__file__).resolve().parents[1] / "scripts" / "build_best_parlays.py"
 _spec = importlib.util.spec_from_file_location("build_best_parlays", _SCRIPT_PATH)
 build_best_parlays = importlib.util.module_from_spec(_spec)
@@ -120,14 +118,22 @@ def test_main_with_legs():
         "player_name": "Aaron Judge",
         "book_prices": {"dk": -110},
     }
-    mock_legs = [mock_game_leg, mock_prop_leg]
     mock_game_odds = []
     mock_prop_odds = []
 
-    # Simulated ticket from build_best_parlays (won't actually build in this test, but main still expects it to work)
-    mock_tickets = []
+    # Real ticket from build_best_parlays to verify model_version is added
+    mock_ticket = {
+        "parlay_id": "dk|g:123:moneyline:home|p:123:456:rec_yds:over",
+        "book": "dk",
+        "legs": [mock_game_leg, mock_prop_leg],
+        "parlay_price": 250,
+        "ev": 0.057,
+        "sport": "nfl",
+        "first_commence": "2025-01-01T20:00:00Z",
+    }
+    mock_tickets = [mock_ticket]
     mock_locked_keys = frozenset()
-    mock_replace = MagicMock(return_value=0)
+    mock_replace = MagicMock(return_value=1)
 
     with patch.object(build_best_parlays, "load_game_picks", return_value=[mock_game_pick]), \
          patch.object(build_best_parlays, "load_prop_picks", return_value=[mock_prop_pick]), \
@@ -140,4 +146,9 @@ def test_main_with_legs():
          patch.object(build_best_parlays, "replace_unlocked_best_parlays", mock_replace), \
          patch("builtins.print"):
         build_best_parlays.main()
-        mock_replace.assert_called_once_with([])
+        # Verify replace was called with the ticket list
+        mock_replace.assert_called_once()
+        called_tickets = mock_replace.call_args[0][0]
+        assert len(called_tickets) == 1
+        # Verify model_version was added
+        assert called_tickets[0]["model_version"] == "ev-parlays-v1"

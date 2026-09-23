@@ -1,10 +1,10 @@
 """Tests for scripts/grade_best_parlays.py.
 
-Tests the pure `grade_ticket` function for pending, loss, win, and void scenarios.
+Tests the pure `grade_ticket` function for pending, loss, win, void, and prop scenarios.
 """
 import importlib.util
+import json
 from pathlib import Path
-from decimal import Decimal
 
 import pytest
 
@@ -80,17 +80,17 @@ def test_grade_ticket_pending_returns_none():
 
 
 def test_grade_ticket_one_leg_lost_while_others_pending():
-    """When one leg loses and others are pending, result is a loss row."""
+    """When one leg loses and others are pending, result is a loss row immediately
+    (loss takes precedence). The pending leg's result is None in the returned ticket."""
     legs = [
-        _game_leg(123, "moneyline", "home"),  # Will be a win
-        _game_leg(124, "moneyline", "home"),  # Will be a loss
+        _game_leg(123, "moneyline", "home"),  # Will be a loss
+        _game_leg(124, "moneyline", "home"),  # Will be pending (no final)
     ]
     ticket = _ticket(legs)
 
-    # Fixture: game 123 wins (margin favors home), game 124 loses (margin favors away)
+    # Only game 123 is graded (loses); game 124 is pending
     finals = {
-        123: {"actual_margin": 5.0, "actual_total": None},    # Home wins by 5
-        124: {"actual_margin": -3.0, "actual_total": None},   # Away wins by 3
+        123: {"actual_margin": -5.0, "actual_total": None},   # Away wins by 5 (home loses)
     }
 
     result = grade_best_parlays.grade_ticket(ticket, finals, {}, set())
@@ -99,13 +99,17 @@ def test_grade_ticket_one_leg_lost_while_others_pending():
     assert result["result"] == "loss"
     assert result["pnl"] == -10.0
     assert result["payout_dec"] is None
+    # Loss leg should have result="loss", pending leg should have result=None
+    assert result["legs"][0]["result"] == "loss"
+    assert result["legs"][1]["result"] is None
 
 
 def test_grade_ticket_all_legs_win():
-    """When all game legs win, result is a win row with correct payout."""
+    """When all game legs win, result is a win row with exact payout calculation.
+    2 legs at -110 each: 1.909090... decimal, product = 3.6446..., pnl = 10 * 2.6446..."""
     legs = [
-        _game_leg(123, "moneyline", "home", price=-110),    # 1.909 dec
-        _game_leg(124, "moneyline", "away", price=-110),    # 1.909 dec
+        _game_leg(123, "moneyline", "home", price=-110),
+        _game_leg(124, "moneyline", "away", price=-110),
     ]
     ticket = _ticket(legs)
 
@@ -119,18 +123,19 @@ def test_grade_ticket_all_legs_win():
 
     assert result is not None
     assert result["result"] == "win"
-    # 1.909 * 1.909 = 3.6442... => pnl = 10 * (3.6442 - 1) = 26.442
-    assert result["pnl"] > 0
+    # -110 odds = 1.909090... decimal; product = 3.644628...; pnl = 10 * 2.644628...
+    expected_pnl = 10 * (1.909090909 * 1.909090909 - 1)
+    assert result["pnl"] == pytest.approx(expected_pnl, rel=0.001)
     assert result["payout_dec"] is not None
-    assert result["payout_dec"] > 1
+    assert result["payout_dec"] == pytest.approx(1.909090909 * 1.909090909, rel=0.001)
 
 
 def test_grade_ticket_prop_void_captured_no_actual():
     """When a prop's game is captured but has no actual, the leg is a push and
-    dropped from the payout calculation."""
+    correctly dropped from payout calculation: only the winning leg (1.909 dec) is used."""
     legs = [
-        _game_leg(123, "moneyline", "home", price=-110),
-        _prop_leg(123, 789, "rec_yds", "over", 45.5, price=-110),  # Will be void (push)
+        _game_leg(123, "moneyline", "home", price=-110),       # Win leg: 1.909 dec
+        _prop_leg(123, "789", "rec_yds", "over", 45.5, price=-110),  # Void (push)
     ]
     ticket = _ticket(legs)
 
@@ -144,9 +149,13 @@ def test_grade_ticket_prop_void_captured_no_actual():
     result = grade_best_parlays.grade_ticket(ticket, finals, actuals, captured_games)
 
     assert result is not None
-    # One win leg, one push leg -> payout is just the winning leg (1.909 dec)
     assert result["result"] == "win"
-    assert result["payout_dec"] is not None
+    # One win leg (1.909 dec), one push leg (dropped) => payout = 1.909
+    # pnl = 10 * (1.909 - 1) = 9.09
+    assert result["payout_dec"] == pytest.approx(1.909090909, rel=0.001)
+    assert result["pnl"] == pytest.approx(9.090909, rel=0.001)
+    assert result["legs"][0]["result"] == "win"
+    assert result["legs"][1]["result"] == "push"
 
 
 def test_grade_ticket_all_pushes():
@@ -175,7 +184,6 @@ def test_grade_ticket_all_pushes():
 
 def test_grade_ticket_legs_json_string():
     """When legs is a JSON string (from DB), it is decoded before grading."""
-    import json
     legs = [
         _game_leg(123, "moneyline", "home"),
     ]
@@ -213,4 +221,49 @@ def test_grade_ticket_result_includes_legs_with_results():
     assert result is not None
     assert len(result["legs"]) == 2
     assert result["legs"][0]["result"] == "win"
+    assert result["legs"][1]["result"] == "loss"
+
+
+def test_grade_ticket_prop_with_actual_over_wins():
+    """Prop leg settles via actual lookup: player actual 60.0 vs line 45.5 over wins."""
+    legs = [
+        _game_leg(123, "moneyline", "home", price=-110),
+        _prop_leg(123, "789", "rec_yds", "over", 45.5, price=-110),
+    ]
+    ticket = _ticket(legs)
+
+    finals = {
+        123: {"actual_margin": 5.0, "actual_total": None},
+    }
+    # player_id is TEXT (string) in the DB
+    actuals = {(123, "789", "rec_yds"): 60.0}  # Actual 60 > line 45.5
+
+    result = grade_best_parlays.grade_ticket(ticket, finals, actuals, set())
+
+    assert result is not None
+    assert result["result"] == "win"
+    # Both legs win: 1.909 * 1.909 parlay
+    assert result["payout_dec"] == pytest.approx(1.909090909 * 1.909090909, rel=0.001)
+    assert result["legs"][1]["result"] == "win"
+
+
+def test_grade_ticket_prop_with_actual_under_loses():
+    """Prop leg settles via actual lookup: player actual 50.0 vs line 45.5 under loses."""
+    legs = [
+        _game_leg(123, "moneyline", "home", price=-110),
+        _prop_leg(123, "789", "rec_yds", "under", 45.5, price=-110),
+    ]
+    ticket = _ticket(legs)
+
+    finals = {
+        123: {"actual_margin": 5.0, "actual_total": None},
+    }
+    # Actual 50 > line 45.5, so under loses
+    actuals = {(123, "789", "rec_yds"): 50.0}
+
+    result = grade_best_parlays.grade_ticket(ticket, finals, actuals, set())
+
+    assert result is not None
+    assert result["result"] == "loss"
+    assert result["pnl"] == -10.0
     assert result["legs"][1]["result"] == "loss"
