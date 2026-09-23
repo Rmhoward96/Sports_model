@@ -1,9 +1,10 @@
 name: build-trends
-# Daily betting trends, ahead of the desk (desk-auto-* 22:15 UTC): Action
+# Daily betting trends in season months (Jan-Feb, Aug-Dec), ahead of the desk
+# (desk-auto-* 22:15 UTC): Action
 # Network season betting records (NFL + CFB) and NFL situational trends.
 on:
   schedule:
-    - cron: "30 20 * * *"
+    - cron: "30 20 * 1,2,8-12 *"
   workflow_dispatch:
 permissions:
   contents: read
@@ -23,7 +24,7 @@ jobs:
           APIFY_TOKEN: ${{ secrets.APIFY_TOKEN }}
         run: uv run python scripts/capture_team_records.py
       - name: Build NFL situational trends
-        if: ${{ always() }}
+        if: ${{ !cancelled() }}
         env:
           DATABASE_URL: ${{ secrets.DATABASE_URL }}
         run: uv run python scripts/build_nfl_trends.py

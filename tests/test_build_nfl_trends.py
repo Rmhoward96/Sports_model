@@ -132,3 +132,13 @@ def test_build_upcoming_multiple_mixed():
 
     game_200 = [r for r in result if r["game_pk"] == 200][0]
     assert game_200["home_line"] == -2.0  # -(2.0) from spread_line
+
+
+def test_build_upcoming_none_spread_line_fallback_does_not_apply():
+    """A None (object-dtype missing) schedule spread_line is also treated as missing."""
+    preds = {333: None}
+    sched = FakeSched([
+        _sched_row(333, "BUF", "KC", "2026-01-25", "16:00", None)
+    ])
+    result = build_nfl_trends.build_upcoming(sched, preds)
+    assert result[0]["home_line"] is None

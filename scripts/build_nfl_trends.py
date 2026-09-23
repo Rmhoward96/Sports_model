@@ -38,7 +38,7 @@ def build_upcoming(sched, preds: dict[int, float | None]) -> list[dict]:
         if pk not in preds:
             continue
         line = preds[pk]
-        if line is None and g.spread_line == g.spread_line:          # not NaN
+        if line is None and not pd.isna(g.spread_line):              # not NaN/None
             line = -float(g.spread_line)                              # nflverse: + = home favored
         out.append({"game_pk": pk, "home_team": g.home_team, "away_team": g.away_team,
                     "home_line": None if line is None else float(line),
