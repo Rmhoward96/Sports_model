@@ -875,3 +875,31 @@ def upsert_team_betting_records(rows: list[dict]) -> int:
         cur.executemany(sql, vals)
         conn.commit()
     return len(vals)
+
+
+_NFL_GAME_TRENDS_COLS = [
+    "game_pk", "team_name", "situation", "label", "ats_w", "ats_l", "ats_p",
+    "ou_o", "ou_u", "ou_p", "n", "since_season",
+]
+
+
+def replace_nfl_game_trends(game_pks: list[int], rows: list[dict]) -> int:
+    """Replace NFL game trends for given game_pks: DELETE then INSERT (one transaction).
+
+    Empty game_pks returns 0 without touching the DB. Requires DATABASE_URL and
+    nfl_game_trends (db/migration_trends.sql).
+    """
+    if not game_pks:
+        return 0
+    placeholders = ", ".join(["%s"] * len(_NFL_GAME_TRENDS_COLS))
+    insert_sql = (
+        f"INSERT INTO nfl_game_trends ({', '.join(_NFL_GAME_TRENDS_COLS)}) "
+        f"VALUES ({placeholders})"
+    )
+    row_tuples = [tuple(r.get(c) for c in _NFL_GAME_TRENDS_COLS) for r in rows]
+    with get_postgres() as conn, conn.cursor() as cur:
+        cur.execute("DELETE FROM nfl_game_trends WHERE game_pk = ANY(%s)", (game_pks,))
+        if row_tuples:
+            cur.executemany(insert_sql, row_tuples)
+        conn.commit()
+    return len(row_tuples)
