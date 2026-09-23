@@ -118,6 +118,16 @@ _PREDICTION_ACCURACY_COLS = [
 ]
 
 
+def refresh_prediction_pnl() -> None:
+    """Rebuild the materialized `prediction_pnl_daily` (db/migration_pnl_materialize.sql).
+    Computing closing prices scans every captured odds row (~2.6s and growing),
+    over the anon role's 3s statement timeout, so the site reads this
+    precomputed rollup instead; the grading job refreshes it after each run."""
+    with get_postgres() as conn, conn.cursor() as cur:
+        cur.execute("REFRESH MATERIALIZED VIEW prediction_pnl_daily")
+        conn.commit()
+
+
 def upsert_prediction_accuracy(records: list[dict]) -> int:
     """Upsert graded prediction-accuracy rows into Supabase `prediction_accuracy`.
 

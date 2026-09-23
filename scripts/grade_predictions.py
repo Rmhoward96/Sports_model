@@ -22,7 +22,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from sportsmodel import config
 from sportsmodel.cfb import espn as cfb_espn
-from sportsmodel.db import get_postgres, upsert_prediction_accuracy
+from sportsmodel.db import get_postgres, refresh_prediction_pnl, upsert_prediction_accuracy
 from sportsmodel.nfl import espn as nfl_espn
 
 # Results-provider seam: sport key -> module exposing fetch_final(game_pk) -> dict|None.
@@ -198,6 +198,14 @@ def main() -> None:
         print(f"Upserted {written} prediction_accuracy rows.")
     for sport, n in counts.items():
         print(f"graded {n} {sport} predictions")
+    # The site's $10-per-bet profit tracker reads this precomputed rollup.
+    # Refresh every run (closing prices can land after a game is first graded);
+    # a failure here must not fail the grading that already succeeded.
+    try:
+        refresh_prediction_pnl()
+        print("Refreshed prediction_pnl_daily.")
+    except Exception as exc:  # noqa: BLE001
+        print(f"WARN prediction_pnl_daily refresh failed ({exc!r})")
 
 
 if __name__ == "__main__":

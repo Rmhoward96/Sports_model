@@ -85,15 +85,8 @@ CREATE OR REPLACE VIEW prediction_pnl AS
   FROM priced
   WHERE bet_dec IS NOT NULL;
 
-CREATE OR REPLACE VIEW prediction_pnl_daily AS
-  SELECT game_date, sport, market,
-         count(*)                                   AS n,
-         count(*) FILTER (WHERE result = 'win')     AS wins,
-         count(*) FILTER (WHERE result = 'loss')    AS losses,
-         count(*) FILTER (WHERE result = 'push')    AS pushes,
-         sum(pnl)                                   AS pnl
-  FROM prediction_pnl
-  GROUP BY game_date, sport, market;
+-- prediction_pnl_daily is a MATERIALIZED view -- see db/migration_pnl_materialize.sql
+-- (a plain view here timed out under the anon role's 3s statement limit).
 
 -- Every graded +EV pick. Game lines: ev_results joined to the pick row for its
 -- best (pick-time) price; won NULL = push. Props: ev_prop_results already
@@ -171,6 +164,6 @@ CREATE OR REPLACE VIEW nfl_prop_pnl_by_game AS
   FROM lean l LEFT JOIN ev ON ev.game_pk = l.game_pk;
 
 GRANT EXECUTE ON FUNCTION american_to_decimal(DOUBLE PRECISION) TO anon, authenticated;
-GRANT SELECT ON game_closing_prices, prediction_pnl, prediction_pnl_daily,
+GRANT SELECT ON game_closing_prices, prediction_pnl,
                 ev_pnl, ev_pnl_daily, nfl_prop_pnl, nfl_prop_pnl_by_game
   TO anon, authenticated;
