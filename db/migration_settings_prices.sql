@@ -31,8 +31,9 @@ CREATE OR REPLACE VIEW ev_pick_prices_current AS
   ), ppicks AS (
     SELECT game_pk, player_id, market, side, line,
            CASE market WHEN 'rec_yds' THEN 'reception_yds' ELSE market END AS omarket,
-           lower(regexp_replace(regexp_replace(trim(player_name), '[.''’]', '', 'g'),
-                                '\s+(jr|sr|ii|iii|iv|v)$', '', 'i')) AS nkey
+           lower(regexp_replace(regexp_replace(regexp_replace(trim(player_name), '[.''’]', '', 'g'),
+                                             '\s+', ' ', 'g'),
+                              '\s+(jr|sr|ii|iii|iv|v)$', '', 'i')) AS nkey
     FROM ev_prop_picks_current WHERE is_pick
   ), pcap AS (
     SELECT o.game_pk, o.market, o.player_name, o.book, max(o.captured_at) AS cap
@@ -44,8 +45,9 @@ CREATE OR REPLACE VIEW ev_pick_prices_current AS
     GROUP BY 1, 2, 3, 4
   ), prows AS (
     SELECT o.game_pk, o.market, o.side, o.book, o.line, o.price,
-           lower(regexp_replace(regexp_replace(trim(o.player_name), '[.''’]', '', 'g'),
-                                '\s+(jr|sr|ii|iii|iv|v)$', '', 'i')) AS nkey
+           lower(regexp_replace(regexp_replace(regexp_replace(trim(o.player_name), '[.''’]', '', 'g'),
+                                             '\s+', ' ', 'g'),
+                              '\s+(jr|sr|ii|iii|iv|v)$', '', 'i')) AS nkey
     FROM odds_snapshot o
     JOIN pcap c ON c.game_pk = o.game_pk AND c.market = o.market AND c.player_name = o.player_name
                AND c.book = o.book AND c.cap = o.captured_at
