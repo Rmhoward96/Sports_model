@@ -106,3 +106,30 @@ def test_attach_game_pks_by_name_matches_on_normalized_name_and_date():
     # wrong date / empty -> dropped
     assert an.attach_game_pks_by_name(rows, {("georgia bulldogs", "alabama crimson tide", "2026-10-04"): 1}) == []
     assert an.attach_game_pks_by_name(rows, {}) == []
+
+
+from sportsmodel.nfl.action_network import parse_team_records
+
+_STANDINGS = {"recordType": "standings", "league": "nfl", "season": 2026, "standings": [
+    {"team": {"name": "Buffalo Bills", "abbreviation": "BUF"}, "records": [
+        {"category": "ats", "wins": 2, "losses": 1, "ties": None, "draws": 1, "overs": None, "unders": None},
+        {"category": "over_under_road", "wins": None, "losses": None, "overs": 3, "unders": 1, "draws": 0},
+        {"category": "units", "wins": 1.2, "losses": 0, "draws": 0},
+        {"category": "home", "wins": 1, "losses": 0, "ties": 0, "draws": None}]},
+    {"team": {"name": None}, "records": []}]}
+
+
+def test_parse_team_records_flattens_categories():
+    rows = parse_team_records([{"eventType": "game"}, _STANDINGS])
+    assert len(rows) == 1
+    r = rows[0]
+    assert (r["sport"], r["season"], r["an_team_name"], r["abbr"]) == ("nfl", 2026, "Buffalo Bills", "BUF")
+    assert r["records"]["ats"] == {"w": 2, "l": 1, "p": 1, "o": None, "u": None}
+    assert r["records"]["over_under_road"] == {"w": None, "l": None, "p": 0, "o": 3, "u": 1}
+    assert r["records"]["units"]["w"] == 1.2 and r["records"]["home"]["p"] == 0
+
+
+def test_parse_team_records_maps_ncaaf_to_cfb_and_ignores_games():
+    item = {**_STANDINGS, "league": "ncaaf"}
+    assert parse_team_records([item])[0]["sport"] == "cfb"
+    assert parse_team_records([{"eventType": "game", "gameId": 1}]) == []

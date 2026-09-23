@@ -855,3 +855,51 @@ def upsert_ev_parlay_results(records: list[dict]) -> int:
         cur.executemany(sql, rows)
         conn.commit()
     return len(rows)
+
+
+_TEAM_RECORD_COLS = ["sport", "season", "team_name", "an_team_name", "abbr", "records"]
+
+
+def upsert_team_betting_records(rows: list[dict]) -> int:
+    """Upsert Action Network season betting records (db/migration_trends.sql).
+    Idempotent on (sport, season, team_name); captured_at refreshed."""
+    if not rows:
+        return 0
+    key = ("sport", "season", "team_name")
+    updates = ", ".join(f"{c} = EXCLUDED.{c}" for c in _TEAM_RECORD_COLS if c not in key)
+    sql = (f"INSERT INTO team_betting_records ({', '.join(_TEAM_RECORD_COLS)}) "
+           f"VALUES ({', '.join(['%s'] * len(_TEAM_RECORD_COLS))}) "
+           f"ON CONFLICT (sport, season, team_name) DO UPDATE SET {updates}, captured_at = now()")
+    vals = [tuple(json.dumps(r[c]) if c == "records" else r.get(c) for c in _TEAM_RECORD_COLS) for r in rows]
+    with get_postgres() as conn, conn.cursor() as cur:
+        cur.executemany(sql, vals)
+        conn.commit()
+    return len(vals)
+
+
+_NFL_GAME_TRENDS_COLS = [
+    "game_pk", "team_name", "situation", "label", "ats_w", "ats_l", "ats_p",
+    "ou_o", "ou_u", "ou_p", "n", "since_season",
+]
+
+
+def replace_nfl_game_trends(game_pks: list[int], rows: list[dict]) -> int:
+    """Replace NFL game trends for given game_pks: DELETE then INSERT (one transaction).
+
+    Empty game_pks returns 0 without touching the DB. Requires DATABASE_URL and
+    nfl_game_trends (db/migration_trends.sql).
+    """
+    if not game_pks:
+        return 0
+    placeholders = ", ".join(["%s"] * len(_NFL_GAME_TRENDS_COLS))
+    insert_sql = (
+        f"INSERT INTO nfl_game_trends ({', '.join(_NFL_GAME_TRENDS_COLS)}) "
+        f"VALUES ({placeholders})"
+    )
+    row_tuples = [tuple(r.get(c) for c in _NFL_GAME_TRENDS_COLS) for r in rows]
+    with get_postgres() as conn, conn.cursor() as cur:
+        cur.execute("DELETE FROM nfl_game_trends WHERE game_pk = ANY(%s)", (game_pks,))
+        if row_tuples:
+            cur.executemany(insert_sql, row_tuples)
+        conn.commit()
+    return len(row_tuples)

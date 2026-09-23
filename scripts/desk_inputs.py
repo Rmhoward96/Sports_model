@@ -69,6 +69,85 @@ log = logging.getLogger(__name__)
 # Pure assembly
 # =============================================================================
 
+def _rec(r: dict | None, a: str = "w", b: str = "l") -> str | None:
+    """Format a record dict {a, b, p} as 'a-b-p' string, or None if empty."""
+    if not r or (r.get(a) is None and r.get(b) is None):
+        return None
+    return f"{r.get(a) or 0}-{r.get(b) or 0}-{r.get('p') or 0}"
+
+
+def trend_block(records: dict | None, situational: list[dict], *, is_home: bool, is_fav: bool | None) -> dict | None:
+    """PURE. One team's trends for the desk: Action Network season records
+    relevant to this game (ATS overall / this venue / this role / last 5, O/U
+    overall / this venue, units) + NFL situational trend lines. None when empty."""
+    out: dict = {}
+    if records:
+        venue = "home" if is_home else "road"
+        venue_lbl = "at home" if is_home else "on the road"
+        picks = [("ATS", _rec(records.get("ats"))), (f"ATS {venue_lbl}", _rec(records.get(f"ats_{venue}"))),
+                 ("ATS last 5", _rec(records.get("ats_last_5"))),
+                 ("O/U", _rec(records.get("over_under"), "o", "u")),
+                 (f"O/U {venue_lbl}", _rec(records.get(f"over_under_{venue}"), "o", "u"))]
+        if is_fav is not None:
+            role, role_lbl = ("fav", "as favorite") if is_fav else ("dog", "as underdog")
+            picks.insert(2, (f"ATS {role_lbl}", _rec(records.get(f"ats_{role}"))))
+        units = records.get("units")
+        if units and units.get("w") is not None:
+            net = float(units.get("w") or 0) - float(units.get("l") or 0)
+            picks.append(("Units", f"{net:+.1f}"))
+        out["records"] = {k: v for k, v in picks if v is not None}
+    sit = [f"{t['ats_w']}-{t['ats_l']}-{t['ats_p']} ATS, O/U {t['ou_o']}-{t['ou_u']}-{t['ou_p']} "
+           f"{t['label']} since {t['since_season']}" for t in (situational or [])]
+    if sit:
+        out["situational"] = sit
+    if not out:
+        return None
+    out.setdefault("records", {})
+    out.setdefault("situational", [])
+    return out
+
+
+def game_trends(
+    home_team: str,
+    away_team: str,
+    market_spread: float | None,
+    records_by_team: dict[str, dict],
+    sit_by_game_team: dict[tuple[int, str], list[dict]],
+    game_pk: int,
+) -> dict:
+    """PURE. Assemble trends for both sides of a single game.
+
+    Args:
+      home_team, away_team: team names (keys for records_by_team)
+      market_spread: ESPN home-referenced spread (negative = home favored);
+        None or 0 -> is_fav = None for both teams (no role trends).
+      records_by_team: {team -> records dict}
+      sit_by_game_team: {(game_pk, team) -> [situational trends]}
+      game_pk: game identifier
+
+    Returns: {"home": trend_block(...) | None, "away": trend_block(...) | None}
+    """
+    # Determine is_fav from market_spread: None or 0 (pick'em) -> None (no role);
+    # negative = home favored (True); positive = away favored (home False).
+    is_fav_home = None if market_spread is None or market_spread == 0 else (market_spread < 0)
+    is_fav_away = None if is_fav_home is None else (not is_fav_home)
+
+    home_trends = trend_block(
+        records_by_team.get(home_team),
+        sit_by_game_team.get((game_pk, home_team), []),
+        is_home=True,
+        is_fav=is_fav_home,
+    )
+    away_trends = trend_block(
+        records_by_team.get(away_team),
+        sit_by_game_team.get((game_pk, away_team), []),
+        is_home=False,
+        is_fav=is_fav_away,
+    )
+
+    return {"home": home_trends, "away": away_trends}
+
+
 def build_bundle(
     games: list[dict],
     model_rows: list[dict],
@@ -76,6 +155,7 @@ def build_bundle(
     injuries: dict[str, list[dict]],
     weather: dict[int, dict],
     now: datetime,
+    trends: dict[int, dict] | None = None,
 ) -> list[dict]:
     """Assemble one bundle entry per UPCOMING game. PURE -- no network/DB/file.
 
@@ -107,15 +187,20 @@ def build_bundle(
         included (already-started/finished games are dropped). Compared as
         ISO-8601 strings via `datetime.fromisoformat` (with a trailing "Z"
         normalized to "+00:00").
+      trends: {game_pk -> {"home": trend_block, "away": trend_block}}, passed
+        through as-is (season records + situational trends). A game_pk absent
+        here yields {"home": None, "away": None} for that game's trends.
 
     Returns one dict per upcoming game:
       {"game_pk", "matchup" ("{away} @ {home}"), "commence_time",
        "market_spread", "market_total",
        "model": {"margin", "total", "win_prob"},
        "form": {"home", "away"},
-       "news": {"injuries": {"home", "away"}, "weather"}}
+       "news": {"injuries": {"home", "away"}, "weather"},
+       "trends": {"home": ..., "away": ...}}
     """
     model_by_pk = {row["game_pk"]: row for row in model_rows}
+    trends_by_pk = trends or {}
 
     out = []
     for game in games:
@@ -152,6 +237,7 @@ def build_bundle(
                 },
                 "weather": weather.get(game_pk),
             },
+            "trends": trends_by_pk.get(game_pk) or {"home": None, "away": None},
         })
     return out
 
@@ -466,7 +552,74 @@ def main() -> None:
     # None for every game.
     weather: dict[int, dict] = {}
 
-    bundle = build_bundle(games, model_rows, form_rows, injuries, weather, now)
+    # -- trends, from team_betting_records + nfl_game_trends (NFL only) --
+    # team_betting_records stores {category: {w, l, p}} season records per team.
+    # nfl_game_trends (NFL only) stores situational ATS/O-U trends per game/team.
+    # The fetch is non-fatal: missing tables log warnings and yield no trends
+    # (desk still runs); the desk methodology treats trends as supporting evidence
+    # only, never required for a pick.
+    trends: dict[int, dict] = {}
+    records_by_team: dict[str, dict] = {}
+    try:
+        with get_postgres() as conn, conn.cursor() as cur:
+            # Load team betting records for the current season
+            cur.execute("""
+                SELECT team_name, records
+                FROM team_betting_records
+                WHERE sport = %(sport)s AND season = %(season)s
+            """, {"sport": args.sport, "season": _current_season(now)})
+            for team_name, records_json in cur.fetchall():
+                # Handle JSONB that might come back as dict or str
+                recs = records_json if isinstance(records_json, dict) else json.loads(records_json or "{}")
+                records_by_team[team_name] = recs
+    except Exception:
+        log.warning("team_betting_records fetch failed; continuing with no records data", exc_info=True)
+
+    # Load NFL situational trends if applicable
+    sit_by_game_team: dict[tuple[int, str], list[dict]] = {}
+    if args.sport == "nfl":
+        try:
+            game_pks = [g["game_pk"] for g in games]
+            if game_pks:
+                with get_postgres() as conn, conn.cursor() as cur:
+                    placeholders = ",".join(["%s"] * len(game_pks))
+                    cur.execute(f"""
+                        SELECT game_pk, team_name, label, ats_w, ats_l, ats_p,
+                               ou_o, ou_u, ou_p, since_season
+                        FROM nfl_game_trends
+                        WHERE game_pk IN ({placeholders})
+                    """, game_pks)
+                    for row in cur.fetchall():
+                        game_pk, team_name, label, ats_w, ats_l, ats_p, ou_o, ou_u, ou_p, since_season = row
+                        sit_by_game_team.setdefault((game_pk, team_name), []).append({
+                            "label": label,
+                            "ats_w": ats_w,
+                            "ats_l": ats_l,
+                            "ats_p": ats_p,
+                            "ou_o": ou_o,
+                            "ou_u": ou_u,
+                            "ou_p": ou_p,
+                            "since_season": since_season,
+                        })
+        except Exception:
+            log.warning("nfl_game_trends fetch failed; continuing with no situational trends", exc_info=True)
+
+    # Build trends dict keyed by game_pk using the pure game_trends helper
+    model_by_pk_trends = {row["game_pk"]: row for row in model_rows}
+    for game in games:
+        game_pk = game["game_pk"]
+        model_row = model_by_pk_trends.get(game_pk)
+        mkt_spread = model_row.get("market_spread") if model_row else None
+        trends[game_pk] = game_trends(
+            game["home_team"],
+            game["away_team"],
+            mkt_spread,
+            records_by_team,
+            sit_by_game_team,
+            game_pk,
+        )
+
+    bundle = build_bundle(games, model_rows, form_rows, injuries, weather, now, trends=trends)
 
     # -- sim disagreement signal, NFL only, from nfl_sim_current --
     # LEFT-join by game_pk: a game with no sim row yet (or the table itself

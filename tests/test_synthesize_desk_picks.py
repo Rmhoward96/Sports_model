@@ -231,3 +231,99 @@ def test_disagreement_cap_uses_custom_threshold():
     bundle = _bundle_with_sim(disagreement=0.2)
     assert syn.apply_disagreement_cap(picks, bundle, threshold=0.25) == 0
     assert syn.apply_disagreement_cap(picks, bundle, threshold=0.1) == 1
+
+
+# --- F1: output-token overflow ---------------------------------------------
+import json  # noqa: E402
+import sys  # noqa: E402
+import types  # noqa: E402
+
+import pytest  # noqa: E402
+
+
+class _Block:
+    def __init__(self, text):
+        self.type = "text"
+        self.text = text
+
+
+class _Resp:
+    def __init__(self, text, stop_reason="end_turn"):
+        self.content = [_Block(text)]
+        self.stop_reason = stop_reason
+
+
+def _install_fake_anthropic(monkeypatch, responses):
+    """Fake `anthropic` module whose client returns `responses` in order. Only
+    `messages.stream` exists: at max_tokens > ~21k the real SDK refuses a
+    non-streaming `messages.create` client-side ("Streaming is required ..."),
+    so the desk must stream."""
+    calls = []
+
+    class _Stream:
+        def __init__(self, resp):
+            self._resp = resp
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            return False
+
+        def get_final_message(self):
+            return self._resp
+
+    class _Messages:
+        def stream(self, **kw):
+            calls.append(kw)
+            return _Stream(responses[len(calls) - 1])
+
+    class _Client:
+        def __init__(self, *a, **kw):
+            self.messages = _Messages()
+
+    mod = types.ModuleType("anthropic")
+    mod.Anthropic = _Client
+    monkeypatch.setitem(sys.modules, "anthropic", mod)
+    return calls
+
+
+def test_max_tokens_defaults_to_32000_and_env_overrides(monkeypatch):
+    monkeypatch.delenv("DESK_SYNTH_MAX_TOKENS", raising=False)
+    assert syn._max_tokens() == 32000
+    monkeypatch.setenv("DESK_SYNTH_MAX_TOKENS", "")
+    assert syn._max_tokens() == 32000
+    monkeypatch.setenv("DESK_SYNTH_MAX_TOKENS", "5000")
+    assert syn._max_tokens() == 5000
+
+
+def test_model_decisions_raises_clear_error_when_truncated(monkeypatch):
+    _install_fake_anthropic(monkeypatch, [_Resp('[{"game_pk": 1, "ra', stop_reason="max_tokens")])
+    with pytest.raises(RuntimeError, match=r"desk response truncated at max_tokens=123; raise DESK_SYNTH_MAX_TOKENS"):
+        syn._model_decisions([_game()], "fake-model", 123)
+
+
+def test_model_decisions_parses_normal_response(monkeypatch):
+    calls = _install_fake_anthropic(monkeypatch, [_Resp('[{"game_pk": 1}]')])
+    assert syn._model_decisions([_game()], "fake-model", 123) == [{"game_pk": 1}]
+    assert calls[0]["max_tokens"] == 123
+
+
+def test_repair_call_raises_clear_error_when_truncated(monkeypatch, tmp_path):
+    # first response: valid contract but the rationale never names the picked
+    # team -> consistency flag -> repair round; the repair response is truncated.
+    first = json.dumps([{
+        "game_pk": 1, "ml_pick_team": "Kansas City Chiefs", "spread_pick_team": None,
+        "conviction_tier": "low", "confidence": 0.53, "rationale": "no team named here",
+        "agent_notes": {"statistics": "s", "analyst": "a", "news": "n"}}])
+    calls = _install_fake_anthropic(monkeypatch, [_Resp(first), _Resp("[{", stop_reason="max_tokens")])
+    bundle = tmp_path / "bundle.json"
+    bundle.write_text(json.dumps([_game()]))
+    out = tmp_path / "picks.json"
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "fake-key-for-test")
+    monkeypatch.setenv("DESK_SYNTH_MAX_TOKENS", "777")
+    monkeypatch.setattr(sys, "argv", ["synth", "--sport", "nfl", "--bundle", str(bundle), "--out", str(out)])
+    with pytest.raises(RuntimeError, match=r"truncated at max_tokens=777"):
+        syn.main()
+    assert len(calls) == 2
+    assert not out.exists()

@@ -18,6 +18,8 @@ desk_inputs = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(desk_inputs)
 
 build_bundle = desk_inputs.build_bundle
+trend_block = desk_inputs.trend_block
+game_trends = desk_inputs.game_trends
 
 NOW = datetime(2026, 9, 7, 12, 0, tzinfo=timezone.utc)
 
@@ -113,3 +115,112 @@ def test_game_with_no_line_or_model_row_still_appears_with_none_fields():
     assert entry["form"]["away"] == FORM_ROWS["Coralville"]
     assert entry["news"]["injuries"]["away"] == INJURIES["Coralville"]
     assert entry["news"]["weather"] is None
+
+
+def test_trend_block_formats_records_and_situational():
+    records = {"ats": {"w": 2, "l": 1, "p": 0}, "ats_road": {"w": 1, "l": 0, "p": 0},
+               "ats_dog": {"w": 0, "l": 0, "p": 0}, "ats_last_5": {"w": 2, "l": 1, "p": 0},
+               "over_under": {"o": 2, "u": 1, "p": 0}, "over_under_road": {"o": 1, "u": 0, "p": 0},
+               "units": {"w": 1.2, "l": 0}}
+    sit = [{"label": "off a road game", "ats_w": 7, "ats_l": 2, "ats_p": 0, "ou_o": 4, "ou_u": 5, "ou_p": 0, "since_season": 2023}]
+    b = trend_block(records, sit, is_home=False, is_fav=False)
+    assert b["records"]["ATS"] == "2-1-0" and b["records"]["ATS on the road"] == "1-0-0"
+    assert b["records"]["ATS as underdog"] == "0-0-0" and b["records"]["ATS last 5"] == "2-1-0"
+    assert b["records"]["O/U"] == "2-1-0" and b["records"]["O/U on the road"] == "1-0-0"
+    assert b["records"]["Units"] == "+1.2"
+    assert b["situational"] == ["7-2-0 ATS, O/U 4-5-0 off a road game since 2023"]
+
+
+def test_trend_block_none_when_no_data():
+    assert trend_block(None, [], is_home=True, is_fav=True) is None
+
+
+def test_build_bundle_attaches_trends_when_given():
+    trends = {GAMES[0]["game_pk"]: {"home": {"records": {"ATS": "1-0-0"}, "situational": []}, "away": None}}
+    bundle = build_bundle(GAMES, MODEL_ROWS, FORM_ROWS, INJURIES, WEATHER, NOW, trends=trends)
+    assert bundle[0]["trends"]["home"]["records"]["ATS"] == "1-0-0"
+    # default: no trends arg -> key present with both sides None
+    assert build_bundle(GAMES, MODEL_ROWS, FORM_ROWS, INJURIES, WEATHER, NOW)[0]["trends"] == {"home": None, "away": None}
+
+
+def test_trend_block_is_home_true_uses_at_home_labels():
+    records = {"ats": {"w": 2, "l": 1, "p": 0}, "ats_home": {"w": 1, "l": 0, "p": 0},
+               "over_under": {"o": 2, "u": 1, "p": 0}, "over_under_home": {"o": 1, "u": 0, "p": 0}}
+    b = trend_block(records, [], is_home=True, is_fav=None)
+    assert "ATS at home" in b["records"]
+    assert "O/U at home" in b["records"]
+    assert "ATS on the road" not in b["records"]
+
+
+def test_trend_block_is_fav_none_omits_role_keys():
+    records = {"ats": {"w": 2, "l": 1, "p": 0}, "ats_fav": {"w": 1, "l": 1, "p": 0},
+               "ats_dog": {"w": 1, "l": 0, "p": 0}}
+    b = trend_block(records, [], is_home=True, is_fav=None)
+    assert "ATS as favorite" not in b["records"]
+    assert "ATS as underdog" not in b["records"]
+    assert b["records"]["ATS"] == "2-1-0"
+
+
+def test_trend_block_is_fav_true_includes_favorite_key():
+    records = {"ats": {"w": 2, "l": 1, "p": 0}, "ats_fav": {"w": 3, "l": 0, "p": 0}}
+    b = trend_block(records, [], is_home=True, is_fav=True)
+    assert b["records"]["ATS as favorite"] == "3-0-0"
+
+
+def test_trend_block_situational_only_records_none():
+    sit = [{"label": "primetime", "ats_w": 5, "ats_l": 2, "ats_p": 0, "ou_o": 3, "ou_u": 4, "ou_p": 0, "since_season": 2024}]
+    b = trend_block(None, sit, is_home=True, is_fav=None)
+    assert b["records"] == {}
+    assert b["situational"] == ["5-2-0 ATS, O/U 3-4-0 primetime since 2024"]
+
+
+def test_game_trends_negative_spread_home_favored():
+    records = {
+        "Home Team": {"ats": {"w": 2, "l": 1, "p": 0}, "ats_fav": {"w": 2, "l": 0, "p": 0}},
+        "Away Team": {"ats": {"w": 1, "l": 2, "p": 0}, "ats_dog": {"w": 1, "l": 2, "p": 0}},
+    }
+    sit = {}
+    result = game_trends("Home Team", "Away Team", -3.5, records, sit, 101)
+    # Home is favored: home has is_fav=True, away has is_fav=False
+    assert "ATS as favorite" in result["home"]["records"]
+    assert "ATS as underdog" in result["away"]["records"]
+
+
+def test_game_trends_positive_spread_away_favored():
+    records = {
+        "Home Team": {"ats": {"w": 1, "l": 2, "p": 0}, "ats_dog": {"w": 0, "l": 2, "p": 0}},
+        "Away Team": {"ats": {"w": 3, "l": 0, "p": 0}, "ats_fav": {"w": 3, "l": 0, "p": 0}},
+    }
+    sit = {}
+    result = game_trends("Home Team", "Away Team", 2.5, records, sit, 102)
+    # Away is favored: home has is_fav=False, away has is_fav=True
+    assert "ATS as underdog" in result["home"]["records"]
+    assert "ATS as favorite" in result["away"]["records"]
+
+
+def test_game_trends_zero_spread_pickem_no_role_trends():
+    records = {
+        "Home Team": {"ats": {"w": 2, "l": 1, "p": 0}, "ats_fav": {"w": 1, "l": 0, "p": 0}, "ats_dog": {"w": 1, "l": 1, "p": 0}},
+        "Away Team": {"ats": {"w": 2, "l": 2, "p": 0}, "ats_fav": {"w": 1, "l": 1, "p": 0}, "ats_dog": {"w": 1, "l": 1, "p": 0}},
+    }
+    sit = {}
+    result = game_trends("Home Team", "Away Team", 0.0, records, sit, 103)
+    # Pick'em: both teams have is_fav=None (no role trends)
+    assert "ATS as favorite" not in result["home"]["records"]
+    assert "ATS as underdog" not in result["home"]["records"]
+    assert "ATS as favorite" not in result["away"]["records"]
+    assert "ATS as underdog" not in result["away"]["records"]
+    assert result["home"]["records"]["ATS"] == "2-1-0"
+    assert result["away"]["records"]["ATS"] == "2-2-0"
+
+
+def test_game_trends_none_spread_no_role_trends():
+    records = {
+        "Home Team": {"ats": {"w": 2, "l": 1, "p": 0}},
+        "Away Team": {"ats": {"w": 1, "l": 2, "p": 0}},
+    }
+    sit = {}
+    result = game_trends("Home Team", "Away Team", None, records, sit, 104)
+    # No spread: both teams have is_fav=None (no role trends)
+    assert "ATS as favorite" not in (result["home"]["records"] if result["home"] else {})
+    assert "ATS as underdog" not in (result["away"]["records"] if result["away"] else {})
