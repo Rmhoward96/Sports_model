@@ -119,6 +119,41 @@ def attach_game_pks_by_name(rows: list[dict], index: dict) -> list[dict]:
     return out
 
 
+_LEAGUE_TO_SPORT = {"nfl": "nfl", "ncaaf": "cfb"}
+
+
+def parse_team_records(items) -> list[dict]:
+    """PURE. The actor's standings item(s) (includeStandings: true) -> one row
+    per team: {sport, season, an_team_name, abbr, records}, where records maps
+    each category (ats, ats_road, over_under_home, units_fav, last_5, ...) to
+    {w, l, p, o, u}: wins/losses, pushes (draws, else ties), overs/unders
+    (over_under_* only; units_* carry the unit value in w). Game items and
+    rows without a team name are skipped."""
+    out: list[dict] = []
+    for item in items or []:
+        if item.get("recordType") != "standings":
+            continue
+        sport = _LEAGUE_TO_SPORT.get(str(item.get("league") or "").lower())
+        if sport is None:
+            continue
+        for row in item.get("standings") or []:
+            team = row.get("team") or {}
+            name = team.get("name")
+            if not name:
+                continue
+            records = {}
+            for rec in row.get("records") or []:
+                cat = rec.get("category")
+                if not cat:
+                    continue
+                push = rec.get("draws") if rec.get("draws") is not None else rec.get("ties")
+                records[cat] = {"w": rec.get("wins"), "l": rec.get("losses"), "p": push,
+                                "o": rec.get("overs"), "u": rec.get("unders")}
+            out.append({"sport": sport, "season": item.get("season"), "an_team_name": name,
+                        "abbr": team.get("abbreviation"), "records": records})
+    return out
+
+
 @retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=0.5, max=8),
        retry=retry_if_exception_type(httpx.TransportError), reraise=True)
 def fetch_splits(token: str, leagues=("nfl",), game_status=("scheduled",),

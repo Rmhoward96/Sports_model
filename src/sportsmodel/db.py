@@ -855,3 +855,23 @@ def upsert_ev_parlay_results(records: list[dict]) -> int:
         cur.executemany(sql, rows)
         conn.commit()
     return len(rows)
+
+
+_TEAM_RECORD_COLS = ["sport", "season", "team_name", "an_team_name", "abbr", "records"]
+
+
+def upsert_team_betting_records(rows: list[dict]) -> int:
+    """Upsert Action Network season betting records (db/migration_trends.sql).
+    Idempotent on (sport, season, team_name); captured_at refreshed."""
+    if not rows:
+        return 0
+    key = ("sport", "season", "team_name")
+    updates = ", ".join(f"{c} = EXCLUDED.{c}" for c in _TEAM_RECORD_COLS if c not in key)
+    sql = (f"INSERT INTO team_betting_records ({', '.join(_TEAM_RECORD_COLS)}) "
+           f"VALUES ({', '.join(['%s'] * len(_TEAM_RECORD_COLS))}) "
+           f"ON CONFLICT (sport, season, team_name) DO UPDATE SET {updates}, captured_at = now()")
+    vals = [tuple(json.dumps(r[c]) if c == "records" else r.get(c) for c in _TEAM_RECORD_COLS) for r in rows]
+    with get_postgres() as conn, conn.cursor() as cur:
+        cur.executemany(sql, vals)
+        conn.commit()
+    return len(vals)
