@@ -4,9 +4,9 @@ projected props.
 
 For each finished game that still has projections in `nfl_player_sim` but no
 captured actuals, this resolves the game's NFL week (nflverse `import_schedules`
-`espn` join), fetches that season's `import_weekly_data`, and writes each
-projected player's realized value for the six projected markets
-(pass_yds/pass_tds/rush_yds/rec_yds/receptions/anytime_td). Only players the
+`espn` join), fetches that season's weekly player stats, and writes each
+projected player's realized value for the projected markets
+(pass_yds/pass_tds/rush_yds/rec_yds/receptions/anytime_td/rush_att). Only players the
 sim projected are captured, so the table lines up 1:1 with the props table.
 
 Reads Supabase + nflverse only -- NO Odds API calls. Rolling window (like
@@ -30,14 +30,13 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
-import nfl_data_py as nfl_data_py_import
 import pandas as pd
 
 from sportsmodel import config
 from sportsmodel.db import get_postgres, upsert_nfl_player_actuals
 from sportsmodel.nfl.data import load_schedules
 from sportsmodel.nfl.injuries_nflverse import nfl_season
-from sportsmodel.nfl.nflverse import import_by_season
+from sportsmodel.nfl.nflverse import load_release
 from sportsmodel.nfl.weekly_actuals import (
     WEEKLY_STAT_COLS,
     player_market_actual,
@@ -96,8 +95,9 @@ def _schedule_for(season: int) -> pd.DataFrame | None:
 
 def _weekly_for(season: int) -> pd.DataFrame | None:
     if season not in _weekly_cache:
-        _weekly_cache[season] = import_by_season(
-            nfl_data_py_import.import_weekly_data, [season], "weekly", required=False)
+        # nfl_data_py's import_weekly_data points at a retired nflverse URL
+        # (silently empty); read the canonical stats_player_week release.
+        _weekly_cache[season] = load_release("weekly", [season], required=False)
     return _weekly_cache[season]
 
 

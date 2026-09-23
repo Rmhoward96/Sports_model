@@ -23,9 +23,13 @@ def test_week_for_game_no_match_or_missing_col_returns_none():
     assert week_for_game(pd.DataFrame(), 1) is None
 
 
-def test_all_six_markets_mapped():
+def test_all_markets_mapped():
     assert set(WEEKLY_STAT_COLS) == {
-        "pass_yds", "pass_tds", "rush_yds", "rec_yds", "receptions", "anytime_td"}
+        "pass_yds", "pass_tds", "rush_yds", "rec_yds", "receptions", "anytime_td", "rush_att"}
+
+
+def test_rush_att_reads_carries():
+    assert player_market_actual(pd.Series({"carries": 17}), "rush_att") == 17.0
 
 
 def test_player_market_actual_reads_and_sums():

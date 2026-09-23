@@ -16,6 +16,7 @@ WEEKLY_STAT_COLS: dict[str, tuple[str, ...]] = {
     "rec_yds": ("receiving_yards",),
     "receptions": ("receptions",),
     "anytime_td": ("rushing_tds", "receiving_tds"),
+    "rush_att": ("carries",),
 }
 
 

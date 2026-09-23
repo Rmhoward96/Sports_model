@@ -47,14 +47,13 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
-import nfl_data_py as nfl_data_py_import
 import pandas as pd
 
 from sportsmodel import config
 from sportsmodel.db import get_postgres, upsert_ev_prop_results
 from sportsmodel.nfl.data import load_schedules
 from sportsmodel.nfl.injuries_nflverse import nfl_season
-from sportsmodel.nfl.nflverse import import_by_season
+from sportsmodel.nfl.nflverse import load_release
 from sportsmodel.serving.props_ev import (
     SIM_MARKET_TO_WEEKLY,
     grade_prop_pick,
@@ -127,8 +126,9 @@ def _schedule_for(season: int) -> pd.DataFrame | None:
 
 def _weekly_for(season: int) -> pd.DataFrame | None:
     if season not in _weekly_cache:
-        _weekly_cache[season] = import_by_season(
-            nfl_data_py_import.import_weekly_data, [season], "weekly", required=False)
+        # nfl_data_py's import_weekly_data points at a retired nflverse URL
+        # (silently empty); read the canonical stats_player_week release.
+        _weekly_cache[season] = load_release("weekly", [season], required=False)
     return _weekly_cache[season]
 
 
