@@ -669,6 +669,35 @@ def upsert_nfl_player_actuals(records: list[dict]) -> int:
     return len(rows)
 
 
+_NFL_PROP_LINES_COLS = [
+    "game_pk", "player_id", "player_name", "team", "market", "line",
+    "over_price", "over_book", "under_price", "under_book",
+    "projection", "p_over", "lean", "n_books", "commence_time",
+]
+
+
+def upsert_nfl_prop_lines(records: list[dict]) -> int:
+    """Upsert the book line + best prices for each sim prop projection into
+    `nfl_prop_lines`. Idempotent on (game_pk, player_id, market): each board
+    build overwrites in place (the main line can move), so the last write
+    before kickoff is the graded line. Requires db/migration_nfl_prop_lines.sql."""
+    if not records:
+        return 0
+    key = ("game_pk", "player_id", "market")
+    updates = ", ".join(f"{c} = EXCLUDED.{c}" for c in _NFL_PROP_LINES_COLS if c not in key)
+    placeholders = ", ".join(["%s"] * len(_NFL_PROP_LINES_COLS))
+    sql = (
+        f"INSERT INTO nfl_prop_lines ({', '.join(_NFL_PROP_LINES_COLS)}) "
+        f"VALUES ({placeholders}) "
+        f"ON CONFLICT (game_pk, player_id, market) DO UPDATE SET {updates}, updated_at = now()"
+    )
+    rows = [tuple(r.get(c) for c in _NFL_PROP_LINES_COLS) for r in records]
+    with get_postgres() as conn, conn.cursor() as cur:
+        cur.executemany(sql, rows)
+        conn.commit()
+    return len(rows)
+
+
 _NFL_BETTING_SPLITS_COLS = [
     "game_pk", "market", "side", "cash_pct", "ticket_pct", "commence_time", "captured_at",
 ]

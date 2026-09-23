@@ -16,11 +16,20 @@ name: build-ev-props
 # prop markets in SportConfig["nfl"]).
 on:
   workflow_dispatch:
+    inputs:
+      lines_only:
+        description: "Write nfl_prop_lines only (skip the +EV board)"
+        type: boolean
+        default: false
   schedule:
     # A little after the capture-odds post-lineup windows on game days
     # (Sun/Mon/Thu/Sat), mirroring build-ev-board. Crons are UTC.
     - cron: "35 20 * * 0,1,4,6"
     - cron: "35 23 * * 0,1,4,6"
+    # Daily lines-only run: writes nfl_prop_lines for every sim projection
+    # with a line (no usage gate, no +EV filter), independent of the +EV
+    # board's game-day schedule above.
+    - cron: "35 15 * * *"
 
 permissions:
   contents: read
@@ -38,4 +47,4 @@ jobs:
       - name: Build NFL prop +EV board
         env:
           DATABASE_URL: ${{ secrets.DATABASE_URL }}
-        run: uv run python scripts/build_ev_props_board.py --sport nfl
+        run: uv run python scripts/build_ev_props_board.py --sport nfl ${{ (github.event.schedule == '35 15 * * *' || github.event.inputs.lines_only == 'true') && '--lines-only' || '' }}

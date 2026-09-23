@@ -29,8 +29,13 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from sportsmodel import sports
-from sportsmodel.db import clear_stale_prop_line_picks, get_postgres, upsert_ev_prop_picks
-from sportsmodel.serving.props_ev import assemble_prop_rows
+from sportsmodel.db import (
+    clear_stale_prop_line_picks,
+    get_postgres,
+    upsert_ev_prop_picks,
+    upsert_nfl_prop_lines,
+)
+from sportsmodel.serving.props_ev import assemble_prop_line_rows, assemble_prop_rows
 
 MODEL_VERSION = "props-sim-v1"
 
@@ -92,11 +97,21 @@ def load_latest_prop_odds(sport: str, game_pks: list[int]) -> list[dict]:
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--sport", default="nfl", help="Sport key (default: nfl)")
+    parser.add_argument(
+        "--lines-only", action="store_true",
+        help="Write nfl_prop_lines only (skip the +EV board)",
+    )
     args = parser.parse_args()
 
     sim_rows = load_sim_rows(args.sport)
     game_pks = sorted({r["game_pk"] for r in sim_rows})
     odds_rows = load_latest_prop_odds(args.sport, game_pks)
+
+    line_rows = assemble_prop_line_rows(sim_rows, odds_rows)
+    n_lines = upsert_nfl_prop_lines(line_rows)
+    print(f"[build_ev_props_board] prop_lines={n_lines}")
+    if args.lines_only:
+        return
 
     rows = assemble_prop_rows(sim_rows, odds_rows, MODEL_VERSION)
     upsert_ev_prop_picks(rows)

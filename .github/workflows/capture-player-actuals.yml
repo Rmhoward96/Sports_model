@@ -10,7 +10,12 @@ name: capture-player-actuals
 on:
   schedule:
     - cron: "0 4,15 * * 0,1,2,5,6"  # Tue/Wed/Sat/Sun/Mon mornings + afternoons UTC
-  workflow_dispatch: {}
+  workflow_dispatch:
+    inputs:
+      days:
+        description: "Lookback window in days (for backfilling e.g. week 1-2)"
+        type: string
+        default: "8"
 
 permissions:
   contents: read
@@ -32,4 +37,4 @@ jobs:
         env:
           DATABASE_URL: ${{ secrets.DATABASE_URL }}
           SM_DATA_DIR: ${{ github.workspace }}/data
-        run: uv run python scripts/capture_nfl_player_actuals.py --days 8
+        run: uv run python scripts/capture_nfl_player_actuals.py --days "${{ github.event.inputs.days || '8' }}"
