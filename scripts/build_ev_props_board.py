@@ -44,7 +44,24 @@ SIM_COLS = [
     "market", "mean", "dist", "commence_time", "matchup",
 ]
 
-ODDS_COLS = ["game_pk", "market", "side", "player_name", "book", "line", "price"]
+ODDS_COLS = ["game_pk", "market", "side", "player_name", "book", "line", "price", "captured_at"]
+
+
+def latest_capture_only(rows: list[dict]) -> list[dict]:
+    """Keep only rows from each book's most recent pre-kickoff capture per
+    (game_pk, market, player_name, book). odds_snapshot retains every capture,
+    so without this a book's superseded line (moved since) would still count
+    toward the main line and be shopped as a live price."""
+    latest_at: dict[tuple, object] = {}
+    for r in rows:
+        key = (r["game_pk"], r["market"], r["player_name"], r["book"])
+        ts = r["captured_at"]
+        if key not in latest_at or ts > latest_at[key]:
+            latest_at[key] = ts
+    return [
+        r for r in rows
+        if r["captured_at"] == latest_at[(r["game_pk"], r["market"], r["player_name"], r["book"])]
+    ]
 
 
 def load_sim_rows(sport: str) -> list[dict]:
@@ -69,7 +86,11 @@ def load_sim_rows(sport: str) -> list[dict]:
 def load_latest_prop_odds(sport: str, game_pks: list[int]) -> list[dict]:
     """Latest odds_snapshot row per (game_pk, market, side, player_name, book,
     line) for this sport's prop markets, restricted to `game_pks` and
-    captured before kickoff. Empty list of game_pks -> empty result."""
+    captured before kickoff, further filtered to each book's MOST RECENT
+    capture per (game_pk, market, player_name, book) via `latest_capture_only`
+    -- a book's superseded line (moved since) is dropped, not just its
+    superseded (game_pk, market, side, player_name, book, line) row. Empty
+    list of game_pks -> empty result."""
     if not game_pks:
         return []
     prop_markets = list(sports.get(sport).prop_market_map.keys())
@@ -78,10 +99,10 @@ def load_latest_prop_odds(sport: str, game_pks: list[int]) -> list[dict]:
     with get_postgres() as pg, pg.cursor() as cur:
         cur.execute(
             """
-            SELECT game_pk, market, side, player_name, book, line, price
+            SELECT game_pk, market, side, player_name, book, line, price, captured_at
             FROM (
                 SELECT DISTINCT ON (game_pk, market, side, player_name, book, line)
-                       game_pk, market, side, player_name, book, line, price
+                       game_pk, market, side, player_name, book, line, price, captured_at
                 FROM odds_snapshot
                 WHERE game_pk = ANY(%s) AND market = ANY(%s)
                   AND captured_at <= commence_time
@@ -91,25 +112,36 @@ def load_latest_prop_odds(sport: str, game_pks: list[int]) -> list[dict]:
             [list(game_pks), prop_markets],
         )
         rows = cur.fetchall()
-    return [dict(zip(ODDS_COLS, r)) for r in rows]
+    return latest_capture_only([dict(zip(ODDS_COLS, r)) for r in rows])
 
 
-def main() -> None:
+def main(argv: list[str] | None = None) -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--sport", default="nfl", help="Sport key (default: nfl)")
     parser.add_argument(
         "--lines-only", action="store_true",
         help="Write nfl_prop_lines only (skip the +EV board)",
     )
-    args = parser.parse_args()
+    args = parser.parse_args(argv)
 
     sim_rows = load_sim_rows(args.sport)
     game_pks = sorted({r["game_pk"] for r in sim_rows})
     odds_rows = load_latest_prop_odds(args.sport, game_pks)
 
-    line_rows = assemble_prop_line_rows(sim_rows, odds_rows)
-    n_lines = upsert_nfl_prop_lines(line_rows)
-    print(f"[build_ev_props_board] prop_lines={n_lines}")
+    # The lines write is a separate concern from the +EV board below -- a
+    # missing nfl_prop_lines table (migration not yet applied) or any other
+    # lines-write error must not take down the game-day +EV build. Only
+    # --lines-only (whose sole job IS the lines write) re-raises, so that
+    # run still exits non-zero.
+    try:
+        line_rows = assemble_prop_line_rows(sim_rows, odds_rows)
+        n_lines = upsert_nfl_prop_lines(line_rows)
+        print(f"[build_ev_props_board] prop_lines={n_lines}")
+    except Exception as e:
+        print(f"[build_ev_props_board] prop_lines FAILED: {type(e).__name__}: {e}")
+        if args.lines_only:
+            raise
+
     if args.lines_only:
         return
 
