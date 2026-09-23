@@ -11,6 +11,7 @@ many; result = home_score - away_score; gametime is Eastern "HH:MM".
 """
 from __future__ import annotations
 
+import re
 from datetime import date
 
 import pandas as pd
@@ -37,6 +38,14 @@ PRIMETIME_ET = "19:00"
 
 def _vs(x: float) -> str:
     return "W" if x > 0 else "L" if x < 0 else "P"
+
+
+def _is_primetime(kickoff_et: str) -> bool:
+    """True iff kickoff_et ("YYYY-MM-DD HH:MM" Eastern) carries a real HH:MM time >= 19:00."""
+    parts = str(kickoff_et or "").strip().split(" ", 1)
+    t = parts[1].strip() if len(parts) == 2 else ""
+    m = re.fullmatch(r"(\d{1,2}):(\d{2})", t)
+    return bool(m) and (int(m.group(1)), int(m.group(2))) >= (19, 0)
 
 
 def team_game_log(sched: pd.DataFrame) -> pd.DataFrame:
@@ -81,7 +90,7 @@ def situations_for(team, is_home, team_line, kickoff_et, log_before, *, opp, sea
                 s.append("off_bye")
     if NFL_DIVISIONS.get(team) and NFL_DIVISIONS.get(team) == NFL_DIVISIONS.get(opp):
         s.append("division")
-    if kickoff_et and (kickoff_et[-5:] if not pd.isna(kickoff_et[-5:]) else "") >= PRIMETIME_ET:
+    if _is_primetime(kickoff_et):
         s.append("primetime")
     return s
 
@@ -105,7 +114,9 @@ def compute_game_trends(sched: pd.DataFrame, upcoming: list[dict], current_seaso
             if pd.isna(line):
                 line = None
             team_line = None if line is None else (line if is_home else -line)
-            now_sits = situations_for(team, is_home, team_line, f"{g['gameday']} {g.get('gametime') or ''}".strip(),
+            gt = g.get("gametime")
+            gt = "" if gt is None or (isinstance(gt, float) and pd.isna(gt)) else str(gt)
+            now_sits = situations_for(team, is_home, team_line, f"{g['gameday']} {gt}".strip(),
                                       before, opp=opp, season=current_season, gameday=g["gameday"])
             # Situations of each past game (in-window), evaluated against ITS own previous game.
             hist = {k: [] for k in now_sits}
