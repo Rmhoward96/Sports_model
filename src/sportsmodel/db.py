@@ -543,6 +543,76 @@ def upsert_ev_parlays(records: list[dict]) -> int:
     return len(rows)
 
 
+_BEST_PARLAY_COLS = ["parlay_id", "sport", "book", "legs", "n_legs", "parlay_dec", "parlay_price",
+                     "true_prob", "ev", "first_commence", "last_commence", "model_version"]
+
+
+def replace_unlocked_best_parlays(tickets: list[dict]) -> int:
+    """Swap in the current +EV parlay set: delete tickets whose first leg hasn't
+    started (unlocked), insert `tickets`. Locked tickets (first leg started) are
+    never touched -- they're what gets graded. One transaction."""
+    placeholders = ", ".join(["%s"] * len(_BEST_PARLAY_COLS))
+    sql = (f"INSERT INTO ev_best_parlays ({', '.join(_BEST_PARLAY_COLS)}) VALUES ({placeholders}) "
+           f"ON CONFLICT (parlay_id) DO NOTHING")
+    rows = [tuple(json.dumps(t[c], default=str) if c == "legs" else t.get(c) for c in _BEST_PARLAY_COLS)
+            for t in tickets]
+    with get_postgres() as conn, conn.cursor() as cur:
+        cur.execute("DELETE FROM ev_best_parlays WHERE first_commence > now()")
+        if rows:
+            cur.executemany(sql, rows)
+        conn.commit()
+    return len(rows)
+
+
+def locked_leg_keys() -> frozenset:
+    """Leg keys riding on locked (started) tickets that aren't graded yet."""
+    with get_postgres() as conn, conn.cursor() as cur:
+        cur.execute("""
+            SELECT p.legs FROM ev_best_parlays p
+            WHERE p.first_commence <= now()
+              AND NOT EXISTS (SELECT 1 FROM ev_best_parlay_results r WHERE r.parlay_id = p.parlay_id)
+        """)
+        rows = cur.fetchall()
+    keys = set()
+    for (legs,) in rows:
+        for leg in (legs if isinstance(legs, list) else json.loads(legs)):
+            keys.add(leg["key"])
+    return frozenset(keys)
+
+
+def ungraded_locked_parlays() -> list[dict]:
+    cols = ["parlay_id", "sport", "book", "legs", "parlay_price", "first_commence"]
+    with get_postgres() as conn, conn.cursor() as cur:
+        cur.execute(f"""
+            SELECT {', '.join('p.' + c for c in cols)} FROM ev_best_parlays p
+            WHERE p.first_commence <= now()
+              AND NOT EXISTS (SELECT 1 FROM ev_best_parlay_results r WHERE r.parlay_id = p.parlay_id)
+        """)
+        return [dict(zip(cols, r)) for r in cur.fetchall()]
+
+
+_BEST_PARLAY_RESULT_COLS = ["parlay_id", "sport", "book", "parlay_price", "first_commence",
+                            "result", "pnl", "payout_dec", "legs"]
+
+
+def upsert_best_parlay_results(records: list[dict]) -> int:
+    """Upsert graded +EV parlay ticket results into Supabase `ev_best_parlay_results`.
+    Idempotent on parlay_id; bumps graded_at on update. `legs` is written as JSON.
+    Requires DATABASE_URL and ev_best_parlay_results (db/migration_ev_best_parlays.sql)."""
+    if not records:
+        return 0
+    updates = ", ".join(f"{c} = EXCLUDED.{c}" for c in _BEST_PARLAY_RESULT_COLS if c != "parlay_id")
+    placeholders = ", ".join(["%s"] * len(_BEST_PARLAY_RESULT_COLS))
+    sql = (f"INSERT INTO ev_best_parlay_results ({', '.join(_BEST_PARLAY_RESULT_COLS)}) "
+           f"VALUES ({placeholders}) ON CONFLICT (parlay_id) DO UPDATE SET {updates}, graded_at = now()")
+    rows = [tuple(json.dumps(r[c], default=str) if c == "legs" else r.get(c) for c in _BEST_PARLAY_RESULT_COLS)
+            for r in records]
+    with get_postgres() as conn, conn.cursor() as cur:
+        cur.executemany(sql, rows)
+        conn.commit()
+    return len(rows)
+
+
 _NFL_SIM_DEFAULT_MODEL_VERSION = "sim-nfl-v1"
 
 _NFL_SIM_COLS = [

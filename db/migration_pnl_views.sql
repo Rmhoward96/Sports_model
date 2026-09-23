@@ -91,6 +91,7 @@ CREATE OR REPLACE VIEW prediction_pnl AS
 -- Every graded +EV pick. Game lines: ev_results joined to the pick row for its
 -- best (pick-time) price; won NULL = push. Props: ev_prop_results already
 -- carries profit in units at the pick price -> x10.
+-- ev_pnl is redefined with a parlay branch in migration_ev_best_parlays.sql; run that after this file.
 CREATE OR REPLACE VIEW ev_pnl AS
   SELECT r.sport, r.game_pk, r.market, r.side, p.commence_time,
          CASE WHEN r.won IS NULL THEN 'push' WHEN r.won THEN 'win' ELSE 'loss' END AS result,
