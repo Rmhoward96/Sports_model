@@ -113,3 +113,32 @@ def test_game_with_no_line_or_model_row_still_appears_with_none_fields():
     assert entry["form"]["away"] == FORM_ROWS["Coralville"]
     assert entry["news"]["injuries"]["away"] == INJURIES["Coralville"]
     assert entry["news"]["weather"] is None
+
+
+trend_block = desk_inputs.trend_block
+
+
+def test_trend_block_formats_records_and_situational():
+    records = {"ats": {"w": 2, "l": 1, "p": 0}, "ats_road": {"w": 1, "l": 0, "p": 0},
+               "ats_dog": {"w": 0, "l": 0, "p": 0}, "ats_last_5": {"w": 2, "l": 1, "p": 0},
+               "over_under": {"o": 2, "u": 1, "p": 0}, "over_under_road": {"o": 1, "u": 0, "p": 0},
+               "units": {"w": 1.2, "l": 0}}
+    sit = [{"label": "off a road game", "ats_w": 7, "ats_l": 2, "ats_p": 0, "ou_o": 4, "ou_u": 5, "ou_p": 0, "since_season": 2023}]
+    b = trend_block(records, sit, is_home=False, is_fav=False)
+    assert b["records"]["ATS"] == "2-1-0" and b["records"]["ATS on the road"] == "1-0-0"
+    assert b["records"]["ATS as underdog"] == "0-0-0" and b["records"]["ATS last 5"] == "2-1-0"
+    assert b["records"]["O/U"] == "2-1-0" and b["records"]["O/U on the road"] == "1-0-0"
+    assert b["records"]["Units"] == "+1.2"
+    assert b["situational"] == ["7-2-0 ATS, O/U 4-5-0 off a road game since 2023"]
+
+
+def test_trend_block_none_when_no_data():
+    assert trend_block(None, [], is_home=True, is_fav=True) is None
+
+
+def test_build_bundle_attaches_trends_when_given():
+    trends = {GAMES[0]["game_pk"]: {"home": {"records": {"ATS": "1-0-0"}, "situational": []}, "away": None}}
+    bundle = build_bundle(GAMES, MODEL_ROWS, FORM_ROWS, INJURIES, WEATHER, NOW, trends=trends)
+    assert bundle[0]["trends"]["home"]["records"]["ATS"] == "1-0-0"
+    # default: no trends arg -> key present with both sides None
+    assert build_bundle(GAMES, MODEL_ROWS, FORM_ROWS, INJURIES, WEATHER, NOW)[0]["trends"] == {"home": None, "away": None}

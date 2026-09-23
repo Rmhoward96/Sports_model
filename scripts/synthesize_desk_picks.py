@@ -92,6 +92,16 @@ METHODOLOGY (load-bearing -- follow exactly):
   fading an inflated number on a big favorite, do it only when the favorite's
   OWN form is shaky or the dog's form is strong -- never fade a rolling
   dominant favorite on model margin alone.
+- TRENDS (`trends.home` / `trends.away`): season betting records (ATS, O/U,
+  units -- overall, by venue, by favorite/underdog role, last 5) and, for NFL,
+  situational trends ("7-2-0 ATS off a road game since 2023"). The SPORTS-ANALYST
+  note (`agent_notes.analyst`) MUST cite every trend given for BOTH teams and say
+  which way each points. Trends are SUPPORTING EVIDENCE: they may raise or lower
+  conviction or tip a close call, but they are never the sole basis for a spread
+  lean -- a lean still needs a concrete edge (injury, form, model-vs-line). Most
+  ATS trends are small-sample noise; weigh lopsided, larger-sample ones more. If
+  a trend influenced the call, say so in the rationale. If `trends` is null for a
+  team, say trends were unavailable.
 
 OUTPUT: return ONLY a JSON array (no prose, no markdown fences). One object per
 game in the bundle, each EXACTLY:
