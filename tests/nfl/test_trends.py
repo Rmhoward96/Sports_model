@@ -35,25 +35,26 @@ def test_situations_for():
 
 def test_compute_game_trends_counts_matching_past_games_and_min_n():
     rows = []
-    # BUF: 5 past road games each followed by a home game (to build "off a road game" history)
-    # Then one final road game to set up off_road for upcoming
+    # BUF: alternating road/home games, all wins, total lines create mixed over/under
     days = pd.date_range("2025-09-07", periods=11, freq="7D").strftime("%Y-%m-%d")
     for i, d in enumerate(days):
         if i % 2 == 0:
-            # Even indices (0,2,4,6,8,10): BUF road
+            # Even indices (0,2,4,6,8,10): BUF road vs NYJ (division)
+            # NYJ home 10, BUF away 20, total 30 < 40 → Under
             rows.append(_g(2025, d, "NYJ", "BUF", 10, 20, 3.0, 40.0))
         else:
-            # Odd indices (1,3,5,7,9): BUF home after road
+            # Odd indices (1,3,5,7,9): BUF home vs NE (division)
+            # BUF home 24, NE away 21, total 45 > 40 → Over
             rows.append(_g(2025, d, "BUF", "NE", 24, 21, 1.0, 40.0))
-    
+
     sched = pd.DataFrame(rows)
     upcoming = [{"game_pk": 401, "home_team": "BUF", "away_team": "MIA", "home_line": -2.5,
                  "gameday": "2026-09-27", "gametime": "13:00"}]
     out = compute_game_trends(sched, upcoming, current_season=2026, min_n=5)
-    
+
     # Test for off_road situation: BUF's last game (2025-11-16) is road, so off_road applies
     off_road = [r for r in out if r["team"] == "BUF" and r["situation"] == "off_road"]
-    
+
     # Past games with off_road (games 1,3,5,7,9 where BUF is home after road game):
     # Each is: BUF home vs NE, spread 1.0, result 24-21=3, ats=W (3 > -1.0)
     # total 45 vs 40, ou=O
@@ -66,11 +67,118 @@ def test_compute_game_trends_counts_matching_past_games_and_min_n():
         assert r["ou_o"] == 5 and r["ou_u"] == 0 and r["ou_p"] == 0, \
             f"off_road ou should be 5O-0U-0P, got {r['ou_o']}O-{r['ou_u']}U-{r['ou_p']}P"
         assert r["ats_w"] + r["ats_l"] + r["ats_p"] == r["n"]
-    
+
+    # Assert full expected set of BUF rows: home, favorite, off_road, off_win, division
+    expected_situations = {"home", "favorite", "off_road", "off_win", "division"}
+    buf_situations = {r["situation"] for r in out if r["team"] == "BUF"}
+    assert buf_situations == expected_situations, \
+        f"Expected {expected_situations}, got {buf_situations}"
+
+    # Assert full expected counts for each situation
+    # home: 5 games (all Over, all cover)
+    # favorite: 5 games (all home games, Over, all cover)
+    # off_road: 5 games (home games after road, Over, all cover)
+    # off_win: 10 games (5 road Under + 5 home Over, all cover)
+    # division: 11 games (6 road Under + 5 home Over, all cover)
+    expected_counts = {
+        "home": {"ats_w": 5, "ats_l": 0, "ats_p": 0, "ou_o": 5, "ou_u": 0, "ou_p": 0, "n": 5},
+        "favorite": {"ats_w": 5, "ats_l": 0, "ats_p": 0, "ou_o": 5, "ou_u": 0, "ou_p": 0, "n": 5},
+        "off_road": {"ats_w": 5, "ats_l": 0, "ats_p": 0, "ou_o": 5, "ou_u": 0, "ou_p": 0, "n": 5},
+        "off_win": {"ats_w": 10, "ats_l": 0, "ats_p": 0, "ou_o": 5, "ou_u": 5, "ou_p": 0, "n": 10},
+        "division": {"ats_w": 11, "ats_l": 0, "ats_p": 0, "ou_o": 5, "ou_u": 6, "ou_p": 0, "n": 11},
+    }
+    for r in out:
+        if r["team"] == "BUF":
+            exp = expected_counts[r["situation"]]
+            assert r["ats_w"] == exp["ats_w"] and r["ats_l"] == exp["ats_l"] and r["ats_p"] == exp["ats_p"], \
+                f"{r['situation']}: ats {r['ats_w']}W-{r['ats_l']}L-{r['ats_p']}P != expected {exp['ats_w']}W-{exp['ats_l']}L-{exp['ats_p']}P"
+            assert r["ou_o"] == exp["ou_o"] and r["ou_u"] == exp["ou_u"] and r["ou_p"] == exp["ou_p"], \
+                f"{r['situation']}: ou {r['ou_o']}O-{r['ou_u']}U-{r['ou_p']}P != expected {exp['ou_o']}O-{exp['ou_u']}U-{exp['ou_p']}P"
+            assert r["n"] == exp["n"], f"{r['situation']}: n {r['n']} != expected {exp['n']}"
+
     # Test min_n: off_home should be omitted (only 4 road games before any home games initially)
     off_home = [r for r in out if r["team"] == "BUF" and r["situation"] == "off_home"]
     assert len(off_home) == 0, "off_home should be omitted (fewer than 5 games)"
-    
+
     # Verify other assertions
     assert all(r["n"] >= 5 for r in out), "All situations should have n >= 5"
     assert all(r["since_season"] == 2023 for r in out), "since_season should be 2023 (2026 - 3)"
+
+    # Verify NFL_DIVISIONS usage: assert 32 unique teams, 8 divisions
+    assert len(NFL_DIVISIONS) == 32, f"Expected 32 teams, got {len(NFL_DIVISIONS)}"
+    divisions = set(NFL_DIVISIONS.values())
+    assert len(divisions) == 8, f"Expected 8 divisions, got {len(divisions)}"
+
+
+def test_compute_game_trends_min_n_filter_with_primetime():
+    """Test that situations with fewer than min_n games are omitted.
+    Using primetime: exactly 4 past primetime games should be excluded."""
+    rows = []
+    days = pd.date_range("2025-09-07", periods=4, freq="7D").strftime("%Y-%m-%d")
+    # Create 4 primetime games (19:00 or later)
+    for i, d in enumerate(days):
+        rows.append(_g(2025, d, "BUF", "NE", 24, 21, 1.0, 40.0, time="20:00"))
+    # Upcoming game is primetime too
+    sched = pd.DataFrame(rows)
+    upcoming = [{"game_pk": 401, "home_team": "BUF", "away_team": "MIA", "home_line": -2.5,
+                 "gameday": "2026-09-27", "gametime": "20:00"}]
+    out = compute_game_trends(sched, upcoming, current_season=2026, min_n=5)
+
+    # Primetime should be omitted (only 4 past games < min_n=5)
+    primetime = [r for r in out if r["team"] == "BUF" and r["situation"] == "primetime"]
+    assert len(primetime) == 0, f"primetime should be omitted (4 < min_n=5), but got {len(primetime)} rows"
+
+
+def test_compute_game_trends_season_filtering():
+    """Test that games from season 2022 (since-1) influence situations but aren't counted.
+    2022 game serves as 'previous' for 2023 game (off_road applies), but 2022 games
+    are excluded from min_n calculation."""
+    rows = []
+    # Add one 2022 game (road) to serve as previous for first 2023 game
+    rows.append(_g(2022, "2022-12-25", "NYJ", "BUF", 10, 20, 3.0, 40.0))
+    # Add 5 games in 2023 (all home, following the 2022 road game for first one)
+    dates_2023 = pd.date_range("2023-09-10", periods=5, freq="7D").strftime("%Y-%m-%d")
+    for d in dates_2023:
+        rows.append(_g(2023, d, "BUF", "NE", 24, 21, 1.0, 40.0))
+
+    sched = pd.DataFrame(rows)
+    upcoming = [{"game_pk": 401, "home_team": "BUF", "away_team": "MIA", "home_line": -2.5,
+                 "gameday": "2026-09-27", "gametime": "13:00"}]
+    out = compute_game_trends(sched, upcoming, current_season=2026, min_n=5)
+
+    # 5 games from 2023 should be included (in window 2023-2026)
+    home = [r for r in out if r["team"] == "BUF" and r["situation"] == "home"]
+    assert len(home) > 0, "home situation should exist"
+    for r in home:
+        # All 5 home games have spread 1.0, result 3, should cover
+        assert r["n"] == 5, f"Expected 5 games, got {r['n']}"
+        assert r["ats_w"] == 5, f"Expected 5W, got {r['ats_w']}W"
+
+
+def test_compute_game_trends_mixed_line_no_line():
+    """Test that games without a line (NaN team_line) are not counted and
+    not misclassified as underdog."""
+    rows = []
+    # One game with line (road, covers)
+    rows.append(_g(2025, "2025-09-07", "NYJ", "BUF", 10, 20, 3.0, 40.0))
+    # Six games without line (home, can't assess ATS)
+    for i in range(1, 7):
+        d = f"2025-09-{7+i*7:02d}"
+        rows.append(_g(2025, d, "BUF", "NE", 24, 21, None, None))
+
+    sched = pd.DataFrame(rows)
+    upcoming = [{"game_pk": 401, "home_team": "BUF", "away_team": "MIA", "home_line": -2.5,
+                 "gameday": "2026-10-05", "gametime": "13:00"}]
+    out = compute_game_trends(sched, upcoming, current_season=2026, min_n=5)
+
+    # Verify no row has "underdog" (6 home games without line should NOT create underdog)
+    for r in out:
+        if r["team"] == "BUF":
+            assert r["situation"] != "underdog", \
+                f"Games without line should not create underdog situation, but got {r}"
+
+    # Verify ats_w + ats_l + ats_p == n for every row (no missing games)
+    for r in out:
+        total = r["ats_w"] + r["ats_l"] + r["ats_p"]
+        assert total == r["n"], \
+            f"Situation {r['situation']}: ats total {total} != n {r['n']}"

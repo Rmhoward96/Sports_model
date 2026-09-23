@@ -56,7 +56,7 @@ def team_game_log(sched: pd.DataFrame) -> pd.DataFrame:
                                            (g.away_team, g.home_team, False, -margin_home)):
             line = None if not has_line else (-float(g.spread_line) if is_home else float(g.spread_line))
             rows.append({"team": team, "opp": opp, "season": int(g.season), "gameday": str(g.gameday),
-                         "gametime": str(g.gametime or ""), "is_home": is_home, "team_line": line,
+                         "gametime": "" if pd.isna(g.gametime) else str(g.gametime), "is_home": is_home, "team_line": line,
                          "su": _vs(margin), "ats": None if line is None else _vs(margin + line), "ou": ou})
     log = pd.DataFrame(rows)
     return log.sort_values(["team", "gameday"]).reset_index(drop=True) if len(log) else log
@@ -68,7 +68,7 @@ def situations_for(team, is_home, team_line, kickoff_et, log_before, *, opp, sea
     team_line: the team's own spread for this game (negative = favored; None or
     0 -> neither favorite nor underdog). kickoff_et: "YYYY-MM-DD HH:MM" Eastern."""
     s = ["home" if is_home else "road"]
-    if team_line is not None and team_line != 0:
+    if team_line is not None and not pd.isna(team_line) and team_line != 0:
         s.append("favorite" if team_line < 0 else "underdog")
     if len(log_before):
         prev = log_before.iloc[-1]
@@ -102,6 +102,8 @@ def compute_game_trends(sched: pd.DataFrame, upcoming: list[dict], current_seaso
             tlog = log[log["team"] == team] if len(log) else log
             before = tlog[tlog["gameday"] < g["gameday"]] if len(tlog) else tlog
             line = g.get("home_line")
+            if pd.isna(line):
+                line = None
             team_line = None if line is None else (line if is_home else -line)
             now_sits = situations_for(team, is_home, team_line, f"{g['gameday']} {g.get('gametime') or ''}".strip(),
                                       before, opp=opp, season=current_season, gameday=g["gameday"])
@@ -110,7 +112,7 @@ def compute_game_trends(sched: pd.DataFrame, upcoming: list[dict], current_seaso
             games = before.reset_index(drop=True)
             for i in range(len(games)):
                 row = games.iloc[i]
-                if int(row["season"]) < since or row["ats"] is None:
+                if int(row["season"]) < since or pd.isna(row["ats"]):
                     continue
                 past_sits = situations_for(team, bool(row["is_home"]), row["team_line"],
                                            f"{row['gameday']} {row['gametime']}", games.iloc[:i],
@@ -122,7 +124,7 @@ def compute_game_trends(sched: pd.DataFrame, upcoming: list[dict], current_seaso
                 if len(rows) < min_n:
                     continue
                 ats = [r["ats"] for r in rows]
-                ou = [r["ou"] for r in rows if r["ou"] is not None]
+                ou = [r["ou"] for r in rows if pd.notna(r["ou"])]
                 out.append({"game_pk": g["game_pk"], "team": team, "situation": k,
                             "label": SITUATION_LABELS[k],
                             "ats_w": ats.count("W"), "ats_l": ats.count("L"), "ats_p": ats.count("P"),
