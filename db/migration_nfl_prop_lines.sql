@@ -42,3 +42,19 @@ ALTER TABLE nfl_prop_lines ENABLE ROW LEVEL SECURITY;
 DROP POLICY IF EXISTS "public read nfl_prop_lines" ON nfl_prop_lines;
 CREATE POLICY "public read nfl_prop_lines" ON nfl_prop_lines FOR SELECT USING (true);
 GRANT SELECT ON nfl_prop_lines, nfl_prop_grades TO anon, authenticated;
+
+-- Pre-aggregated per-market (+ overall) accuracy counts, so the front-end
+-- doesn't have to page through nfl_prop_grades itself -- PostgREST caps
+-- unordered/limited reads at 1000 rows, which silently truncated the
+-- accuracy section to an arbitrary subset once grades passed ~2 weeks.
+CREATE OR REPLACE VIEW nfl_prop_accuracy AS
+  SELECT COALESCE(market, 'all')                                AS market,
+         count(*)                                               AS n,
+         count(*) FILTER (WHERE result = 'hit')                 AS hits,
+         count(*) FILTER (WHERE result IN ('hit','miss'))       AS decided,
+         avg(sim_err)                                           AS sim_mae,
+         avg(line_err)                                          AS line_mae,
+         avg(sim_bias)                                          AS bias
+  FROM nfl_prop_grades
+  GROUP BY ROLLUP (market);
+GRANT SELECT ON nfl_prop_accuracy TO anon, authenticated;
