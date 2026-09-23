@@ -342,6 +342,27 @@ def _espn_injury_names(espn_list: list[dict], crosswalk: dict[str, str]
     return out, q
 
 
+def _merge_espn_injuries(out_by_team: dict[str, set[str]], q_by_team: dict[str, set[str]],
+                         espn_list: list[dict], crosswalk: dict[str, str]) -> None:
+    """Overlay ESPN's injury designations onto the nflverse name sets IN PLACE.
+    ESPN is fresher PER PLAYER: nflverse's newest report is last week's until
+    the Wed-Fri report posts, so a player it had Out last week (and ESPN now
+    lists Active/Questionable) would otherwise stay benched. Every player ESPN
+    lists is removed from both sets and re-added per ESPN's status; players only
+    nflverse lists keep their nflverse status."""
+    espn_out, espn_q = _espn_injury_names(espn_list, crosswalk)
+    for e in espn_list:
+        abbr = crosswalk.get(e.get("team"))
+        nm = str(e.get("player", "")).strip().lower()
+        if abbr and nm:
+            out_by_team.get(abbr, set()).discard(nm)
+            q_by_team.get(abbr, set()).discard(nm)
+    for abbr, s in espn_out.items():
+        out_by_team.setdefault(abbr, set()).update(s)
+    for abbr, s in espn_q.items():
+        q_by_team.setdefault(abbr, set()).update(s)
+
+
 def _questionable_names_by_team(injuries: dict[str, list[dict]]) -> dict[str, set[str]]:
     """{team_abbrev -> {lowercased player name}} for Questionable entries, for
     active_usage's `questionable_names` (down-weighted, not dropped)."""
@@ -396,17 +417,14 @@ def main() -> None:
     injuries = current_injuries(now)
     out_names_by_team = _out_names_by_team(injuries)
     q_names_by_team = _questionable_names_by_team(injuries)
-    # Supplement nflverse's weekly report (finalized Wed-Fri, so it lags mid-week)
-    # with ESPN's near-real-time injuries, so a recently-injured starter is
-    # dropped before nflverse lists them. UNION the name sets.
+    # Overlay ESPN's near-real-time injuries on nflverse's weekly report
+    # (finalized Wed-Fri, so it lags mid-week): ESPN's status wins for every
+    # player it lists -- catches new injuries AND clears last week's stale Outs.
     try:
-        espn_out, espn_q = _espn_injury_names(nfl_espn.fetch_injuries(), crosswalk)
-        for abbr, s in espn_out.items():
-            out_names_by_team.setdefault(abbr, set()).update(s)
-        for abbr, s in espn_q.items():
-            q_names_by_team.setdefault(abbr, set()).update(s)
-        print(f"espn injuries merged: {sum(len(v) for v in espn_out.values())} out, "
-              f"{sum(len(v) for v in espn_q.values())} questionable")
+        _merge_espn_injuries(out_names_by_team, q_names_by_team,
+                             nfl_espn.fetch_injuries(), crosswalk)
+        print(f"espn injuries merged: {sum(len(v) for v in out_names_by_team.values())} out, "
+              f"{sum(len(v) for v in q_names_by_team.values())} questionable (after overlay)")
     except Exception as exc:  # noqa: BLE001 -- ESPN is a supplement; degrade to nflverse only
         print(f"WARN espn injuries unavailable ({exc!r}); using nflverse report only")
     print(f"injuries: questionable_weight={QUESTIONABLE_WEIGHT}")

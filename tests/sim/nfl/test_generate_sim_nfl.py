@@ -235,3 +235,21 @@ def test_espn_injury_names_categorizes_and_maps_teams():
     assert "Unknown Team" not in out and all(k in ("NYG", "DEN") for k in out)  # unknown skipped
     # Active is neither dropped nor down-weighted.
     assert not any("someone active" in s for s in out.get("NYG", set()) | q.get("NYG", set()))
+
+
+def test_merge_espn_injuries_overrides_stale_nflverse_status():
+    # nflverse's newest report is LAST week's mid-week (Tue): a QB listed Out
+    # last week but Active now must not stay benched; ESPN is fresher per player.
+    crosswalk = {"Atlanta Falcons": "ATL", "Baltimore Ravens": "BAL"}
+    out = {"ATL": {"michael penix jr."}, "BAL": {"zay flowers", "stale only"}}
+    q = {"ATL": set(), "BAL": set()}
+    espn = [
+        {"team": "Atlanta Falcons", "player": "Michael Penix Jr.", "status": "Active"},
+        {"team": "Baltimore Ravens", "player": "Zay Flowers", "status": "Questionable"},
+        {"team": "Baltimore Ravens", "player": "New Injury", "status": "Out"},
+    ]
+    gsn._merge_espn_injuries(out, q, espn, crosswalk)
+    assert "michael penix jr." not in out["ATL"] | q["ATL"]   # Active -> cleared
+    assert "zay flowers" not in out["BAL"] and "zay flowers" in q["BAL"]  # Doubtful -> Questionable
+    assert "new injury" in out["BAL"]                         # ESPN-only Out -> added
+    assert "stale only" in out["BAL"]                         # nflverse-only entry kept
