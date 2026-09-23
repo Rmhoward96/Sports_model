@@ -1,5 +1,6 @@
 from sportsmodel.serving.best_parlays import (
-    PARLAY_BOOKS, assemble_game_legs, assemble_prop_legs, build_best_parlays)
+    PARLAY_BOOKS, assemble_game_legs, assemble_prop_legs, build_best_parlays,
+    game_leg_result, prop_leg_result, settle_parlay)
 
 
 def _leg(key, game_pk, prob, prices, kind="game"):
@@ -90,3 +91,42 @@ def test_assemble_prop_legs_matches_player_market_side_line():
     assert leg["book_prices"] == {"fanduel": -112}
     assert leg["key"] == "p:9:00-1:rec_yds:under" and leg["kind"] == "prop" and leg["sport"] == "nfl"
     assert leg["label"] == "A.J. Brown Rec Yds Under 66.5"
+
+
+def _g(market, side, line=None):
+    return {"kind": "game", "market": market, "side": side, "line": line}
+
+
+def test_game_leg_results():
+    final = {"actual_margin": 7, "actual_total": 44}           # home won by 7, 44 total
+    assert game_leg_result(_g("moneyline", "home"), final) == "win"
+    assert game_leg_result(_g("moneyline", "away"), final) == "loss"
+    assert game_leg_result(_g("moneyline", "home"), {"actual_margin": 0, "actual_total": 40}) == "push"
+    assert game_leg_result(_g("spread", "home", -7.0), final) == "push"
+    assert game_leg_result(_g("spread", "home", -6.5), final) == "win"
+    assert game_leg_result(_g("spread", "away", 6.5), final) == "loss"
+    assert game_leg_result(_g("spread", "away", 7.5), final) == "win"
+    assert game_leg_result(_g("total", "over", 43.5), final) == "win"
+    assert game_leg_result(_g("total", "under", 44.0), final) == "push"
+    assert game_leg_result(_g("total", "under", 43.5), None) is None   # not final yet
+
+
+def test_prop_leg_results_and_void():
+    leg = {"kind": "prop", "side": "under", "line": 66.5}
+    assert prop_leg_result(leg, 50.0, True) == "win"
+    assert prop_leg_result(leg, 70.0, True) == "loss"
+    assert prop_leg_result({**leg, "side": "over", "line": 5.0}, 5.0, True) == "push"
+    assert prop_leg_result(leg, None, True) == "push"        # didn't play -> void
+    assert prop_leg_result(leg, None, False) is None         # game not captured yet
+
+
+def test_settle_parlay():
+    legs = [{"price": -110}, {"price": +100}, {"price": -120}]
+    assert settle_parlay(legs, ["win", "loss", None]) == {"result": "loss", "pnl": -10.0, "payout_dec": None}
+    assert settle_parlay(legs, ["win", "win", None]) is None
+    win = settle_parlay(legs, ["win", "win", "win"])
+    dec = (1 + 100 / 110) * 2.0 * (1 + 100 / 120)
+    assert win["result"] == "win" and abs(win["pnl"] - 10 * (dec - 1)) < 1e-9
+    one_push = settle_parlay(legs, ["win", "push", "win"])
+    assert abs(one_push["payout_dec"] - (1 + 100 / 110) * (1 + 100 / 120)) < 1e-9
+    assert settle_parlay(legs, ["push", "push", "push"]) == {"result": "push", "pnl": 0.0, "payout_dec": 1.0}

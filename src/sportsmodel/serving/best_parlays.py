@@ -146,3 +146,45 @@ def build_best_parlays(legs: list[dict], excluded_keys: frozenset = frozenset())
         used = {l["key"] for l in best["legs"]}
         pool = [l for l in pool if l["key"] not in used]
     return tickets
+
+
+def _vs(x: float) -> str:
+    return "win" if x > 0 else "loss" if x < 0 else "push"
+
+
+def game_leg_result(leg: dict, final: dict | None) -> str | None:
+    """Settle a game-line leg from a prediction_accuracy row (actual_margin =
+    home - away, actual_total). None while the game isn't graded."""
+    if not final or final.get("actual_margin") is None:
+        return None
+    margin = float(final["actual_margin"])
+    side_margin = margin if leg["side"] == "home" else -margin
+    if leg["market"] == "moneyline":
+        return _vs(side_margin)
+    if leg["market"] == "spread":
+        return _vs(side_margin + float(leg["line"]))
+    total = float(final["actual_total"])
+    return _vs(total - float(leg["line"]) if leg["side"] == "over" else float(leg["line"]) - total)
+
+
+def prop_leg_result(leg: dict, actual: float | None, game_captured: bool) -> str | None:
+    """Settle a prop leg vs the player's actual. A player with no actual once the
+    game's actuals are captured didn't record the stat line -> void (push)."""
+    if actual is None:
+        return "push" if game_captured else None
+    diff = float(actual) - float(leg["line"])
+    return _vs(diff if leg["side"] == "over" else -diff)
+
+
+def settle_parlay(legs: list[dict], results: list[str | None], stake: float = 10.0) -> dict | None:
+    """Ticket result from per-leg results: any loss -> loss now; any pending ->
+    None; else pushes drop out and the win pays stake x (product of winning legs'
+    decimals - 1); all pushes -> push."""
+    if "loss" in results:
+        return {"result": "loss", "pnl": -stake, "payout_dec": None}
+    if any(r is None for r in results):
+        return None
+    dec = math.prod(decimal_odds(l["price"]) for l, r in zip(legs, results) if r == "win")
+    if not any(r == "win" for r in results):
+        return {"result": "push", "pnl": 0.0, "payout_dec": 1.0}
+    return {"result": "win", "pnl": stake * (dec - 1), "payout_dec": dec}
