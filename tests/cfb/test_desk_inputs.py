@@ -224,3 +224,14 @@ def test_game_trends_none_spread_no_role_trends():
     # No spread: both teams have is_fav=None (no role trends)
     assert "ATS as favorite" not in (result["home"]["records"] if result["home"] else {})
     assert "ATS as underdog" not in (result["away"]["records"] if result["away"] else {})
+
+
+def test_trend_block_units_losses_stored_negative():
+    # Action Network stores units lost as a NEGATIVE number (live 2026-09-23:
+    # Falcons 0-2 SU -> {"w": 0, "l": -2}; Browns won once as a big dog ->
+    # {"w": 3.3, "l": -1}). Net must be w - |l|, not w - l.
+    assert trend_block({"units": {"w": 0, "l": -2}}, [], is_home=False, is_fav=None)["records"]["Units"] == "-2.0"
+    assert trend_block({"units": {"w": 3.3, "l": -1}}, [], is_home=False, is_fav=None)["records"]["Units"] == "+2.3"
+    assert trend_block({"units": {"w": 1.2, "l": 0}}, [], is_home=False, is_fav=None)["records"]["Units"] == "+1.2"
+    # Robust if a positive loss magnitude is ever sent.
+    assert trend_block({"units": {"w": 0, "l": 2}}, [], is_home=False, is_fav=None)["records"]["Units"] == "-2.0"

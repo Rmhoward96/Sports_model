@@ -93,7 +93,9 @@ def trend_block(records: dict | None, situational: list[dict], *, is_home: bool,
             picks.insert(2, (f"ATS {role_lbl}", _rec(records.get(f"ats_{role}"))))
         units = records.get("units")
         if units and units.get("w") is not None:
-            net = float(units.get("w") or 0) - float(units.get("l") or 0)
+            # Action Network stores units lost as a negative number (0-2 SU ->
+            # l = -2); subtract the magnitude so either sign convention works.
+            net = float(units.get("w") or 0) - abs(float(units.get("l") or 0))
             picks.append(("Units", f"{net:+.1f}"))
         out["records"] = {k: v for k, v in picks if v is not None}
     sit = [f"{t['ats_w']}-{t['ats_l']}-{t['ats_p']} ATS, O/U {t['ou_o']}-{t['ou_u']}-{t['ou_p']} "
