@@ -296,3 +296,34 @@ def test_tune_returns_grid_point_and_trains_only_before_validation_season(tbl, m
 def test_tune_raises_without_validation_data(tbl):
     with pytest.raises(ValueError):
         tune(tbl.player, 2022, VOL)
+
+
+class _ConstModel:
+    """Stub fitted model: predicts the same value for every row."""
+
+    def __init__(self, value: float):
+        self.value = value
+
+    def predict(self, X):
+        return np.full(len(X), self.value, dtype=float)
+
+
+def test_apply_floors_learned_ypr_and_ypc_at_half_a_yard(tbl, spec, eff_models):
+    # A <= 0 learned ypr/ypc would give ypt <= 0 and can make the kernel fail;
+    # the harness's per-game try/except would then silently drop the game.
+    m = dataclasses.replace(eff_models, eff={"ypr": _ConstModel(-3.0),
+                                             "catch_rate": _ConstModel(0.6),
+                                             "ypc": _ConstModel(0.0)})
+    out = apply_to_spec(spec, m, tbl.rows_for(2024, 1), tbl.team_rows_for(2024, 1),
+                        questionable=set(), q_weight=0.75)
+    for p in out.home_players + out.away_players:
+        assert p.ypr == 0.5 and p.ypc == 0.5
+        assert p.ypt == pytest.approx(0.6 * 0.5)
+    # values above the floor pass through untouched
+    m2 = dataclasses.replace(eff_models, eff={"ypr": _ConstModel(11.0),
+                                              "catch_rate": None,
+                                              "ypc": _ConstModel(4.2)})
+    out2 = apply_to_spec(spec, m2, tbl.rows_for(2024, 1), tbl.team_rows_for(2024, 1),
+                         questionable=set(), q_weight=0.75)
+    assert {p.ypr for p in out2.home_players} == {11.0}
+    assert {p.ypc for p in out2.home_players} == {4.2}

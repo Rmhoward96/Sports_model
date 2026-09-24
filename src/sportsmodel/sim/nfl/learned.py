@@ -50,6 +50,9 @@ TUNE_DECAYS: tuple[float, ...] = (1.0, 0.8, 0.6)
 TUNE_MAX_ITERS: tuple[int, ...] = (150, 300)
 
 CATCH_RATE_BOUNDS = (0.05, 1.0)
+# Learned yards-per-touch floor: a <= 0 ypr/ypc prediction would give ypt <= 0
+# and can make the kernel fail (a silently skipped game biases the gate).
+YARDS_PER_TOUCH_FLOOR = 0.5
 
 
 def feature_columns(df: pd.DataFrame, toggles: frozenset[str]) -> list[str]:
@@ -257,6 +260,8 @@ def _side_players(players: list[PlayerInput], models: LearnedModels,
             vals = model.predict(X)
             if name == "catch_rate":
                 vals = np.clip(vals, *CATCH_RATE_BOUNDS)
+            else:  # ypr / ypc
+                vals = np.maximum(vals, YARDS_PER_TOUCH_FLOOR)
             for pid, v in zip(have, vals):
                 changes[pid][name] = float(v)
 
@@ -279,7 +284,8 @@ def apply_to_spec(spec: NflGameSpec, models: LearnedModels,
     shares are replaced only if EVERY active player has a feature row
     (otherwise left unchanged and counted in ``models.share_fallbacks``);
     questionable players' predicted counts are multiplied by ``q_weight``
-    before renormalizing. Efficiency is replaced per player with a row.
+    before renormalizing. Efficiency is replaced per player with a row;
+    learned ``ypr`` / ``ypc`` are floored at ``YARDS_PER_TOUCH_FLOOR``.
     """
     return dataclasses.replace(
         spec,
