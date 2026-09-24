@@ -599,6 +599,19 @@ def _kickoffs_utc(schedules: pd.DataFrame) -> pd.DataFrame:
     return pd.concat(rows, ignore_index=True).dropna(subset=["team", "kickoff"])
 
 
+def _snapshot_formation(chart: pd.DataFrame) -> pd.Series:
+    """Old-schema-style `formation` for snapshot rows from `pos_grp` (e.g.
+    "3WR 1TE" -> Offense, "Base 4-3 D" -> Defense, "Special Teams")."""
+    if "pos_grp" not in chart.columns:
+        return pd.Series(pd.NA, index=chart.index, dtype="string")
+    g = chart["pos_grp"].astype("string").str.strip()
+    out = pd.Series("Offense", index=chart.index, dtype="string")
+    out[g.str.endswith(" D").fillna(False)] = "Defense"
+    out[(g == "Special Teams").fillna(False)] = "Special Teams"
+    out[g.isna()] = pd.NA
+    return out
+
+
 def depth_charts_asof(raw: pd.DataFrame, schedules: pd.DataFrame) -> pd.DataFrame:
     """Per-(season, week, team) depth charts in the OLD columns `active_usage`
     reads, from a frame mixing nflverse's two schemas. PURE.
@@ -615,7 +628,8 @@ def depth_charts_asof(raw: pd.DataFrame, schedules: pd.DataFrame) -> pd.DataFram
       (active_usage's _latest_depth_week fallback then applies). Snapshot
       `team` codes are `normalize_team`-normalized first (LAR -> LA, ...) so
       they match the normalized schedule; codes it rejects are dropped.
-      `formation` is NaN (the snapshot files KR/PR under their own pos_abb).
+      `formation` is derived from `pos_grp` ("Special Teams" -> Special
+      Teams, "... D" -> Defense, other groups -> Offense; NaN without it).
     """
     cols = ["season", "week", "club_code", "depth_team", "position", "gsis_id", "full_name", "football_name",
             "formation"]
@@ -661,6 +675,6 @@ def depth_charts_asof(raw: pd.DataFrame, schedules: pd.DataFrame) -> pd.DataFram
                     "depth_team": pd.to_numeric(chart.get("pos_rank"), errors="coerce"),
                     "position": chart["pos_abb"].astype("string"), "gsis_id": chart["gsis_id"].astype("string"),
                     "full_name": name, "football_name": name,
-                    "formation": pd.Series(pd.NA, index=chart.index, dtype="string"),
+                    "formation": _snapshot_formation(chart),
                 }))
     return pd.concat(parts, ignore_index=True)[cols] if parts else pd.DataFrame(columns=cols)

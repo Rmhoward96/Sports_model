@@ -141,3 +141,17 @@ def test_date_only_dt_is_midnight_utc_and_mixes_with_timestamps():
              _snap("2025-09-07", "KC", "qd", "QB", 1, "D")]
     assert _wk1_qb(mixed) == ["qd"]
     assert _wk1_qb(list(reversed(mixed))) == ["qd"]
+
+
+def test_snapshot_formation_comes_from_pos_grp():
+    """Snapshot KR/PR slots (pos_grp 'Special Teams') must be tagged like the
+    old schema's Special Teams formation so p_depth_rank can drop them in
+    both eras (a WR who is KR1 is not a rank-1 WR)."""
+    raw = pd.DataFrame([
+        {**_snap("2025-09-06T10:00:00Z", "KC", "w", "WR", 3, "W"), "pos_grp": "3WR 1TE"},
+        {**_snap("2025-09-06T10:00:00Z", "KC", "w", "KR", 1, "W"), "pos_grp": "Special Teams"},
+        {**_snap("2025-09-06T10:00:00Z", "KC", "d", "LCB", 1, "D"), "pos_grp": "Base 4-3 D"},
+    ])
+    out = depth_charts_asof(raw, SCHED)
+    wk1 = out[out["week"] == 1].set_index("position")["formation"]
+    assert wk1.to_dict() == {"WR": "Offense", "KR": "Special Teams", "LCB": "Defense"}

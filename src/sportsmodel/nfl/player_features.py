@@ -399,9 +399,11 @@ def _depth_rank(depth: pd.DataFrame | None, pg: pd.DataFrame) -> pd.DataFrame:
     ascending, ties by the strictly-prior snap-share EWM descending (NaN
     last), then gsis_id. A player listed more than once in a group counts once
     (best slot); listed in several groups -> his best rank. Old-schema
-    non-offense listings (`formation` Special Teams / Defense: KR/PR slots are
-    filed under the player's own position there, under pos_abb KR/PR in the
-    snapshot) are ignored; a missing formation (snapshot rows) is kept."""
+    Non-offense listings are ignored in both eras (`formation` Special Teams /
+    Defense: old-schema KR/PR slots are filed under the player's own
+    position; snapshot KR/PR are their own pos_abb, tagged from pos_grp by
+    depth_charts_asof -- otherwise a KR1 WR would rank 1); a missing
+    formation is kept."""
     if depth is None or not len(depth):
         return pd.DataFrame(columns=KEYS + ["p_depth_rank"])
     if "formation" in depth.columns:

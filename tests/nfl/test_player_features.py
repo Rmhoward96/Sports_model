@@ -289,3 +289,14 @@ def test_career_games_exclude_the_own_game_on_played_rows():
         prior = int((mine["season"] * 100 + mine["week"] < key[0] * 100 + key[1]).sum())
         assert t.loc[(pid, *key), "p_career_games"] == prior
     assert t.loc[("KC_QB", 2024, 3), "p_career_games"] == 6 and t.loc[("BAL_QB2", 2024, 3), "p_career_games"] == 0
+
+
+def test_depth_rank_ignores_snapshot_return_slots():
+    """Snapshot era: a WR who is KR1 (pos_abb KR, pos_grp Special Teams) keeps
+    his WR rank -- his KR group rank must not become his p_depth_rank."""
+    from sportsmodel.nfl.player_features import _depth_rank
+    depth = _depth_rows([(2025, 2, "KC", 1.0, "WR", "w1"), (2025, 2, "KC", 2.0, "WR", "w2"),
+                         (2025, 2, "KC", 1.0, "KR", "w2")])
+    depth["formation"] = ["Offense", "Offense", "Special Teams"]
+    r = _depth_rank(depth, _snap_pg([])).set_index("player_id")["p_depth_rank"]
+    assert r.to_dict() == {"w1": 1, "w2": 2}
