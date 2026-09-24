@@ -1,0 +1,175 @@
+name: injury-watch
+
+# Twice-daily injury watch -- re-runs the model/sim/desk pipeline when a game
+# kicking off within 30h has an Out/Doubtful designation change (Questionable
+# churn never triggers). Scheduled at 3 PM and 10 PM UTC to catch injury
+# announcements across US time zones.
+#
+# Injury sources: NFL = nflverse's weekly report verified per player against
+# ESPN's live list (sportsmodel.nfl.injury_report); CFB = SportsDataIO.
+#
+# For each sport (NFL, CFB):
+#  1. `injury_watch.py --check` compares against `injury_snapshots`.
+#  2. If changed, the full re-run chain: model -> sim (NFL only) -> desk bundle
+#     -> synthesize + write picks -> +EV board -> +EV parlays -> record the
+#     snapshot from the desk bundle (`--record --bundle`).
+# Each job shares a concurrency group (injury-pipeline-<sport>) with
+# desk-auto-<sport>.yml so the two never overlap.
+#
+# Requires repo secrets: DATABASE_URL, SPORTSDATA_API_KEY, ANTHROPIC_API_KEY.
+# Optional repo variable DESK_SYNTH_MODEL overrides the synthesis model.
+on:
+  schedule:
+    - cron: "0 15,22 * * *"  # 3 PM and 10 PM UTC daily
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  nfl:
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    env:
+      SPORT: nfl
+    concurrency:
+      group: injury-pipeline-nfl
+      cancel-in-progress: false
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v10.0.1
+
+      - name: Sync deps
+        run: uv sync
+
+      - name: Check for injury changes
+        id: check
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+          SPORTSDATA_API_KEY: ${{ secrets.SPORTSDATA_API_KEY }}
+        run: uv run python scripts/injury_watch.py --sport "$SPORT" --check
+
+      - name: Generate NFL predictions (model-only game lines)
+        if: steps.check.outputs.changed == 'true'
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+          SM_DATA_DIR: ${{ github.workspace }}/data
+        run: uv run python scripts/generate_nfl.py
+
+      - name: Generate NFL sim predictions (Monte Carlo + player distributions)
+        if: steps.check.outputs.changed == 'true'
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+          SM_DATA_DIR: ${{ github.workspace }}/data
+        run: uv run python scripts/generate_sim_nfl.py
+
+      - name: Build desk bundle
+        if: steps.check.outputs.changed == 'true'
+        env:
+          SPORTSDATA_API_KEY: ${{ secrets.SPORTSDATA_API_KEY }}
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+        run: uv run python scripts/desk_inputs.py --sport "$SPORT" --out desk_bundle.json --days-ahead 7
+
+      - name: Synthesize picks (Anthropic API)
+        if: steps.check.outputs.changed == 'true'
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          DESK_SYNTH_MODEL: ${{ vars.DESK_SYNTH_MODEL }}
+        run: uv run python scripts/synthesize_desk_picks.py --sport "$SPORT" --bundle desk_bundle.json --out picks.json
+
+      - name: Write picks
+        if: steps.check.outputs.changed == 'true'
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+        run: uv run python scripts/write_desk_picks.py --in picks.json
+
+      - name: Rebuild +EV board
+        if: steps.check.outputs.changed == 'true'
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+        run: uv run python scripts/build_ev_board.py --sport "$SPORT"
+
+      - name: Build +EV parlays
+        if: steps.check.outputs.changed == 'true'
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+        run: uv run python scripts/build_best_parlays.py
+
+      - name: Record injury snapshot
+        if: steps.check.outputs.changed == 'true'
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+          SPORTSDATA_API_KEY: ${{ secrets.SPORTSDATA_API_KEY }}
+        run: uv run python scripts/injury_watch.py --sport "$SPORT" --record --bundle desk_bundle.json
+
+  cfb:
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    env:
+      SPORT: cfb
+    concurrency:
+      group: injury-pipeline-cfb
+      cancel-in-progress: false
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v10.0.1
+
+      - name: Sync deps
+        run: uv sync
+
+      - name: Check for injury changes
+        id: check
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+          SPORTSDATA_API_KEY: ${{ secrets.SPORTSDATA_API_KEY }}
+        run: uv run python scripts/injury_watch.py --sport "$SPORT" --check
+
+      - name: Generate CFB predictions (model-only game lines)
+        if: steps.check.outputs.changed == 'true'
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+          SM_DATA_DIR: ${{ github.workspace }}/data
+        run: uv run python scripts/generate_cfb.py
+
+      - name: Build desk bundle
+        if: steps.check.outputs.changed == 'true'
+        env:
+          SPORTSDATA_API_KEY: ${{ secrets.SPORTSDATA_API_KEY }}
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+        run: uv run python scripts/desk_inputs.py --sport "$SPORT" --out desk_bundle.json --days-ahead 7
+
+      - name: Synthesize picks (Anthropic API)
+        if: steps.check.outputs.changed == 'true'
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          DESK_SYNTH_MODEL: ${{ vars.DESK_SYNTH_MODEL }}
+        run: uv run python scripts/synthesize_desk_picks.py --sport "$SPORT" --bundle desk_bundle.json --out picks.json
+
+      - name: Write picks
+        if: steps.check.outputs.changed == 'true'
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+        run: uv run python scripts/write_desk_picks.py --in picks.json
+
+      - name: Rebuild +EV board
+        if: steps.check.outputs.changed == 'true'
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+        run: uv run python scripts/build_ev_board.py --sport "$SPORT"
+
+      - name: Build +EV parlays
+        if: steps.check.outputs.changed == 'true'
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+        run: uv run python scripts/build_best_parlays.py
+
+      - name: Record injury snapshot
+        if: steps.check.outputs.changed == 'true'
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+          SPORTSDATA_API_KEY: ${{ secrets.SPORTSDATA_API_KEY }}
+        run: uv run python scripts/injury_watch.py --sport "$SPORT" --record --bundle desk_bundle.json

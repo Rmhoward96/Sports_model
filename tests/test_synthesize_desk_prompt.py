@@ -43,3 +43,19 @@ def test_system_prompt_asks_for_compact_trend_citations():
     assert "COMPACT" in p
     assert "one short line per team" in p
     assert "BUF ATS 2-1" in p
+
+
+def test_system_prompt_injury_freshness_rule():
+    """Desk must not state stale injury designations; freshness block explained."""
+    p = " ".join(syn.SYSTEM_PROMPT.split())
+    assert "INJURY FRESHNESS" in p
+    assert "Never state a player is out" in p
+    assert "`news.injury_report`" in p
+
+
+def test_system_prompt_injury_freshness_espn_down_and_nfl_specific():
+    p = " ".join(syn.SYSTEM_PROMPT.split())
+    assert ("If `espn_available` is false, statuses are the official weekly report only "
+            "and may be last week's -- say so before relying on one.") in p
+    assert "(NFL)" in p and "verified against ESPN's live list" in p
+    assert "(when `stale`, ESPN statuses replace the unposted report)" in p

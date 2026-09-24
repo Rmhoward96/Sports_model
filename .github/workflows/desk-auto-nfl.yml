@@ -24,6 +24,11 @@ jobs:
     timeout-minutes: 20
     env:
       SPORT: nfl
+    # Shared with injury-watch.yml's nfl job: a desk run and an injury-watch
+    # re-run for the same sport queue behind each other, never overlap.
+    concurrency:
+      group: injury-pipeline-nfl
+      cancel-in-progress: false
     steps:
       - uses: actions/checkout@v5
       - name: Install uv
@@ -52,3 +57,9 @@ jobs:
         env:
           DATABASE_URL: ${{ secrets.DATABASE_URL }}
         run: uv run python scripts/build_ev_board.py --sport "$SPORT"
+
+      - name: Record injury snapshot
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+          SPORTSDATA_API_KEY: ${{ secrets.SPORTSDATA_API_KEY }}
+        run: uv run python scripts/injury_watch.py --sport "$SPORT" --record --bundle desk_bundle.json
