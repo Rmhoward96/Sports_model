@@ -903,3 +903,45 @@ def replace_nfl_game_trends(game_pks: list[int], rows: list[dict]) -> int:
             cur.executemany(insert_sql, row_tuples)
         conn.commit()
     return len(row_tuples)
+
+
+def load_injury_snapshots(sport: str, game_pks: list[int]) -> dict[int, dict]:
+    """{game_pk -> {"fingerprint", "statuses", "captured_at"}} from
+    `injury_snapshots` for the given games (absent games are simply missing).
+    Empty game_pks returns {} without touching the DB. Requires
+    db/migration_injury_snapshots.sql."""
+    if not game_pks:
+        return {}
+    with get_postgres() as conn, conn.cursor() as cur:
+        cur.execute(
+            "SELECT game_pk, fingerprint, statuses, captured_at FROM injury_snapshots "
+            "WHERE sport = %s AND game_pk = ANY(%s)",
+            (sport, list(game_pks)),
+        )
+        rows = cur.fetchall()
+    return {
+        int(pk): {"fingerprint": fp,
+                  "statuses": json.loads(st) if isinstance(st, str) else st,
+                  "captured_at": ts}
+        for pk, fp, st, ts in rows
+    }
+
+
+def upsert_injury_snapshots(rows: list[dict]) -> int:
+    """Upsert per-game injury fingerprints into `injury_snapshots`, idempotent
+    on (sport, game_pk). Each row: sport, game_pk, fingerprint, statuses (list,
+    JSON-encoded here). captured_at is DEFAULT on insert and bumped to now()
+    on update. Requires db/migration_injury_snapshots.sql."""
+    if not rows:
+        return 0
+    sql = (
+        "INSERT INTO injury_snapshots (sport, game_pk, fingerprint, statuses) "
+        "VALUES (%s, %s, %s, %s) "
+        "ON CONFLICT (sport, game_pk) DO UPDATE SET "
+        "fingerprint = EXCLUDED.fingerprint, statuses = EXCLUDED.statuses, captured_at = now()"
+    )
+    vals = [(r["sport"], r["game_pk"], r["fingerprint"], json.dumps(r["statuses"])) for r in rows]
+    with get_postgres() as conn, conn.cursor() as cur:
+        cur.executemany(sql, vals)
+        conn.commit()
+    return len(vals)
