@@ -14,7 +14,6 @@ from datetime import datetime
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
-import numpy as np
 import pandas as pd
 
 from sportsmodel.nfl.teams import normalize_team
@@ -45,9 +44,12 @@ def _home_stadiums(games: pd.DataFrame) -> dict[tuple[int, str], str]:
     season -- data-driven, so relocations (OAK->LV, SD->LAC) and
     international 'home' games resolve correctly."""
     def _mode_first(s: pd.Series) -> str:
-        counts = s.value_counts()
+        s_clean = s[pd.notna(s)]  # Skip NaN stadium_ids
+        if len(s_clean) == 0:
+            return ""
+        counts = s_clean.value_counts()
         top = counts.max()
-        return next(v for v in s if counts[v] == top)   # tie -> earliest game (a London 'home' game can't win a tie)
+        return next(v for v in s_clean if counts[v] == top)   # ties resolve to earliest game by row order
 
     g = games.sort_values(["season", "week"])
     h = g.groupby(["season", "home_team"])["stadium_id"].agg(_mode_first)
@@ -55,7 +57,9 @@ def _home_stadiums(games: pd.DataFrame) -> dict[tuple[int, str], str]:
 
 
 def _indoor(roof: str, stadium_roof: str) -> float:
-    r = (roof or "").strip().lower()
+    r = ""
+    if pd.notna(roof):
+        r = str(roof).strip().lower()
     if r in ("dome", "closed"):
         return 1.0
     if r in ("outdoors", "open"):
@@ -84,10 +88,20 @@ def team_game_context(schedules: pd.DataFrame, stadiums: dict[str, dict]) -> pd.
             wind = float(r.wind) if pd.notna(r.wind) else float("nan")
         else:
             temp = wind = float("nan")
-        turf = 0.0 if str(r.surface or "").strip().lower() in ("grass", "") else 1.0
+        if pd.isna(r.surface):
+            turf = float("nan")
+        else:
+            surface_str = str(r.surface).strip().lower()
+            if surface_str == "grass":
+                turf = 0.0
+            elif surface_str == "":
+                turf = float("nan")
+            else:
+                turf = 1.0
         spread = float(r.spread_line) if pd.notna(r.spread_line) else float("nan")
         total = float(r.total_line) if pd.notna(r.total_line) else float("nan")
-        kick_h = int(str(r.gametime or "13:00").split(":")[0])
+        gametime_str = r.gametime if pd.notna(r.gametime) else "13:00"
+        kick_h = int(str(gametime_str).split(":")[0])
         for side, team, opp, rest, opp_rest in (
             ("home", r.home_team, r.away_team, r.home_rest, r.away_rest),
             ("away", r.away_team, r.home_team, r.away_rest, r.home_rest),
@@ -99,6 +113,15 @@ def team_game_context(schedules: pd.DataFrame, stadiums: dict[str, dict]) -> pd.
                 tz_shift = abs(_utc_offset_h(st["tz"], str(r.gameday)) - _utc_offset_h(base["tz"], str(r.gameday)))
             else:
                 travel = tz_shift = float("nan")
+            # Check if venue is in Eastern time zone by comparing UTC offsets
+            is_eastern = False
+            if st.get("tz"):
+                try:
+                    eastern_offset = _utc_offset_h("America/New_York", str(r.gameday))
+                    venue_offset = _utc_offset_h(st.get("tz"), str(r.gameday))
+                    is_eastern = venue_offset == eastern_offset
+                except (ValueError, KeyError):
+                    pass
             sign = 1.0 if side == "home" else -1.0
             rows.append({
                 "season": int(r.season), "week": int(r.week), "team": team, "opponent": opp,
@@ -107,7 +130,7 @@ def team_game_context(schedules: pd.DataFrame, stadiums: dict[str, dict]) -> pd.
                 "cx_short_week": float(rest <= 5), "cx_off_bye": float(rest >= 13),
                 "cx_travel_km": round(travel, 1) if not math.isnan(travel) else travel,
                 "cx_tz_shift": tz_shift,
-                "cx_west_early": float(base.get("tz") in _PACIFIC and kick_h < 14 and st.get("tz") == "America/New_York"),
+                "cx_west_early": float(base.get("tz") in _PACIFIC and kick_h < 14 and is_eastern),
                 "cx_indoor": indoor, "cx_turf": turf, "cx_temp": temp, "cx_wind": wind,
                 "cx_div": float(r.div_game),
                 "mk_spread": sign * spread, "mk_total": total,
