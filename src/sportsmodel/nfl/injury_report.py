@@ -50,6 +50,10 @@ def _key(name) -> str:
     return re.sub(r"\s+(jr|sr|ii|iii|iv|v)$", "", s)
 
 
+# Public alias: the normalized player-name key ("Ja’Marr Chase" == "Ja'Marr Chase").
+name_key = _key
+
+
 def merge_report(nflverse_by_abbr: dict, report_week, target_week, espn_rows: list[dict],
                  name_to_abbr: dict[str, str], espn_available: bool = True) -> dict:
     stale = report_week is None or (target_week is not None and int(report_week) < int(target_week))
@@ -129,12 +133,26 @@ def _schedule_target_week(now: datetime, schedules_df) -> int | None:
     return int(rows["week"].min()) if len(rows) else None
 
 
+# ESPN numbers postseason (season_type 3) weeks 1-5; nflverse's injury report
+# numbers them 19-22 (WC 19, DIV 20, CONF 21, SB 22). ESPN week 4 is the Pro
+# Bowl week, so both 4 and 5 map to the Super Bowl report week.
+_POSTSEASON_WEEK = {1: 19, 2: 20, 3: 21, 4: 22, 5: 22}
+
+
+def _nflverse_week(tw: dict) -> int:
+    week = int(tw["week"])
+    if int(tw.get("season_type") or 2) == 3:
+        return _POSTSEASON_WEEK.get(week, 22)
+    return week
+
+
 def resolve_target_week(now: datetime, schedules_df=None) -> int | None:
-    """The NFL week being picked/simmed. ESPN first; on failure, the local
-    nflverse schedule (assets/nfl/schedules.parquet unless `schedules_df` is
-    given); None only if both fail (merge_report then treats it as not stale)."""
+    """The NFL week being picked/simmed, in nflverse report-week numbering
+    (postseason 19-22). ESPN first; on failure, the local nflverse schedule
+    (assets/nfl/schedules.parquet unless `schedules_df` is given); None only if
+    both fail (merge_report then treats it as not stale)."""
     try:
-        return int(espn.resolve_target_week()["week"])
+        return _nflverse_week(espn.resolve_target_week())
     except Exception as exc:  # noqa: BLE001 -- fall back to the local schedule
         print(f"WARN espn target week unavailable ({exc!r}); using local schedule")
     try:

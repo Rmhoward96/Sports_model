@@ -237,3 +237,29 @@ def test_resolve_target_week_none_when_both_fail(monkeypatch):
     assert injury_report.resolve_target_week(datetime(2026, 10, 5, tzinfo=timezone.utc), SCHED) is None
     assert injury_report.resolve_target_week(datetime(2026, 9, 24, tzinfo=timezone.utc),
                                              pd.DataFrame()) is None
+
+
+# -- postseason: ESPN weeks 1-5 -> nflverse report weeks 19-22 ----------------
+
+def _espn_week(week, season_type):
+    return lambda: {"season": 2026, "week": week, "season_type": season_type}
+
+
+def test_resolve_target_week_postseason_maps_to_nflverse_weeks(monkeypatch):
+    now = datetime(2027, 1, 12, 16, tzinfo=timezone.utc)
+    for espn_wk, want in ((1, 19), (2, 20), (3, 21), (4, 22), (5, 22)):
+        monkeypatch.setattr(injury_report.espn, "resolve_target_week", _espn_week(espn_wk, 3))
+        assert injury_report.resolve_target_week(now, SCHED) == want, espn_wk
+
+
+def test_resolve_target_week_regular_season_unchanged(monkeypatch):
+    monkeypatch.setattr(injury_report.espn, "resolve_target_week", _espn_week(7, 2))
+    assert injury_report.resolve_target_week(datetime(2026, 10, 20, tzinfo=timezone.utc), SCHED) == 7
+
+
+def test_week18_report_is_stale_for_wild_card(monkeypatch):
+    monkeypatch.setattr(injury_report.espn, "resolve_target_week", _espn_week(1, 3))
+    target = injury_report.resolve_target_week(datetime(2027, 1, 12, 16, tzinfo=timezone.utc), SCHED)
+    r = merge_report(NFLV, 18, target, [], N2A)
+    assert r["stale"] is True and r["target_week"] == 19
+    assert r["by_team"] == {}  # Week-18 designations dropped; ESPN (none here) rules
