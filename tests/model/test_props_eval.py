@@ -105,16 +105,34 @@ def test_cluster_bootstrap_resamples_with_replacement():
 
 def test_cluster_bootstrap_deterministic_and_order_invariant():
     """Same seed gives identical results; row order of input doesn't matter."""
-    # Create base data with noise
-    base_rows = _recs(10.0, n=60)
-    cand_rows = _recs(9.5, n=60)
+    # Create base data with per-record noise in RPS (not constant)
+    rng = np.random.default_rng(7)
+    base_rows = [
+        {
+            "season": 2024,
+            "week": 1 + i % 17,
+            "home": f"T{i % 8}",
+            "player_id": f"p{i}",
+            "market": "rec_yds",
+            "rps": 10.0 + rng.normal(0, 0.5),  # Noisy RPS per record
+            "pit": (i % 10) / 10 + 0.05,
+            "mean": 50.0,
+        }
+        for i in range(60)
+    ]
+
+    # Candidate records with different RPS (~9.5 with noise)
+    cand_rows = [
+        {**b, "rps": 9.5 + rng.normal(0, 0.5)}
+        for b in base_rows
+    ]
 
     pop = {(r["season"], r["week"], r["player_id"], r["market"]) for r in base_rows}
 
-    # Build paired frame twice: once normal, once with shuffled input
+    # Build paired frame in original order
     df1 = paired_frame(base_rows, cand_rows, pop)
 
-    # Shuffle input and rebuild
+    # Shuffle input and rebuild (same records, different order)
     import random
     base_shuffled = base_rows.copy()
     cand_shuffled = cand_rows.copy()
@@ -123,14 +141,19 @@ def test_cluster_bootstrap_deterministic_and_order_invariant():
 
     df2 = paired_frame(base_shuffled, cand_shuffled, pop)
 
-    # Bootstrap both with same seed
+    # Paired frames should be identical (same rows, same order) despite shuffled input
+    assert df1.equals(df2), "paired_frame should be deterministic regardless of input order"
+
+    # Bootstrap both with same seed should give identical results
     point1, lo1, hi1 = cluster_bootstrap(df1, relative_skill, n_boot=50, seed=0)
     point2, lo2, hi2 = cluster_bootstrap(df2, relative_skill, n_boot=50, seed=0)
 
-    # Results should be identical despite different input orders
     assert point1 == point2, f"Points differ: {point1} vs {point2}"
     assert lo1 == lo2, f"LO bounds differ: {lo1} vs {lo2}"
     assert hi1 == hi2, f"HI bounds differ: {hi1} vs {hi2}"
+
+    # Prove the data is noisy enough to create variance in bootstrap
+    assert lo1 < hi1, f"Bootstrap bounds should differ (data is noisy), got lo={lo1}, hi={hi1}"
 
 
 def test_rung_fails_on_zero_skill():
@@ -184,3 +207,4 @@ def test_rung_fails_on_ece_regression():
     ece_b = d["per_market"]["rec_yds"]["ece_b"]
     assert ece_c > ece_b + 0.005, f"Expected ECE regression: {ece_c} > {ece_b + 0.005}"
     assert any("ece_c" in r for r in d["reasons"]), f"Expected ECE reason in {d['reasons']}"
+    assert any("rec_yds" in r for r in d["reasons"]), f"Expected market name in reasons: {d['reasons']}"
