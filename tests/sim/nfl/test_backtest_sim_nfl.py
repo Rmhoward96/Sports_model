@@ -452,3 +452,43 @@ def test_game_seed_streams_independent_of_iteration_order():
     assert len({tuple(v) for v in fwd.values()}) == 3
     assert bsn.game_seed(42, 2025, 3, "BAL", "KC") != bsn.game_seed(42, 2025, 3, "KC", "BAL")
     assert bsn.game_seed(7, 2025, 3, "KC", "BAL") != bsn.game_seed(42, 2025, 3, "KC", "BAL")
+
+
+# =============================================================================
+# fetch_backtest_sources / run_backtest(sources=...) -- fetch once, reuse
+# =============================================================================
+
+def test_backtest_fetch_seasons_adds_warmup():
+    assert bsn.backtest_fetch_seasons([2023, 2025]) == [2022, 2023, 2024, 2025]
+    assert bsn.backtest_fetch_seasons([2021]) == [2020, 2021]
+
+
+def test_run_backtest_with_sources_does_not_fetch(monkeypatch):
+    """Given `sources`, run_backtest must not touch any fetcher (the harness
+    fetches once and passes the same inputs to every run)."""
+    import sportsmodel.nfl.nflverse as nflverse
+    import nfl_data_py
+
+    def boom(*a, **k):
+        raise AssertionError("fetcher called despite sources")
+
+    for mod, name in ((bsn, "fetch_nflverse"), (bsn, "fetch_usage_sources"), (bsn, "load_schedules"),
+                      (bsn, "fetch_backtest_sources"), (nflverse, "load_release"),
+                      (nfl_data_py, "import_injuries")):
+        monkeypatch.setattr(mod, name, boom)
+    sched = pd.DataFrame({"season": [2024], "week": [1], "game_type": ["REG"], "home_team": ["KC"],
+                          "away_team": ["BAL"], "home_score": [float("nan")], "away_score": [float("nan")]})
+    sources = {"pbp": pd.DataFrame(), "weekly": pd.DataFrame(), "snaps": pd.DataFrame(),
+               "pfr2gsis": {}, "schedules": sched,
+               "depth": pd.DataFrame({"club_code": ["KC"]}),
+               "injuries": pd.DataFrame({"team": ["KC"]})}
+    out = bsn.run_backtest([2024], 10, sources=sources)
+    assert out["game_probs"] == [] and out["n_empty_active"] == 0
+
+
+def test_fetch_backtest_sources_keys_match_what_run_backtest_reads():
+    import inspect
+
+    src = inspect.getsource(bsn.fetch_backtest_sources)
+    for key in ("pbp", "weekly", "snaps", "pfr2gsis", "schedules", "depth", "injuries"):
+        assert f'"{key}"' in src

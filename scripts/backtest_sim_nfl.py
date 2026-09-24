@@ -376,6 +376,43 @@ def _actual_player_stats(weekly_df, season: int, week: int) -> dict[str, dict[st
     return out
 
 
+def backtest_fetch_seasons(seasons: list[int]) -> list[int]:
+    """The seasons run_backtest's sources span: `seasons` plus
+    WARMUP_SEASONS_BACK earlier warm-up seasons. PURE."""
+    return list(range(min(seasons) - WARMUP_SEASONS_BACK, max(seasons) + 1))
+
+
+def fetch_backtest_sources(fetch_seasons: list[int]) -> dict:
+    """Every nflverse input run_backtest reads, fetched once (IO, not unit
+    tested). Keys: pbp, weekly, snaps (usage snaps), pfr2gsis, schedules,
+    depth (per-week charts via depth_charts_asof), injuries."""
+    print(f"fetching nflverse seasons {fetch_seasons}")
+    nflverse = fetch_nflverse(fetch_seasons)
+
+    print(f"fetching usage sources for seasons {fetch_seasons}")
+    usage_src = fetch_usage_sources(fetch_seasons)
+    schedules = load_schedules(fetch_seasons)
+
+    from sportsmodel.nfl.nflverse import load_release
+    # Per-week charts: old weekly schema <= 2024; 2025+ snapshots resolved to the
+    # latest chart at/before each team's kickoff (the prior collapse applied one
+    # stale chart to every 2025 week).
+    depth_df = depth_charts_asof(load_release("depth", fetch_seasons), schedules)
+
+    print(f"fetching historical injuries for seasons {fetch_seasons}")
+    import nfl_data_py as nfl
+
+    return {
+        "pbp": nflverse["pbp"],
+        "weekly": nflverse["weekly"],
+        "snaps": usage_src["snaps"],
+        "pfr2gsis": build_pfr_to_gsis(usage_src["ids"]),
+        "schedules": schedules,
+        "depth": depth_df,
+        "injuries": nfl.import_injuries(fetch_seasons),
+    }
+
+
 def run_backtest(
     seasons: list[int],
     n_sims: int,
@@ -388,8 +425,13 @@ def run_backtest(
     ratings_weight: float = 0.0,
     spec_hook: Callable[[int, int, str, str, NflGameSpec], NflGameSpec] | None = None,
     record: list | None = None,
+    sources: dict | None = None,
 ) -> dict:
     """Walk forward over every completed REG-season game in `seasons`.
+
+    sources: optional `fetch_backtest_sources(backtest_fetch_seasons(seasons))`
+        result; when given nothing is fetched (the props-ML harness fetches
+        once and reuses it for every run). None -> fetched here (unchanged).
 
     seed: base seed; each game is simulated with its own stream
         `np.random.default_rng(game_seed(seed, season, week, home, away))`,
@@ -428,26 +470,11 @@ def run_backtest(
       `active_usage` handed back an empty roster for either side -- see
       `abbrev_alignment`'s docstring for why this can happen silently).
     """
-    fetch_seasons = list(range(min(seasons) - WARMUP_SEASONS_BACK, max(seasons) + 1))
-    print(f"fetching nflverse seasons {fetch_seasons}")
-    nflverse = fetch_nflverse(fetch_seasons)
-    pbp, weekly, snaps = nflverse["pbp"], nflverse["weekly"], nflverse["snaps"]
-
-    print(f"fetching usage sources for seasons {fetch_seasons}")
-    usage_src = fetch_usage_sources(fetch_seasons)
-    pfr2gsis = build_pfr_to_gsis(usage_src["ids"])
-    schedules = load_schedules(fetch_seasons)
-
-    from sportsmodel.nfl.nflverse import load_release
-    # Per-week charts: old weekly schema <= 2024; 2025+ snapshots resolved to the
-    # latest chart at/before each team's kickoff (the prior collapse applied one
-    # stale chart to every 2025 week).
-    depth_df = depth_charts_asof(load_release("depth", fetch_seasons), schedules)
-
-    print(f"fetching historical injuries for seasons {fetch_seasons}")
-    import nfl_data_py as nfl
-
-    injuries_df = nfl.import_injuries(fetch_seasons)
+    if sources is None:
+        sources = fetch_backtest_sources(backtest_fetch_seasons(seasons))
+    pbp, weekly = sources["pbp"], sources["weekly"]
+    usage_snaps, pfr2gsis = sources["snaps"], sources["pfr2gsis"]
+    schedules, depth_df, injuries_df = sources["schedules"], sources["depth"], sources["injuries"]
 
     # Leakage-free per-game pre-game Elo from the full committed schedule (well
     # warmed). run_elo records elo_home/elo_away as the ratings BEFORE each game,
@@ -524,7 +551,7 @@ def run_backtest(
                 week,
                 depth_df,
                 weekly,
-                usage_src["snaps"],
+                usage_snaps,
                 pfr2gsis,
                 out_by_team.get(team, set()),
                 questionable_names=q_by_team.get(team, set()),

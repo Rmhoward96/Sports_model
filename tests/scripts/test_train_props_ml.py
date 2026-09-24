@@ -411,3 +411,195 @@ def test_gate_json_uses_real_booleans_and_native_numbers():
     assert back["final"]["pass"] is False
     assert back["ladder"][0]["decision"]["skill"] == -0.5
     assert back["ladder"][0]["decision"]["per_market"]["rec_yds"]["n"] == 100
+
+
+# ---- I1: run tag / isolated outputs / fixed configuration ----------------------------
+
+def test_run_tag_names_seasons_and_refit_schedule():
+    assert tpm.run_tag([2021, 2022, 2023, 2024, 2025], tpm.REFIT_WEEKS) == "s2021-2025__every4"
+    assert tpm.run_tag([2025], tpm.WEEKLY_REFIT_WEEKS) == "s2025__weekly"
+    assert tpm.run_tag([2021, 2023, 2025], tpm.REFIT_WEEKS) == "s2021_2023_2025__every4"
+    assert tpm.DEFAULT_TAG == "s2021-2025__every4"
+
+
+def test_checkpoint_path_is_scoped_by_tag(tmp_path):
+    assert tpm.checkpoint_path(tmp_path, "volume", "s2025__weekly") == \
+        tmp_path / "records_volume__s2025__weekly.parquet"
+
+
+def test_toggles_from_env():
+    assert tpm.toggles_from_env({}) is None
+    assert tpm.toggles_from_env({"PROPS_ML_TOGGLES": " "}) is None
+    assert tpm.toggles_from_env({"PROPS_ML_TOGGLES": "volume,efficiency"}) == \
+        frozenset({"volume", "efficiency"})
+    # every configuration implies volume (as in the ladder)
+    assert tpm.toggles_from_env({"PROPS_ML_TOGGLES": "context"}) == frozenset({"volume", "context"})
+    with pytest.raises(ValueError, match="bogus"):
+        tpm.toggles_from_env({"PROPS_ML_TOGGLES": "volume,bogus"})
+    assert tpm.toggles_label(frozenset({"market", "volume", "efficiency"})) == "volume-efficiency-market"
+
+
+def test_output_paths_default_other_tag_and_fixed(tmp_path):
+    gate, rdir = tmp_path / "a_gate.json", tmp_path / "reports"
+    kw = dict(gate_path=gate, report_dir=rdir)
+    assert tpm.output_paths(tpm.DEFAULT_TAG, "2026-09-24", **kw) == \
+        (gate, rdir / "2026-09-24-props-ml-a-gate.md")
+    assert tpm.output_paths("s2025__weekly", "2026-09-24", **kw) == \
+        (tmp_path / "a_gate__s2025__weekly.json", rdir / "2026-09-24-props-ml-a-gate__s2025__weekly.md")
+    fixed = tpm.output_paths(tpm.DEFAULT_TAG, "2026-09-24", toggles=frozenset({"volume", "efficiency"}), **kw)
+    assert fixed == (tmp_path / "a_gate__s2021-2025__every4__volume-efficiency.json",
+                     rdir / "2026-09-24-props-ml-a-gate__s2021-2025__every4__volume-efficiency.md")
+
+
+# ---- I4: backtest sources fingerprint ----------------------------------------------------
+
+def _sources():
+    return {"pbp": pd.DataFrame({"season": [2024, 2024], "week": [1, 2], "posteam": ["KC", "BAL"],
+                                 "play_type": ["pass", "run"], "epa": [0.1, -0.2], "junk": [1, 2]}),
+            "weekly": pd.DataFrame({"player_id": ["a"], "season": [2024], "week": [1], "targets": [5]}),
+            "pfr2gsis": {"P1": "G1", "P2": "G2"}}
+
+
+def test_sources_fingerprint_rows_and_key_column_hash():
+    fp = tpm.sources_fingerprint(_sources())
+    assert fp["pbp"]["rows"] == 2 and fp["weekly"]["rows"] == 1 and fp["pfr2gsis"]["rows"] == 2
+    assert fp == tpm.sources_fingerprint(_sources())                 # deterministic
+    s = _sources()
+    s["pbp"].loc[1, "epa"] = 9.9                                      # key column change
+    assert tpm.sources_fingerprint(s)["pbp"]["hash"] != fp["pbp"]["hash"]
+    s = _sources()
+    s["pfr2gsis"]["P2"] = "G3"
+    assert tpm.sources_fingerprint(s)["pfr2gsis"]["hash"] != fp["pfr2gsis"]["hash"]
+    s = _sources()
+    s["pbp"]["junk"] = [7, 8]                                         # not a key column: cheap hash ignores
+    assert tpm.sources_fingerprint(s)["pbp"] == fp["pbp"]
+
+
+# ---- M1 / I3 guards -----------------------------------------------------------------------
+
+def test_checked_paired_frame_requires_every_population_key():
+    base = _game_recs([(2025, 1, "KC"), (2025, 2, "KC")])
+    for i, r in enumerate(base):
+        r["player_id"] = f"p{i}"
+    pop = {(r["season"], r["week"], r["player_id"], r["market"]) for r in base}
+    assert len(tpm.checked_paired_frame(base, list(base), pop, base, "volume")) == 2
+    with pytest.raises(RuntimeError, match=r"(?s)volume.*1 of 2"):
+        tpm.checked_paired_frame(base, base[:1], pop, base, "volume")
+
+
+def test_check_share_fallbacks_aborts_above_two_percent_of_sides():
+    tpm.check_share_fallbacks(4, 100, "volume")                      # 4 / 200 sides = 2%: ok
+    with pytest.raises(RuntimeError, match=r"(?s)volume.*5.*200"):
+        tpm.check_share_fallbacks(5, 100, "volume")
+
+
+# ---- M2 / I2 report text ------------------------------------------------------------------
+
+def test_report_states_holdout_caveat_baseline_era_drift_and_q_weight():
+    g = _gate(False, ["volume"])
+    g.update(run_tag="s2025__every4", learned_q_weight=1.0)
+    md = tpm.render_report(g)
+    assert "not an independent holdout" in md
+    assert "is_starter = depth_team == 1" in md and "era" in md
+    assert "s2025__every4" in md and "questionable multiplier on learned shares: 1.0" in md
+
+
+# ---- fixed configuration path, stubbed backtest ----------------------------------------------
+
+class _FakeBsn:
+    SIM_SEED = 42
+
+    def __init__(self):
+        self.fetches, self.runs = [], []
+        self.src = {"pbp": pd.DataFrame({"season": [2025], "week": [1], "epa": [0.1]})}
+
+    def backtest_fetch_seasons(self, seasons):
+        return [min(seasons) - 1] + list(seasons)
+
+    def fetch_backtest_sources(self, fetch_seasons):
+        self.fetches.append(list(fetch_seasons))
+        return self.src
+
+    def run_backtest(self, seasons, n_sims, *, seed, on_game, spec_hook, record, sources, **prod):
+        import numpy as np
+        self.runs.append({"hook": spec_hook is not None, "sources": sources, "prod": prod})
+        rng = np.random.default_rng(0)
+        for w in range(1, 11):
+            for g in range(4):
+                home = f"H{g}"
+                on_game(2025, w, home, f"A{g}", None)
+                for k in range(3):
+                    rps = float(rng.uniform(2, 4))
+                    record.append({"season": 2025, "week": w, "home": home, "player_id": f"{home}p{k}",
+                                   "market": "rec_yds", "mean": 50.0, "p50": 48.0, "p90": 90.0,
+                                   "rps": rps * (0.9 if spec_hook is not None else 1.0),
+                                   "pit": float(rng.uniform()), "actual": 40.0})
+
+
+class _Models:
+    share_fallbacks = 0
+
+
+def test_fixed_toggles_run_one_configuration_vs_baseline(tmp_path, monkeypatch):
+    bsn = _FakeBsn()
+    fits = []
+    monkeypatch.setattr(tpm.learned, "tune", lambda p, s, t: (0.8, 150))
+    monkeypatch.setattr(tpm.learned, "fit_models",
+                        lambda p, t, toggles, **k: fits.append((toggles, k["upto"])) or _Models())
+    env = {"PROPS_ML_SEASONS": "2025", "PROPS_ML_N_SIMS": "10",
+           "PROPS_ML_TOGGLES": "volume,efficiency"}
+    ptbl = _player_tbl().assign(season=2025)
+    gate = tpm.run_harness(env, bsn=bsn, player_tbl=ptbl, team_tbl=_team_tbl(),
+                           identity={"git_head": "deadbeef"}, data_dir=tmp_path / "data",
+                           gate_path=tmp_path / "a_gate.json", report_dir=tmp_path / "reports",
+                           log=lambda m: None, run_date="2026-09-24")
+    # one fetch, reused by exactly two runs (baseline + the fixed candidate); no ladder
+    assert bsn.fetches == [[2024, 2025]]
+    assert [r["hook"] for r in bsn.runs] == [False, True]
+    assert all(r["sources"] is bsn.src for r in bsn.runs)
+    assert {t for t, _ in fits} == {frozenset({"volume", "efficiency"})}
+    assert sorted(u for _, u in fits) == [(2025, r) for r in tpm.REFIT_WEEKS]
+    assert gate["mode"] == "fixed" and gate["toggles"] == ["volume", "efficiency"]
+    assert gate["run_tag"] == "s2025__every4" and gate["learned_q_weight"] == 1.0
+    assert gate["decision"]["skill"] > 0 and "pbp" in gate["identity"]["backtest_sources"]
+    out = tmp_path / "a_gate__s2025__every4__volume-efficiency.json"
+    assert out.exists() and not (tmp_path / "a_gate.json").exists()
+    assert (tmp_path / "reports" / "2026-09-24-props-ml-a-gate__s2025__every4__volume-efficiency.md").exists()
+    assert sorted(p.name for p in (tmp_path / "data").glob("*.parquet")) == [
+        "records_baseline__s2025__every4.parquet",
+        "records_fixed_volume-efficiency__s2025__every4.parquet"]
+
+
+def test_fixed_toggles_resume_reuses_checkpoints(tmp_path, monkeypatch):
+    monkeypatch.setattr(tpm.learned, "tune", lambda p, s, t: (0.8, 150))
+    monkeypatch.setattr(tpm.learned, "fit_models", lambda *a, **k: _Models())
+    env = {"PROPS_ML_SEASONS": "2025", "PROPS_ML_N_SIMS": "10", "PROPS_ML_TOGGLES": "volume"}
+    kw = dict(player_tbl=_player_tbl().assign(season=2025), team_tbl=_team_tbl(),
+              identity={"git_head": "deadbeef"}, data_dir=tmp_path / "data",
+              gate_path=tmp_path / "a_gate.json", report_dir=tmp_path / "reports",
+              log=lambda m: None, run_date="2026-09-24")
+    first = tpm.run_harness(env, bsn=_FakeBsn(), **kw)
+    bsn2 = _FakeBsn()
+    again = tpm.run_harness({**env, "PROPS_ML_RESUME": "1"}, bsn=bsn2, **kw)
+    assert bsn2.runs == [] and again["decision"] == first["decision"]
+
+
+def test_ladder_non_default_tag_writes_tagged_outputs_and_checkpoints(tmp_path, monkeypatch):
+    bsn = _FakeBsn()
+    monkeypatch.setattr(tpm.learned, "tune", lambda p, s, t: (0.8, 150))
+    monkeypatch.setattr(tpm.learned, "fit_models", lambda *a, **k: _Models())
+    gate = tpm.run_harness({"PROPS_ML_SEASONS": "2025", "PROPS_ML_N_SIMS": "10"}, bsn=bsn,
+                           player_tbl=_player_tbl().assign(season=2025), team_tbl=_team_tbl(),
+                           identity={"git_head": "deadbeef",
+                                     "player_features": {"size": 10, "sha256": "a" * 64},
+                                     "team_features": {"size": 5, "sha256": "b" * 64}},
+                           data_dir=tmp_path / "data",
+                           gate_path=tmp_path / "a_gate.json", report_dir=tmp_path / "reports",
+                           log=lambda m: None, run_date="2026-09-24")
+    assert len(bsn.fetches) == 1 and len(bsn.runs) == 1 + len(tpm.LADDER)
+    assert all(r["sources"] is bsn.src for r in bsn.runs)
+    assert gate["mode"] == "ladder" and gate["kept"] == ["volume"]
+    assert (tmp_path / "a_gate__s2025__every4.json").exists() and not (tmp_path / "a_gate.json").exists()
+    assert (tmp_path / "reports" / "2026-09-24-props-ml-a-gate__s2025__every4.md").exists()
+    assert {p.name for p in (tmp_path / "data").glob("*.parquet")} == {
+        f"records_{n}__s2025__every4.parquet" for n in ("baseline", *tpm.LADDER)}
