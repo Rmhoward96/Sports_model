@@ -76,3 +76,37 @@ def test_load_release_required_raises_when_none(monkeypatch):
     _patch_release(monkeypatch, set())
     with pytest.raises(RuntimeError):
         load_release("pbp", [2026])
+
+
+def test_single_file_dataset_is_read_once_and_filtered(monkeypatch):
+    calls = []
+    frame = pd.DataFrame({"season": [2020, 2021, 2022], "week": [1, 1, 1],
+                          "player_gsis_id": ["a", "b", "c"], "avg_separation": [3.0, 3.1, 3.2],
+                          "avg_cushion": [6.0] * 3, "avg_intended_air_yards": [9.0] * 3,
+                          "avg_yac_above_expectation": [0.1] * 3, "season_type": ["REG"] * 3})
+    monkeypatch.setattr(nflverse.pd, "read_parquet", lambda url: calls.append(url) or frame)
+    out = nflverse.load_release("ngs_receiving", [2021, 2022])
+    assert len(calls) == 1 and calls[0].endswith("nextgen_stats/ngs_receiving.parquet")
+    assert sorted(out["season"].tolist()) == [2021, 2022]
+
+
+def test_validate_columns_names_missing(monkeypatch):
+    with pytest.raises(ValueError, match="avg_separation"):
+        nflverse.validate_columns(pd.DataFrame({"season": [2021]}), "ngs_receiving")
+
+
+def test_depth_release_url_is_per_season(monkeypatch):
+    urls = []
+    old = pd.DataFrame({"season": [2021], "club_code": ["KC"], "week": [1], "depth_team": ["1"],
+                        "gsis_id": ["x"], "position": ["QB"], "football_name": ["P"], "last_name": ["M"],
+                        "first_name": ["P"]})
+    monkeypatch.setattr(nflverse.pd, "read_parquet", lambda url: urls.append(url) or old)
+    nflverse.load_release("depth", [2021])
+    assert urls == ["https://github.com/nflverse/nflverse-data/releases/download/depth_charts/depth_charts_2021.parquet"]
+
+
+def test_schedules_validated(monkeypatch):
+    bad = pd.DataFrame({"season": [2021], "week": [1]})
+    monkeypatch.setattr(nflverse.pd, "read_parquet", lambda url: bad)
+    with pytest.raises(ValueError, match="home_rest"):
+        nflverse.load_release("schedules", [2021])

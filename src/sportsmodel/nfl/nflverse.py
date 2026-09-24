@@ -26,13 +26,43 @@ from typing import Callable
 
 import pandas as pd
 
+_BASE = "https://github.com/nflverse/nflverse-data/releases/download"
 # Canonical nflverse-data release URLs (per season). nfl_data_py's own paths for
 # these are stale (weekly) or buggy (pbp), so we read them directly.
 _RELEASE_URL = {
-    "pbp": "https://github.com/nflverse/nflverse-data/releases/download/pbp/play_by_play_{year}.parquet",
-    "weekly": "https://github.com/nflverse/nflverse-data/releases/download/stats_player/stats_player_week_{year}.parquet",
-    "snaps": "https://github.com/nflverse/nflverse-data/releases/download/snap_counts/snap_counts_{year}.parquet",
+    "pbp": f"{_BASE}/pbp/play_by_play_{{year}}.parquet",
+    "weekly": f"{_BASE}/stats_player/stats_player_week_{{year}}.parquet",
+    "snaps": f"{_BASE}/snap_counts/snap_counts_{{year}}.parquet",
+    "depth": f"{_BASE}/depth_charts/depth_charts_{{year}}.parquet",
 }
+# One file covering every season; read once, filtered to the requested seasons.
+_SINGLE_FILE_URL = {
+    "schedules": f"{_BASE}/schedules/games.parquet",
+    "ngs_receiving": f"{_BASE}/nextgen_stats/ngs_receiving.parquet",
+    "ngs_rushing": f"{_BASE}/nextgen_stats/ngs_rushing.parquet",
+    "ngs_passing": f"{_BASE}/nextgen_stats/ngs_passing.parquet",
+}
+# Columns the props-ML features read. A release that drops one fails loudly
+# here instead of silently producing NaN features (lesson of the 2025
+# depth-chart schema change).
+EXPECTED_COLUMNS: dict[str, frozenset[str]] = {
+    "schedules": frozenset({"game_id", "season", "week", "game_type", "gameday", "gametime",
+                            "home_team", "away_team", "home_rest", "away_rest", "roof", "surface",
+                            "temp", "wind", "div_game", "stadium_id", "spread_line", "total_line"}),
+    "ngs_receiving": frozenset({"season", "week", "player_gsis_id", "avg_separation", "avg_cushion",
+                                "avg_intended_air_yards", "avg_yac_above_expectation"}),
+    "ngs_rushing": frozenset({"season", "week", "player_gsis_id", "efficiency",
+                              "percent_attempts_gte_eight_defenders", "rush_yards_over_expected_per_att"}),
+    "ngs_passing": frozenset({"season", "week", "player_gsis_id", "avg_time_to_throw",
+                              "completion_percentage_above_expectation", "aggressiveness"}),
+}
+
+
+def validate_columns(df: pd.DataFrame, dataset: str) -> None:
+    """Raise ValueError if `df` lacks any EXPECTED_COLUMNS[dataset] column."""
+    missing = sorted(EXPECTED_COLUMNS.get(dataset, frozenset()) - set(df.columns))
+    if missing:
+        raise ValueError(f"nflverse {dataset}: missing expected columns {missing}")
 
 
 def _read_release_season(dataset: str, year: int) -> pd.DataFrame:
@@ -46,12 +76,24 @@ def _read_release_season(dataset: str, year: int) -> pd.DataFrame:
 
 
 def load_release(dataset: str, seasons: list[int], *, required: bool = True) -> pd.DataFrame:
-    """Season-by-season read of an nflverse release (``pbp``/``weekly``/``snaps``),
+    """Season-by-season read of an nflverse release (``pbp``/``weekly``/``snaps``/``depth``),
+    or single-file datasets (``schedules`` and ``ngs_*``) read once and filtered to ``seasons``,
     skipping seasons whose file isn't published yet, concatenating the rest.
 
     Same contract as ``import_by_season`` (resilient, ``required`` gating) but
-    reads the canonical release URLs directly rather than via nfl_data_py.
+    reads the canonical release URLs directly rather than via nfl_data_py. Every
+    dataset in EXPECTED_COLUMNS is schema-validated.
     """
+    # Handle single-file datasets (read once, filter to seasons)
+    if dataset in _SINGLE_FILE_URL:
+        df = pd.read_parquet(_SINGLE_FILE_URL[dataset])
+        validate_columns(df, dataset)
+        df = df[df["season"].isin(seasons)].reset_index(drop=True)
+        if df.empty and required:
+            raise RuntimeError(f"nflverse {dataset}: no rows for seasons {seasons}")
+        return df
+
+    # Handle per-season datasets
     frames: list[pd.DataFrame] = []
     got: list[int] = []
     for yr in seasons:
@@ -67,7 +109,9 @@ def load_release(dataset: str, seasons: list[int], *, required: bool = True) -> 
         return pd.DataFrame()
     if got != seasons:
         print(f"nflverse {dataset}: using seasons {got}")
-    return pd.concat(frames, ignore_index=True)
+    out = pd.concat(frames, ignore_index=True)
+    validate_columns(out, dataset)
+    return out
 
 
 def import_by_season(
