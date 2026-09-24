@@ -13,26 +13,36 @@ from __future__ import annotations
 import re
 from datetime import datetime
 
-_OUT_WORDS = ("out", "injured reserve", "reserve", "suspension", "physically unable", "non football", "pup", "nfi")
+_OUT_WORDS = ("out", "injured reserve", "reserve", "suspension", "suspended", "physically unable", "non football")
+# ASCII apostrophe + U+2019 right single quotation mark for player name normalization
+_APOS = "'" + "’"
+_DROP_RE = re.compile("[." + re.escape(_APOS) + "]")
 
 
 def normalize_status(s) -> str | None:
     st = str(s or "").strip().lower()
+    # Treat statuses starting with "active" as None (e.g., "Active/PUP" → None)
+    if st.startswith("active"):
+        return None
     # Replace punctuation with spaces to normalize hyphenated/slashed status strings
     st = re.sub(r"[-/_]", " ", st)
     st = re.sub(r"\s+", " ", st).strip()
-    # Match whole words for doubtful/questionable (anchored or word boundaries)
+    # Match whole words for doubtful/questionable
     if re.search(r"\bdoubtful\b", st):
         return "Doubtful"
     if re.search(r"\bquestionable\b", st):
         return "Questionable"
+    # Match whole words for pup/nfi
+    if re.search(r"\bpup\b", st) or re.search(r"\bnfi\b", st):
+        return "Out"
+    # Match substring for other out words
     if any(w in st for w in _OUT_WORDS):
         return "Out"
     return None
 
 
 def _key(name) -> str:
-    s = re.sub(r"[.''']", "", str(name or "").strip().lower())
+    s = _DROP_RE.sub("", str(name or "").strip().lower())
     s = re.sub(r"\s+", " ", s).strip()
     return re.sub(r"\s+(jr|sr|ii|iii|iv|v)$", "", s)
 

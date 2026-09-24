@@ -51,6 +51,33 @@ def test_normalize_status_negative_cases():
     assert normalize_status("Commissioner Exempt") is None
 
 
+def test_normalize_status_active_prefix_is_none():
+    """Statuses starting with 'active' should return None (e.g., Active/PUP)."""
+    assert normalize_status("Active/PUP") is None
+    assert normalize_status("Active/NFI") is None
+    assert normalize_status("Active/Reserve") is None
+
+
+def test_normalize_status_pup_nfi_word_boundaries():
+    """PUP and NFI should match as whole words, and Reserve/PUP should be Out."""
+    assert normalize_status("PUP") == "Out"
+    assert normalize_status("NFI") == "Out"
+    assert normalize_status("Reserve/PUP") == "Out"
+    assert normalize_status("Reserve/NFI") == "Out"
+
+
+def test_normalize_status_suspended():
+    """Suspended status should normalize to Out."""
+    assert normalize_status("Suspended") == "Out"
+    assert normalize_status("Reserve/Suspended") == "Out"
+
+
+def test_normalize_status_invalid_words():
+    """Invalid statuses should return None."""
+    assert normalize_status("Sunfire") is None
+    assert normalize_status("Vacation") is None
+
+
 def test_stale_report_dropped_when_espn_available():
     espn = [{"team": "Atlanta Falcons", "player": "Michael Penix Jr.", "status": "Active"}]
     r = merge_report(NFLV, report_week=2, target_week=3, espn_rows=espn, name_to_abbr=N2A)
@@ -108,14 +135,17 @@ def test_name_matching_normalized_and_unknown_team_skipped():
 
 
 def test_curly_apostrophe_matching():
-    """Ja'Marr Chase (nflverse) Out + Ja'Marr Chase (ESPN, curly apostrophe) Active → cleared + conflict."""
+    """Ja'Marr Chase (nflverse, ASCII apostrophe) Out + Ja'Marr Chase (ESPN, U+2019 curly apostrophe) Active → cleared + conflict."""
     nflv = {"CIN": [{"player": "Ja'Marr Chase", "position": "WR", "status": "Out", "note": None}]}
-    espn = [{"team": "Cincinnati Bengals", "player": "Ja'Marr Chase", "status": "Active"}]
+    # ESPN name with U+2019 curly apostrophe to test actual name matching across different encodings
+    espn_name = "Ja’Marr Chase"
+    assert "’" in espn_name  # Guard: confirm curly apostrophe is present
+    espn = [{"team": "Cincinnati Bengals", "player": espn_name, "status": "Active"}]
     n2a = {"Cincinnati Bengals": "CIN"}
     r = merge_report(nflv, report_week=3, target_week=3, espn_rows=espn, name_to_abbr=n2a)
     # Ja'Marr Chase should be cleared (ESPN Active) and not in by_team
     assert r["by_team"].get("CIN", []) == []
-    # Conflict: nflverse says Out, ESPN says None (cleared)
+    # Conflict: nflverse says Out, ESPN says None (cleared); name comes from nflverse (ASCII apostrophe)
     assert {"team": "CIN", "player": "Ja'Marr Chase", "nflverse": "Out", "espn": None} in r["conflicts"]
 
 
