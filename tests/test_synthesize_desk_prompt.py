@@ -43,3 +43,11 @@ def test_system_prompt_asks_for_compact_trend_citations():
     assert "COMPACT" in p
     assert "one short line per team" in p
     assert "BUF ATS 2-1" in p
+
+
+def test_system_prompt_injury_freshness_rule():
+    """Desk must not state stale injury designations; freshness block explained."""
+    p = " ".join(syn.SYSTEM_PROMPT.split())
+    assert "INJURY FRESHNESS" in p
+    assert "Never state a player is out" in p
+    assert "`news.injury_report`" in p

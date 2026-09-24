@@ -235,3 +235,114 @@ def test_trend_block_units_losses_stored_negative():
     assert trend_block({"units": {"w": 1.2, "l": 0}}, [], is_home=False, is_fav=None)["records"]["Units"] == "+1.2"
     # Robust if a positive loss magnitude is ever sent.
     assert trend_block({"units": {"w": 0, "l": 2}}, [], is_home=False, is_fav=None)["records"]["Units"] == "-2.0"
+
+
+# -- injury freshness block (news.injury_report) ------------------------------
+
+INJURY_META = {
+    "source": "nflverse+espn", "stale": True, "report_week": 2, "target_week": 3,
+    "espn_available": True,
+    "conflicts": [
+        {"team": "Ames", "player": "John Doe", "nflverse": "Out", "espn": "Questionable"},
+        {"team": "Boone", "player": "Jane Roe", "nflverse": None, "espn": "Out"},
+        {"team": "Elsewhere", "player": "Not Here", "nflverse": "Out", "espn": None},
+    ],
+}
+
+
+def test_build_bundle_injury_report_default_none():
+    bundle = build_bundle(GAMES, MODEL_ROWS, FORM_ROWS, INJURIES, WEATHER, NOW)
+    assert all(g["news"]["injury_report"] is None for g in bundle)
+
+
+def test_build_bundle_injury_report_conflicts_filtered_to_game_teams():
+    bundle = build_bundle(GAMES, MODEL_ROWS, FORM_ROWS, INJURIES, WEATHER, NOW,
+                          trends=None, injury_meta=INJURY_META)
+    g401 = _by_pk(bundle, 401)["news"]["injury_report"]  # Boone @ Ames
+    assert g401["source"] == "nflverse+espn"
+    assert g401["stale"] is True
+    assert g401["report_week"] == 2 and g401["target_week"] == 3
+    assert [c["player"] for c in g401["conflicts"]] == ["John Doe", "Jane Roe"]
+    g403 = _by_pk(bundle, 403)["news"]["injury_report"]  # Coralville @ Ames
+    assert [c["player"] for c in g403["conflicts"]] == ["John Doe"]
+
+
+def test_build_bundle_injury_report_cfb_meta_no_week_keys():
+    meta = {"source": "sportsdata", "stale": False, "conflicts": []}
+    g = _by_pk(build_bundle(GAMES, MODEL_ROWS, FORM_ROWS, INJURIES, WEATHER, NOW,
+                            injury_meta=meta), 401)["news"]["injury_report"]
+    assert g == {"source": "sportsdata", "stale": False, "report_week": None,
+                 "target_week": None, "conflicts": []}
+
+
+# -- injury sources return (by_name, meta) ------------------------------------
+
+def test_nfl_injuries_by_name_uses_shared_report(monkeypatch):
+    calls = {}
+
+    def fake_report(now, target_week, name_to_abbr):
+        calls["args"] = (now, target_week, name_to_abbr)
+        return {
+            "by_team": {
+                "ATL": [{"player": "Michael Penix Jr.", "position": "QB", "status": "Questionable",
+                         "note": None, "source": "espn"}],
+                "ZZZ": [{"player": "Nobody", "position": "QB", "status": "Out", "note": None, "source": "espn"}],
+            },
+            "stale": True, "report_week": 2, "target_week": 3, "espn_available": True,
+            "conflicts": [{"team": "ATL", "player": "Michael Penix Jr.", "nflverse": "Out", "espn": "Questionable"}],
+        }
+
+    monkeypatch.setattr(desk_inputs.injury_report, "current_report", fake_report)
+    monkeypatch.setattr(desk_inputs.nfl_espn, "resolve_target_week",
+                        lambda: {"season": 2026, "week": 3, "season_type": 2})
+    crosswalk = {"ATL": "Atlanta Falcons", "GB": "Green Bay Packers"}
+    by_name, meta = desk_inputs._nfl_injuries_by_name(None, None, crosswalk, NOW)
+
+    assert calls["args"] == (NOW, 3, {"Atlanta Falcons": "ATL", "Green Bay Packers": "GB"})
+    assert list(by_name) == ["Atlanta Falcons"]  # unknown abbr dropped
+    assert by_name["Atlanta Falcons"][0]["status"] == "Questionable"
+    assert "by_team" not in meta
+    assert meta["source"] == "nflverse+espn"
+    assert meta["stale"] is True and meta["report_week"] == 2 and meta["target_week"] == 3
+    assert meta["conflicts"] == [{"team": "Atlanta Falcons", "player": "Michael Penix Jr.",
+                                  "nflverse": "Out", "espn": "Questionable"}]
+
+
+def test_nfl_injuries_by_name_target_week_error_is_none(monkeypatch):
+    seen = {}
+
+    def fake_report(now, target_week, name_to_abbr):
+        seen["tw"] = target_week
+        return {"by_team": {}, "stale": False, "report_week": 3, "target_week": None,
+                "espn_available": True, "conflicts": []}
+
+    def boom():
+        raise RuntimeError("espn down")
+
+    monkeypatch.setattr(desk_inputs.injury_report, "current_report", fake_report)
+    monkeypatch.setattr(desk_inputs.nfl_espn, "resolve_target_week", boom)
+    by_name, meta = desk_inputs._nfl_injuries_by_name(None, None, {"ATL": "Atlanta Falcons"}, NOW)
+    assert seen["tw"] is None
+    assert by_name == {} and meta["stale"] is False
+
+
+def test_cfb_injuries_by_name_returns_live_meta():
+    class FakeAdapter:
+        INJURED_PLAYERS_PATH = "inj"
+        TEAMS_PATH = "teams"
+
+        @staticmethod
+        def _get(path, key):
+            return path
+
+        @staticmethod
+        def parse_injuries(payload):
+            return {"AMES": [{"player": "John Doe", "status": "Out"}], "UNK": []}
+
+        @staticmethod
+        def parse_teams(payload):
+            return {"AMES": "Ames"}
+
+    by_name, meta = desk_inputs._cfb_injuries_by_name(FakeAdapter, "k", {}, NOW)
+    assert by_name == {"Ames": [{"player": "John Doe", "status": "Out"}]}
+    assert meta == {"source": "sportsdata", "stale": False, "conflicts": []}

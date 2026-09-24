@@ -57,7 +57,8 @@ import pandas as pd
 from sportsmodel import config
 from sportsmodel.cfb import sportsdata as cfb_sportsdata
 from sportsmodel.nfl import sportsdata as nfl_sportsdata
-from sportsmodel.nfl import injuries_nflverse
+from sportsmodel.nfl import espn as nfl_espn
+from sportsmodel.nfl import injury_report
 from sportsmodel.db import get_postgres
 
 RECENT_FORM_N = 5
@@ -158,6 +159,7 @@ def build_bundle(
     weather: dict[int, dict],
     now: datetime,
     trends: dict[int, dict] | None = None,
+    injury_meta: dict | None = None,
 ) -> list[dict]:
     """Assemble one bundle entry per UPCOMING game. PURE -- no network/DB/file.
 
@@ -192,13 +194,20 @@ def build_bundle(
       trends: {game_pk -> {"home": trend_block, "away": trend_block}}, passed
         through as-is (season records + situational trends). A game_pk absent
         here yields {"home": None, "away": None} for that game's trends.
+      injury_meta: the injury source's freshness metadata (see
+        `_nfl_injuries_by_name` / `_cfb_injuries_by_name`): {"source",
+        "stale", "report_week"?, "target_week"?, "conflicts": [{"team"
+        (display name), "player", "nflverse", "espn"}]}. Each game gets
+        `news.injury_report` = {"source", "stale", "report_week",
+        "target_week", "conflicts"} with conflicts filtered to that game's
+        home/away teams; None for every game when injury_meta is None.
 
     Returns one dict per upcoming game:
       {"game_pk", "matchup" ("{away} @ {home}"), "commence_time",
        "market_spread", "market_total",
        "model": {"margin", "total", "win_prob"},
        "form": {"home", "away"},
-       "news": {"injuries": {"home", "away"}, "weather"},
+       "news": {"injuries": {"home", "away"}, "injury_report", "weather"},
        "trends": {"home": ..., "away": ...}}
     """
     model_by_pk = {row["game_pk"]: row for row in model_rows}
@@ -237,11 +246,26 @@ def build_bundle(
                     "home": injuries.get(home_team, []),
                     "away": injuries.get(away_team, []),
                 },
+                "injury_report": _injury_report_block(injury_meta, home_team, away_team),
                 "weather": weather.get(game_pk),
             },
             "trends": trends_by_pk.get(game_pk) or {"home": None, "away": None},
         })
     return out
+
+
+def _injury_report_block(meta: dict | None, home_team: str, away_team: str) -> dict | None:
+    """Per-game injury freshness block; conflicts limited to this game's teams."""
+    if meta is None:
+        return None
+    teams = {home_team, away_team}
+    return {
+        "source": meta.get("source"),
+        "stale": meta.get("stale"),
+        "report_week": meta.get("report_week"),
+        "target_week": meta.get("target_week"),
+        "conflicts": [c for c in meta.get("conflicts") or [] if c.get("team") in teams],
+    }
 
 
 def _parse_iso(ts: str) -> datetime:
@@ -371,47 +395,73 @@ def _rekey_by_espn_name(source: dict[str, object], espn_names: list[str]) -> dic
 
 
 # =============================================================================
-# injury sources -- one per sport, each returning {full_team_name -> [rows]}
+# injury sources -- one per sport, each returning ({full_team_name -> [rows]}, meta)
 # =============================================================================
 #
-# Both return injuries keyed by FULL team name (ready for _rekey_by_espn_name).
+# Both return injuries keyed by FULL team name (ready for _rekey_by_espn_name)
+# plus freshness metadata for build_bundle's `news.injury_report`.
 # They differ only in where the data comes from and how abbreviations resolve:
 #   - CFB: SportsDataIO's real InjuredPlayers + Teams endpoints (its CFB feed
 #     is genuine). abbrev -> School name via parse_teams (a live call). Needs
 #     the api_key; ignores the crosswalk.
-#   - NFL: nflverse's official injury report (SportsDataIO's NFL feed is
-#     SCRAMBLED). abbrev -> full name via the nfl_teams.json crosswalk (the
-#     SAME abbrev->name map already loaded for form). Needs no api_key.
+#   - NFL: the shared injury report (sportsmodel.nfl.injury_report, same as
+#     the sim): nflverse's official report verified per player against ESPN's
+#     live list, dropped when stale (SportsDataIO's NFL feed is SCRAMBLED).
+#     abbrev -> full name via the nfl_teams.json crosswalk (the SAME
+#     abbrev->name map already loaded for form). Needs no api_key.
 
 
-def _cfb_injuries_by_name(adapter, api_key, crosswalk, now) -> dict[str, list[dict]]:
-    """CFB injuries, {School name -> rows}, from SportsDataIO."""
+def _cfb_injuries_by_name(adapter, api_key, crosswalk, now) -> tuple[dict[str, list[dict]], dict]:
+    """CFB injuries, ({School name -> rows}, meta), from SportsDataIO. Its CFB
+    feed is live (no weekly report), so there's no stale concept."""
     injuries_by_abbrev = adapter.parse_injuries(
         adapter._get(adapter.INJURED_PLAYERS_PATH, api_key)
     )
     teams_by_abbrev = adapter.parse_teams(
         adapter._get(adapter.TEAMS_PATH, api_key)
     )
-    return {
+    by_name = {
         teams_by_abbrev[abbrev]: rows
         for abbrev, rows in injuries_by_abbrev.items()
         if abbrev in teams_by_abbrev
     }
+    return by_name, {"source": "sportsdata", "stale": False, "conflicts": []}
 
 
-def _nfl_injuries_by_name(adapter, api_key, crosswalk, now) -> dict[str, list[dict]]:
-    """NFL injuries, {full team name -> rows}, from nflverse's injury report.
+def _nfl_target_week() -> int | None:
+    """The NFL week the desk is picking, from ESPN; None on any error (the
+    injury report then treats nflverse's newest week as not stale)."""
+    try:
+        return int(nfl_espn.resolve_target_week()["week"])
+    except Exception:
+        log.warning("target week unavailable; injury staleness unchecked", exc_info=True)
+        return None
 
-    nflverse keys by abbreviation (ARI, PHI, LA, ...) -- exactly the keys in
-    `nfl_teams.json` -- so the form crosswalk resolves them to ESPN full names
-    with no extra mapping. `adapter`/`api_key` are unused (nflverse needs no
-    key); kept in the signature so both sources share one shape."""
-    by_abbrev = injuries_nflverse.current_injuries(now)
-    return {
+
+def _nfl_injuries_by_name(adapter, api_key, crosswalk, now) -> tuple[dict[str, list[dict]], dict]:
+    """NFL injuries, ({full team name -> rows}, meta), from the shared injury
+    report (`injury_report.current_report`, the same one the sim uses).
+
+    The report keys by nflverse abbreviation (ARI, PHI, LA, ...) -- exactly
+    the keys in `nfl_teams.json` -- so the form crosswalk resolves them to ESPN
+    full names; its inverse is the report's name_to_abbr for ESPN's rows.
+    meta = the report minus by_team, plus "source", with each conflict's team
+    mapped abbr -> display name (so build_bundle can filter per game).
+    `adapter`/`api_key` are unused; kept so both sources share one shape."""
+    name_to_abbr = {name: abbr for abbr, name in crosswalk.items()}
+    report = injury_report.current_report(now, _nfl_target_week(), name_to_abbr)
+    by_name = {
         crosswalk[abbrev]: rows
-        for abbrev, rows in by_abbrev.items()
+        for abbrev, rows in report["by_team"].items()
         if abbrev in crosswalk
     }
+    meta = {k: v for k, v in report.items() if k != "by_team"}
+    meta["source"] = "nflverse+espn"
+    meta["conflicts"] = [
+        {**c, "team": crosswalk.get(c.get("team"), c.get("team"))}
+        for c in report.get("conflicts") or []
+    ]
+    return by_name, meta
 
 
 def _fetch_nfl_sim(conn) -> dict[int, dict]:
@@ -536,14 +586,17 @@ def main() -> None:
     # Each source returns {full team name -> rows} (CFB School / NFL FullName,
     # e.g. "Florida State" / "Philadelphia Eagles"); _rekey_by_espn_name then
     # prefix-matches that onto ESPN's displayName ("Florida State Seminoles" /
-    # "Philadelphia Eagles"). CFB uses SportsDataIO's real feed; NFL uses
-    # nflverse (SportsDataIO's NFL injury feed is scrambled). The fetch is
-    # non-fatal: any outage/error logs a warning and yields empty injuries
-    # rather than aborting the whole bundle -- the model/form blocks are still
-    # worth writing on their own.
+    # "Philadelphia Eagles"). CFB uses SportsDataIO's real feed; NFL uses the
+    # shared nflverse+ESPN report (SportsDataIO's NFL injury feed is
+    # scrambled). Each source also returns freshness meta for
+    # news.injury_report. The fetch is non-fatal: any outage/error logs a
+    # warning and yields empty injuries (and injury_report None) rather than
+    # aborting the whole bundle -- the model/form blocks are still worth
+    # writing on their own.
     injuries: dict[str, list[dict]] = {}
+    injury_meta: dict | None = None
     try:
-        injuries_by_name = cfg["injury_source"](adapter, api_key, crosswalk, now)
+        injuries_by_name, injury_meta = cfg["injury_source"](adapter, api_key, crosswalk, now)
         injuries = _rekey_by_espn_name(injuries_by_name, espn_names)
     except Exception:
         log.warning("injury fetch failed; continuing with no injury data", exc_info=True)
@@ -621,7 +674,8 @@ def main() -> None:
             game_pk,
         )
 
-    bundle = build_bundle(games, model_rows, form_rows, injuries, weather, now, trends=trends)
+    bundle = build_bundle(games, model_rows, form_rows, injuries, weather, now,
+                          trends=trends, injury_meta=injury_meta)
 
     # -- sim disagreement signal, NFL only, from nfl_sim_current --
     # LEFT-join by game_pk: a game with no sim row yet (or the table itself

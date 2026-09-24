@@ -219,37 +219,46 @@ def test_assemble_sim_rows_analytic_zero_is_not_treated_as_missing():
     assert sim_rows[0]["disagreement"] == pytest.approx(sim_rows[0]["sim_home_win_prob"])
 
 
-def test_espn_injury_names_categorizes_and_maps_teams():
-    crosswalk = {"New York Giants": "NYG", "Denver Broncos": "DEN"}
-    espn = [
-        {"team": "New York Giants", "player": "Jaxson Dart", "status": "Doubtful"},
-        {"team": "New York Giants", "player": "Malik Nabers", "status": "Questionable"},
-        {"team": "New York Giants", "player": "Someone Active", "status": "Active"},
-        {"team": "Denver Broncos", "player": "Injured Guy", "status": "Injured Reserve"},
-        {"team": "Unknown Team", "player": "Nobody", "status": "Out"},  # no crosswalk -> skipped
-    ]
-    out, q = gsn._espn_injury_names(espn, crosswalk)
-    assert out["NYG"] == {"jaxson dart"}          # Doubtful -> OUT
-    assert out["DEN"] == {"injured guy"}          # Injured Reserve -> OUT
-    assert q["NYG"] == {"malik nabers"}           # Questionable -> down-weight
-    assert "Unknown Team" not in out and all(k in ("NYG", "DEN") for k in out)  # unknown skipped
-    # Active is neither dropped nor down-weighted.
-    assert not any("someone active" in s for s in out.get("NYG", set()) | q.get("NYG", set()))
+REPORT = {
+    "by_team": {
+        "ATL": [
+            {"player": "Michael Penix Jr.", "position": "QB", "status": "Questionable", "note": None, "source": "espn"},
+            {"player": "Samson Ebukam", "position": "DE", "status": "Out", "note": None, "source": "nflverse"},
+        ],
+        "NYG": [{"player": "Jaxson Dart", "position": "QB", "status": "Doubtful", "note": None, "source": "espn"}],
+    },
+    "stale": True, "report_week": 2, "target_week": 3, "espn_available": True,
+    "conflicts": [{"team": "ATL", "player": "Michael Penix Jr.", "nflverse": "Out", "espn": "Questionable"}],
+}
 
 
-def test_merge_espn_injuries_overrides_stale_nflverse_status():
-    # nflverse's newest report is LAST week's mid-week (Tue): a QB listed Out
-    # last week but Active now must not stay benched; ESPN is fresher per player.
-    crosswalk = {"Atlanta Falcons": "ATL", "Baltimore Ravens": "BAL"}
-    out = {"ATL": {"michael penix jr."}, "BAL": {"zay flowers", "stale only"}}
-    q = {"ATL": set(), "BAL": set()}
-    espn = [
-        {"team": "Atlanta Falcons", "player": "Michael Penix Jr.", "status": "Active"},
-        {"team": "Baltimore Ravens", "player": "Zay Flowers", "status": "Questionable"},
-        {"team": "Baltimore Ravens", "player": "New Injury", "status": "Out"},
-    ]
-    gsn._merge_espn_injuries(out, q, espn, crosswalk)
-    assert "michael penix jr." not in out["ATL"] | q["ATL"]   # Active -> cleared
-    assert "zay flowers" not in out["BAL"] and "zay flowers" in q["BAL"]  # Doubtful -> Questionable
-    assert "new injury" in out["BAL"]                         # ESPN-only Out -> added
-    assert "stale only" in out["BAL"]                         # nflverse-only entry kept
+def test_out_and_questionable_names_from_normalized_report():
+    # current_report's statuses are normalized Out/Doubtful/Questionable; the
+    # sim's lowercase status sets must still sort them into OUT vs down-weight.
+    out = gsn._out_names_by_team(REPORT["by_team"])
+    q = gsn._questionable_names_by_team(REPORT["by_team"])
+    assert out == {"ATL": {"samson ebukam"}, "NYG": {"jaxson dart"}}
+    assert q == {"ATL": {"michael penix jr."}, "NYG": set()}
+
+
+def test_injury_summary_line():
+    assert gsn._injury_summary(REPORT) == (
+        "injuries: report_week=2 target_week=3 stale=True espn=OK conflicts=1")
+    down = dict(REPORT, espn_available=False, conflicts=[], stale=False, target_week=None)
+    assert gsn._injury_summary(down) == (
+        "injuries: report_week=2 target_week=None stale=False espn=UNAVAILABLE conflicts=0")
+
+
+def test_espn_merge_helpers_removed():
+    # Their behavior now lives in sportsmodel.nfl.injury_report (tests/nfl/test_injury_report.py).
+    assert not hasattr(gsn, "_merge_espn_injuries")
+    assert not hasattr(gsn, "_espn_injury_names")
+
+
+def test_target_week_falls_back_to_none_on_error(monkeypatch):
+    def boom():
+        raise RuntimeError("espn down")
+    monkeypatch.setattr(gsn.nfl_espn, "resolve_target_week", boom)
+    assert gsn._target_week() is None
+    monkeypatch.setattr(gsn.nfl_espn, "resolve_target_week", lambda: {"season": 2026, "week": 4, "season_type": 2})
+    assert gsn._target_week() == 4

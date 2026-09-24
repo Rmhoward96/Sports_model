@@ -106,6 +106,13 @@ METHODOLOGY (load-bearing -- follow exactly):
   ATS trends are small-sample noise; weigh lopsided, larger-sample ones more. If
   a trend influenced the call, say so in the rationale. If `trends` is null for a
   team, say trends were unavailable.
+- INJURY FRESHNESS (`news.injury_report`): injury statuses are the CURRENT
+  report, verified against ESPN's live list. Never state a player is out,
+  doubtful or questionable unless he appears in `news.injuries` with that
+  status. If `stale` is true, the official weekly report for this week hasn't
+  posted yet and statuses come from ESPN only -- say so if an injury drives
+  your call. If `conflicts` lists a player, the sources disagreed; the
+  bundle's status is the resolved one -- name the conflict if you rely on it.
 
 OUTPUT: return ONLY a JSON array (no prose, no markdown fences). One object per
 game in the bundle, each EXACTLY:
