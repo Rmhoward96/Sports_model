@@ -70,3 +70,12 @@ def test_changed_games_missing_stored_is_changed():
 
 def test_changed_games_none_changed():
     assert changed_games({1: "a"}, {1: "a", 9: "z"}) == []
+
+
+def test_game_statuses_duplicate_player_keeps_more_severe():
+    a = {HOME: [{"player": "P", "status": "Doubtful"}, {"player": "P", "status": "Out"}]}
+    b = {HOME: [{"player": "P", "status": "Out"}, {"player": "P", "status": "Doubtful"}]}
+    want = [{"team": HOME, "player": "P", "status": "Out"}]
+    assert game_statuses(HOME, AWAY, a) == want
+    assert game_statuses(HOME, AWAY, b) == want
+    assert fingerprint(game_statuses(HOME, AWAY, a)) == fingerprint(game_statuses(HOME, AWAY, b))

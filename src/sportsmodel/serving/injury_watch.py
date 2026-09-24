@@ -16,13 +16,14 @@ _NONE = "(none)"
 
 def game_statuses(home: str, away: str, injuries_by_team: dict) -> list[dict]:
     """[{team, player, status}] for the game's Out/Doubtful players, sorted by
-    (team, player) and de-duplicated."""
+    (team, player) and de-duplicated; a player listed twice keeps the more
+    severe status (Out over Doubtful), so input order never matters."""
     seen: dict[tuple[str, str], str] = {}
     for team in (home, away):
         for r in (injuries_by_team or {}).get(team) or []:
             st = normalize_status(r.get("status"))
             player = str(r.get("player") or "").strip()
-            if st in _WATCHED and player:
+            if st in _WATCHED and player and seen.get((team, player)) != "Out":
                 seen[(team, player)] = st
     return [{"team": t, "player": p, "status": s} for (t, p), s in sorted(seen.items())]
 
