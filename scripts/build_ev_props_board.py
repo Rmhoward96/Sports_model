@@ -73,7 +73,8 @@ def load_sim_rows(sport: str) -> list[dict]:
 def load_latest_prop_odds(sport: str, game_pks: list[int]) -> list[dict]:
     """Latest odds_snapshot row per (game_pk, market, side, player_name, book,
     line) for this sport's prop markets, restricted to `game_pks` and
-    captured before kickoff, further filtered to each book's MOST RECENT
+    captured before kickoff and within the last 48h (a stale book drops out,
+    same window as the site's price views), further filtered to each book's MOST RECENT
     capture per (game_pk, market, player_name, book) via `latest_capture_only`
     -- a book's superseded line (moved since) is dropped, not just its
     superseded (game_pk, market, side, player_name, book, line) row. Empty
@@ -93,6 +94,7 @@ def load_latest_prop_odds(sport: str, game_pks: list[int]) -> list[dict]:
                 FROM odds_snapshot
                 WHERE game_pk = ANY(%s) AND market = ANY(%s)
                   AND captured_at <= commence_time
+                  AND captured_at > now() - interval '48 hours'
                 ORDER BY game_pk, market, side, player_name, book, line, captured_at DESC
             ) t
             """,

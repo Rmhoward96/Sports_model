@@ -154,3 +154,42 @@ def test_main_lines_upsert_success_with_lines_only_returns_before_ev_board(monke
     build_ev_props_board.main(["--lines-only"])
 
     assert not ev_called
+
+
+def test_load_latest_prop_odds_ignores_book_prices_older_than_48h(monkeypatch):
+    # A book that stopped updating must not keep a days-old capture as its
+    # "current" prop price -- same 48h window as the site's price views.
+    import re
+
+    sink = []
+
+    class _Cur:
+        def execute(self, sql, params=None):
+            sink.append((sql, params))
+
+        def fetchall(self):
+            return []
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+    class _Conn:
+        def cursor(self):
+            return _Cur()
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+    monkeypatch.setattr(build_ev_props_board, "get_postgres", lambda: _Conn())
+    assert build_ev_props_board.load_latest_prop_odds("nfl", [5]) == []
+    assert len(sink) == 1
+    sql, params = sink[0]
+    assert re.search(r"captured_at\s*>\s*now\(\)\s*-\s*interval\s*'48 hours'", sql)
+    assert "captured_at <= commence_time" in sql
+    assert params[0] == [5]

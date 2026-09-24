@@ -4,6 +4,7 @@ Loads the script module directly (it isn't a package) via importlib.
 Tests the pure `ticket_summary` helper and `main` with loaders monkeypatched.
 """
 import importlib.util
+import re
 from datetime import datetime, timezone, timedelta
 from pathlib import Path
 from unittest.mock import patch, MagicMock
@@ -226,3 +227,64 @@ def test_main_drops_locked_tickets_with_past_first_commence():
         called_tickets = mock_replace.call_args[0][0]
         assert len(called_tickets) == 1
         assert called_tickets[0] == good_ticket
+
+
+WINDOW_48H = re.compile(r"captured_at\s*>\s*now\(\)\s*-\s*interval\s*'48 hours'")
+
+
+def _capture_q(monkeypatch):
+    """Monkeypatch get_postgres with a fake conn whose cursor records SQL."""
+    sink = []
+
+    class _Cur:
+        description = []
+
+        def execute(self, sql, params=None):
+            sink.append((sql, params))
+
+        def fetchall(self):
+            return []
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+    class _Conn:
+        def cursor(self):
+            return _Cur()
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+    monkeypatch.setattr(build_best_parlays, "get_postgres", lambda: _Conn())
+    return sink
+
+
+def test_load_game_odds_ignores_book_prices_older_than_48h(monkeypatch):
+    sink = _capture_q(monkeypatch)
+    assert build_best_parlays.load_game_odds([7]) == []
+    assert len(sink) == 1
+    sql, params = sink[0]
+    assert WINDOW_48H.search(sql)
+    assert "captured_at <= commence_time" in sql
+    assert params == [[7]]
+
+
+def test_load_prop_odds_ignores_book_prices_older_than_48h(monkeypatch):
+    sink = _capture_q(monkeypatch)
+    assert build_best_parlays.load_prop_odds([7]) == []
+    assert len(sink) == 1
+    sql, params = sink[0]
+    assert WINDOW_48H.search(sql)
+    assert "captured_at <= commence_time" in sql
+    assert params[0] == [7]
+
+
+def test_odds_loaders_empty_game_pks_short_circuit_no_db():
+    assert build_best_parlays.load_game_odds([]) == []
+    assert build_best_parlays.load_prop_odds([]) == []
