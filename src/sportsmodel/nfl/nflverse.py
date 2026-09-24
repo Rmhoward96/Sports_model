@@ -65,6 +65,33 @@ def validate_columns(df: pd.DataFrame, dataset: str) -> None:
         raise ValueError(f"nflverse {dataset}: missing expected columns {missing}")
 
 
+# nflverse depth charts changed schema in 2025: seasons <= 2024 are the old
+# weekly charts, 2025+ timestamped snapshots. Each season's file must match one.
+DEPTH_SCHEMAS: dict[str, frozenset[str]] = {
+    "old": frozenset({"season", "club_code", "week", "depth_team", "gsis_id", "position"}),
+    "snapshot": frozenset({"dt", "team", "gsis_id", "pos_abb", "pos_rank"}),
+}
+
+
+def validate_depth_season(df: pd.DataFrame, season: int) -> str:
+    """Schema of one season's depth-chart release ("old" or "snapshot"); raise
+    ValueError if it matches neither, or if a snapshot's non-null `pos_rank`
+    values are not positive integers."""
+    missing = {name: sorted(cols - set(df.columns)) for name, cols in DEPTH_SCHEMAS.items()}
+    schema = next((name for name, m in missing.items() if not m), None)
+    if schema is None:
+        raise ValueError(f"nflverse depth {season}: matches neither depth-chart schema -- old schema "
+                         f"missing {missing['old']}; snapshot schema missing {missing['snapshot']}")
+    if schema == "snapshot":
+        raw = df["pos_rank"]
+        num = pd.to_numeric(raw, errors="coerce")
+        bad = raw.notna() & (num.isna() | (num <= 0) | (num % 1 != 0))
+        if bad.any():
+            raise ValueError(f"nflverse depth {season}: pos_rank must be positive integers; "
+                             f"got {sorted(map(str, raw[bad].unique()))[:10]}")
+    return schema
+
+
 def _read_release_season(dataset: str, year: int) -> pd.DataFrame:
     """Read one season's release parquet and normalize it to the column names the
     rest of the code expects. The new weekly release names the team column
@@ -82,7 +109,8 @@ def load_release(dataset: str, seasons: list[int], *, required: bool = True) -> 
 
     Same contract as ``import_by_season`` (resilient, ``required`` gating) but
     reads the canonical release URLs directly rather than via nfl_data_py. Every
-    dataset in EXPECTED_COLUMNS is schema-validated.
+    dataset in EXPECTED_COLUMNS is schema-validated; ``depth`` is validated per
+    season against either of its two schemas (``validate_depth_season``).
     """
     # Handle single-file datasets (read once, filter to seasons)
     if dataset in _SINGLE_FILE_URL:
@@ -98,10 +126,17 @@ def load_release(dataset: str, seasons: list[int], *, required: bool = True) -> 
     got: list[int] = []
     for yr in seasons:
         try:
-            frames.append(_read_release_season(dataset, yr))
-            got.append(yr)
+            df = _read_release_season(dataset, yr)
         except Exception as exc:  # noqa: BLE001 -- a not-yet-published season 404s; skip it
             print(f"nflverse {dataset}: season {yr} unavailable ({type(exc).__name__}); skipping")
+            continue
+        if dataset == "depth":
+            # per season, outside the try: schema drift must fail loudly, not
+            # read as "unavailable" (a concat would also hide it behind the
+            # other schema's columns)
+            validate_depth_season(df, yr)
+        frames.append(df)
+        got.append(yr)
     if not frames:
         if required:
             raise RuntimeError(f"nflverse {dataset}: no seasons available from {seasons}")

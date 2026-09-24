@@ -108,3 +108,38 @@ def test_nan_share_by_group():
     got = bpf.nan_share_by_group(df)
     assert got["p_"] == 0.75 and got["cx_"] == 0.0
     assert "y_" not in got and math.isnan(got["mk_"])
+
+
+def test_active_stubs_fall_back_to_latest_earlier_chart_like_active_usage():
+    """A team-week with no exact chart uses the team's latest earlier chart
+    (usage.active_usage's fallback), so an active non-player still gets a row."""
+    sched = pd.DataFrame({"season": [2024, 2024, 2024], "week": [1, 2, 3], "game_type": ["REG"] * 3,
+                          "home_team": ["KC", "KC", "BAL"], "away_team": ["BAL", "DET", "KC"]})
+    depth = _depth([
+        (2024, 1, "KC", 1, "WR", "WR1"),
+        (2024, 1, "KC", 2, "WR", "WR2"),
+        (2024, 3, "KC", 1, "WR", "WR1"),        # week 3: exact chart, WR2 no longer listed
+    ])
+    inj = _injuries([(2024, 2, "KC", "WR1", "Out")])
+    out = bpf.active_stubs(depth, inj, _pg([]), sched)
+    got = sorted(zip(out["player_id"], out["week"], out["opponent"]))
+    # wk1 exact chart; wk2 has no chart -> wk1's (WR1 Out that week); wk3 exact chart
+    assert got == [("WR1", 1, "BAL"), ("WR1", 3, "BAL"), ("WR2", 1, "BAL"), ("WR2", 2, "DET")]
+    assert set(out.loc[out["team"] == "BAL", "player_id"]) == set()   # BAL never had a chart
+
+
+def test_chart_coverage_counts_exact_fallback_and_none():
+    sched = pd.DataFrame({"season": [2024, 2024], "week": [1, 2], "game_type": ["REG"] * 2,
+                          "home_team": ["KC", "KC"], "away_team": ["BAL", "BAL"]})
+    depth = _depth([(2024, 1, "KC", 1, "WR", "W")])
+    # KC wk1 exact, KC wk2 fallback to wk1, BAL both weeks none
+    assert bpf.chart_coverage(depth, sched) == {"exact": 1, "fallback": 1, "none": 2}
+
+
+def test_depth_rank_distribution_shares_by_season():
+    feats = pd.DataFrame({"season": [2024] * 4 + [2025] * 2, "position": ["WR"] * 5 + ["RB"],
+                          "p_depth_rank": [1.0, 2.0, 6.0, math.nan, 1.0, 1.0]})
+    got = bpf.depth_rank_distribution(feats, "WR")
+    assert got.loc[2024, "rows"] == 4 and got.loc[2025, "rows"] == 1
+    assert got.loc[2024, ["1", "2", "5+", "nan"]].tolist() == [0.25, 0.25, 0.25, 0.25]
+    assert got.loc[2024, "mean"] == 3.0 and got.loc[2025, "1"] == 1.0

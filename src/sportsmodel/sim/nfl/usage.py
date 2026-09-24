@@ -115,6 +115,35 @@ def _latest_depth_week(
     return (best_season, best_week)
 
 
+def chart_weeks_asof(depth_df: pd.DataFrame, team_weeks: pd.DataFrame) -> pd.DataFrame:
+    """Vectorized `_latest_depth_week` for many team-weeks. PURE.
+
+    For each (team, season, week) row of `team_weeks`, the (season, week) of
+    the depth chart `active_usage` builds that team's active set from: the
+    exact week if `depth_df` has any `club_code == team` row that week, else
+    the team's latest earlier chart (compound (season, week) order), else NaN.
+    Returns `team_weeks[["team", "season", "week"]]` (same row order) plus
+    `chart_season` / `chart_week`.
+    """
+    tw = team_weeks[["team", "season", "week"]].reset_index(drop=True)
+    out = tw.assign(chart_season=float("nan"), chart_week=float("nan"))
+    if depth_df is None or not len(depth_df) or not len(tw):
+        return out
+    charts = depth_df[["club_code", "season", "week"]].dropna().drop_duplicates()
+    charts = pd.DataFrame({"team": charts["club_code"].astype(str).to_numpy(),
+                           "_ord": (charts["season"].astype("int64") * 100
+                                    + charts["week"].astype("int64")).to_numpy()})
+    charts = charts.assign(chart_season=charts["_ord"] // 100, chart_week=charts["_ord"] % 100)
+    q = pd.DataFrame({"team": tw["team"].astype(str).to_numpy(),
+                      "_ord": (tw["season"].astype("int64") * 100 + tw["week"].astype("int64")).to_numpy(),
+                      "_i": range(len(tw))})
+    m = pd.merge_asof(q.sort_values("_ord"), charts.sort_values("_ord"), on="_ord", by="team",
+                      direction="backward", allow_exact_matches=True).sort_values("_i")
+    out["chart_season"] = m["chart_season"].to_numpy(dtype=float)
+    out["chart_week"] = m["chart_week"].to_numpy(dtype=float)
+    return out
+
+
 def _depth_team_int(value: object) -> int:
     """Coerce a depth-chart slot ("1"/"2"/2/…) to int; unknown -> 99 (deep backup)."""
     try:
@@ -577,6 +606,8 @@ def depth_charts_asof(raw: pd.DataFrame, schedules: pd.DataFrame) -> pd.DataFram
     - Old weekly schema (has a non-null `club_code`, seasons <= 2024): passed
       through; `full_name` = "first last" (falls back to football_name).
       Rows with a null season/week (the "SBBYE" game_type) are dropped.
+      Its `formation` (Offense / Defense / Special Teams) is passed through --
+      KR/PR slots are listed under the player's own position there.
     - Snapshot schema (2025+: `dt`, `team`, `pos_abb`, `pos_rank`): for each
       team's REG-season game, take that team's latest snapshot with
       `dt <= kickoff` (UTC) — never a later one — stamped with that game's
@@ -584,8 +615,10 @@ def depth_charts_asof(raw: pd.DataFrame, schedules: pd.DataFrame) -> pd.DataFram
       (active_usage's _latest_depth_week fallback then applies). Snapshot
       `team` codes are `normalize_team`-normalized first (LAR -> LA, ...) so
       they match the normalized schedule; codes it rejects are dropped.
+      `formation` is NaN (the snapshot files KR/PR under their own pos_abb).
     """
-    cols = ["season", "week", "club_code", "depth_team", "position", "gsis_id", "full_name", "football_name"]
+    cols = ["season", "week", "club_code", "depth_team", "position", "gsis_id", "full_name", "football_name",
+            "formation"]
     if raw is None or len(raw) == 0:
         return pd.DataFrame(columns=cols)
     parts: list[pd.DataFrame] = []
@@ -606,6 +639,7 @@ def depth_charts_asof(raw: pd.DataFrame, schedules: pd.DataFrame) -> pd.DataFram
             "depth_team": pd.to_numeric(old["depth_team"], errors="coerce"),
             "position": old["position"].astype("string"), "gsis_id": old["gsis_id"].astype("string"),
             "full_name": full, "football_name": old["football_name"].astype("string"),
+            "formation": old.get("formation", pd.Series(pd.NA, index=old.index)).astype("string"),
         }))
     new = raw[~is_old]
     if len(new) and {"dt", "team", "pos_abb", "gsis_id"}.issubset(new.columns):
@@ -625,5 +659,6 @@ def depth_charts_asof(raw: pd.DataFrame, schedules: pd.DataFrame) -> pd.DataFram
                     "depth_team": pd.to_numeric(chart.get("pos_rank"), errors="coerce"),
                     "position": chart["pos_abb"].astype("string"), "gsis_id": chart["gsis_id"].astype("string"),
                     "full_name": name, "football_name": name,
+                    "formation": pd.Series(pd.NA, index=chart.index, dtype="string"),
                 }))
     return pd.concat(parts, ignore_index=True)[cols] if parts else pd.DataFrame(columns=cols)

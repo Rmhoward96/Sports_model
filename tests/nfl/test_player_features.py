@@ -182,3 +182,77 @@ def test_feature_table_accepts_string_dtype_ids_from_real_sources():
     inp["stubs"] = inp["stubs"].assign(player_id=inp["stubs"]["player_id"].astype("string"))
     got = _build(inp).set_index(["player_id", "season", "week"])
     pd.testing.assert_frame_equal(base, got, check_dtype=False, check_index_type=False)
+
+
+# ---- p_depth_rank: rank within (team, season, week, position), both eras -----------
+
+def _snap_pg(rows):
+    """Minimal played rows (player_id, season, week, snap_pct) for _depth_rank."""
+    return pd.DataFrame(rows, columns=["player_id", "season", "week", "snap_pct"])
+
+
+def _depth_rows(rows):
+    return pd.DataFrame(rows, columns=["season", "week", "club_code", "depth_team", "position", "gsis_id"])
+
+
+def test_depth_rank_old_schema_slot_ties_broken_by_prior_snap_share():
+    """Old schema (<= 2024): WR1/WR2/WR3 are each depth_team 1 (LWR/RWR/SWR).
+    The rank orders them by strictly-prior snap-share EWM."""
+    from sportsmodel.nfl.player_features import _depth_rank
+    pg = _snap_pg([("wa", 2024, 1, 0.50), ("wb", 2024, 1, 0.95), ("wc", 2024, 1, 0.70)])
+    depth = _depth_rows([(2024, 2, "KC", 1.0, "WR", "wa"), (2024, 2, "KC", 1.0, "WR", "wb"),
+                         (2024, 2, "KC", 1.0, "WR", "wc"), (2024, 2, "KC", 2.0, "WR", "wd"),
+                         (2024, 2, "KC", 1.0, "RB", "rb")])
+    r = _depth_rank(depth, pg).set_index("player_id")["p_depth_rank"]
+    assert r.to_dict() == {"wb": 1, "wc": 2, "wa": 3, "wd": 4, "rb": 1}
+
+
+def test_depth_rank_snapshot_schema_equals_pos_rank_order():
+    """Snapshot schema (2025+): depth_team is pos_rank (already a within-position
+    order) -> the rank reproduces it, whatever the prior snap shares."""
+    from sportsmodel.nfl.player_features import _depth_rank
+    pg = _snap_pg([("w1", 2025, 1, 0.40), ("w2", 2025, 1, 0.90), ("w3", 2025, 1, 0.99), ("w4", 2025, 1, 1.0)])
+    depth = _depth_rows([(2025, 2, "KC", 3.0, "WR", "w3"), (2025, 2, "KC", 1.0, "WR", "w1"),
+                         (2025, 2, "KC", 4.0, "WR", "w4"), (2025, 2, "KC", 2.0, "WR", "w2")])
+    r = _depth_rank(depth, pg).set_index("player_id")["p_depth_rank"]
+    assert r.to_dict() == {"w1": 1, "w2": 2, "w3": 3, "w4": 4}
+
+
+def test_depth_rank_tie_break_uses_only_strictly_prior_snaps_and_nan_last():
+    """Leakage: the target week's own snap share must not move the rank; a
+    player with no prior snaps sorts after tied players with history, then
+    gsis_id breaks remaining ties; a double listing counts once (best slot)."""
+    from sportsmodel.nfl.player_features import _depth_rank
+    prior = [("wa", 2024, 1, 0.9), ("wb", 2024, 1, 0.5)]
+    depth = _depth_rows([(2024, 2, "KC", 1.0, "WR", "wa"), (2024, 2, "KC", 1.0, "WR", "wb"),
+                         (2024, 2, "KC", 1.0, "WR", "wz"), (2024, 2, "KC", 1.0, "WR", "wy"),
+                         (2024, 2, "KC", 2.0, "WR", "wa")])                     # wa listed twice
+    base = _depth_rank(depth, _snap_pg(prior)).set_index("player_id")["p_depth_rank"]
+    assert base.to_dict() == {"wa": 1, "wb": 2, "wy": 3, "wz": 4}
+    # the target week's snaps (reversed order) must not change anything
+    leaky = _snap_pg(prior + [("wa", 2024, 2, 0.1), ("wb", 2024, 2, 1.0), ("wz", 2024, 2, 1.0)])
+    pd.testing.assert_series_equal(base, _depth_rank(depth, leaky).set_index("player_id")["p_depth_rank"])
+
+
+def test_depth_rank_is_comparable_across_eras_in_the_feature_table():
+    """build_feature_table's p_depth_rank for the fixture league: every
+    (team, season, week, position) group ranks 1..n."""
+    from tests.nfl.fixtures_props import feature_inputs
+    t = _build(feature_inputs())
+    ranked = t.dropna(subset=["p_depth_rank"])
+    assert (ranked["p_depth_rank"] >= 1).all()
+    assert ranked["p_depth_rank"].max() == 2
+
+
+def test_depth_rank_ignores_special_teams_listings_of_the_old_schema():
+    """Old-schema KR/PR slots are listed under the player's own position (a
+    backup WR who returns kicks is 'WR', depth_team 1, formation 'Special
+    Teams'); the snapshot schema files them under pos_abb KR/PR instead. Only
+    offensive listings (or snapshot rows, formation NaN) rank."""
+    from sportsmodel.nfl.player_features import _depth_rank
+    pg = _snap_pg([("w1", 2024, 1, 0.9), ("w2", 2024, 1, 0.8), ("kr", 2024, 1, 0.1)])
+    depth = _depth_rows([(2024, 2, "KC", 1.0, "WR", "w1"), (2024, 2, "KC", 2.0, "WR", "w2"),
+                         (2024, 2, "KC", 3.0, "WR", "kr"), (2024, 2, "KC", 1.0, "WR", "kr")])
+    depth["formation"] = ["Offense", "Offense", "Offense", "Special Teams"]
+    r = _depth_rank(depth, pg).set_index("player_id")["p_depth_rank"]
+    assert r.to_dict() == {"w1": 1, "w2": 2, "kr": 3}

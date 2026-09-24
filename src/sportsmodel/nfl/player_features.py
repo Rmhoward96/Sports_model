@@ -372,13 +372,49 @@ def _status(out: pd.DataFrame, pg: pd.DataFrame, injuries: pd.DataFrame | None,
     return _qb_changed(out, pg, depth)
 
 
-def _depth_rank(depth: pd.DataFrame | None) -> pd.DataFrame:
-    """p_depth_rank: the as-of (pre-game) depth_team for (player, S, w); best
-    rank if listed more than once."""
+def _prior_snap_ewm(pg: pd.DataFrame, rows: pd.DataFrame) -> pd.Series:
+    """For each (player_id, season, week) row of `rows`: the player's snap_pct
+    EWM over played games strictly before (season, week) -- the same value as
+    the table's p_snap_pct_ewm (stub weeks carry NaN snaps, which the
+    ignore_na EWM skips). NaN with no prior game. Aligned to `rows.index`."""
+    played = pg[KEYS + ["snap_pct"]].dropna(subset=["player_id"]).sort_values(KEYS)
+    hist = played[["player_id"]].assign(
+        _ord=_ord(played),
+        _snap_ewm=played.groupby("player_id")["snap_pct"].transform(
+            lambda x: x.ewm(halflife=_HALFLIFE, ignore_na=True).mean()))
+    q = rows[["player_id"]].assign(_ord=_ord(rows), _i=np.arange(len(rows)))
+    # merge_asof requires identical `by` dtypes (StringDtype depth ids vs object pg ids)
+    q["player_id"], hist["player_id"] = q["player_id"].astype(object), hist["player_id"].astype(object)
+    m = pd.merge_asof(q.sort_values("_ord"), hist.sort_values("_ord"), on="_ord", by="player_id",
+                      allow_exact_matches=False)
+    return pd.Series(m.sort_values("_i")["_snap_ewm"].to_numpy(), index=rows.index)
+
+
+def _depth_rank(depth: pd.DataFrame | None, pg: pd.DataFrame) -> pd.DataFrame:
+    """p_depth_rank: the player's rank 1..n within his as-of (pre-game) depth
+    chart's (club_code, season, week, position) group -- the same meaning in
+    both nflverse eras. Old weekly schema (<= 2024) lists slot depth
+    (WR1/WR2/WR3 are each depth_team 1 at LWR/RWR/SWR); the 2025+ snapshot
+    lists pos_rank (already a within-position order). Order: depth_team
+    ascending, ties by the strictly-prior snap-share EWM descending (NaN
+    last), then gsis_id. A player listed more than once in a group counts once
+    (best slot); listed in several groups -> his best rank. Old-schema
+    non-offense listings (`formation` Special Teams / Defense: KR/PR slots are
+    filed under the player's own position there, under pos_abb KR/PR in the
+    snapshot) are ignored; a missing formation (snapshot rows) is kept."""
     if depth is None or not len(depth):
         return pd.DataFrame(columns=KEYS + ["p_depth_rank"])
-    d = depth[["season", "week", "gsis_id"]].assign(p_depth_rank=pd.to_numeric(depth["depth_team"], errors="coerce"))
-    d = d.dropna(subset=["gsis_id"]).rename(columns={"gsis_id": "player_id"})
+    if "formation" in depth.columns:
+        depth = depth[depth["formation"].isna() | (depth["formation"] == "Offense")]
+    grp = ["club_code", "season", "week", "position"]
+    d = depth[grp + ["gsis_id"]].assign(_dt=pd.to_numeric(depth["depth_team"], errors="coerce"))
+    d = d.dropna(subset=["gsis_id", "club_code", "position"]).rename(columns={"gsis_id": "player_id"})
+    d = d.astype({"season": "int64", "week": "int64", "player_id": object, "club_code": object, "position": object})
+    d = d.sort_values("_dt", kind="stable", na_position="last").drop_duplicates(grp + ["player_id"])
+    d = d.assign(_snap=_prior_snap_ewm(pg, d))
+    d = d.sort_values(grp + ["_dt", "_snap", "player_id"], ascending=[True] * 5 + [False, True],
+                      na_position="last", kind="stable")
+    d["p_depth_rank"] = (d.groupby(grp).cumcount() + 1).astype(float)
     return d.groupby(KEYS, as_index=False)["p_depth_rank"].min()
 
 
@@ -394,7 +430,7 @@ def build_feature_table(pg, tg, rz, ctx, ngs, injuries, depth, game_epa, stubs=N
     out = out.merge(team_tbl[_TEAM_KEYS + team_feats], on=_TEAM_KEYS, how="left")
     out = out.merge(_op_ypt_allowed(pg, team_tbl), on=_OPP_KEYS, how="left")
     out = _status(out, pg, injuries, depth)
-    out = out.merge(_depth_rank(depth), on=KEYS, how="left")
+    out = out.merge(_depth_rank(depth, pg), on=KEYS, how="left")
     labels = [c for c in pg.columns if c.startswith("y_")]
     feats = [c for c in out.columns if c.startswith(_FEATURE_PREFIXES)]
     out = out[KEYS + ["team", "opponent", "position"] + labels + feats]

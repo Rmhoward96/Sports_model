@@ -74,3 +74,41 @@ def test_old_schema_rows_without_a_week_are_dropped():
                         "first_name": ["A", "B"], "last_name": ["X", "Y"]})
     out = depth_charts_asof(old, SCHED)
     assert out["gsis_id"].tolist() == ["a"] and out["week"].tolist() == [5]
+
+
+def test_formation_passes_through_for_old_rows_and_is_missing_for_snapshots():
+    """_depth_rank needs the old schema's formation (Offense / Special Teams);
+    snapshot rows have none (their KR/PR slots are separate pos_abb values)."""
+    old = pd.DataFrame({"season": [2024, 2024], "week": [3, 3], "club_code": ["KC", "KC"],
+                        "depth_team": ["1", "3"], "gsis_id": ["kr", "kr"], "position": ["WR", "WR"],
+                        "formation": ["Special Teams", "Offense"], "football_name": ["K", "K"],
+                        "first_name": ["K", "K"], "last_name": ["R", "R"]})
+    new = pd.DataFrame([_snap("2025-09-06T10:00:00Z", "KC", "q2", "QB", 1, "X")])
+    out = depth_charts_asof(pd.concat([old, new], ignore_index=True), SCHED)
+    assert out.loc[out["gsis_id"] == "kr", "formation"].tolist() == ["Special Teams", "Offense"]
+    assert out.loc[out["gsis_id"] == "q2", "formation"].isna().all()
+
+
+# ---- chart_weeks_asof: the (season, week) chart active_usage uses per team-week ------
+
+def test_chart_weeks_asof_matches_active_usage_fallback_rule():
+    """Exact week when the team has rows that week, else its latest earlier
+    chart (across seasons), else none -- the same answer as
+    active_usage's _latest_depth_week for every team-week."""
+    from sportsmodel.sim.nfl.usage import _latest_depth_week, chart_weeks_asof
+    depth = pd.DataFrame({
+        "season": [2023, 2024, 2024, 2024, 2024],
+        "week": [17, 1, 3, 1, 5],
+        "club_code": ["KC", "KC", "KC", "BAL", "BAL"],
+        "position": ["QB", "WR", "LT", "QB", "QB"],   # any position counts as a chart
+    })
+    tw = pd.DataFrame({"team": ["KC", "KC", "KC", "KC", "BAL", "BAL", "MIA"],
+                       "season": [2024, 2024, 2024, 2025, 2024, 2024, 2024],
+                       "week": [1, 2, 4, 1, 1, 4, 1]})
+    got = chart_weeks_asof(depth, tw)
+    assert list(got.columns) == ["team", "season", "week", "chart_season", "chart_week"]
+    for r in got.itertuples(index=False):
+        want = _latest_depth_week(depth, r.team, r.season, r.week)
+        have = None if pd.isna(r.chart_season) else (int(r.chart_season), int(r.chart_week))
+        assert have == want, (r, want)
+    assert got["chart_week"].tolist()[:3] == [1, 1, 3]

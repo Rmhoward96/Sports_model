@@ -8,9 +8,13 @@ Fetches nflverse sources for SEASONS and writes
 The tables are regenerable and never committed (data/ is gitignored).
 
 Pure seams (unit tested in tests/scripts/test_build_player_features.py):
-  active_stubs          -- active depth-chart skill players with no played row
-  dropped_snap_mappings -- snap rows lost to a missing pfr -> gsis id mapping
-  nan_share_by_group    -- NaN share per feature prefix group
+  active_stubs            -- active depth-chart skill players with no played row
+                             (same exact-week-else-latest-earlier chart rule as
+                             usage.active_usage)
+  chart_coverage          -- REG team-weeks by chart used (exact / fallback / none)
+  depth_rank_distribution -- per-season p_depth_rank shares for one position
+  dropped_snap_mappings   -- snap rows lost to a missing pfr -> gsis id mapping
+  nan_share_by_group      -- NaN share per feature prefix group
 fetch_sources()/build_and_write()/main() are IO (network + parquet writes)
 and not unit tested.
 
@@ -62,20 +66,29 @@ def active_stubs(depth: pd.DataFrame, injuries: pd.DataFrame, pg: pd.DataFrame,
                  schedules: pd.DataFrame) -> pd.DataFrame:
     """Active-but-no-snap skill players per REG team-week. PURE.
 
-    Stubs = as-of depth-chart QB/RB/WR/TE rows for (season, week, club_code)
-    on a REG team-week in `schedules` (which supplies the opponent), minus
-    players whose injury `report_status` is Out or Doubtful that (season,
-    week) (matched by gsis_id), minus players already in `pg` for that
-    (season, week). Team codes are normalized. Columns: player_id (gsis),
-    season, week, team, opponent, position; one row per player-week.
+    Stubs = QB/RB/WR/TE rows of the depth chart `usage.active_usage` uses
+    for each REG team-week in `schedules` (which supplies the opponent): the
+    exact week's chart, else the team's latest earlier chart
+    (`usage.chart_weeks_asof`, the same fallback rule), minus players whose
+    injury `report_status` is Out or Doubtful that (season, week) (matched by
+    gsis_id), minus players already in `pg` for that (season, week). Team
+    codes are normalized. Columns: player_id (gsis), season, week, team,
+    opponent, position; one row per player-week.
     """
+    from sportsmodel.sim.nfl.usage import chart_weeks_asof
+
     if depth is None or not len(depth):
         return pd.DataFrame(columns=_STUB_COLS)
-    d = depth[depth["position"].isin(SKILL)]
-    d = d.assign(team=d["club_code"].map(_norm), player_id=d["gsis_id"])
-    d = d[d["team"].notna() & d["player_id"].notna()]
-    d = d[["player_id", "season", "week", "team", "position"]].astype({"season": int, "week": int})
-    d = d.merge(_reg_team_weeks(schedules), on=["season", "week", "team"], how="inner")
+    dn = depth.assign(club_code=depth["club_code"].map(_norm)).dropna(subset=["club_code", "season", "week"])
+    dn = dn.astype({"season": int, "week": int})
+    tw = _reg_team_weeks(schedules).reset_index(drop=True)
+    cw = chart_weeks_asof(dn, tw).assign(opponent=tw["opponent"].to_numpy()).dropna(subset=["chart_season"])
+    cw = cw.astype({"chart_season": int, "chart_week": int})
+    d = dn[dn["position"].isin(SKILL) & dn["gsis_id"].notna()]
+    d = pd.DataFrame({"player_id": d["gsis_id"], "chart_season": d["season"], "chart_week": d["week"],
+                      "team": d["club_code"], "position": d["position"]})
+    d = cw.merge(d, on=["team", "chart_season", "chart_week"], how="inner")
+    d = d[["player_id", "season", "week", "team", "opponent", "position"]].astype({"season": int, "week": int})
     if injuries is not None and len(injuries):
         out = injuries[injuries["report_status"].isin(["Out", "Doubtful"])].dropna(subset=["gsis_id", "season", "week"])
         out = out.rename(columns={"gsis_id": "player_id"})[["player_id", "season", "week"]]
@@ -87,6 +100,33 @@ def active_stubs(depth: pd.DataFrame, injuries: pd.DataFrame, pg: pd.DataFrame,
         d = d.merge(played.assign(_pl=1), on=["player_id", "season", "week"], how="left")
         d = d[d["_pl"].isna()].drop(columns="_pl")
     return d.drop_duplicates(["player_id", "season", "week"])[_STUB_COLS].reset_index(drop=True)
+
+
+def chart_coverage(depth: pd.DataFrame, schedules: pd.DataFrame) -> dict[str, int]:
+    """REG team-weeks by which depth chart active_usage/active_stubs use:
+    `exact` week, `fallback` (latest earlier chart), or `none`. PURE."""
+    from sportsmodel.sim.nfl.usage import chart_weeks_asof
+
+    tw = _reg_team_weeks(schedules)
+    dn = depth.assign(club_code=depth["club_code"].map(_norm)).dropna(subset=["club_code", "season", "week"])
+    cw = chart_weeks_asof(dn, tw)
+    none = cw["chart_season"].isna()
+    exact = (cw["chart_season"] == cw["season"]) & (cw["chart_week"] == cw["week"])
+    return {"exact": int(exact.sum()), "fallback": int((~exact & ~none).sum()), "none": int(none.sum())}
+
+
+def depth_rank_distribution(feats: pd.DataFrame, position: str = "WR") -> pd.DataFrame:
+    """Per season: share of `position` rows with p_depth_rank 1, 2, 3, 4, 5+
+    or NaN, plus row count and mean rank. PURE."""
+    f = feats[feats["position"] == position]
+    r = f["p_depth_rank"]
+    bucket = r.clip(upper=5).map(lambda v: "nan" if pd.isna(v) else ("5+" if v >= 5 else str(int(v))))
+    tab = pd.crosstab(f["season"], bucket, normalize="index")
+    tab = tab.reindex(columns=["1", "2", "3", "4", "5+", "nan"], fill_value=0.0).round(3)
+    tab.insert(0, "rows", f.groupby("season").size())
+    tab["mean"] = r.groupby(f["season"]).mean().round(2)
+    tab.columns.name = None
+    return tab
 
 
 def dropped_snap_mappings(snaps: pd.DataFrame, pfr2gsis: dict[str, str]) -> dict[int, int]:
@@ -188,6 +228,11 @@ def build_and_write(src: dict, t0: float, t_fetch: float) -> None:
     shares = nan_share_by_group(feats)
     print("NaN share per feature group (player table): "
           + ", ".join(f"{k}={v:.3f}" for k, v in shares.items()))
+    cov = chart_coverage(depth, sched)
+    print(f"REG team-weeks by depth chart used (active_usage rule): exact {cov['exact']}, "
+          f"fallback to an earlier chart {cov['fallback']}, none {cov['none']}")
+    print("WR p_depth_rank (rank within team-week-position) share by season:\n"
+          + depth_rank_distribution(feats, "WR").to_string())
     print(f"feature columns: {sum(c.startswith(FEATURE_GROUPS) for c in feats.columns)}; "
           f"written to {OUT_DIR}")
     print(f"build time: {elapsed:.1f}s (fetch {t_fetch:.1f}s, features {elapsed - t_fetch:.1f}s)")
