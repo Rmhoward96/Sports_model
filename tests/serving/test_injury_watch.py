@@ -79,3 +79,24 @@ def test_game_statuses_duplicate_player_keeps_more_severe():
     assert game_statuses(HOME, AWAY, a) == want
     assert game_statuses(HOME, AWAY, b) == want
     assert fingerprint(game_statuses(HOME, AWAY, a)) == fingerprint(game_statuses(HOME, AWAY, b))
+
+
+def test_same_player_two_spellings_same_fingerprint():
+    espn = {HOME: [{"player": "Ja\u2019Marr Chase", "status": "Out"}]}
+    nflv = {HOME: [{"player": "Ja'Marr Chase", "status": "Out"}]}
+    assert fingerprint(game_statuses(HOME, AWAY, espn)) == fingerprint(game_statuses(HOME, AWAY, nflv))
+    # the stored rows keep the display name as given
+    assert game_statuses(HOME, AWAY, espn)[0]["player"] == "Ja\u2019Marr Chase"
+
+
+def test_game_statuses_dedupes_on_normalized_name():
+    inj = {HOME: [{"player": "Ja\u2019Marr Chase", "status": "Doubtful"},
+                  {"player": "Ja'Marr Chase", "status": "Out"}]}
+    got = game_statuses(HOME, AWAY, inj)
+    assert len(got) == 1 and got[0]["status"] == "Out"
+
+
+def test_diff_statuses_ignores_spelling_only_change():
+    old = [{"team": HOME, "player": "Ja'Marr Chase", "status": "Out"}]
+    new = [{"team": HOME, "player": "Ja\u2019Marr Chase", "status": "Out"}]
+    assert diff_statuses(old, new) == []
