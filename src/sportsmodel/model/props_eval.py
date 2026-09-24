@@ -43,11 +43,18 @@ def decile_ece(pits: np.ndarray | list) -> float:
     deviation of empirical from expected frequencies. For perfect calibration,
     each decile should contain ~10% of observations.
 
+    NaN values are dropped; pits are clipped to [0, 1].
+
     Returns: mean of |empirical_share - 0.1| across the 10 bins.
     """
     pits = np.asarray(pits, dtype=float).flatten()
+    # Drop NaN values
+    pits = pits[np.isfinite(pits)]
     if len(pits) == 0:
         return 0.0
+
+    # Clip to [0, 1]
+    pits = np.clip(pits, 0, 1)
 
     n = len(pits)
     errors = []
@@ -73,6 +80,8 @@ def paired_frame(base: list[dict], cand: list[dict], population: set[tuple]) -> 
     tuples. Adds a 'cluster' column as f"{season}-{week}-{home}".
 
     Returns DataFrame with columns: rps_b, rps_c, pit_b, pit_c, cluster.
+
+    Row order is deterministic (sorted by key) regardless of input order.
     """
     # Create lookup dicts keyed by (season, week, player_id, market)
     base_lookup = {
@@ -87,6 +96,9 @@ def paired_frame(base: list[dict], cand: list[dict], population: set[tuple]) -> 
 
     # Filter to population
     common_keys = common_keys & population
+
+    # Sort for deterministic row order across processes
+    common_keys = sorted(common_keys)
 
     rows = []
     for key in common_keys:
@@ -141,6 +153,9 @@ def cluster_bootstrap(
     Resamples unique clusters (with replacement) using numpy default_rng,
     then recomputes the statistic (callable) on each bootstrap sample.
 
+    Clusters drawn multiple times contribute multiple copies of their rows to
+    each bootstrap replicate (proper resampling with replacement).
+
     Returns: (point_estimate, percentile_2.5, percentile_97.5)
     """
     point = stat(df)
@@ -148,13 +163,19 @@ def cluster_bootstrap(
     if df.empty or "cluster" not in df.columns:
         return (point, point, point)
 
-    clusters = df["cluster"].unique()
+    # Build deterministic sorted array of clusters and per-cluster row groups
+    clusters = sorted(df["cluster"].unique())
+    groups = {cluster: df[df["cluster"] == cluster] for cluster in clusters}
+
     rng = np.random.default_rng(seed)
 
     boot_stats = []
     for _ in range(n_boot):
-        boot_clusters = rng.choice(clusters, size=len(clusters), replace=True)
-        boot_df = df[df["cluster"].isin(boot_clusters)]
+        # Sample cluster IDs with replacement
+        boot_cluster_ids = rng.choice(clusters, size=len(clusters), replace=True)
+        # Concatenate row groups for sampled clusters (with repetition)
+        boot_dfs = [groups[c] for c in boot_cluster_ids]
+        boot_df = pd.concat(boot_dfs, ignore_index=True)
         if not boot_df.empty:
             boot_stats.append(stat(boot_df))
 
