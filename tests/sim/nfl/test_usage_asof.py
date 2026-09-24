@@ -112,3 +112,32 @@ def test_chart_weeks_asof_matches_active_usage_fallback_rule():
         have = None if pd.isna(r.chart_season) else (int(r.chart_season), int(r.chart_week))
         assert have == want, (r, want)
     assert got["chart_week"].tolist()[:3] == [1, 1, 3]
+
+
+# ---- T2: ET -> UTC at the kickoff boundary ------------------------------------------------
+# SCHED week 1: 2025-09-07 13:00 US-Eastern (EDT, UTC-4) -> kickoff 17:00Z.
+
+def _wk1_qb(raw):
+    out = depth_charts_asof(pd.DataFrame(raw), SCHED)
+    return out[(out["club_code"] == "KC") & (out["week"] == 1)]["gsis_id"].tolist()
+
+
+def test_kickoff_boundary_is_13_et_equals_17z():
+    before, at, after = ("2025-09-07T15:00:00Z", "2025-09-07T17:00:00Z", "2025-09-07T17:30:00Z")
+    assert _wk1_qb([_snap(before, "KC", "q15", "QB", 1, "A")]) == ["q15"]    # 15:00Z < 17:00Z counts
+    assert _wk1_qb([_snap(after, "KC", "q1730", "QB", 1, "C")]) == []        # 17:30Z is after kickoff
+    assert _wk1_qb([_snap(at, "KC", "q17", "QB", 1, "B")]) == ["q17"]        # dt == kickoff counts
+    assert _wk1_qb([_snap(before, "KC", "q15", "QB", 1, "A"), _snap(at, "KC", "q17", "QB", 1, "B"),
+                    _snap(after, "KC", "q1730", "QB", 1, "C")]) == ["q17"]  # latest at/before kickoff
+
+
+def test_date_only_dt_is_midnight_utc_and_mixes_with_timestamps():
+    """A date-only dt parses as 00:00Z (before a 17:00Z kickoff) -- also when
+    the column mixes it with full ISO timestamps (a plain to_datetime infers
+    one format from the first value and silently NaTs the rest)."""
+    assert _wk1_qb([_snap("2025-09-07", "KC", "qd", "QB", 1, "D")]) == ["qd"]
+    assert _wk1_qb([_snap("2025-09-08", "KC", "qn", "QB", 1, "N")]) == []
+    mixed = [_snap("2025-09-06T10:00:00Z", "KC", "qold", "QB", 1, "O"),
+             _snap("2025-09-07", "KC", "qd", "QB", 1, "D")]
+    assert _wk1_qb(mixed) == ["qd"]
+    assert _wk1_qb(list(reversed(mixed))) == ["qd"]

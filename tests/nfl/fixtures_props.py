@@ -192,3 +192,18 @@ def feature_inputs(perturb_from: tuple[int, int] | None = None, offset: float = 
                     for k, v in game_epa.items()}
     return {"pg": pg, "tg": tg, "rz": rz, "ctx": ctx, "ngs": ngs, "injuries": _injuries(),
             "depth": _depth(games), "game_epa": game_epa, "stubs": _stubs(games)}
+
+
+def leaked_features(build, *, perturb_from: tuple[int, int] = (2024, 3), offset: float = 0.0) -> list[str]:
+    """Leakage check, reusable for any table builder: feature columns (not
+    ``y_*``) whose ``perturb_from`` week rows differ between
+    ``build(feature_inputs())`` and ``build(feature_inputs(perturb_from, offset))``
+    -- box scores at/after that week are garbage in the second build. An
+    empty list means no feature read the target week or later."""
+    keys = ["player_id", "season", "week"]
+    t0 = build(feature_inputs()).set_index(keys)
+    t1 = build(feature_inputs(perturb_from=perturb_from, offset=offset)).set_index(keys)
+    rows = [k for k in t0.index if k[1:] == perturb_from]
+    feats = [c for c in t0.columns if not c.startswith("y_")]
+    a, b = t0.loc[rows, feats], t1.loc[rows, feats]
+    return [c for c in feats if not a[c].equals(b[c])]

@@ -89,15 +89,25 @@ def test_roll_features_are_strictly_prior():
 def test_perturbing_target_week_and_later_does_not_change_features():
     """Leakage guard: garbage box scores at/after (2024, 3) must leave the
     (2024, 3) feature row identical."""
-    from tests.nfl.fixtures_props import feature_inputs     # synthetic 2-season league (see Step 3)
-    base = feature_inputs()
-    t0 = _build(base).set_index(["player_id", "season", "week"])
-    bad = feature_inputs(perturb_from=(2024, 3))
-    t1 = _build(bad).set_index(["player_id", "season", "week"])
-    feats = [c for c in t0.columns if not c.startswith("y_")]
+    from tests.nfl.fixtures_props import feature_inputs, leaked_features   # synthetic 2-season league
+    assert leaked_features(_build) == []
+    t0 = _build(feature_inputs()).set_index(["player_id", "season", "week"])
+    t1 = _build(feature_inputs(perturb_from=(2024, 3))).set_index(["player_id", "season", "week"])
     key = [k for k in t0.index if k[1:] == (2024, 3)]
-    pd.testing.assert_frame_equal(t0.loc[key, feats], t1.loc[key, feats])
     assert not t0.loc[key, "y_targets"].equals(t1.loc[key, "y_targets"])  # labels did change
+
+
+def test_planted_leaky_feature_is_caught():
+    """The perturbation check must detect a feature that reads the target
+    week's own label (spec: 'a planted leaky feature is caught')."""
+    from tests.nfl.fixtures_props import leaked_features
+
+    def leaky_build(inp):
+        t = _build(inp)
+        return t.assign(p_leak_targets=t["y_targets"],                # the target week's label
+                        p_leak_next=t.groupby("player_id")["y_targets"].shift(-1))  # a later week's
+    assert leaked_features(leaky_build) == ["p_leak_targets", "p_leak_next"]
+    assert leaked_features(leaky_build, offset=3.7) == ["p_leak_targets", "p_leak_next"]
 
 
 def _build(inp):
@@ -156,12 +166,10 @@ def test_team_table_labels_and_opponent_view():
 def test_leakage_guard_also_moves_ratio_features():
     """x10 leaves per-game ratios unchanged (10y/10t); add an offset so ratio
     features (p_ypt_*, p_carry_share_*, op_press_rate_*, ...) are guarded too."""
-    from tests.nfl.fixtures_props import feature_inputs
+    from tests.nfl.fixtures_props import feature_inputs, leaked_features
+    assert leaked_features(_build, offset=3.7) == []
     t0 = _build(feature_inputs()).set_index(["player_id", "season", "week"])
     t1 = _build(feature_inputs(perturb_from=(2024, 3), offset=3.7)).set_index(["player_id", "season", "week"])
-    feats = [c for c in t0.columns if not c.startswith("y_")]
-    key = [k for k in t0.index if k[1:] == (2024, 3)]
-    pd.testing.assert_frame_equal(t0.loc[key, feats], t1.loc[key, feats])
     later = [k for k in t0.index if k[1:] == (2024, 4)]
     assert not t0.loc[later, "p_ypt_r3"].equals(t1.loc[later, "p_ypt_r3"])   # the perturbation reaches ratios
 
@@ -267,3 +275,17 @@ def test_feature_table_flags_stub_rows_explicitly():
     stubs = t[t["is_stub"]]
     assert set(stubs["player_id"]) == {"KC_RB2"} and len(stubs) == 4
     assert stubs["y_targets"].isna().all() and t.loc[~t["is_stub"], "y_targets"].notna().all()
+
+
+def test_career_games_exclude_the_own_game_on_played_rows():
+    """p_career_games on a PLAYED row counts prior played games only."""
+    from tests.nfl.fixtures_props import feature_inputs
+    inp = feature_inputs()
+    t = _build(inp).set_index(["player_id", "season", "week"])
+    pg = inp["pg"]
+    for pid, key in (("KC_QB", (2024, 3)), ("KC_QB", (2023, 1)), ("BUF_WR", (2024, 4)), ("BAL_QB2", (2024, 3))):
+        assert not t.loc[(pid, *key), "is_stub"]                          # a played row
+        mine = pg[pg["player_id"] == pid]
+        prior = int((mine["season"] * 100 + mine["week"] < key[0] * 100 + key[1]).sum())
+        assert t.loc[(pid, *key), "p_career_games"] == prior
+    assert t.loc[("KC_QB", 2024, 3), "p_career_games"] == 6 and t.loc[("BAL_QB2", 2024, 3), "p_career_games"] == 0

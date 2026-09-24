@@ -643,7 +643,9 @@ def depth_charts_asof(raw: pd.DataFrame, schedules: pd.DataFrame) -> pd.DataFram
         }))
     new = raw[~is_old]
     if len(new) and {"dt", "team", "pos_abb", "gsis_id"}.issubset(new.columns):
-        snaps = new.assign(_dt=pd.to_datetime(new["dt"], errors="coerce", utc=True),
+        # format="ISO8601": dates and full timestamps may mix (a plain parse infers
+        # one format from the first value and NaTs the rest)
+        snaps = new.assign(_dt=pd.to_datetime(new["dt"], errors="coerce", utc=True, format="ISO8601"),
                            _team=new["team"].map(_safe_team)).dropna(subset=["_dt", "_team"])
         ko = _kickoffs_utc(schedules)
         for team, tsnaps in snaps.groupby("_team"):

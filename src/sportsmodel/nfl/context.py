@@ -127,7 +127,9 @@ def team_game_context(schedules: pd.DataFrame, stadiums: dict[str, dict]) -> pd.
                 "season": int(r.season), "week": int(r.week), "team": team, "opponent": opp,
                 "is_home": 1 if side == "home" else 0, "stadium_id": r.stadium_id,
                 "cx_rest": float(rest), "cx_rest_diff": float(rest) - float(opp_rest),
-                "cx_short_week": float(rest <= 5), "cx_off_bye": float(rest >= 13),
+                # unknown rest -> unknown flags (NaN), not "not short / not off a bye"
+                "cx_short_week": float(rest <= 5) if pd.notna(rest) else float("nan"),
+                "cx_off_bye": float(rest >= 13) if pd.notna(rest) else float("nan"),
                 "cx_travel_km": round(travel, 1) if not math.isnan(travel) else travel,
                 "cx_tz_shift": tz_shift,
                 "cx_west_early": float(base.get("tz") in _PACIFIC and kick_h < 14 and is_eastern),

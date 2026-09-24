@@ -99,3 +99,14 @@ def test_context_with_nans_and_eastern_tz():
     # NaN stadium_id in week 5: travel and tz_shift become NaN (no exception raised)
     assert pd.isna(cx.loc[(5, "KC"), "cx_travel_km"])
     assert pd.isna(cx.loc[(5, "KC"), "cx_tz_shift"])
+
+
+def test_short_week_and_off_bye_are_nan_when_rest_is_unknown():
+    g = _games().assign(home_rest=[7, 4, np.nan], away_rest=[np.nan, 13, 7])
+    cx = team_game_context(g, STAD).set_index(["week", "team"])
+    for key in ((1, "LAC"), (3, "KC")):                      # rest NaN -> flags NaN, not 0.0
+        assert pd.isna(cx.loc[key, "cx_rest"])
+        assert pd.isna(cx.loc[key, "cx_short_week"]) and pd.isna(cx.loc[key, "cx_off_bye"])
+    assert cx.loc[(2, "LAC"), "cx_short_week"] == 1 and cx.loc[(2, "LAC"), "cx_off_bye"] == 0
+    assert cx.loc[(2, "KC"), "cx_short_week"] == 0 and cx.loc[(2, "KC"), "cx_off_bye"] == 1
+    assert cx.loc[(1, "KC"), "cx_short_week"] == 0 and cx.loc[(1, "KC"), "cx_off_bye"] == 0
