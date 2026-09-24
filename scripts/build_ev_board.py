@@ -73,7 +73,9 @@ def load_upcoming_games(sport: str) -> list[dict]:
 
 def load_latest_odds(game_pks: list[int]) -> list[dict]:
     """Latest odds_snapshot row per (game_pk, market, side, book) -- Pinnacle +
-    MAJOR_BOOKS -- for the given games, captured before kickoff. Empty list of
+    MAJOR_BOOKS -- for the given games, captured before kickoff and within the last 48h (a
+    book that stopped updating drops out instead of keeping a stale price --
+    same window as the site's price views). Empty list of
     game_pks -> empty result (no games to query)."""
     if not game_pks:
         return []
@@ -86,6 +88,7 @@ def load_latest_odds(game_pks: list[int]) -> list[dict]:
                        game_pk, market, side, book, line, price
                 FROM odds_snapshot
                 WHERE game_pk = ANY(%s) AND captured_at <= commence_time
+                  AND captured_at > now() - interval '48 hours'
                 ORDER BY game_pk, market, side, book, captured_at DESC
             ) t
             """,

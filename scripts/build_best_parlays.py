@@ -45,6 +45,7 @@ def load_game_odds(game_pks: list[int]) -> list[dict]:
         FROM odds_snapshot
         WHERE game_pk = ANY(%s) AND market IN ('moneyline','spread','total')
           AND COALESCE(player_name, '') = '' AND captured_at <= commence_time
+          AND captured_at > now() - interval '48 hours'
         ORDER BY game_pk, market, side, book, captured_at DESC
     """, [game_pks])
 
@@ -63,6 +64,7 @@ def load_prop_odds(game_pks: list[int]) -> list[dict]:
         SELECT game_pk, market, side, player_name, book, line, price, captured_at
         FROM odds_snapshot
         WHERE game_pk = ANY(%s) AND market = ANY(%s) AND captured_at <= commence_time
+          AND captured_at > now() - interval '48 hours'
     """, [game_pks, sorted(set(SIM_TO_ODDS_MARKET.values()))])
     return latest_capture_only(rows)
 
