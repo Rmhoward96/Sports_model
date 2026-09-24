@@ -420,3 +420,35 @@ def test_run_backtest_accepts_spec_hook_and_record():
 
     params = inspect.signature(bsn.run_backtest).parameters
     assert "spec_hook" in params and "record" in params
+
+
+# =============================================================================
+# game_seed -- per-game random streams (game-level alignment across runs)
+# =============================================================================
+
+def test_game_seed_is_pure_and_deterministic():
+    import zlib
+    s = bsn.game_seed(42, 2025, 3, "KC", "BAL")
+    assert s == [42, 2025, 3, zlib.crc32(b"KC|BAL")]
+    assert s == bsn.game_seed(42, 2025, 3, "KC", "BAL")
+    assert all(isinstance(x, int) and x >= 0 for x in s)
+
+
+def test_game_seed_streams_independent_of_iteration_order():
+    import numpy as np
+
+    games = [(2025, 3, "KC", "BAL"), (2025, 3, "DET", "LA"), (2025, 4, "KC", "BAL")]
+
+    def draws(order):
+        out = {}
+        for g in order:
+            rng = np.random.default_rng(bsn.game_seed(42, *g))
+            out[g] = rng.random(5).tolist()
+        return out
+
+    fwd, rev = draws(games), draws(list(reversed(games)))
+    assert fwd == rev
+    # distinct games (home/away swapped, other week, other seed) get distinct streams
+    assert len({tuple(v) for v in fwd.values()}) == 3
+    assert bsn.game_seed(42, 2025, 3, "BAL", "KC") != bsn.game_seed(42, 2025, 3, "KC", "BAL")
+    assert bsn.game_seed(7, 2025, 3, "KC", "BAL") != bsn.game_seed(42, 2025, 3, "KC", "BAL")

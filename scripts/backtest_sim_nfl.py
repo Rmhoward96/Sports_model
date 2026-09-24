@@ -76,6 +76,7 @@ from __future__ import annotations
 
 import os
 import sys
+import zlib
 from pathlib import Path
 from typing import Callable
 
@@ -153,6 +154,19 @@ _MARKET_USAGE_GATE: dict[str, tuple[str, float]] = {
 # =============================================================================
 # PURE metric helpers (unit-tested)
 # =============================================================================
+
+def game_seed(seed: int, season: int, week: int, home: str, away: str) -> list[int]:
+    """Per-game seed sequence for `np.random.default_rng`.
+
+    Each game gets its own random stream derived only from (seed, season,
+    week, home, away), so a game's draws do not depend on which games were
+    simulated before it or on how many draws they consumed (the kernel's draw
+    count is data-dependent). Two runs that differ only in their specs (e.g.
+    the props-ML spec_hook) therefore get per-game seeded random streams --
+    game-level alignment across runs.
+    """
+    return [int(seed), int(season), int(week), zlib.crc32(f"{home}|{away}".encode())]
+
 
 def brier(probs: list[float], outcomes: list[float]) -> float:
     """Mean squared error between predicted probabilities and 0/1 (or 0.5-tie)
@@ -377,6 +391,10 @@ def run_backtest(
 ) -> dict:
     """Walk forward over every completed REG-season game in `seasons`.
 
+    seed: base seed; each game is simulated with its own stream
+        `np.random.default_rng(game_seed(seed, season, week, home, away))`,
+        so runs that differ only in their specs stay aligned game by game.
+
     on_game: optional callback invoked once per successfully-simulated game
         as `on_game(season, week, home, away, sims)` (`home`/`away` already
         `normalize_team`-normalized, `sims` the raw `GameSims` from
@@ -467,8 +485,6 @@ def run_backtest(
     else:
         print("abbrev alignment: OK (depth/injuries/schedule codes all known)")
 
-    rng = np.random.default_rng(seed)
-
     game_probs: list[float] = []
     game_outcomes: list[float] = []
     margin_preds: list[float] = []
@@ -548,7 +564,9 @@ def run_backtest(
                 spec = spec_hook(season, week, home, away, spec)
             eh, ea = elo_by_game.get((season, week, home, away), (_ELO_BASE, _ELO_BASE))
             rtilt = ratings_tilt(eh, ea, ratings_weight)
-            sims = simulate_game(spec, n_sims, rng, home_field=home_field, ratings_tilt=rtilt)
+            game_rng = np.random.default_rng(game_seed(seed, season, week, home, away))
+            sims = simulate_game(spec, n_sims, game_rng, home_field=home_field,
+                                 ratings_tilt=rtilt)
         except Exception as exc:  # noqa: BLE001 -- one bad game must not abort the walk
             print(f"skipping {season} wk{week} {row.away_team}@{row.home_team}: {exc}")
             n_skipped += 1
