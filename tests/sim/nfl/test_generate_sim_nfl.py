@@ -249,16 +249,6 @@ def test_injury_summary_line():
         "injuries: report_week=2 target_week=None stale=False espn=UNAVAILABLE conflicts=0")
 
 
-def test_espn_merge_helpers_removed():
-    # Their behavior now lives in sportsmodel.nfl.injury_report (tests/nfl/test_injury_report.py).
-    assert not hasattr(gsn, "_merge_espn_injuries")
-    assert not hasattr(gsn, "_espn_injury_names")
-
-
-def test_target_week_falls_back_to_none_on_error(monkeypatch):
-    def boom():
-        raise RuntimeError("espn down")
-    monkeypatch.setattr(gsn.nfl_espn, "resolve_target_week", boom)
-    assert gsn._target_week() is None
-    monkeypatch.setattr(gsn.nfl_espn, "resolve_target_week", lambda: {"season": 2026, "week": 4, "season_type": 2})
-    assert gsn._target_week() == 4
+def test_sim_uses_shared_target_week_resolver():
+    # One resolver (injury_report.resolve_target_week) for sim + desk.
+    assert not hasattr(gsn, "_target_week")

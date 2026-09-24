@@ -172,3 +172,68 @@ def test_latest_report_week_no_designations_returns_none():
         {"week": 2, "report_status": "Active", "player": "Player2"},
     ])
     assert latest_report_week(df) is None
+
+
+def test_espn_only_designation_is_not_a_conflict():
+    """ESPN adding a player nflverse never designated (e.g. Injured Reserve) is not a disagreement."""
+    espn = [
+        {"team": "Green Bay Packers", "player": "Jordan Love", "status": "Out"},
+        {"team": "Atlanta Falcons", "player": "IR Guy", "status": "Injured Reserve"},
+    ]
+    for rw in (2, 3):  # stale and current report
+        r = merge_report(NFLV, report_week=rw, target_week=3, espn_rows=espn, name_to_abbr=N2A)
+        assert r["conflicts"] == []
+        assert ("Jordan Love", "Out") in [(x["player"], x["status"]) for x in r["by_team"]["GB"]]
+
+
+def test_real_flips_are_conflicts():
+    nflv = {"ATL": [{"player": "Q Guy", "position": "WR", "status": "Questionable", "note": None},
+                    {"player": "Michael Penix Jr.", "position": "QB", "status": "Out", "note": None}]}
+    espn = [{"team": "Atlanta Falcons", "player": "Q Guy", "status": "Out"},
+            {"team": "Atlanta Falcons", "player": "Michael Penix Jr.", "status": "Questionable"}]
+    r = merge_report(nflv, report_week=3, target_week=3, espn_rows=espn, name_to_abbr=N2A)
+    assert {"team": "ATL", "player": "Q Guy", "nflverse": "Questionable", "espn": "Out"} in r["conflicts"]
+    assert {"team": "ATL", "player": "Michael Penix Jr.", "nflverse": "Out", "espn": "Questionable"} in r["conflicts"]
+    assert len(r["conflicts"]) == 2
+
+
+# -- resolve_target_week: ESPN first, local nflverse schedule fallback ---------
+
+from datetime import datetime, timezone  # noqa: E402
+
+from sportsmodel.nfl import injury_report  # noqa: E402
+
+SCHED = pd.DataFrame({
+    "season": [2025, 2026, 2026, 2026, 2026, 2026],
+    "game_type": ["REG", "PRE", "REG", "REG", "REG", "REG"],
+    "week": [18, 3, 3, 3, 4, 4],
+    "gameday": ["2026-01-04", "2026-09-25", "2026-09-21", "2026-09-24", "2026-09-28", "2026-10-01"],
+})
+
+
+def _boom():
+    raise RuntimeError("espn down")
+
+
+def test_resolve_target_week_prefers_espn(monkeypatch):
+    monkeypatch.setattr(injury_report.espn, "resolve_target_week",
+                        lambda: {"season": 2026, "week": 5, "season_type": 2})
+    assert injury_report.resolve_target_week(datetime(2026, 9, 24, 16, tzinfo=timezone.utc), SCHED) == 5
+
+
+def test_resolve_target_week_falls_back_to_schedule(monkeypatch):
+    monkeypatch.setattr(injury_report.espn, "resolve_target_week", _boom)
+    # 2026-09-24 16:00 UTC is Sept 24 ET: week 3 still has a game that day.
+    assert injury_report.resolve_target_week(datetime(2026, 9, 24, 16, tzinfo=timezone.utc), SCHED) == 3
+    # 2026-09-25 03:00 UTC is still Sept 24 in ET -> week 3.
+    assert injury_report.resolve_target_week(datetime(2026, 9, 25, 3, tzinfo=timezone.utc), SCHED) == 3
+    # Sept 26 ET: week 3 done (PRE game ignored) -> week 4.
+    assert injury_report.resolve_target_week(datetime(2026, 9, 26, 16, tzinfo=timezone.utc), SCHED) == 4
+
+
+def test_resolve_target_week_none_when_both_fail(monkeypatch):
+    monkeypatch.setattr(injury_report.espn, "resolve_target_week", _boom)
+    # season over: no REG game on/after today
+    assert injury_report.resolve_target_week(datetime(2026, 10, 5, tzinfo=timezone.utc), SCHED) is None
+    assert injury_report.resolve_target_week(datetime(2026, 9, 24, tzinfo=timezone.utc),
+                                             pd.DataFrame()) is None

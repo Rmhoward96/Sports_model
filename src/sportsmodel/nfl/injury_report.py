@@ -12,6 +12,9 @@ from __future__ import annotations
 
 import re
 from datetime import datetime
+from zoneinfo import ZoneInfo
+
+from sportsmodel.nfl import espn
 
 _OUT_WORDS = ("out", "injured reserve", "reserve", "suspension", "suspended", "physically unable", "non football")
 # ASCII apostrophe + U+2019 right single quotation mark for player name normalization
@@ -74,7 +77,10 @@ def merge_report(nflverse_by_abbr: dict, report_week, target_week, espn_rows: li
         if st:
             by_team.setdefault(abbr, {})[k] = {"player": name, "position": prior_row.get("position") if prior_row else None,
                                                "status": st, "note": None, "source": "espn"}
-        if (before in ("Out", "Doubtful")) != (st in ("Out", "Doubtful")) and (before or st):
+        # A conflict is a real flip of a player nflverse DID designate (e.g. Out ->
+        # Active/Questionable, Questionable -> Out); ESPN-only additions (IR etc.)
+        # are not disagreements.
+        if before is not None and (before in ("Out", "Doubtful")) != (st in ("Out", "Doubtful")):
             conflicts.append({"team": abbr, "player": name, "nflverse": before, "espn": st})
     return {"by_team": {a: list(v.values()) for a, v in by_team.items()}, "stale": bool(stale),
             "report_week": report_week, "target_week": target_week,
@@ -93,7 +99,6 @@ def current_report(now: datetime, target_week, name_to_abbr: dict[str, str]) -> 
     """IO: nflverse season report + ESPN live injuries, merged."""
     import nfl_data_py as nfl
 
-    from sportsmodel.nfl import espn
     from sportsmodel.nfl.injuries_nflverse import nfl_season, parse_injuries
     from sportsmodel.nfl.nflverse import import_by_season
 
@@ -106,3 +111,42 @@ def current_report(now: datetime, target_week, name_to_abbr: dict[str, str]) -> 
         print(f"WARN espn injuries unavailable ({exc!r})")
         espn_rows, ok = [], False
     return merge_report(by_abbr, week, target_week, espn_rows, name_to_abbr, espn_available=ok)
+
+
+_ET = ZoneInfo("America/New_York")
+
+
+def _schedule_target_week(now: datetime, schedules_df) -> int | None:
+    """Earliest REG-season week of `nfl_season(now)` with a game on/after today (ET)."""
+    from sportsmodel.nfl.injuries_nflverse import nfl_season
+
+    df = schedules_df
+    if df is None or len(df) == 0 or not {"season", "game_type", "week", "gameday"} <= set(df.columns):
+        return None
+    today = now.astimezone(_ET).date().isoformat()
+    rows = df[(df["season"] == nfl_season(now)) & (df["game_type"] == "REG")
+              & (df["gameday"].astype(str).str[:10] >= today)]
+    return int(rows["week"].min()) if len(rows) else None
+
+
+def resolve_target_week(now: datetime, schedules_df=None) -> int | None:
+    """The NFL week being picked/simmed. ESPN first; on failure, the local
+    nflverse schedule (assets/nfl/schedules.parquet unless `schedules_df` is
+    given); None only if both fail (merge_report then treats it as not stale)."""
+    try:
+        return int(espn.resolve_target_week()["week"])
+    except Exception as exc:  # noqa: BLE001 -- fall back to the local schedule
+        print(f"WARN espn target week unavailable ({exc!r}); using local schedule")
+    try:
+        if schedules_df is None:
+            import pandas as pd
+
+            from sportsmodel import config
+            schedules_df = pd.read_parquet(config.PROJECT_ROOT / "assets" / "nfl" / "schedules.parquet")
+        week = _schedule_target_week(now, schedules_df)
+    except Exception as exc:  # noqa: BLE001
+        print(f"WARN schedule target week unavailable ({exc!r})")
+        week = None
+    if week is None:
+        print("WARN target week unresolved; injury staleness unchecked")
+    return week

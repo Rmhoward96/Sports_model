@@ -88,7 +88,8 @@ METHODOLOGY (load-bearing -- follow exactly):
   ~0.62-0.68 high.
 - Sport notes: NFL injuries are the official report (real) but the market is
   sharp -- expect FEW, small leans; a report that hasn't posted yet means lean
-  on model+form and say so, never invent injuries. CFB injuries are real; when
+  on model+form and say so, never invent injuries (when `stale`, ESPN statuses
+  replace the unposted report). CFB injuries are real; when
   fading an inflated number on a big favorite, do it only when the favorite's
   OWN form is shaky or the dog's form is strong -- never fade a rolling
   dominant favorite on model margin alone.
@@ -107,12 +108,14 @@ METHODOLOGY (load-bearing -- follow exactly):
   a trend influenced the call, say so in the rationale. If `trends` is null for a
   team, say trends were unavailable.
 - INJURY FRESHNESS (`news.injury_report`): injury statuses are the CURRENT
-  report, verified against ESPN's live list. Never state a player is out,
+  report -- (NFL) verified against ESPN's live list. Never state a player is out,
   doubtful or questionable unless he appears in `news.injuries` with that
   status. If `stale` is true, the official weekly report for this week hasn't
   posted yet and statuses come from ESPN only -- say so if an injury drives
   your call. If `conflicts` lists a player, the sources disagreed; the
   bundle's status is the resolved one -- name the conflict if you rely on it.
+  If `espn_available` is false, statuses are the official weekly report only
+  and may be last week's -- say so before relying on one.
 
 OUTPUT: return ONLY a JSON array (no prose, no markdown fences). One object per
 game in the bundle, each EXACTLY:

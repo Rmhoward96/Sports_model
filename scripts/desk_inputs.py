@@ -57,7 +57,6 @@ import pandas as pd
 from sportsmodel import config
 from sportsmodel.cfb import sportsdata as cfb_sportsdata
 from sportsmodel.nfl import sportsdata as nfl_sportsdata
-from sportsmodel.nfl import espn as nfl_espn
 from sportsmodel.nfl import injury_report
 from sportsmodel.db import get_postgres
 
@@ -196,11 +195,13 @@ def build_bundle(
         here yields {"home": None, "away": None} for that game's trends.
       injury_meta: the injury source's freshness metadata (see
         `_nfl_injuries_by_name` / `_cfb_injuries_by_name`): {"source",
-        "stale", "report_week"?, "target_week"?, "conflicts": [{"team"
-        (display name), "player", "nflverse", "espn"}]}. Each game gets
-        `news.injury_report` = {"source", "stale", "report_week",
-        "target_week", "conflicts"} with conflicts filtered to that game's
-        home/away teams; None for every game when injury_meta is None.
+        "stale", "espn_available"?, "report_week"?, "target_week"?,
+        "conflicts": [{"team" (display name), "player", "nflverse", "espn"}]}. Each game gets
+        `news.injury_report` = {"source", "stale", "espn_available",
+        "report_week", "target_week", "conflicts"} with conflicts filtered to
+        that game's home/away teams; source is "nflverse" when ESPN was
+        unreachable (espn_available False). None for every game when
+        injury_meta is None.
 
     Returns one dict per upcoming game:
       {"game_pk", "matchup" ("{away} @ {home}"), "commence_time",
@@ -259,9 +260,14 @@ def _injury_report_block(meta: dict | None, home_team: str, away_team: str) -> d
     if meta is None:
         return None
     teams = {home_team, away_team}
+    espn_available = meta.get("espn_available")
+    source = meta.get("source")
+    if espn_available is False and source == "nflverse+espn":
+        source = "nflverse"  # ESPN unreachable: nothing was verified against it
     return {
-        "source": meta.get("source"),
+        "source": source,
         "stale": meta.get("stale"),
+        "espn_available": espn_available,
         "report_week": meta.get("report_week"),
         "target_week": meta.get("target_week"),
         "conflicts": [c for c in meta.get("conflicts") or [] if c.get("team") in teams],
@@ -428,16 +434,6 @@ def _cfb_injuries_by_name(adapter, api_key, crosswalk, now) -> tuple[dict[str, l
     return by_name, {"source": "sportsdata", "stale": False, "conflicts": []}
 
 
-def _nfl_target_week() -> int | None:
-    """The NFL week the desk is picking, from ESPN; None on any error (the
-    injury report then treats nflverse's newest week as not stale)."""
-    try:
-        return int(nfl_espn.resolve_target_week()["week"])
-    except Exception:
-        log.warning("target week unavailable; injury staleness unchecked", exc_info=True)
-        return None
-
-
 def _nfl_injuries_by_name(adapter, api_key, crosswalk, now) -> tuple[dict[str, list[dict]], dict]:
     """NFL injuries, ({full team name -> rows}, meta), from the shared injury
     report (`injury_report.current_report`, the same one the sim uses).
@@ -449,7 +445,7 @@ def _nfl_injuries_by_name(adapter, api_key, crosswalk, now) -> tuple[dict[str, l
     mapped abbr -> display name (so build_bundle can filter per game).
     `adapter`/`api_key` are unused; kept so both sources share one shape."""
     name_to_abbr = {name: abbr for abbr, name in crosswalk.items()}
-    report = injury_report.current_report(now, _nfl_target_week(), name_to_abbr)
+    report = injury_report.current_report(now, injury_report.resolve_target_week(now), name_to_abbr)
     by_name = {
         crosswalk[abbrev]: rows
         for abbrev, rows in report["by_team"].items()

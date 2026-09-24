@@ -71,9 +71,8 @@ import pandas as pd
 
 from sportsmodel import config
 from sportsmodel.db import get_postgres, upsert_nfl_player_sim, upsert_nfl_sim
-from sportsmodel.nfl import espn as nfl_espn
 from sportsmodel.nfl.injuries_nflverse import nfl_season
-from sportsmodel.nfl.injury_report import current_report
+from sportsmodel.nfl.injury_report import current_report, resolve_target_week
 from sportsmodel.nfl.teams import TEAMS
 from sportsmodel.sim.engine import margin_pmf, pred_scores, stat_pmf, total_pmf
 from sportsmodel.sim.nfl.aggregate import disagreement, nfl_player_prop_dists
@@ -331,16 +330,6 @@ def _questionable_names_by_team(injuries: dict[str, list[dict]]) -> dict[str, se
     return out
 
 
-def _target_week() -> int | None:
-    """The NFL week being simmed, from ESPN; None on any error (the injury
-    report then treats nflverse's newest week as not stale)."""
-    try:
-        return int(nfl_espn.resolve_target_week()["week"])
-    except Exception as exc:  # noqa: BLE001 -- degrade to "not stale", don't abort
-        print(f"WARN target week unavailable ({exc!r}); injury staleness unchecked")
-        return None
-
-
 def _injury_summary(report: dict) -> str:
     """One log line describing the shared injury report's freshness."""
     return (f"injuries: report_week={report.get('report_week')} "
@@ -392,7 +381,7 @@ def main() -> None:
     # ESPN's live list, and dropped entirely when it's last week's (stale) and
     # ESPN is reachable. Statuses are normalized Out/Doubtful/Questionable.
     # `crosswalk` is already {display name -> abbrev} (= name_to_abbr).
-    report = current_report(now, _target_week(), crosswalk)
+    report = current_report(now, resolve_target_week(now), crosswalk)
     injuries = report["by_team"]
     out_names_by_team = _out_names_by_team(injuries)
     q_names_by_team = _questionable_names_by_team(injuries)
