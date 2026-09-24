@@ -13,22 +13,26 @@ from __future__ import annotations
 import re
 from datetime import datetime
 
-_OUT_WORDS = ("out", "injured reserve", "reserve", "suspension", "physically unable", "non football")
+_OUT_WORDS = ("out", "injured reserve", "reserve", "suspension", "physically unable", "non football", "pup", "nfi")
 
 
 def normalize_status(s) -> str | None:
     st = str(s or "").strip().lower()
-    if st == "questionable":
-        return "Questionable"
-    if st == "doubtful":
+    # Replace punctuation with spaces to normalize hyphenated/slashed status strings
+    st = re.sub(r"[-/_]", " ", st)
+    st = re.sub(r"\s+", " ", st).strip()
+    # Match whole words for doubtful/questionable (anchored or word boundaries)
+    if re.search(r"\bdoubtful\b", st):
         return "Doubtful"
+    if re.search(r"\bquestionable\b", st):
+        return "Questionable"
     if any(w in st for w in _OUT_WORDS):
         return "Out"
     return None
 
 
 def _key(name) -> str:
-    s = re.sub(r"[.'']", "", str(name or "").strip().lower())
+    s = re.sub(r"[.''']", "", str(name or "").strip().lower())
     s = re.sub(r"\s+", " ", s).strip()
     return re.sub(r"\s+(jr|sr|ii|iii|iv|v)$", "", s)
 
