@@ -318,6 +318,9 @@ def _vacated(out: pd.DataFrame, inj: pd.DataFrame) -> pd.DataFrame:
     h["_ord"] = _ord(h)
     o = inj[inj["report_status"].isin(["Out", "Doubtful"])].dropna(subset=["team"])
     o = o[KEYS + ["team"]].assign(_ord=_ord(o)).sort_values("_ord")
+    # merge_asof requires identical `by` dtypes: real injury ids arrive as
+    # StringDtype, pg's (pfr->gsis .map) as object.
+    o["player_id"], h["player_id"] = o["player_id"].astype(object), h["player_id"].astype(object)
     m = pd.merge_asof(o, h[["player_id", "_ord", "_hteam", "_tgt", "_car"]].sort_values("_ord"),
                       on="_ord", by="player_id", allow_exact_matches=False)
     m = m[m["_hteam"] == m["team"]]
@@ -339,6 +342,7 @@ def _qb_changed(out: pd.DataFrame, pg: pd.DataFrame, depth: pd.DataFrame | None)
     lead = pg[pg["y_pass_att"] > 0].sort_values("y_pass_att", ascending=False, kind="stable")
     lead = lead.drop_duplicates(_TEAM_KEYS)[_TEAM_KEYS + ["player_id"]].rename(columns={"player_id": "_lead"})
     lead = lead.assign(_ord=_ord(lead)).sort_values("_ord").drop(columns=["season", "week"])
+    tw["team"], lead["team"] = tw["team"].astype(object), lead["team"].astype(object)   # merge_asof: same `by` dtype
     tw = pd.merge_asof(tw, lead, on="_ord", by="team", allow_exact_matches=False)
     if depth is not None and len(depth):
         d = depth[depth["position"] == "QB"].assign(team=depth["club_code"].map(_norm),

@@ -576,6 +576,7 @@ def depth_charts_asof(raw: pd.DataFrame, schedules: pd.DataFrame) -> pd.DataFram
 
     - Old weekly schema (has a non-null `club_code`, seasons <= 2024): passed
       through; `full_name` = "first last" (falls back to football_name).
+      Rows with a null season/week (the "SBBYE" game_type) are dropped.
     - Snapshot schema (2025+: `dt`, `team`, `pos_abb`, `pos_rank`): for each
       team's REG-season game, take that team's latest snapshot with
       `dt <= kickoff` (UTC) — never a later one — stamped with that game's
@@ -589,7 +590,11 @@ def depth_charts_asof(raw: pd.DataFrame, schedules: pd.DataFrame) -> pd.DataFram
         return pd.DataFrame(columns=cols)
     parts: list[pd.DataFrame] = []
     is_old = raw["club_code"].notna() if "club_code" in raw.columns else pd.Series(False, index=raw.index)
+    # Old-schema rows with no season/week (e.g. game_type "SBBYE", the Super
+    # Bowl bye) key to no game -- drop them.
     old = raw[is_old]
+    if len(old):
+        old = old.dropna(subset=["season", "week"])
     if len(old):
         first = old.get("first_name", pd.Series(pd.NA, index=old.index)).astype("string")
         last = old.get("last_name", pd.Series(pd.NA, index=old.index)).astype("string")

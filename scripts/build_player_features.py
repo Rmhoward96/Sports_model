@@ -11,7 +11,8 @@ Pure seams (unit tested in tests/scripts/test_build_player_features.py):
   active_stubs          -- active depth-chart skill players with no played row
   dropped_snap_mappings -- snap rows lost to a missing pfr -> gsis id mapping
   nan_share_by_group    -- NaN share per feature prefix group
-main() is IO (network + parquet writes) and not unit tested.
+fetch_sources()/build_and_write()/main() are IO (network + parquet writes)
+and not unit tested.
 
 Usage:
     uv run python scripts/build_player_features.py
@@ -126,39 +127,47 @@ def _load_pbp(seasons: list[int]) -> pd.DataFrame:
     return pd.concat(frames, ignore_index=True)
 
 
-def main() -> None:
+def fetch_sources() -> dict:
+    """IO: every nflverse input for SEASONS (network)."""
     import nfl_data_py as nfl
 
+    from sportsmodel.nfl.nflverse import import_by_season, load_release
+    from sportsmodel.sim.nfl.usage import build_pfr_to_gsis, depth_charts_asof
+
+    sched = load_release("schedules", SEASONS)
+    return {
+        "sched": sched,
+        "pbp": _load_pbp(SEASONS),
+        "weekly": load_release("weekly", SEASONS),
+        "snaps": load_release("snaps", SEASONS),
+        "depth": depth_charts_asof(load_release("depth", SEASONS), sched),
+        "injuries": import_by_season(nfl.import_injuries, SEASONS, "injuries", required=False),
+        "ngs": {k: load_release(f"ngs_{v}", SEASONS, required=False)
+                for k, v in (("rec", "receiving"), ("rush", "rushing"), ("pass", "passing"))},
+        "pfr2gsis": build_pfr_to_gsis(nfl.import_ids()),
+    }
+
+
+def build_and_write(src: dict, t0: float, t_fetch: float) -> None:
+    """Build both tables from fetched sources, write the parquets, print the summary."""
     from sportsmodel.nfl.context import load_stadiums, team_game_context
     from sportsmodel.nfl.efficiency import team_game_epa
-    from sportsmodel.nfl.nflverse import import_by_season, load_release
     from sportsmodel.nfl.player_features import (
         build_feature_table, build_team_table, player_games, player_redzone, team_games,
     )
-    from sportsmodel.sim.nfl.usage import build_pfr_to_gsis, depth_charts_asof
 
-    t0 = time.monotonic()
-    sched = load_release("schedules", SEASONS)
-    pbp = _load_pbp(SEASONS)
-    weekly = load_release("weekly", SEASONS)
-    snaps = load_release("snaps", SEASONS)
-    depth = depth_charts_asof(load_release("depth", SEASONS), sched)
-    injuries = import_by_season(nfl.import_injuries, SEASONS, "injuries", required=False)
-    ngs = {k: load_release(f"ngs_{v}", SEASONS, required=False)
-           for k, v in (("rec", "receiving"), ("rush", "rushing"), ("pass", "passing"))}
-    pfr2gsis = build_pfr_to_gsis(nfl.import_ids())
-    t_fetch = time.monotonic() - t0
-
-    dropped = dropped_snap_mappings(snaps, pfr2gsis)
-    pg = player_games(weekly, snaps, pfr2gsis)
+    sched, pbp, injuries, depth = src["sched"], src["pbp"], src["injuries"], src["depth"]
+    dropped = dropped_snap_mappings(src["snaps"], src["pfr2gsis"])
+    pg = player_games(src["weekly"], src["snaps"], src["pfr2gsis"])
     tg = team_games(pbp)
     rz = player_redzone(pbp)
     ctx = team_game_context(sched, load_stadiums())
     game_epa = team_game_epa(pbp)
     stubs = active_stubs(depth, injuries, pg, sched)
-    del pbp
+    print(f"sources ready ({t_fetch:.1f}s): {len(pg)} player-games, {len(tg)} team-games, {len(stubs)} stubs; "
+          "building feature tables...", flush=True)
 
-    feats = build_feature_table(pg, tg, rz, ctx, ngs, injuries, depth, game_epa, stubs=stubs)
+    feats = build_feature_table(pg, tg, rz, ctx, src["ngs"], injuries, depth, game_epa, stubs=stubs)
     team = build_team_table(tg, ctx, game_epa)
 
     OUT_DIR.mkdir(parents=True, exist_ok=True)
@@ -182,6 +191,12 @@ def main() -> None:
     print(f"feature columns: {sum(c.startswith(FEATURE_GROUPS) for c in feats.columns)}; "
           f"written to {OUT_DIR}")
     print(f"build time: {elapsed:.1f}s (fetch {t_fetch:.1f}s, features {elapsed - t_fetch:.1f}s)")
+
+
+def main() -> None:
+    t0 = time.monotonic()
+    src = fetch_sources()
+    build_and_write(src, t0, time.monotonic() - t0)
 
 
 if __name__ == "__main__":

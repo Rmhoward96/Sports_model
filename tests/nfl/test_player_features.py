@@ -164,3 +164,21 @@ def test_leakage_guard_also_moves_ratio_features():
     pd.testing.assert_frame_equal(t0.loc[key, feats], t1.loc[key, feats])
     later = [k for k in t0.index if k[1:] == (2024, 4)]
     assert not t0.loc[later, "p_ypt_r3"].equals(t1.loc[later, "p_ypt_r3"])   # the perturbation reaches ratios
+
+
+def test_feature_table_accepts_string_dtype_ids_from_real_sources():
+    """Real nflverse frames under pandas 3 carry ids as StringDtype (injuries,
+    depth) while pg's player_id (pfr->gsis .map) is object; merge_asof in the
+    status features must not reject the mixed key dtypes."""
+    from tests.nfl.fixtures_props import feature_inputs
+    base = _build(feature_inputs()).set_index(["player_id", "season", "week"])
+    inp = feature_inputs()
+    for k in ("injuries", "depth"):
+        f = inp[k].copy()
+        for c in ("gsis_id", "team", "club_code", "report_status", "position"):
+            if c in f.columns:
+                f[c] = f[c].astype("string")
+        inp[k] = f
+    inp["stubs"] = inp["stubs"].assign(player_id=inp["stubs"]["player_id"].astype("string"))
+    got = _build(inp).set_index(["player_id", "season", "week"])
+    pd.testing.assert_frame_equal(base, got, check_dtype=False, check_index_type=False)

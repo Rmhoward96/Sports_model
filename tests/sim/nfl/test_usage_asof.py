@@ -62,3 +62,15 @@ def test_snapshot_team_code_is_normalized_before_matching_schedule():
     assert list(la["gsis_id"]) == ["s1"]
     assert "bad" not in set(out["gsis_id"])
     assert "LAR" not in set(out["club_code"])
+
+
+def test_old_schema_rows_without_a_week_are_dropped():
+    # Real nflverse 2016+ depth charts carry game_type "SBBYE" rows (the
+    # Super Bowl bye week) with a null `week`; they key to no game and must
+    # be dropped rather than crash the int cast.
+    old = pd.DataFrame({"season": [2016, 2016], "week": [5, None], "club_code": ["ATL", "ATL"],
+                        "game_type": ["REG", "SBBYE"], "depth_team": ["1", "1"], "gsis_id": ["a", "b"],
+                        "position": ["QB", "QB"], "football_name": ["A", "B"],
+                        "first_name": ["A", "B"], "last_name": ["X", "Y"]})
+    out = depth_charts_asof(old, SCHED)
+    assert out["gsis_id"].tolist() == ["a"] and out["week"].tolist() == [5]
