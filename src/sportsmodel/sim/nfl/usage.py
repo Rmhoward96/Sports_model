@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import pandas as pd
 
+from sportsmodel.nfl.teams import normalize_team
 from sportsmodel.sim.nfl.spec import PlayerInput
 
 # Offensive skill positions that participate in the target/carry usage model.
@@ -542,3 +543,82 @@ def fetch_usage_sources(seasons: list[int]) -> dict:
         "snaps": import_by_season(nfl.import_snap_counts, seasons, "snaps"),
         "ids": nfl.import_ids(),
     }
+
+
+_ET = "America/New_York"
+
+
+def _safe_team(code: object) -> str | None:
+    """`normalize_team`, or None for a code it rejects (row then dropped)."""
+    try:
+        return normalize_team(str(code))
+    except ValueError:
+        return None
+
+
+def _kickoffs_utc(schedules: pd.DataFrame) -> pd.DataFrame:
+    """One row per (season, week, team) with that team's kickoff in UTC.
+    nflverse `gameday`/`gametime` are US-Eastern local."""
+    s = schedules[schedules["game_type"] == "REG"]
+    local = pd.to_datetime(s["gameday"].astype(str) + " " + s["gametime"].fillna("13:00").astype(str),
+                           errors="coerce")
+    ko = local.dt.tz_localize(_ET, ambiguous="NaT", nonexistent="NaT").dt.tz_convert("UTC")
+    rows = []
+    for side in ("home_team", "away_team"):
+        rows.append(pd.DataFrame({"season": s["season"].astype(int), "week": s["week"].astype(int),
+                                  "team": s[side].map(_safe_team), "kickoff": ko}))
+    return pd.concat(rows, ignore_index=True).dropna(subset=["team", "kickoff"])
+
+
+def depth_charts_asof(raw: pd.DataFrame, schedules: pd.DataFrame) -> pd.DataFrame:
+    """Per-(season, week, team) depth charts in the OLD columns `active_usage`
+    reads, from a frame mixing nflverse's two schemas. PURE.
+
+    - Old weekly schema (has a non-null `club_code`, seasons <= 2024): passed
+      through; `full_name` = "first last" (falls back to football_name).
+    - Snapshot schema (2025+: `dt`, `team`, `pos_abb`, `pos_rank`): for each
+      team's REG-season game, take that team's latest snapshot with
+      `dt <= kickoff` (UTC) — never a later one — stamped with that game's
+      (season, week). A team with no snapshot before kickoff gets no rows
+      (active_usage's _latest_depth_week fallback then applies). Snapshot
+      `team` codes are `normalize_team`-normalized first (LAR -> LA, ...) so
+      they match the normalized schedule; codes it rejects are dropped.
+    """
+    cols = ["season", "week", "club_code", "depth_team", "position", "gsis_id", "full_name", "football_name"]
+    if raw is None or len(raw) == 0:
+        return pd.DataFrame(columns=cols)
+    parts: list[pd.DataFrame] = []
+    is_old = raw["club_code"].notna() if "club_code" in raw.columns else pd.Series(False, index=raw.index)
+    old = raw[is_old]
+    if len(old):
+        first = old.get("first_name", pd.Series(pd.NA, index=old.index)).astype("string")
+        last = old.get("last_name", pd.Series(pd.NA, index=old.index)).astype("string")
+        full = (first.fillna("") + " " + last.fillna("")).str.strip()
+        full = full.where(full != "", old["football_name"].astype("string"))
+        parts.append(pd.DataFrame({
+            "season": old["season"].astype(int), "week": old["week"].astype(int),
+            "club_code": old["club_code"].astype("string"),
+            "depth_team": pd.to_numeric(old["depth_team"], errors="coerce"),
+            "position": old["position"].astype("string"), "gsis_id": old["gsis_id"].astype("string"),
+            "full_name": full, "football_name": old["football_name"].astype("string"),
+        }))
+    new = raw[~is_old]
+    if len(new) and {"dt", "team", "pos_abb", "gsis_id"}.issubset(new.columns):
+        snaps = new.assign(_dt=pd.to_datetime(new["dt"], errors="coerce", utc=True),
+                           _team=new["team"].map(_safe_team)).dropna(subset=["_dt", "_team"])
+        ko = _kickoffs_utc(schedules)
+        for team, tsnaps in snaps.groupby("_team"):
+            times = tsnaps["_dt"].drop_duplicates().sort_values()
+            for g in ko[ko["team"] == team].itertuples(index=False):
+                eligible = times[times <= g.kickoff]
+                if eligible.empty:
+                    continue
+                chart = tsnaps[tsnaps["_dt"] == eligible.iloc[-1]]
+                name = chart["player_name"].astype("string")
+                parts.append(pd.DataFrame({
+                    "season": g.season, "week": g.week, "club_code": str(team),
+                    "depth_team": pd.to_numeric(chart.get("pos_rank"), errors="coerce"),
+                    "position": chart["pos_abb"].astype("string"), "gsis_id": chart["gsis_id"].astype("string"),
+                    "full_name": name, "football_name": name,
+                }))
+    return pd.concat(parts, ignore_index=True)[cols] if parts else pd.DataFrame(columns=cols)

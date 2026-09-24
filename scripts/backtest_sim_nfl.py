@@ -91,6 +91,7 @@ from sportsmodel.sim.engine import GameSims, pred_scores
 from sportsmodel.sim.nfl.aggregate import nfl_player_prop_dists
 from sportsmodel.sim.nfl.inputs import build_spec_from_usage
 from sportsmodel.sim.nfl.kernel import simulate_game
+from sportsmodel.sim.nfl.spec import NflGameSpec
 from sportsmodel.nfl.elo import EloConfig, run_elo
 from sportsmodel.sim.nfl.rates import (fetch_nflverse, ratings_tilt, team_rates_from_pbp,
                                        team_defense_rates_from_pbp)
@@ -98,9 +99,10 @@ from sportsmodel.sim.nfl.usage import (
     abbrev_alignment,
     active_usage,
     build_pfr_to_gsis,
+    depth_charts_asof,
     fetch_usage_sources,
-    normalize_depth_charts,
 )
+from sportsmodel.model.props_eval import pit_pmf, pit_uniform, rps_pmf
 
 DEFAULT_N_SIMS = 2000
 SIM_SEED = 42
@@ -370,6 +372,8 @@ def run_backtest(
     home_field: float = 0.0,
     use_defense: bool = True,
     ratings_weight: float = 0.0,
+    spec_hook: Callable[[int, int, str, str, NflGameSpec], NflGameSpec] | None = None,
+    record: list | None = None,
 ) -> dict:
     """Walk forward over every completed REG-season game in `seasons`.
 
@@ -382,6 +386,14 @@ def run_backtest(
         (via `sim.engine.margin_pmf`/`total_pmf`) without duplicating this
         function's rates/usage/spec-building wiring. Not called for a game
         the per-game try/except below skips.
+    spec_hook: optional `spec_hook(season, week, home, away, spec) -> spec`
+        applied after `build_spec_from_usage` and before `simulate_game` -- the
+        props-ML harness uses it to swap in learned team volume / player shares.
+    record: optional list; when given, one dict per (player, market in
+        PLAYER_MARKETS) with a paired actual is appended: season, week, home,
+        player_id, market, mean, p50, p90, rps, pit, actual. Ungated (the
+        caller applies the population gate). Small records, not pmfs, so five
+        full walk-forwards fit in memory.
 
     Returns a dict of raw sample lists for `report()` to summarize:
       game_probs/game_outcomes, margin_preds/margin_actuals,
@@ -406,21 +418,18 @@ def run_backtest(
     print(f"fetching usage sources for seasons {fetch_seasons}")
     usage_src = fetch_usage_sources(fetch_seasons)
     pfr2gsis = build_pfr_to_gsis(usage_src["ids"])
-    # Normalize nflverse's current (snapshot-based) depth schema onto the old
-    # columns active_usage expects. Stamped at (earliest fetch season, week 1)
-    # so active_usage's _latest_depth_week fallback resolves it for EVERY
-    # walk-forward (season, week). LIMITATION: the new feed carries only recent
-    # snapshots, so every historical week gets the CURRENT chart (upstream has
-    # no depth history) -- acceptable for this rough/bounded backfill; a
-    # no-op passthrough when the old (frozen) schema is what's installed.
-    depth_df = normalize_depth_charts(usage_src["depth"], min(fetch_seasons), 1)
+    schedules = load_schedules(fetch_seasons)
+
+    from sportsmodel.nfl.nflverse import load_release
+    # Per-week charts: old weekly schema <= 2024; 2025+ snapshots resolved to the
+    # latest chart at/before each team's kickoff (the prior collapse applied one
+    # stale chart to every 2025 week).
+    depth_df = depth_charts_asof(load_release("depth", fetch_seasons), schedules)
 
     print(f"fetching historical injuries for seasons {fetch_seasons}")
     import nfl_data_py as nfl
 
     injuries_df = nfl.import_injuries(fetch_seasons)
-
-    schedules = load_schedules(fetch_seasons)
 
     # Leakage-free per-game pre-game Elo from the full committed schedule (well
     # warmed). run_elo records elo_home/elo_away as the ratings BEFORE each game,
@@ -535,6 +544,8 @@ def run_backtest(
                 home, away, rates, home_players, away_players, home_qb, away_qb,
                 def_rates=def_rates,
             )
+            if spec_hook is not None:
+                spec = spec_hook(season, week, home, away, spec)
             eh, ea = elo_by_game.get((season, week, home, away), (_ELO_BASE, _ELO_BASE))
             rtilt = ratings_tilt(eh, ea, ratings_weight)
             sims = simulate_game(spec, n_sims, rng, home_field=home_field, ratings_tilt=rtilt)
@@ -568,6 +579,17 @@ def run_backtest(
                     continue
                 dist = markets[market]
                 a = actual[market]
+                # a == a skips a NaN actual (float(nan or 0.0) keeps NaN), which
+                # would make rps_pmf/pit_pmf raise outside the per-game try.
+                if record is not None and a == a:
+                    record.append({
+                        "season": season, "week": week, "home": home, "player_id": player_id,
+                        "market": market, "mean": float(dist["mean"]),
+                        "p50": quantile_from_pmf(dist, 0.50), "p90": quantile_from_pmf(dist, 0.90),
+                        "rps": rps_pmf(dist["pmf"], a),
+                        "pit": pit_pmf(dist["pmf"], a, pit_uniform(season, week, player_id, market)),
+                        "actual": a,
+                    })
                 if is_propable(market, actual):
                     player_mean_pairs[market].append((dist["mean"], a))
                     player_p50_pairs[market].append((quantile_from_pmf(dist, 0.50), a))

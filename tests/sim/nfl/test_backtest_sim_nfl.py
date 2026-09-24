@@ -409,3 +409,14 @@ def test_abbrev_alignment_all_clean_returns_empty_lists():
     injuries_df = pd.DataFrame([{"team": "KC"}, {"team": "SF"}])
     result = bsn.abbrev_alignment(depth_df, injuries_df, {"KC", "BUF"}, _KNOWN_TEAMS)
     assert result == {"depth_unknown": [], "injuries_unknown": [], "games_unknown": []}
+
+
+# =============================================================================
+# run_backtest hooks for the props-ML harness
+# =============================================================================
+
+def test_run_backtest_accepts_spec_hook_and_record():
+    import inspect
+
+    params = inspect.signature(bsn.run_backtest).parameters
+    assert "spec_hook" in params and "record" in params
