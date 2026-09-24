@@ -1,0 +1,94 @@
+"""One NFL injury report for the sim AND the desk: nflverse's official weekly
+report, verified per player against ESPN's live injury list, and never trusted
+when stale.
+
+nflverse's newest report is LAST week's until the Wed-Fri report posts. A player
+Out last week (Penix, Week 2) would otherwise stay Out in this week's sim/desk.
+So: if the report's week is older than the target week and ESPN is reachable,
+the report is dropped entirely and ESPN's current designations are used; ESPN
+also overrides the current report per player. PURE merge + thin IO wrapper.
+"""
+from __future__ import annotations
+
+import re
+from datetime import datetime
+
+_OUT_WORDS = ("out", "injured reserve", "reserve", "suspension", "physically unable", "non football")
+
+
+def normalize_status(s) -> str | None:
+    st = str(s or "").strip().lower()
+    if st == "questionable":
+        return "Questionable"
+    if st == "doubtful":
+        return "Doubtful"
+    if any(w in st for w in _OUT_WORDS):
+        return "Out"
+    return None
+
+
+def _key(name) -> str:
+    s = re.sub(r"[.'']", "", str(name or "").strip().lower())
+    s = re.sub(r"\s+", " ", s).strip()
+    return re.sub(r"\s+(jr|sr|ii|iii|iv|v)$", "", s)
+
+
+def merge_report(nflverse_by_abbr: dict, report_week, target_week, espn_rows: list[dict],
+                 name_to_abbr: dict[str, str], espn_available: bool = True) -> dict:
+    stale = report_week is None or (target_week is not None and int(report_week) < int(target_week))
+    use_nflverse = not (stale and espn_available)
+    by_team: dict[str, dict[str, dict]] = {}
+    nfl_status: dict[tuple, str] = {}
+    for abbr, rows in (nflverse_by_abbr or {}).items():
+        for r in rows or []:
+            st = normalize_status(r.get("status"))
+            nfl_status[(abbr, _key(r.get("player")))] = st
+            if use_nflverse and st:
+                by_team.setdefault(abbr, {})[_key(r.get("player"))] = {
+                    "player": r.get("player"), "position": r.get("position"), "status": st,
+                    "note": r.get("note"), "source": "nflverse"}
+    conflicts = []
+    for e in espn_rows or []:
+        abbr = name_to_abbr.get(e.get("team"))
+        k = _key(e.get("player"))
+        if not abbr or not k:
+            continue
+        st = normalize_status(e.get("status"))
+        before = nfl_status.get((abbr, k))
+        prior_row = by_team.get(abbr, {}).pop(k, None)
+        name = prior_row["player"] if prior_row else e.get("player")
+        if st:
+            by_team.setdefault(abbr, {})[k] = {"player": name, "position": prior_row.get("position") if prior_row else None,
+                                               "status": st, "note": None, "source": "espn"}
+        if (before in ("Out", "Doubtful")) != (st in ("Out", "Doubtful")) and (before or st):
+            conflicts.append({"team": abbr, "player": name, "nflverse": before, "espn": st})
+    return {"by_team": {a: list(v.values()) for a, v in by_team.items()}, "stale": bool(stale),
+            "report_week": report_week, "target_week": target_week,
+            "espn_available": espn_available, "conflicts": conflicts}
+
+
+def latest_report_week(df) -> int | None:
+    """Latest week with a real designation in the nflverse injuries frame."""
+    if df is None or len(df) == 0 or "report_status" not in df.columns:
+        return None
+    rep = df[df["report_status"].isin(["Out", "Doubtful", "Questionable"])]
+    return int(rep["week"].max()) if len(rep) else None
+
+
+def current_report(now: datetime, target_week, name_to_abbr: dict[str, str]) -> dict:
+    """IO: nflverse season report + ESPN live injuries, merged."""
+    import nfl_data_py as nfl
+
+    from sportsmodel.nfl import espn
+    from sportsmodel.nfl.injuries_nflverse import nfl_season, parse_injuries
+    from sportsmodel.nfl.nflverse import import_by_season
+
+    df = import_by_season(nfl.import_injuries, [nfl_season(now)], "injuries", required=False)
+    week = latest_report_week(df)
+    by_abbr = parse_injuries(df, week=week) if week is not None else {}
+    try:
+        espn_rows, ok = espn.fetch_injuries(), True
+    except Exception as exc:  # noqa: BLE001 -- ESPN down: fall back to nflverse, flagged
+        print(f"WARN espn injuries unavailable ({exc!r})")
+        espn_rows, ok = [], False
+    return merge_report(by_abbr, week, target_week, espn_rows, name_to_abbr, espn_available=ok)
