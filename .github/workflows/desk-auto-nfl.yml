@@ -24,6 +24,11 @@ jobs:
     timeout-minutes: 20
     env:
       SPORT: nfl
+    # Shared with injury-watch.yml's nfl job: a desk run and an injury-watch
+    # re-run for the same sport queue behind each other, never overlap.
+    concurrency:
+      group: injury-pipeline-nfl
+      cancel-in-progress: false
     steps:
       - uses: actions/checkout@v5
       - name: Install uv

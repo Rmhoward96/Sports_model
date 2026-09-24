@@ -3,7 +3,10 @@
     --check   games kicking off within the next 30h: fingerprint each game's
               Out/Doubtful designations, compare to `injury_snapshots`, print
               each changed game's matchup + per-player diff, and append
-              `changed=true|false` to $GITHUB_OUTPUT (when set). Always exits 0.
+              `changed=true|false` to $GITHUB_OUTPUT (when set). Exits non-zero
+              on DB/SportsDataIO errors, so the run is visibly red and the gated
+              re-run is skipped; exits 0 with changed=false when ESPN is degraded
+              (NFL) or the CFB key is missing.
     --record  snapshot into `injury_snapshots`. With `--bundle PATH` it records
               exactly what the desk used (the desk_inputs bundle JSON: per game
               `game_pk`, `matchup` "Away @ Home", `news.injuries.home/away`);

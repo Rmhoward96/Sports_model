@@ -1,12 +1,20 @@
 name: injury-watch
 
-# Twice-daily injury watch -- re-runs the full model/sim/desk pipeline whenever
-# an injury/availability status changes (Out or Doubtful transitions). Scheduled
-# at 3 PM and 10 PM UTC to catch injury announcements across US time zones.
+# Twice-daily injury watch -- re-runs the model/sim/desk pipeline when a game
+# kicking off within 30h has an Out/Doubtful designation change (Questionable
+# churn never triggers). Scheduled at 3 PM and 10 PM UTC to catch injury
+# announcements across US time zones.
+#
+# Injury sources: NFL = nflverse's weekly report verified per player against
+# ESPN's live list (sportsmodel.nfl.injury_report); CFB = SportsDataIO.
 #
 # For each sport (NFL, CFB):
-#  1. Check if injuries have changed (database + SportsData API).
-#  2. If changed: regenerate model, sim (NFL only), synthesize desk picks, record snapshot.
+#  1. `injury_watch.py --check` compares against `injury_snapshots`.
+#  2. If changed, the full re-run chain: model -> sim (NFL only) -> desk bundle
+#     -> synthesize + write picks -> +EV board -> +EV parlays -> record the
+#     snapshot from the desk bundle (`--record --bundle`).
+# Each job shares a concurrency group (injury-pipeline-<sport>) with
+# desk-auto-<sport>.yml so the two never overlap.
 #
 # Requires repo secrets: DATABASE_URL, SPORTSDATA_API_KEY, ANTHROPIC_API_KEY.
 # Optional repo variable DESK_SYNTH_MODEL overrides the synthesis model.
