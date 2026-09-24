@@ -256,3 +256,14 @@ def test_depth_rank_ignores_special_teams_listings_of_the_old_schema():
     depth["formation"] = ["Offense", "Offense", "Offense", "Special Teams"]
     r = _depth_rank(depth, pg).set_index("player_id")["p_depth_rank"]
     assert r.to_dict() == {"w1": 1, "w2": 2, "kr": 3}
+
+
+def test_feature_table_flags_stub_rows_explicitly():
+    """is_stub marks active-but-no-snap rows (the learned count models train
+    them as 0); it is a bool, never a feature (no feature prefix)."""
+    from tests.nfl.fixtures_props import feature_inputs
+    t = _build(feature_inputs())
+    assert t["is_stub"].dtype == bool
+    stubs = t[t["is_stub"]]
+    assert set(stubs["player_id"]) == {"KC_RB2"} and len(stubs) == 4
+    assert stubs["y_targets"].isna().all() and t.loc[~t["is_stub"], "y_targets"].notna().all()

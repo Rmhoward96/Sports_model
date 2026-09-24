@@ -14,9 +14,14 @@ INPUTS:
 
 Leakage contract
 ----------------
-``fit_models`` filters ``(season, week) < upto`` ITSELF and requires the
-label to be present (stub rows with NaN labels never train), so callers
-cannot leak by passing the full feature table. Training is walk-forward only
+``fit_models`` filters ``(season, week) < upto`` ITSELF, so callers cannot
+leak by passing the full feature table. Rows need their label present, with
+one exception: the player COUNT models (targets, carries) are applied to the
+sim's whole active set, healthy scratches included, so when the table flags
+stubs (``is_stub``: active-but-no-snap rows, labels NaN) the in-window stub
+rows train with count label 0 -- E[count | active], not E[count | played].
+Efficiency models still require a touch (denominator > 0), so stubs never
+train them; future rows (stubs included) never train anything. Training is walk-forward only
 (no random splits, no early stopping with a random validation fraction).
 NaN features stay NaN (HistGradientBoosting routes missing values natively);
 a column that is 100% NaN in a model's training slice is dropped for that fit
@@ -46,6 +51,9 @@ RUNG_PREFIXES: dict[str, tuple[str, ...]] = {
 _TARGETS_MONO = {"p_target_share_ewm": 1}
 _CARRIES_MONO = {"p_carry_share_ewm": 1}
 
+# Bool column marking stub rows (see the leakage contract); never a feature.
+STUB_COL = "is_stub"
+
 TUNE_DECAYS: tuple[float, ...] = (1.0, 0.8, 0.6)
 TUNE_MAX_ITERS: tuple[int, ...] = (150, 300)
 
@@ -61,14 +69,15 @@ def feature_columns(df: pd.DataFrame, toggles: frozenset[str]) -> list[str]:
     ``volume`` prefixes are always included (volume is on whenever any
     learned model is used); ``context`` adds ``cx_``, ``market`` adds ``mk_``.
     ``efficiency`` toggles the efficiency MODELS, not columns. Keys, ``y_*``
-    labels and any non-prefixed column are excluded by construction.
+    labels, the ``is_stub`` flag and any non-prefixed column are excluded.
     """
     prefixes = list(RUNG_PREFIXES["volume"])
     for rung in ("context", "market"):
         if rung in toggles:
             prefixes.extend(RUNG_PREFIXES[rung])
     pref = tuple(prefixes)
-    return [c for c in df.columns if c.startswith(pref) and not c.startswith("y_")]
+    return [c for c in df.columns
+            if c.startswith(pref) and not c.startswith("y_") and c != STUB_COL]
 
 
 @dataclass
@@ -131,11 +140,22 @@ def _fit_one(X: pd.DataFrame, y: pd.Series, weight: np.ndarray, *, loss: str,
     return FittedModel(estimator=est, cols=cols)
 
 
+def _count_label(df: pd.DataFrame, label: str, stubs_as_zero: bool) -> pd.Series:
+    """``df[label]``, with flagged stub rows' NaN set to 0 when ``stubs_as_zero``
+    (and the frame carries ``is_stub``); other NaN labels stay NaN."""
+    y = df[label]
+    if stubs_as_zero and STUB_COL in df.columns:
+        y = y.mask(df[STUB_COL].fillna(False).astype(bool) & y.isna(), 0.0)
+    return y
+
+
 def _fit_count(df: pd.DataFrame, label: str, cols: list[str], upto, test_season,
-               decay, max_iter, mono) -> FittedModel | None:
-    tr = df[_before(df, upto) & df[label].notna()]
+               decay, max_iter, mono, stubs_as_zero: bool = False) -> FittedModel | None:
+    y = _count_label(df, label, stubs_as_zero)
+    m = _before(df, upto) & y.notna()
+    tr = df[m]
     w = decay ** (test_season - tr["season"].to_numpy(dtype=float))
-    return _fit_one(tr[cols], tr[label], w, loss="poisson", max_iter=max_iter, mono=mono)
+    return _fit_one(tr[cols], y[m], w, loss="poisson", max_iter=max_iter, mono=mono)
 
 
 # efficiency model -> (numerator label, denominator/weight label)
@@ -159,7 +179,8 @@ def _fit_eff(df: pd.DataFrame, num: str, den: str, cols: list[str], upto,
 def fit_models(player_df: pd.DataFrame, team_df: pd.DataFrame,
                toggles: frozenset[str], *, upto: tuple[int, int],
                test_season: int, decay: float, max_iter: int) -> LearnedModels:
-    """Fit rung-A models on rows with ``(season, week) < upto`` and labels present.
+    """Fit rung-A models on rows with ``(season, week) < upto`` and labels present
+    (flagged stub rows count as 0 for the targets / carries models).
 
     Sample weight is ``decay ** (test_season - season)`` (times the touch
     count for efficiency models). Efficiency models are fitted only when
@@ -168,8 +189,10 @@ def fit_models(player_df: pd.DataFrame, team_df: pd.DataFrame,
     pcols = feature_columns(player_df, toggles)
     tcols = feature_columns(team_df, toggles)
     common = dict(upto=upto, test_season=test_season, decay=decay, max_iter=max_iter)
-    targets = _fit_count(player_df, "y_targets", pcols, mono=_TARGETS_MONO, **common)
-    carries = _fit_count(player_df, "y_carries", pcols, mono=_CARRIES_MONO, **common)
+    targets = _fit_count(player_df, "y_targets", pcols, mono=_TARGETS_MONO,
+                         stubs_as_zero=True, **common)
+    carries = _fit_count(player_df, "y_carries", pcols, mono=_CARRIES_MONO,
+                         stubs_as_zero=True, **common)
     team_pass = _fit_count(team_df, "y_team_pass_att", tcols, mono=None, **common)
     team_rush = _fit_count(team_df, "y_team_rush_att", tcols, mono=None, **common)
     eff = None
@@ -187,13 +210,16 @@ def tune(player_df: pd.DataFrame, test_season: int, toggles: frozenset[str]
 
     Trains the targets model on seasons < ``test_season - 1`` (weights
     relative to the validation season) and scores mean Poisson deviance on
-    labelled rows of season ``test_season - 1``. Ties keep the first grid
+    labelled rows of season ``test_season - 1`` -- flagged stub rows count
+    as 0 targets in both, as in ``fit_models``. Ties keep the first grid
     point. Raises ``ValueError`` if either slice is empty.
     """
     val_season = test_season - 1
     cols = feature_columns(player_df, toggles)
-    val = player_df[(player_df["season"] == val_season) & player_df["y_targets"].notna()]
-    n_train = int(((player_df["season"] < val_season) & player_df["y_targets"].notna()).sum())
+    y = _count_label(player_df, "y_targets", stubs_as_zero=True)
+    vmask = (player_df["season"] == val_season) & y.notna()
+    val, y_val = player_df[vmask], y[vmask]
+    n_train = int(((player_df["season"] < val_season) & y.notna()).sum())
     if val.empty or n_train == 0:
         raise ValueError(
             f"tune({test_season}): need labelled rows before {val_season} "
@@ -203,11 +229,10 @@ def tune(player_df: pd.DataFrame, test_season: int, toggles: frozenset[str]
         for max_iter in TUNE_MAX_ITERS:
             m = _fit_count(player_df, "y_targets", cols, upto=(val_season, 0),
                            test_season=val_season, decay=decay,
-                           max_iter=max_iter, mono=_TARGETS_MONO)
+                           max_iter=max_iter, mono=_TARGETS_MONO, stubs_as_zero=True)
             if m is None:
                 continue
-            dev = mean_poisson_deviance(val["y_targets"].to_numpy(dtype=float),
-                                        m.predict(val))
+            dev = mean_poisson_deviance(y_val.to_numpy(dtype=float), m.predict(val))
             if best is None or dev < best[0]:
                 best = (dev, decay, max_iter)
     if best is None:

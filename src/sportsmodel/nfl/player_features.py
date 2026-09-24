@@ -422,7 +422,8 @@ def build_feature_table(pg, tg, rz, ctx, ngs, injuries, depth, game_epa, stubs=N
     """One row per (player_id, season, week): every played row plus `stubs`
     (active-but-no-snap players the sim may still need; labels NaN). `ngs` is
     {"rec": df, "rush": df, "pass": df}. Returns KEYS, team, opponent,
-    position, y_* labels and p_/ngs_/tm_/op_/st_/cx_/mk_ features. Same-game
+    position, `is_stub` (bool: a stub row, never a feature), y_* labels and
+    p_/ngs_/tm_/op_/st_/cx_/mk_ features. Same-game
     box-score columns (snap_pct, target_share, ...) are never returned."""
     out = _ngs_rolls(_player_rolls(_player_base(pg, tg, rz, stubs)), ngs)
     team_tbl = build_team_table(tg, ctx, game_epa)
@@ -433,5 +434,6 @@ def build_feature_table(pg, tg, rz, ctx, ngs, injuries, depth, game_epa, stubs=N
     out = out.merge(_depth_rank(depth, pg), on=KEYS, how="left")
     labels = [c for c in pg.columns if c.startswith("y_")]
     feats = [c for c in out.columns if c.startswith(_FEATURE_PREFIXES)]
-    out = out[KEYS + ["team", "opponent", "position"] + labels + feats]
+    out["is_stub"] = out["_played"] == 0
+    out = out[KEYS + ["team", "opponent", "position", "is_stub"] + labels + feats]
     return out.sort_values(KEYS).reset_index(drop=True)

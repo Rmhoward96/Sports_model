@@ -21,6 +21,9 @@ def test_ladder_constants():
     assert tpm.LADDER == ("volume", "efficiency", "context", "market")
     assert tpm.PROD == dict(season_decay=0.4, questionable_weight=0.75,
                             home_field=0.07, ratings_weight=0.5)
+    # learned count models train on stubs as 0 and see st_questionable as a
+    # feature, so learned shares get no extra questionable down-weight
+    assert tpm.Q_WEIGHT == 1.0
 
 
 # ---- refit_block ----------------------------------------------------------------
@@ -138,7 +141,7 @@ def test_make_hook_uses_block_model_and_only_that_week_and_teams(monkeypatch):
     assert set(tr["team"]) == {"AAA", "BBB"}
     assert set(zip(tr["season"], tr["week"])) == {(2024, 3)}
     assert c["questionable"] == {"a1", "b1"}
-    assert c["q_weight"] == 0.75
+    assert c["q_weight"] == 1.0  # learned shares: no questionable down-weight on top (I2)
 
 
 def test_make_hook_picks_later_block(monkeypatch):

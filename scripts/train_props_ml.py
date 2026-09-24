@@ -80,7 +80,10 @@ REFIT_WEEKS = (1, 5, 9, 13, 17)
 WEEKLY_REFIT_WEEKS = tuple(range(1, 19))
 LADDER = ("volume", "efficiency", "context", "market")
 PROD = dict(season_decay=0.4, questionable_weight=0.75, home_field=0.07, ratings_weight=0.5)
-Q_WEIGHT = 0.75  # production questionable down-weight for learned shares
+# Questionable multiplier on LEARNED shares: 1.0 (none). The count models train
+# on the sim's population (stubs as 0) with st_questionable as a feature, so a
+# further down-weight would double-count. Baseline shares keep PROD's 0.75.
+Q_WEIGHT = 1.0
 TUNE_TOGGLES = frozenset({"volume"})
 FINAL_SEASON = 2025
 DEFAULT_N_SIMS = 1000

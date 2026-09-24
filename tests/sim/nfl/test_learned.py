@@ -327,3 +327,63 @@ def test_apply_floors_learned_ypr_and_ypc_at_half_a_yard(tbl, spec, eff_models):
                          questionable=set(), q_weight=0.75)
     assert {p.ypr for p in out2.home_players} == {11.0}
     assert {p.ypc for p in out2.home_players} == {4.2}
+
+
+# ---- I2: count models train on the sim's population (stubs as zero) ---------------
+
+def _spy_fit_y(monkeypatch):
+    calls = []
+    real_fit = HistGradientBoostingRegressor.fit
+
+    def spy(self, X, y, sample_weight=None):
+        calls.append({"n": len(X), "y": np.asarray(y, dtype=float), "loss": self.loss,
+                      "cols": list(X.columns)})
+        return real_fit(self, X, y, sample_weight=sample_weight)
+
+    monkeypatch.setattr(HistGradientBoostingRegressor, "fit", spy)
+    return calls
+
+
+def _with_stub_flag(p):
+    return p.assign(is_stub=p["y_targets"].isna())
+
+
+def test_count_models_train_in_window_stubs_as_zero_efficiency_does_not(tbl, monkeypatch):
+    p = _with_stub_flag(tbl.player)
+    calls = _spy_fit_y(monkeypatch)
+    fit_models(p, tbl.team, frozenset({"volume", "efficiency"}), upto=(2023, 5),
+               test_season=2023, decay=1.0, max_iter=10)
+    before = (p.season < 2023) | ((p.season == 2023) & (p.week < 5))
+    n_played, n_stub = int((before & ~p.is_stub).sum()), int((before & p.is_stub).sum())
+    assert n_stub > 0 and int((~before & p.is_stub).sum()) > 0     # stubs on both sides of upto
+    targets, carries = calls[0], calls[1]                            # fit order: targets, carries, team...
+    for c, label in ((targets, "y_targets"), (carries, "y_carries")):
+        assert c["loss"] == "poisson" and c["n"] == n_played + n_stub   # future stubs never train
+        want = np.sort(np.concatenate([p.loc[before & ~p.is_stub, label].to_numpy(), np.zeros(n_stub)]))
+        np.testing.assert_array_equal(np.sort(c["y"]), want)
+        assert "is_stub" not in c["cols"]
+    eff = [c for c in calls if c["loss"] == "squared_error"]
+    pb = p[before]
+    assert sorted(c["n"] for c in eff) == sorted([int((pb.y_receptions > 0).sum()),
+                                                   int((pb.y_targets > 0).sum()),
+                                                   int((pb.y_carries > 0).sum())])
+
+
+def test_feature_columns_never_include_the_stub_flag(tbl):
+    p = _with_stub_flag(tbl.player)
+    assert "is_stub" not in feature_columns(p, frozenset({"volume", "context", "market"}))
+
+
+def test_tune_trains_and_validates_on_the_sim_population(tbl, monkeypatch):
+    """With the flag, tune's targets fits and its validation slice both treat
+    stub rows as 0-target rows (the population the model is applied to)."""
+    p = _with_stub_flag(tbl.player)
+    calls = _spy_fit_y(monkeypatch)
+    scored = []
+    import sportsmodel.sim.nfl.learned as L
+    real_dev = L.mean_poisson_deviance
+    monkeypatch.setattr(L, "mean_poisson_deviance",
+                        lambda y, pred: scored.append(len(y)) or real_dev(y, pred))
+    tune(p, 2024, VOL)
+    assert all(c["n"] == int((p.season < 2023).sum()) for c in calls)
+    assert set(scored) == {int((p.season == 2023).sum())}
