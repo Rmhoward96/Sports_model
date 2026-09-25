@@ -1,0 +1,198 @@
+{
+  "run_date": "2026-09-25",
+  "seasons": [
+    2025
+  ],
+  "n_sims": 1000,
+  "refit_schedule": "weekly",
+  "refit_weeks": [
+    1,
+    2,
+    3,
+    4,
+    5,
+    6,
+    7,
+    8,
+    9,
+    10,
+    11,
+    12,
+    13,
+    14,
+    15,
+    16,
+    17,
+    18
+  ],
+  "run_tag": "s2025__weekly",
+  "learned_q_weight": 1.0,
+  "alignment": "per-game seeded random streams (game-level alignment across runs)",
+  "identity": {
+    "player_features": {
+      "size": 25767614,
+      "sha256": "6ba250c35b6006c07dacdf306a8b130eb61b4f14288ebfde9c5b4c963fd86857"
+    },
+    "team_features": {
+      "size": 1216370,
+      "sha256": "5b7afd3a670b3c858cd491804dc1be52193109e643ea32a3a4447a2173d6f703"
+    },
+    "git_head": "a52e8390b06e095aea542f23dd6e90b6a479aa24",
+    "prod": {
+      "season_decay": 0.4,
+      "questionable_weight": 0.75,
+      "home_field": 0.07,
+      "ratings_weight": 0.5
+    },
+    "seed": 42,
+    "backtest_sources": {
+      "depth": {
+        "rows": 76338,
+        "hash": "5dd08139aef6d24615b359ba8be5e007f9f19221778dd15256ded67258410f7a"
+      },
+      "injuries": {
+        "rows": 12283,
+        "hash": "87acf3d086c4ea2c5483e76dc03644d2f7de478a3f8111d28fc99b60dc258f26"
+      },
+      "pbp": {
+        "rows": 98263,
+        "hash": "ab904a5bbf463a8a4f1dc2fb9d0348fc4765cfb89894ae8d770ca676470e0649"
+      },
+      "pfr2gsis": {
+        "rows": 7821,
+        "hash": "2b9b92822af4257e17cb16b3e3410d4f8365fd5ad6eea82f82f43e9c41344196"
+      },
+      "schedules": {
+        "rows": 570,
+        "hash": "699c5b6982e8f6c62e149f591c20fca10cf4f6f72476412ef519fae19efa2889"
+      },
+      "snaps": {
+        "rows": 53228,
+        "hash": "075556276242dee2f0ba907eefcf9a98ca48fab2af66c733c9d74623fe453de0"
+      },
+      "weekly": {
+        "rows": 38405,
+        "hash": "dc5491700976ce4505cd2f958c4a98780cf80a831d6d07993b9678d473ef7d07"
+      }
+    }
+  },
+  "tuned": {
+    "2025": [
+      0.8,
+      300
+    ]
+  },
+  "n_games_baseline": 272,
+  "mode": "fixed",
+  "toggles": [
+    "volume",
+    "efficiency",
+    "context",
+    "market"
+  ],
+  "decision": {
+    "skill": 0.03638657168910697,
+    "lo": 0.019901463276761826,
+    "hi": 0.0536492461885298,
+    "per_market": {
+      "pass_yds": {
+        "n": 531,
+        "rps_b": 44.07315415442559,
+        "rps_c": 43.541678322033874,
+        "ece_b": 0.03935969868173257,
+        "ece_c": 0.03822975517890772
+      },
+      "rec_yds": {
+        "n": 1585,
+        "rps_b": 18.14264473438486,
+        "rps_c": 17.2211841747634,
+        "ece_b": 0.019495268138801265,
+        "ece_c": 0.02044164037854889
+      },
+      "receptions": {
+        "n": 1433,
+        "rps_b": 1.299335206559665,
+        "rps_c": 1.2332809330076762,
+        "ece_b": 0.01761339846475925,
+        "ece_c": 0.014082344731332866
+      },
+      "rush_yds": {
+        "n": 760,
+        "rps_b": 19.118225414473688,
+        "rps_c": 18.509107210526317,
+        "ece_b": 0.017894736842105262,
+        "ece_c": 0.012105263157894737
+      }
+    },
+    "pass": true,
+    "reasons": []
+  },
+  "baseline_ece": {
+    "pass": true,
+    "reasons": [],
+    "per_market": {
+      "pass_yds": {
+        "n": 531,
+        "ece_base": 0.03935969868173257,
+        "ece_cand": 0.03822975517890772
+      },
+      "rec_yds": {
+        "n": 1585,
+        "ece_base": 0.019495268138801265,
+        "ece_cand": 0.02044164037854889
+      },
+      "receptions": {
+        "n": 1433,
+        "ece_base": 0.01761339846475925,
+        "ece_cand": 0.014082344731332866
+      },
+      "rush_yds": {
+        "n": 760,
+        "ece_base": 0.017894736842105262,
+        "ece_cand": 0.012105263157894737
+      }
+    }
+  },
+  "season_2025": {
+    "skill": 0.03638657168910697,
+    "lo": 0.019901463276761826,
+    "hi": 0.0536492461885298,
+    "per_market": {
+      "pass_yds": {
+        "n": 531,
+        "rps_b": 44.07315415442559,
+        "rps_c": 43.541678322033874,
+        "ece_b": 0.03935969868173257,
+        "ece_c": 0.03822975517890772
+      },
+      "rec_yds": {
+        "n": 1585,
+        "rps_b": 18.14264473438486,
+        "rps_c": 17.2211841747634,
+        "ece_b": 0.019495268138801265,
+        "ece_c": 0.02044164037854889
+      },
+      "receptions": {
+        "n": 1433,
+        "rps_b": 1.299335206559665,
+        "rps_c": 1.2332809330076762,
+        "ece_b": 0.01761339846475925,
+        "ece_c": 0.014082344731332866
+      },
+      "rush_yds": {
+        "n": 760,
+        "rps_b": 19.118225414473688,
+        "rps_c": 18.509107210526317,
+        "ece_b": 0.017894736842105262,
+        "ece_c": 0.012105263157894737
+      }
+    },
+    "pass": true,
+    "reasons": []
+  },
+  "pass": true,
+  "n_records": 23276,
+  "n_games": 272,
+  "share_fallbacks": 0,
+  "elapsed_s": 2818.1828541755676
+}
