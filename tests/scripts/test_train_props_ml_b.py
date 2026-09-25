@@ -73,8 +73,9 @@ def test_pipeline_config_shape():
     cfg = tpb.pipeline_config(frozenset({"volume", "market", "efficiency", "context"}),
                               {2025: (0.8, 300), 2024: (1.0, 150)},
                               {m: ("baseline" if m == "pass_tds" else "ml") for m in MARKETS},
-                              {m: 0.7 for m in MARKETS}, True)
-    assert set(cfg) == {"kept_a_toggles", "tuned", "markets"}
+                              {m: 0.7 for m in MARKETS}, True, (2025, 18))
+    assert set(cfg) == {"kept_a_toggles", "tuned", "markets", "data_end"}
+    assert cfg["data_end"] == [2025, 18]
     assert cfg["kept_a_toggles"] == ["volume", "efficiency", "context", "market"]
     assert cfg["tuned"] == {"2024": [1.0, 150], "2025": [0.8, 300]}
     assert set(cfg["markets"]) == set(MARKETS)
@@ -86,11 +87,13 @@ def test_output_paths_default_and_tagged(tmp_path):
     kw = dict(gate_path=tmp_path / "b_gate.json", pipeline_path=tmp_path / "pipeline.json",
               report_dir=tmp_path / "r")
     assert tpb.output_paths("s2021-2025__every4", "2026-09-25", **kw) == (
-        tmp_path / "b_gate.json", tmp_path / "pipeline.json",
+        tmp_path / "b_gate.json", tmp_path / "pipeline.json", tmp_path / "calibration.json",
         tmp_path / "r" / "2026-09-25-props-ml-b-gate.md")
     assert tpb.output_paths("s2025__every4", "2026-09-25", **kw) == (
         tmp_path / "b_gate__s2025__every4.json", tmp_path / "pipeline__s2025__every4.json",
+        tmp_path / "calibration__s2025__every4.json",
         tmp_path / "r" / "2026-09-25-props-ml-b-gate__s2025__every4.md")
+    assert tpb.CALIBRATION_PATH == tpb.PIPELINE_PATH.with_name("calibration.json")
 
 
 # ---- pure: apply_pipeline ---------------------------------------------------------------
@@ -227,6 +230,73 @@ def test_fit_calibration_uses_pre_calibration_pits_and_p():
     assert np.asarray(knots).shape == (2, 201)
     ab = tpb.fit_calibration([r for r in rows if r["market"] == "anytime_td"], "anytime_td")
     assert len(ab) == 2
+
+
+def _pre_rows(seasons=(2024, 2025), weeks=(1, 2, 3, 4), n=3, seed=0):
+    """apply_pipeline-shaped OOF rows (pmf_b None = B missing)."""
+    rng = np.random.default_rng(seed)
+    rows = []
+    for s in seasons:
+        for w in weeks:
+            for m in MARKETS:
+                k = 2 if m == "anytime_td" else KMAX + 1
+                for i in range(n):
+                    a, b = rng.dirichlet(np.ones(k)), rng.dirichlet(np.ones(k))
+                    rows.append({"season": s, "week": w, "home": "KC", "player_id": f"p{i}",
+                                 "market": m, "w": 1.0, "pit_pre": 0.5, "p_pre": 0.5,
+                                 "actual": float(rng.integers(0, k)), "pmf_a": a,
+                                 "pmf_b": None if i == 2 else b})
+    return rows
+
+
+def _markets_cfg(w=1.0, calibrate=True):
+    return {m: {"source": "ml", "w_final": w, "calibrate": calibrate} for m in MARKETS}
+
+
+def test_final_calibration_refits_every_oof_row_at_w_final(monkeypatch):
+    rows = _pre_rows()
+    seen = {}
+
+    def spy(rs, market):
+        seen[market] = list(rs)
+        return (0.9, 0.1) if market == "anytime_td" else np.vstack([np.linspace(0, 1, 3)] * 2)
+
+    monkeypatch.setattr(tpb, "fit_calibration", spy)
+    cal = tpb.final_calibration(rows, _markets_cfg(w=0.0))  # w_final 0 -> pre pmf = B
+    assert set(cal) == set(MARKETS)
+    assert cal["anytime_td"] == {"calibrate": True, "kind": "platt", "map": [0.9, 0.1], "n": 24}
+    assert cal["rec_yds"]["kind"] == "pit" and cal["rec_yds"]["n"] == 24
+    assert cal["rec_yds"]["map"] == np.vstack([np.linspace(0, 1, 3)] * 2).tolist()
+    by_key = {(r["season"], r["week"], r["player_id"]): r for r in rows if r["market"] == "rec_yds"}
+    assert len(seen["rec_yds"]) == 24
+    for r in seen["rec_yds"]:
+        o = by_key[(r["season"], r["week"], r["player_id"])]
+        pmf = o["pmf_a"] if o["pmf_b"] is None else o["pmf_b"]   # stored pit_pre (0.5) ignored
+        want = pit_pmf(pmf, o["actual"], pit_uniform(o["season"], o["week"], o["player_id"],
+                                                     "rec_yds"))
+        assert r["pit_pre"] == pytest.approx(want, abs=1e-9)
+
+
+def test_final_calibration_identity_when_not_calibrating_and_guards():
+    off = tpb.final_calibration(_pre_rows(), _markets_cfg(calibrate=False))
+    assert off["anytime_td"] == {"calibrate": False, "kind": "platt",
+                                 "map": list(IDENTITY_PLATT), "n": 0}
+    assert off["rush_att"]["map"] == IDENTITY_KNOTS.tolist()
+    few = tpb.final_calibration(_pre_rows(n=1), _markets_cfg())   # < 300 PITs / < 100 per class
+    assert few["anytime_td"]["map"] == list(IDENTITY_PLATT) and few["anytime_td"]["n"] == 8
+    assert few["rush_att"]["map"] == IDENTITY_KNOTS.tolist()
+
+
+def test_final_weights_skip_rows_without_b(monkeypatch):
+    seen = []
+    monkeypatch.setattr(tpb, "choose_weight", lambda rs, m: seen.append(list(rs)) or 0.6)
+    w = tpb.final_weights(_pre_rows(), MARKETS, blend_kept=True)
+    assert w == {m: 0.6 for m in MARKETS}
+    assert all(r["pmf_b"] is not None for rs in seen for r in rs)
+    assert all(len(rs) == 16 for rs in seen)          # 2 of 3 players have B, 8 weeks
+    assert tpb.final_weights(_pre_rows(), MARKETS, blend_kept=False) == {m: 1.0 for m in MARKETS}
+    none_b = [{**r, "pmf_b": None} for r in _pre_rows()]
+    assert tpb.final_weights(none_b, MARKETS, blend_kept=True) == {m: 1.0 for m in MARKETS}
 
 
 # ---- run_b_ladder with a stubbed backtest ---------------------------------------------------
@@ -390,7 +460,11 @@ def test_ladder_failing_blend_keeps_pipeline_at_a(tmp_path, monkeypatch):
     assert gate["blend"]["pass"] is False
     assert "blend" not in gate["kept_rungs"]
     pipe = json.loads((tmp_path / "pipeline__s2021-2022__every4.json").read_text())
-    assert set(pipe) == {"kept_a_toggles", "tuned", "markets"}
+    assert set(pipe) == {"kept_a_toggles", "tuned", "markets", "data_end"}
+    assert pipe["data_end"] == [2022, WEEKS]
+    cal = json.loads((tmp_path / "calibration__s2021-2022__every4.json").read_text())
+    assert cal["data_end"] == [2022, WEEKS] and set(cal["markets"]) == set(MARKETS)
+    assert all(v["calibrate"] is False and v["n"] == 0 for v in cal["markets"].values())
     assert pipe["kept_a_toggles"] == ["volume", "efficiency", "context", "market"]
     assert pipe["tuned"] == {"2021": [1.0, 300], "2022": [1.0, 150]}
     assert set(pipe["markets"]) == set(MARKETS)
@@ -485,6 +559,11 @@ def test_passing_blend_is_kept_and_feeds_calibration_and_w_final(tmp_path, monke
     assert {r["w"] for r in cal_rows if r["season"] == 2022} != {1.0}
     pipe = json.loads((tmp_path / "pipeline__s2021-2022__every4.json").read_text())
     assert any(v["w_final"] < 1.0 for v in pipe["markets"].values())
+    cal = json.loads((tmp_path / "calibration__s2021-2022__every4.json").read_text())
+    assert cal["data_end"] == pipe["data_end"] == [2022, WEEKS]
+    for m, v in cal["markets"].items():   # calibrate follows the calibration rung
+        assert v["calibrate"] is pipe["markets"][m]["calibrate"]
+        assert v["n"] == (2 * WEEKS * GAMES * PLAYERS if v["calibrate"] else 0)
     # an out-of-role population record's blended pmf is its A pmf (B := A)
     out = [r for r in cal_rows if r["season"] == 2022 and r["market"] == "rec_yds"
            and r["player_id"].endswith("p0")]
@@ -521,3 +600,22 @@ def test_missing_guard_is_per_market_and_counts_only_in_role(tmp_path, monkeypat
     keep2 = keep & ~((ptbl.player_id == "H1p1") & (ptbl.season == 2022) & (ptbl.week == 6))
     with pytest.raises(RuntimeError, match=r"B feature rows missing.*rec_yds"):
         _run(tmp_path / "b", _FakeBsn(), seasons=seasons, player_tbl=ptbl[keep2])
+
+
+def test_kept_blend_with_a_missing_b_row_chooses_w_final_without_it(tmp_path, monkeypatch):
+    _stub_b(monkeypatch, "good")
+    real_step = tpb.rung_step
+
+    def forced(name, *a, **k):
+        step = real_step(name, *a, **k)
+        if name == "blend":
+            step["pass"] = True
+        return step
+
+    monkeypatch.setattr(tpb, "rung_step", forced)
+    seasons = (2021, 2022, 2023)
+    ptbl = _ptbl(seasons)
+    keep = ~((ptbl.player_id == "H0p1") & (ptbl.season == 2022) & (ptbl.week == 6))
+    gate = _run(tmp_path, _FakeBsn(), seasons=seasons, player_tbl=ptbl[keep])
+    assert gate["b_oof"]["missing"]["rec_yds"] == 1 and "blend" in gate["kept_rungs"]
+    assert any(v["w_final"] < 1.0 for v in gate["pipeline"]["markets"].values())

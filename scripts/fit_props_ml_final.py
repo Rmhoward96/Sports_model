@@ -1,27 +1,28 @@
 """Final fit, model artifacts and the weekly quick gate for props-ML (spec §4-§5).
 
+Inputs: the COMMITTED ``assets/nfl/props_ml/pipeline.json`` and
+``calibration.json`` (both written by ``train_props_ml_b.py``: per-market
+source / ``w_final`` / calibrate, the serving calibration maps fit on the
+ladder's OOF rows, and ``data_end`` = the last OOF (season, week)), plus
+``a_gate.json`` and the feature tables. No OOF records are read here.
+
 Final fit (default, ``--holdout-weeks 0``)
 -----------------------------------------
-Fits the gated pipeline (``assets/nfl/props_ml/pipeline.json``, written by
-``train_props_ml_b.py``) on every completed game in the feature table and
-writes ``data/props_ml/models/``:
+Fits the gated pipeline on every completed game in the feature table and
+writes ``data/props_ml/models/`` atomically (temp dir, then swap):
 
 * ``learned.joblib`` -- A (``learned.fit_models``) with the kept toggles and
   the MOST RECENT test season's tuned ``(decay, max_iter)`` from
   ``a_gate.json``;
 * ``b_<market>.joblib`` -- B (``dist_models.fit_market``, unweighted,
-  ``max_iter`` 150, in-role rows only) for every market served from ML
-  (``source == "ml"``);
-* ``calibration.json`` -- per market ``{calibrate, kind, map, n}``: for markets
-  with ``calibrate`` the PIT map (Platt for anytime_td) fit on ALL OOF records
-  (``data/props_ml/oof_b7__<tag>.parquet``) whose pre-calibration values are
-  RECOMPUTED at the market's ``w_final`` via ``apply_pipeline`` (the stored
-  values are at the per-season OOF weights); identity otherwise;
+  ``max_iter`` 150, in-role rows only) for every market that READS B:
+  ``source == "ml"`` and ``w_final < 1`` (``b_markets``);
+* ``calibration.json`` -- the committed serving maps, copied;
 * ``props_ml_config.json`` -- ``pipeline.json`` + ``trained_through``,
   ``fit_upto``, ``git``, ``features`` (player/team fingerprints),
-  ``created_at``, ``a_fit``, ``b_fit``, ``q_weight``, ``role_subsets``,
-  ``market_max``, ``feature_columns`` and ``artifact_files`` -- everything
-  serving needs without importing the training scripts. Written LAST.
+  ``created_at``, ``a_fit``, ``b_fit``, ``b_markets``, ``q_weight``,
+  ``role_subsets``, ``market_max``, ``feature_columns`` and ``artifact_files``
+  -- everything serving needs without importing the training scripts.
 
 ``trained_through`` = the last (season, week) with a played label in the player
 table; every model trains on rows strictly before ``trained_through + 1 week``
@@ -29,16 +30,17 @@ table; every model trains on rows strictly before ``trained_through + 1 week``
 
 Quick gate (``--holdout-weeks N``; plan ruling 9)
 ------------------------------------------------
-Holdout = the last N completed (season, week)s. A, B and the calibration maps
-(and, where the blend is active, the blend weights) are fit ONLY on data
-strictly before the first holdout week. The baseline (current sim) and the
-pipeline (A via ``spec_hook`` + offline B / blend / calibration via
-``apply_pipeline``, per-market sources from pipeline.json) are run on the
-holdout weeks alone (``run_backtest`` with the schedules filtered to them,
-``record_pmf``). Pass iff the pooled relative-RPS skill point estimate >= 0 AND
-no market's RPS > 1.05 x the baseline's AND the coverage / share-fallback /
-B-feature checks pass. ``quick_gate.json`` is written either way; exit 1 with
-the reasons on failure. No model artifact is written in this mode.
+Holdout = the last N completed (season, week)s STRICTLY AFTER pipeline.json's
+``data_end`` (the blend weights and calibration maps saw every OOF week up to
+it); none left -> the gate fails. A and B are fit only on data strictly before
+the first holdout week. The baseline (current sim) and the pipeline (A via
+``spec_hook`` + offline B / blend / calibration via ``apply_pipeline``, the
+per-market sources) run on the holdout weeks alone (``run_backtest`` with the
+schedules filtered to them, ``record_pmf``). Pass iff the pooled relative-RPS
+skill point estimate >= 0 AND no market's RPS > 1.05 x the baseline's AND the
+coverage / share-fallback / B-feature checks pass. ``quick_gate.json`` is
+removed at entry and written on EVERY exit path (an exception writes a failing
+record, then re-raises); exit 1 on failure. No model artifact is written.
 
 Pure parts are unit tested (tests/scripts/test_fit_props_ml_final.py);
 ``main`` / ``_load_inputs`` (file IO) are not.
@@ -48,7 +50,9 @@ from __future__ import annotations
 import argparse
 import importlib.util
 import json
+import shutil
 import sys
+import tempfile
 import time
 from datetime import datetime, timezone
 from pathlib import Path
@@ -62,7 +66,7 @@ import numpy as np  # noqa: E402
 import pandas as pd  # noqa: E402
 
 from sportsmodel.model.props_eval import population_from_baseline, rung_decision  # noqa: E402
-from sportsmodel.model.props_ml.blend import BINARY_MARKET, choose_weight  # noqa: E402
+from sportsmodel.model.props_ml.blend import BINARY_MARKET  # noqa: E402
 from sportsmodel.model.props_ml.dist_models import (  # noqa: E402
     ROLE_SUBSETS,
     fit_market,
@@ -84,7 +88,6 @@ tpb = _load_script("train_props_ml_b")
 tpm = tpb.tpm
 
 MODEL_DIR = tpm.DATA_DIR / "models"
-OOF_PATH = tpm.DATA_DIR / f"oof_b7__{tpm.DEFAULT_TAG}.parquet"
 CONFIG_FILE = "props_ml_config.json"
 LEARNED_FILE = "learned.joblib"
 CALIB_FILE = "calibration.json"
@@ -96,11 +99,6 @@ KEY = ["season", "week", "player_id"]
 
 
 # ---- pure helpers: weeks / config inputs --------------------------------------------------
-
-def _before(df: pd.DataFrame, upto: tuple[int, int]) -> pd.Series:
-    s, w = upto
-    return (df["season"] < s) | ((df["season"] == s) & (df["week"] < w))
-
 
 def labelled_weeks(player_tbl: pd.DataFrame) -> list[tuple[int, int]]:
     """Sorted (season, week)s with at least one played row: not a stub and
@@ -126,16 +124,35 @@ def next_week(sw: tuple[int, int]) -> tuple[int, int]:
     return (int(sw[0]), int(sw[1]) + 1)
 
 
-def holdout_weeks(player_tbl: pd.DataFrame, n: int) -> list[tuple[int, int]]:
-    """The last ``n`` completed (season, week)s; at least one earlier
-    completed week must remain to train on."""
-    weeks = labelled_weeks(player_tbl)
+def holdout_weeks(player_tbl: pd.DataFrame, n: int, after: tuple[int, int]
+                  ) -> list[tuple[int, int]]:
+    """The last ``n`` completed (season, week)s STRICTLY AFTER ``after``
+    (fewer if fewer remain; [] if none). ValueError for ``n < 1`` or when no
+    completed week precedes the holdout (nothing to train on)."""
     if n < 1:
         raise ValueError(f"holdout needs n >= 1 weeks, got {n}")
-    if len(weeks) <= n:
-        raise ValueError(f"only {len(weeks)} completed weeks: nothing left to train on "
-                         f"before a {n}-week holdout")
-    return weeks[-n:]
+    weeks = labelled_weeks(player_tbl)
+    out = [w for w in weeks if w > tuple(after)][-n:]
+    if out and not any(w < out[0] for w in weeks):
+        raise ValueError(f"no completed week before the holdout {out}: nothing to train on")
+    return out
+
+
+def pipeline_data_end(pipeline: Mapping) -> tuple[int, int]:
+    if "data_end" not in pipeline:
+        raise ValueError("pipeline.json has no data_end: re-run train_props_ml_b.py")
+    return (int(pipeline["data_end"][0]), int(pipeline["data_end"][1]))
+
+
+def check_calibration(pipeline: Mapping, calibration: Mapping) -> None:
+    """ValueError unless calibration.json matches pipeline.json (same
+    ``data_end``, markets and calibrate flags) -- both come from one ladder run."""
+    got = {m: v["calibrate"] for m, v in calibration["markets"].items()}
+    want = {m: v["calibrate"] for m, v in pipeline["markets"].items()}
+    if list(calibration.get("data_end", [])) != list(pipeline_data_end(pipeline)) or got != want:
+        raise ValueError(f"calibration.json (data_end {calibration.get('data_end')}, calibrate "
+                         f"{got}) does not match pipeline.json (data_end {pipeline['data_end']}, "
+                         f"calibrate {want}): re-run train_props_ml_b.py")
 
 
 def a_fit_params(a_gate: Mapping) -> dict:
@@ -157,9 +174,10 @@ def kept_toggles(pipeline: Mapping, a_gate: Mapping) -> frozenset[str]:
     return kept
 
 
-def ml_markets(pipeline: Mapping) -> list[str]:
-    """Markets served from ML (``source == "ml"``), in pipeline order."""
-    return [m for m, v in pipeline["markets"].items() if v["source"] == "ml"]
+def b_markets(pipeline: Mapping) -> list[str]:
+    """Markets whose served pmf READS B: ``source == "ml"`` and ``w_final < 1``."""
+    return [m for m, v in pipeline["markets"].items()
+            if v["source"] == "ml" and float(v["w_final"]) < 1.0]
 
 
 def role_columns(player_tbl: pd.DataFrame, markets) -> list[str]:
@@ -184,88 +202,14 @@ def holdout_sources(sources: Mapping, weeks) -> dict:
     return {**sources, "schedules": sch[keep]}
 
 
-# ---- pure helpers: OOF -> weights / calibration maps ---------------------------------------
-
-def _has(x) -> bool:
-    return x is not None and not (isinstance(x, float) and np.isnan(x))
-
-
-def _oof_inputs(oof: pd.DataFrame, market: str, before=None, in_role_only: bool = False
-                ) -> tuple[list[dict], dict]:
-    """(``apply_pipeline`` records with pmf = pmf_a, ``rec_key -> pmf_b``) of
-    one market's OOF rows (optionally strictly before ``before`` / in role)."""
-    g = oof[oof["market"] == market]
-    if before is not None:
-        g = g[_before(g, before)]
-    if in_role_only:
-        g = g[g["in_role"].astype(bool)]
-    recs, b = [], {}
-    for r in g.to_dict("records"):
-        rec = {"season": int(r["season"]), "week": int(r["week"]), "home": r["home"],
-               "player_id": str(r["player_id"]), "market": market,
-               "pmf": np.asarray(r["pmf_a"], dtype=float), "actual": float(r["actual"])}
-        recs.append(rec)
-        if _has(r["pmf_b"]):
-            b[tpb.rec_key(rec)] = np.asarray(r["pmf_b"], dtype=float)
-    return recs, b
-
-
-def serving_weights(markets: Mapping, oof: pd.DataFrame | None, before=None) -> dict[str, float]:
-    """Weight on A per market. Final fit (``before`` None): pipeline.json's
-    ``w_final``. Quick gate: a market whose blend is active (``w_final`` < 1)
-    re-chooses its weight on in-role OOF rows with a B pmf strictly before
-    ``before`` (none -> 1.0, pure A), so nothing is chosen on the holdout."""
-    out = {}
-    for m, v in markets.items():
-        w = float(v["w_final"])
-        if before is None or w >= 1.0:
-            out[m] = w
-            continue
-        if oof is None:
-            raise ValueError(f"{m}: the blend is active but no OOF records were given")
-        recs, b = _oof_inputs(oof, m, before, in_role_only=True)
-        rows = [{"pmf_a": r["pmf"], "pmf_b": b[tpb.rec_key(r)], "actual": r["actual"]}
-                for r in recs if tpb.rec_key(r) in b]
-        out[m] = float(choose_weight(rows, m)) if rows else 1.0
-    return out
-
-
-def _map_json(c, market: str):
-    if market == BINARY_MARKET:
-        return [float(c[0]), float(c[1])]
-    return np.asarray(c, dtype=float).tolist()
-
-
-def calibration_maps(markets: Mapping, oof: pd.DataFrame | None, weights: Mapping[str, float],
-                     before=None) -> dict[str, dict]:
-    """``{m: {calibrate, kind, map, n}}``. A calibrated market's map is fit
-    (``train_props_ml_b.fit_calibration``; guards -> identity) on its OOF rows
-    (strictly before ``before`` when given) after recomputing each row's
-    pre-calibration pmf at ``weights[m]`` via ``apply_pipeline``; others get
-    the identity map with n 0."""
-    out = {}
-    for m, v in markets.items():
-        kind = "platt" if m == BINARY_MARKET else "pit"
-        if not v["calibrate"]:
-            out[m] = {"calibrate": False, "kind": kind,
-                      "map": _map_json(tpb.identity_calibration(m), m), "n": 0}
-            continue
-        if oof is None:
-            raise ValueError(f"{m}: calibrate is on but no OOF records were given "
-                             f"(expected {OOF_PATH.name} from train_props_ml_b.py)")
-        recs, b = _oof_inputs(oof, m, before)
-        pre = tpb.apply_pipeline(recs, b, {m: float(weights[m])}) if recs else []
-        c = tpb.fit_calibration(pre, m) if pre else tpb.identity_calibration(m)
-        out[m] = {"calibrate": True, "kind": kind, "map": _map_json(c, m), "n": len(pre)}
-    return out
-
-
 def calib_for_apply(calibration: Mapping) -> dict | None:
-    """``apply_pipeline``'s ``calib`` (None when no market calibrates)."""
-    if not any(v["calibrate"] for v in calibration.values()):
+    """``apply_pipeline``'s ``calib`` from calibration.json (None when no
+    market calibrates)."""
+    ms = calibration["markets"]
+    if not any(v["calibrate"] for v in ms.values()):
         return None
     return {m: (tuple(v["map"]) if v["kind"] == "platt" else np.asarray(v["map"], dtype=float))
-            for m, v in calibration.items()}
+            for m, v in ms.items()}
 
 
 # ---- pure helpers: B fit / predict ----------------------------------------------------------
@@ -334,6 +278,10 @@ def _learned_columns(lm) -> dict:
                        "eff": ({n: cols(m) for n, m in lm.eff.items()} if lm.eff else None)}}
 
 
+def _jsonable(x):
+    return json.loads(json.dumps(tpm.to_jsonable(x)))
+
+
 def build_config(pipeline: Mapping, *, learned_models, b_models: Mapping, a_fit: Mapping,
                  trained_through: tuple[int, int], market_max: Mapping, role_cols: list[str],
                  identity: Mapping, created_at: str) -> dict:
@@ -346,7 +294,7 @@ def build_config(pipeline: Mapping, *, learned_models, b_models: Mapping, a_fit:
                          "team": identity.get("team_features")},
             "created_at": created_at, "a_fit": dict(a_fit),
             "b_fit": {"decay": tpb.B_DECAY, "max_iter": tpb.B_MAX_ITER},
-            "q_weight": tpm.Q_WEIGHT, "role_subsets": ROLE_SUBSETS,
+            "b_markets": list(b_models), "q_weight": tpm.Q_WEIGHT, "role_subsets": ROLE_SUBSETS,
             "market_max": {**{m: int(k) for m, k in market_max.items()}, BINARY_MARKET: 1},
             "feature_columns": {"learned": _learned_columns(learned_models),
                                 "b": {m: list(model.cols) for m, model in b_models.items()},
@@ -356,11 +304,11 @@ def build_config(pipeline: Mapping, *, learned_models, b_models: Mapping, a_fit:
 
 
 def required_columns(config: Mapping) -> dict[str, list[str]]:
-    """``{"player": [...], "team": [...]}``: every column the saved models read
-    (fitted columns, role columns, join keys)."""
+    """``{"player": [...], "team": [...]}``: every column the saved models and
+    the A hook read (fitted columns, role columns, ``st_questionable``, keys)."""
     fc = config["feature_columns"]
-    player = {"season", "week", "player_id", "team", *fc["role"]}
-    team = {"season", "week", "team"}
+    player = {"season", "week", "player_id", "team", "opponent", "st_questionable", *fc["role"]}
+    team = {"season", "week", "team", "opponent"}
     lf = fc["learned"]["fitted"]
     for n in ("targets", "carries"):
         player |= set(lf[n] or [])
@@ -393,34 +341,65 @@ class Artifacts(NamedTuple):
     calibration: dict
 
 
+def _is_artifact(name: str) -> bool:
+    return name in (CONFIG_FILE, LEARNED_FILE, CALIB_FILE) or (
+        name.startswith("b_") and name.endswith(".joblib"))
+
+
 def save_artifacts(out_dir: Path, learned_models, b_models: Mapping, calibration: Mapping,
                    config: Mapping) -> None:
-    """Write the model files; stale artifacts (config first) are removed so a
-    crash never leaves a config pointing at old models; config is written last.
-    Other files (``quick_gate.json``) are kept."""
+    """Write the model files into a temp dir next to ``out_dir``, carry over
+    its non-artifact files (``quick_gate.json``), then swap the directories:
+    a failure while writing leaves the previous artifacts in place, and stale
+    ``b_*.joblib`` never survive."""
     out = Path(out_dir)
-    out.mkdir(parents=True, exist_ok=True)
-    for p in [out / CONFIG_FILE, out / LEARNED_FILE, out / CALIB_FILE, *out.glob("b_*.joblib")]:
-        p.unlink(missing_ok=True)
-    joblib.dump(learned_models, out / LEARNED_FILE)
-    for m, model in b_models.items():
-        joblib.dump(model, out / f"b_{m}.joblib")
-    (out / CALIB_FILE).write_text(tpm.gate_json(dict(calibration)))
-    (out / CONFIG_FILE).write_text(tpm.gate_json(dict(config)))
+    out.parent.mkdir(parents=True, exist_ok=True)
+    tmp = Path(tempfile.mkdtemp(prefix=f".{out.name}.new-", dir=out.parent))
+    old = out.with_name(f".{out.name}.old")
+    try:
+        joblib.dump(learned_models, tmp / LEARNED_FILE)
+        for m, model in b_models.items():
+            joblib.dump(model, tmp / f"b_{m}.joblib")
+        (tmp / CALIB_FILE).write_text(tpm.gate_json(dict(calibration)))
+        (tmp / CONFIG_FILE).write_text(tpm.gate_json(dict(config)))
+        if out.exists():
+            for p in out.iterdir():
+                if p.is_file() and not _is_artifact(p.name):
+                    shutil.copy2(p, tmp / p.name)
+            shutil.rmtree(old, ignore_errors=True)
+            out.rename(old)
+            try:
+                tmp.rename(out)
+            except BaseException:
+                old.rename(out)
+                raise
+            shutil.rmtree(old, ignore_errors=True)
+        else:
+            tmp.rename(out)
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
 
 
 def load_artifacts(out_dir: Path, player_tbl: pd.DataFrame | None = None,
                    team_tbl: pd.DataFrame | None = None) -> Artifacts:
-    """Load what ``save_artifacts`` wrote; with tables, verify the config's
-    feature columns exist in them (``verify_feature_columns``)."""
+    """Load what ``save_artifacts`` wrote. ValueError on a format mismatch, a
+    config ``role_subsets`` differing from ``dist_models.ROLE_SUBSETS``, a B
+    model set differing from the markets that read B, or (with tables) a
+    required feature column missing (``verify_feature_columns``)."""
     out = Path(out_dir)
     config = json.loads((out / CONFIG_FILE).read_text())
     if config.get("format_version") != FORMAT_VERSION:
         raise ValueError(f"props_ml_config.json format_version {config.get('format_version')} "
                          f"!= {FORMAT_VERSION}")
+    if config.get("role_subsets") != _jsonable(ROLE_SUBSETS):
+        raise ValueError("props_ml_config.json role_subsets differ from dist_models.ROLE_SUBSETS: "
+                         "refit the models")
+    files = config["artifact_files"]
+    if set(files["b"]) != set(b_markets(config)):
+        raise ValueError(f"B models {sorted(files['b'])} != markets reading B "
+                         f"{sorted(b_markets(config))}")
     if player_tbl is not None or team_tbl is not None:
         verify_feature_columns(config, player_tbl, team_tbl)
-    files = config["artifact_files"]
     return Artifacts(config=config, learned=joblib.load(out / files["learned"]),
                      b_models={m: joblib.load(out / f) for m, f in files["b"].items()},
                      calibration=json.loads((out / files["calibration"]).read_text()))
@@ -430,12 +409,15 @@ def load_artifacts(out_dir: Path, player_tbl: pd.DataFrame | None = None,
 
 def quick_gate_decision(per_market: Mapping, skill: float | None, check_reasons=()) -> dict:
     """Pass iff no check failed, some market was scored, the pooled skill
-    point estimate >= 0 and no market's RPS > 1.05 x the baseline's."""
+    point estimate exists and is >= 0, and no market's RPS > 1.05 x the
+    baseline's."""
     reasons = list(check_reasons)
     if not reasons:
         if not per_market:
             reasons.append("no scored records")
-        if skill is not None and skill < QUICK_MIN_SKILL:
+        if skill is None:
+            reasons.append("pooled relative RPS skill unavailable")
+        elif skill < QUICK_MIN_SKILL:
             reasons.append(f"pooled relative RPS skill {skill:+.4f} < {QUICK_MIN_SKILL}")
         for m, v in sorted(per_market.items()):
             if v["rps_c"] > QUICK_MAX_RPS_RATIO * v["rps_b"]:
@@ -451,58 +433,56 @@ def _now() -> str:
 
 
 def run_final_fit(*, bsn, player_tbl: pd.DataFrame, team_tbl: pd.DataFrame, pipeline: Mapping,
-                  a_gate: Mapping, oof: pd.DataFrame | None, identity: Mapping,
+                  a_gate: Mapping, calibration: Mapping, identity: Mapping,
                   out_dir: Path = MODEL_DIR, log: Callable[[str], None] = print,
                   created_at: str | None = None) -> dict:
-    """Fit A, B and the calibration maps on every completed week; write the
-    artifacts; return the config."""
+    """Fit A and B on every completed week; write the artifacts (with the
+    committed calibration maps); return the config."""
     kept, a_fit = kept_toggles(pipeline, a_gate), a_fit_params(a_gate)
+    check_calibration(pipeline, calibration)
     tt = trained_through(player_tbl)
     upto = next_week(tt)
-    weights = serving_weights(pipeline["markets"], oof)
-    log(f"stage=calibration maps (OOF rows: {0 if oof is None else len(oof)})")
-    calibration = calibration_maps(pipeline["markets"], oof, weights)
     log(f"stage=fit-a trained_through={tt} upto={upto} toggles={sorted(kept)} {a_fit}")
     t0 = time.time()
     lm = learned.fit_models(player_tbl, team_tbl, kept, upto=upto, test_season=int(upto[0]),
                             decay=a_fit["decay"], max_iter=a_fit["max_iter"])
     log(f"stage=fit-a done {time.time() - t0:.1f}s")
-    served = ml_markets(pipeline)
-    b_models = fit_b_models(player_tbl, learned.feature_columns(player_tbl, kept), served, upto,
+    need_b = b_markets(pipeline)
+    b_models = fit_b_models(player_tbl, learned.feature_columns(player_tbl, kept), need_b, upto,
                             log)
     config = build_config(pipeline, learned_models=lm, b_models=b_models, a_fit=a_fit,
                           trained_through=tt, market_max=bsn.MARKET_MAX,
-                          role_cols=role_columns(player_tbl, served), identity=identity,
+                          role_cols=role_columns(player_tbl, need_b), identity=identity,
                           created_at=created_at or _now())
     save_artifacts(out_dir, lm, b_models, calibration, config)
-    log(f"wrote {out_dir}: learned + B {served} + calibration + config "
+    log(f"wrote {out_dir}: learned + B {need_b} + calibration + config "
         f"(trained_through={list(tt)})")
     return config
 
 
-def run_quick_gate(n_weeks: int, *, bsn, player_tbl: pd.DataFrame, team_tbl: pd.DataFrame,
-                   pipeline: Mapping, a_gate: Mapping, oof: pd.DataFrame | None,
-                   identity: Mapping, out_dir: Path = MODEL_DIR, n_sims: int = 1000,
-                   log: Callable[[str], None] = print, created_at: str | None = None) -> dict:
-    """Score the pipeline fit without the last ``n_weeks`` completed weeks on
-    them vs the baseline; write ``quick_gate.json``; return the gate dict."""
-    t0 = time.time()
+def _quick_gate_body(n_weeks: int, rec: dict, *, bsn, player_tbl, team_tbl, pipeline, a_gate,
+                     calibration, n_sims, log) -> dict:
+    """The quick gate's evaluation; fills ``rec`` (holdout) as it goes."""
     kept, a_fit = kept_toggles(pipeline, a_gate), a_fit_params(a_gate)
-    weeks = holdout_weeks(player_tbl, n_weeks)
-    start = weeks[0]
-    seasons = sorted({s for s, _ in weeks})
+    check_calibration(pipeline, calibration)
+    data_end = pipeline_data_end(pipeline)
+    rec["data_end"] = list(data_end)
+    weeks = holdout_weeks(player_tbl, n_weeks, after=data_end)
+    if not weeks:
+        return {"pass": False, "reasons": [f"no completed weeks after ladder data_end {data_end}"]}
+    rec["holdout_weeks"] = [list(w) for w in weeks]
+    start, seasons = weeks[0], sorted({s for s, _ in weeks})
+    rec["fit_upto"] = list(start)
     sources_map = {m: v["source"] for m, v in pipeline["markets"].items()}
-    log(f"stage=quick-gate holdout={weeks} fit_upto={start} n_sims={n_sims}")
+    weights = {m: float(v["w_final"]) for m, v in pipeline["markets"].items()}
+    log(f"stage=quick-gate holdout={weeks} data_end={data_end} fit_upto={start} n_sims={n_sims}")
 
-    weights = serving_weights(pipeline["markets"], oof, before=start)
-    calibration = calibration_maps(pipeline["markets"], oof, weights, before=start)
     log(f"stage=fit-a upto={start} toggles={sorted(kept)} {a_fit}")
     lm = learned.fit_models(player_tbl, team_tbl, kept, upto=start, test_season=int(start[0]),
                             decay=a_fit["decay"], max_iter=a_fit["max_iter"])
-    served = ml_markets(pipeline)
-    b_models = fit_b_models(player_tbl, learned.feature_columns(player_tbl, kept), served, start,
+    need_b = b_markets(pipeline)
+    b_models = fit_b_models(player_tbl, learned.feature_columns(player_tbl, kept), need_b, start,
                             log)
-
     fetch = bsn.backtest_fetch_seasons(seasons)
     log(f"stage=sources fetching {fetch}")
     sources = holdout_sources(bsn.fetch_backtest_sources(fetch), weeks)
@@ -532,13 +512,12 @@ def run_quick_gate(n_weeks: int, *, bsn, player_tbl: pd.DataFrame, team_tbl: pd.
             checks.append(str(exc))
 
     population = population_from_baseline(base_recs)
-    n_pop = {m: sum(1 for k in population if k[3] == m) for m in pipeline["markets"]}
     d = {"skill": None, "lo": None, "hi": None, "per_market": {}}
     if not checks:
         base_pop = [r for r in base_recs if tpb.rec_key(r) in population]
         pop_a = [r for r in runs["pipeline"] if tpb.rec_key(r) in population]
         b_pmfs, oor = predict_b(b_models, player_tbl, pop_a, bsn.MARKET_MAX)
-        checks += b_missing_reasons(pop_a, b_pmfs, oor, served)
+        checks += b_missing_reasons(pop_a, b_pmfs, oor, need_b)
         b_eff = {**b_pmfs, **{tpb.rec_key(r): r["pmf"] for r in pop_a if tpb.rec_key(r) in oor}}
         ml = tpb.apply_pipeline(pop_a, b_eff, weights, calib_for_apply(calibration))
         try:
@@ -548,38 +527,61 @@ def run_quick_gate(n_weeks: int, *, bsn, player_tbl: pd.DataFrame, team_tbl: pd.
             d = {k: rd[k] for k in ("skill", "lo", "hi", "per_market")}
         except RuntimeError as exc:
             checks.append(str(exc))
-    decision = quick_gate_decision(d["per_market"], d["skill"], checks)
-    gate = {"mode": "quick_gate", "created_at": created_at or _now(),
-            "holdout_weeks": [list(w) for w in weeks], "fit_upto": list(start),
-            "n_sims": n_sims, "n_games": len(base_games), "n_population": n_pop,
-            "sources": sources_map, "weights": weights,
-            "calibration": {m: {"calibrate": v["calibrate"], "n": v["n"]}
-                            for m, v in calibration.items()},
-            "a_fit": a_fit, "kept_a_toggles": pipeline["kept_a_toggles"],
-            **d, "thresholds": {"min_skill": QUICK_MIN_SKILL, "max_rps_ratio": QUICK_MAX_RPS_RATIO},
-            **decision, "identity": dict(identity), "elapsed_s": time.time() - t0}
-    out = Path(out_dir)
-    out.mkdir(parents=True, exist_ok=True)
-    (out / QUICK_GATE_FILE).write_text(tpm.gate_json(gate))
-    skill = "n/a" if d["skill"] is None else f"{d['skill']:+.4f}"
-    log(f"QUICK GATE {'PASS' if decision['pass'] else 'FAIL'}: skill {skill}"
-        + ("" if decision["pass"] else f"; reasons: {decision['reasons']}"))
-    log(f"wrote {out / QUICK_GATE_FILE}")
+    return {"n_games": len(base_games),
+            "n_population": {m: sum(1 for k in population if k[3] == m) for m in sources_map},
+            "sources": sources_map, "weights": weights, "b_markets": need_b,
+            "calibrate": {m: v["calibrate"] for m, v in calibration["markets"].items()},
+            "a_fit": a_fit, "kept_a_toggles": pipeline["kept_a_toggles"], **d,
+            **quick_gate_decision(d["per_market"], d["skill"], checks)}
+
+
+def run_quick_gate(n_weeks: int, *, bsn, player_tbl: pd.DataFrame, team_tbl: pd.DataFrame,
+                   pipeline: Mapping, a_gate: Mapping, calibration: Mapping,
+                   identity: Mapping, out_dir: Path = MODEL_DIR, n_sims: int = 1000,
+                   log: Callable[[str], None] = print, created_at: str | None = None) -> dict:
+    """Score the pipeline fit without the last ``n_weeks`` completed weeks
+    after ``data_end`` on them vs the baseline. ``quick_gate.json`` is removed
+    first and written on every exit path (an exception writes a failing
+    record and is re-raised); returns the gate dict."""
+    t0 = time.time()
+    path = Path(out_dir) / QUICK_GATE_FILE
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.unlink(missing_ok=True)
+    rec = {"mode": "quick_gate", "created_at": created_at or _now(), "holdout_weeks": None,
+           "n_sims": n_sims, "thresholds": {"min_skill": QUICK_MIN_SKILL,
+                                            "max_rps_ratio": QUICK_MAX_RPS_RATIO},
+           "identity": dict(identity)}
+
+    def write(gate: dict) -> None:
+        path.write_text(tpm.gate_json({**gate, "elapsed_s": time.time() - t0}))
+        log(f"QUICK GATE {'PASS' if gate['pass'] else 'FAIL'}: skill "
+            f"{'n/a' if gate.get('skill') is None else format(gate['skill'], '+.4f')}"
+            + ("" if gate["pass"] else f"; reasons: {gate['reasons']}") + f" -> wrote {path}")
+
+    try:
+        body = _quick_gate_body(n_weeks, rec, bsn=bsn, player_tbl=player_tbl,
+                                team_tbl=team_tbl, pipeline=pipeline, a_gate=a_gate,
+                                calibration=calibration, n_sims=n_sims, log=log)
+        gate = {**rec, **body}   # rec gains the holdout while the body runs
+    except Exception as exc:
+        write({**rec, "pass": False, "reasons": [f"error: {type(exc).__name__}: {exc}"]})
+        raise
+    write(gate)
     return gate
 
 
 # ---- IO ----------------------------------------------------------------------------------
 
 def _load_inputs(args) -> dict:
-    """Tables, pipeline / A-gate json, OOF records, identity, backtest module."""
-    for p in (tpm.PLAYER_PATH, tpm.TEAM_PATH, tpb.A_GATE_PATH, args.pipeline):
+    """Tables, pipeline / calibration / A-gate json, identity, backtest module."""
+    for p in (tpm.PLAYER_PATH, tpm.TEAM_PATH, tpb.A_GATE_PATH, args.pipeline, args.calibration):
         if not Path(p).exists():
             raise SystemExit(f"missing {p}: build the features / run the A and B gates first")
-    oof = pd.read_parquet(args.oof) if Path(args.oof).exists() else None
     return {"bsn": tpm._load_backtest(), "player_tbl": pd.read_parquet(tpm.PLAYER_PATH),
             "team_tbl": pd.read_parquet(tpm.TEAM_PATH),
             "pipeline": json.loads(Path(args.pipeline).read_text()),
-            "a_gate": json.loads(tpb.A_GATE_PATH.read_text()), "oof": oof,
+            "calibration": json.loads(Path(args.calibration).read_text()),
+            "a_gate": json.loads(tpb.A_GATE_PATH.read_text()),
             "identity": {"player_features": tpm.file_fingerprint(tpm.PLAYER_PATH),
                          "team_features": tpm.file_fingerprint(tpm.TEAM_PATH),
                          "git_head": tpm.git_head()}}
@@ -588,11 +590,11 @@ def _load_inputs(args) -> dict:
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     ap.add_argument("--holdout-weeks", type=int, default=0,
-                    help="quick gate on the last N completed weeks (0 = final fit)")
+                    help="quick gate on the last N completed weeks after data_end (0 = final fit)")
     ap.add_argument("--n-sims", type=int, default=1000, help="sims per game (quick gate)")
     ap.add_argument("--out-dir", type=Path, default=MODEL_DIR)
     ap.add_argument("--pipeline", type=Path, default=tpb.PIPELINE_PATH)
-    ap.add_argument("--oof", type=Path, default=OOF_PATH)
+    ap.add_argument("--calibration", type=Path, default=tpb.CALIBRATION_PATH)
     args = ap.parse_args(argv)
     t0 = time.time()
 

@@ -12,7 +12,7 @@ import pytest
 from sportsmodel.model import props_eval
 from sportsmodel.model.props_eval import pit_pmf, pit_uniform, rps_pmf
 from sportsmodel.model.props_ml.dist_models import ROLE_SUBSETS, fit_market, predict_pmfs
-from sportsmodel.model.props_ml.pit_calibration import IDENTITY_KNOTS, IDENTITY_PLATT
+from sportsmodel.model.props_ml.pit_calibration import IDENTITY_PLATT, fit_pit_map
 from sportsmodel.sim.nfl import learned
 
 _p = pathlib.Path(__file__).resolve().parents[2] / "scripts" / "fit_props_ml_final.py"
@@ -31,12 +31,24 @@ IDENT = {"git_head": "deadbeef", "player_features": {"size": 1, "sha256": "a" * 
          "team_features": {"size": 2, "sha256": "b" * 64}}
 
 
-def _pipeline(w=1.0, calibrate=False, baseline=("pass_tds",)):
+def _pipeline(w=1.0, calibrate=False, baseline=("pass_tds",), data_end=(2025, 4)):
     return {"kept_a_toggles": list(KEPT),
             "tuned": {"2024": [1.0, 150], "2025": [0.8, 300]},
             "markets": {m: {"source": "baseline" if m in baseline else "ml",
                             "w_final": float(w[m] if isinstance(w, dict) else w),
-                            "calibrate": bool(calibrate)} for m in MARKETS}}
+                            "calibrate": bool(calibrate)} for m in MARKETS},
+            "data_end": list(data_end)}
+
+
+def _pipeline_b(b_markets, **kw):
+    """A pipeline whose markets reading B (ml, w_final < 1) are exactly ``b_markets``."""
+    return _pipeline(w={m: (0.5 if m in b_markets else 1.0) for m in MARKETS}, **kw)
+
+
+def _calib(pipeline, rows=()):
+    """calibration.json for a pipeline (``train_props_ml_b.final_calibration``)."""
+    return {"data_end": list(pipeline["data_end"]),
+            "markets": fpf.tpb.final_calibration(list(rows), pipeline["markets"])}
 
 
 @pytest.fixture(autouse=True)
@@ -68,13 +80,17 @@ def test_trained_through_is_last_week_with_played_labels():
         fpf.trained_through(_label_tbl().assign(y_targets=float("nan"), y_rec_yds=float("nan")))
 
 
-def test_holdout_weeks_are_the_last_n_completed_weeks():
-    assert fpf.holdout_weeks(_label_tbl(), 2) == [(2025, 18), (2026, 1)]
-    assert fpf.holdout_weeks(_label_tbl(), 1) == [(2026, 1)]
+def test_holdout_weeks_are_the_last_n_completed_weeks_after_data_end():
+    t = _label_tbl()
+    assert fpf.holdout_weeks(t, 2, after=(2025, 16)) == [(2025, 18), (2026, 1)]
+    assert fpf.holdout_weeks(t, 1, after=(2025, 16)) == [(2026, 1)]
+    # never a week <= data_end; fewer than n remain -> the ones that do
+    assert fpf.holdout_weeks(t, 2, after=(2025, 18)) == [(2026, 1)]
+    assert fpf.holdout_weeks(t, 2, after=(2026, 1)) == []
     with pytest.raises(ValueError):
-        fpf.holdout_weeks(_label_tbl(), 0)
+        fpf.holdout_weeks(t, 0, after=(2025, 16))
     with pytest.raises(ValueError, match="train"):
-        fpf.holdout_weeks(_label_tbl(), 3)  # nothing left to train on
+        fpf.holdout_weeks(t, 3, after=(2024, 18))  # nothing left to train on
 
 
 def test_a_fit_params_use_the_most_recent_tuned_season_and_kept_must_match():
@@ -84,6 +100,23 @@ def test_a_fit_params_use_the_most_recent_tuned_season_and_kept_must_match():
         fpf.kept_toggles({**_pipeline(), "kept_a_toggles": ["volume"]}, A_GATE)
     with pytest.raises(ValueError, match="kept"):
         fpf.kept_toggles({**_pipeline(), "kept_a_toggles": []}, {**A_GATE, "kept": []})
+
+
+def test_b_markets_are_ml_markets_with_an_active_blend():
+    pipe = _pipeline(w={m: (1.0 if m == "rec_yds" else 0.4) for m in MARKETS})
+    assert fpf.b_markets(pipe) == [m for m in MARKETS if m not in ("rec_yds", "pass_tds")]
+    assert fpf.b_markets(_pipeline(w=1.0)) == []
+
+
+def test_check_calibration_needs_the_same_ladder_run():
+    pipe = _pipeline(calibrate=True)
+    fpf.check_calibration(pipe, _calib(pipe))
+    with pytest.raises(ValueError, match="data_end"):
+        fpf.check_calibration(pipe, {**_calib(pipe), "data_end": [2025, 3]})
+    with pytest.raises(ValueError, match="calibrate"):
+        fpf.check_calibration(pipe, _calib(_pipeline(calibrate=False)))
+    with pytest.raises(ValueError, match="data_end"):
+        fpf.pipeline_data_end({k: v for k, v in pipe.items() if k != "data_end"})
 
 
 # ---- quick-gate decision ------------------------------------------------------------------
@@ -110,94 +143,41 @@ def test_quick_gate_decision_fails_with_market_named_reasons():
     d = fpf.quick_gate_decision(_pm(rec_yds=1.0), 0.1, ["run=quick_ml: game coverage differs"])
     assert d == {"pass": False, "reasons": ["run=quick_ml: game coverage differs"]}
     assert fpf.quick_gate_decision({}, 0.0)["pass"] is False
+    d = fpf.quick_gate_decision(_pm(rec_yds=1.0), None)          # no skill -> fail
+    assert d["pass"] is False and "skill" in d["reasons"][0]
 
 
-# ---- serving weights / calibration maps from OOF ------------------------------------------
+# ---- calibration.json -> apply_pipeline -----------------------------------------------------
 
-def _oof(seasons=(2024, 2025), weeks=(1, 2, 3, 4), n=3, seed=0, markets=MARKETS):
-    rng = np.random.default_rng(seed)
-    rows = []
-    for s in seasons:
-        for w in weeks:
-            for m in markets:
-                k = 2 if m == "anytime_td" else KMAX + 1
-                for i in range(n):
-                    a, b = rng.dirichlet(np.ones(k)), rng.dirichlet(np.ones(k))
-                    rows.append({"season": s, "week": w, "home": "KC", "player_id": f"p{i}",
-                                 "market": m, "w": 1.0, "pit_pre": 0.5, "p_pre": 0.5,
-                                 "actual": float(rng.integers(0, k)),
-                                 "pmf_a": a.astype(np.float32),
-                                 "pmf_b": None if i == 2 else b.astype(np.float32),
-                                 "in_role": i != 1})
-    return pd.DataFrame(rows)
+def test_calib_for_apply_none_without_calibration_and_maps_otherwise():
+    assert fpf.calib_for_apply(_calib(_pipeline(calibrate=False))) is None
+    ap = fpf.calib_for_apply(_calib(_pipeline(calibrate=True)))
+    assert ap["anytime_td"] == IDENTITY_PLATT and ap["rush_att"].shape == (2, 2)
 
 
-def test_serving_weights_final_is_w_final_and_quick_refits_before_holdout(monkeypatch):
-    pipe = _pipeline(w={m: (1.0 if m == "rec_yds" else 0.4) for m in MARKETS})
-    oof = _oof()
-    assert fpf.serving_weights(pipe["markets"], oof) == \
-        {m: (1.0 if m == "rec_yds" else 0.4) for m in MARKETS}
-    seen = []
-
-    def spy(rows, market):
-        rows = list(rows)
-        seen.append((market, len(rows)))
-        return 0.7
-
-    monkeypatch.setattr(fpf, "choose_weight", spy)
-    got = fpf.serving_weights(pipe["markets"], oof, before=(2025, 3))
-    # blend not active (w_final 1.0) stays pure A; others re-chosen on OOF rows
-    # strictly before (2025, 3), in role, with a B pmf: 2024 wk1-4 + 2025 wk1-2 = 6 weeks x 1
-    assert got == {m: (1.0 if m == "rec_yds" else 0.7) for m in MARKETS}
-    assert sorted(seen) == sorted((m, 6) for m in MARKETS if m != "rec_yds")
-    # no OOF row before the holdout -> pure A
-    assert fpf.serving_weights(pipe["markets"], oof, before=(2024, 1))["pass_yds"] == 1.0
-
-
-def test_calibration_maps_recompute_pre_calibration_at_w_final(monkeypatch):
-    pipe = _pipeline(w=0.0, calibrate=True)   # w_final 0 -> pre-calibration pmf = B
-    oof = _oof()
-    seen = {}
-
-    def spy(rows, market):
-        seen[market] = list(rows)
-        return (0.9, 0.1) if market == "anytime_td" else np.vstack([np.linspace(0, 1, 3)] * 2)
-
-    monkeypatch.setattr(fpf.tpb, "fit_calibration", spy)
-    cal = fpf.calibration_maps(pipe["markets"], oof, {m: 0.0 for m in MARKETS})
-    assert set(cal) == set(MARKETS)
-    assert cal["anytime_td"] == {"calibrate": True, "kind": "platt", "map": [0.9, 0.1],
-                                 "n": len(oof[oof.market == "anytime_td"])}
-    assert cal["rec_yds"]["kind"] == "pit" and cal["rec_yds"]["n"] == 24
-    # every OOF row of the market; pit_pre recomputed from pmf_b (w = 0), not the stored 0.5
-    rows = seen["rec_yds"]
-    assert len(rows) == 24
-    by_key = {(r.season, r.week, r.player_id): r for r in oof[oof.market == "rec_yds"].itertuples()}
-    for r in rows:
-        o = by_key[(r["season"], r["week"], r["player_id"])]
-        pmf = o.pmf_a if o.pmf_b is None else o.pmf_b     # no B pmf -> A kept
-        want = pit_pmf(np.asarray(pmf, float), o.actual,
-                       pit_uniform(o.season, o.week, o.player_id, "rec_yds"))
-        assert r["pit_pre"] == pytest.approx(want, abs=1e-5)
-    # quick mode: only OOF rows strictly before the holdout's first week
-    seen.clear()
-    fpf.calibration_maps(pipe["markets"], oof, {m: 0.0 for m in MARKETS}, before=(2025, 1))
-    assert {(r["season"]) for r in seen["rec_yds"]} == {2024} and len(seen["rec_yds"]) == 12
-
-
-def test_calibration_maps_identity_when_not_calibrating_and_apply_form():
-    cal = fpf.calibration_maps(_pipeline(calibrate=False)["markets"], None, {m: 1.0 for m in MARKETS})
-    assert cal["anytime_td"] == {"calibrate": False, "kind": "platt",
-                                 "map": list(IDENTITY_PLATT), "n": 0}
-    assert cal["rush_att"]["map"] == IDENTITY_KNOTS.tolist()
-    assert fpf.calib_for_apply(cal) is None
-    on = fpf.calibration_maps(_pipeline(calibrate=True)["markets"], _oof(n=1),
-                              {m: 1.0 for m in MARKETS})
-    ap = fpf.calib_for_apply(on)
-    assert ap["anytime_td"] == IDENTITY_PLATT            # < 100 per class -> identity
-    np.testing.assert_array_equal(ap["rush_att"], IDENTITY_KNOTS)
-    with pytest.raises(ValueError, match="OOF"):
-        fpf.calibration_maps(_pipeline(calibrate=True)["markets"], None, {m: 1.0 for m in MARKETS})
+def test_non_identity_calibration_round_trips_through_calibration_json(tmp_path, small_fit):
+    p, t, lm, b = small_fit
+    rng = np.random.default_rng(3)
+    knots = fit_pit_map(rng.beta(0.5, 0.5, 400))            # overconfident PITs -> widening
+    assert not np.allclose(knots[0], knots[1])
+    pipe = _pipeline_b(b, calibrate=True)
+    cal = _calib(pipe)
+    for m, v in cal["markets"].items():
+        v["map"] = [0.8, 0.3] if m == "anytime_td" else knots.tolist()
+    fpf.save_artifacts(tmp_path / "models", lm, b, cal, _config(p, lm, b, pipe))
+    loaded = fpf.load_artifacts(tmp_path / "models").calibration
+    assert loaded == json.loads(json.dumps(cal))
+    recs = [{"season": 2025, "week": 3, "home": "KC", "player_id": "x", "market": "rec_yds",
+             "pmf": rng.dirichlet(np.ones(12)), "actual": 4.0},
+            {"season": 2025, "week": 3, "home": "KC", "player_id": "x", "market": "anytime_td",
+             "pmf": np.array([0.7, 0.3]), "actual": 1.0}]
+    w = {m: 1.0 for m in MARKETS}
+    got = fpf.tpb.apply_pipeline(recs, {}, w, fpf.calib_for_apply(loaded))
+    want = fpf.tpb.apply_pipeline(recs, {}, w, {"rec_yds": knots, "anytime_td": (0.8, 0.3)})
+    plain = fpf.tpb.apply_pipeline(recs, {}, w)
+    for g, x, y in zip(got, want, plain):
+        np.testing.assert_allclose(g["pmf"], x["pmf"], atol=1e-15)
+        assert not np.allclose(g["pmf"], y["pmf"], atol=1e-3)   # the map really moved it
 
 
 def test_holdout_sources_filters_schedules_to_the_holdout_weeks():
@@ -214,6 +194,7 @@ def test_holdout_sources_filters_schedules_to_the_holdout_weeks():
 
 POS = ("QB", "RB", "WR", "WR", "TE", "RB")
 TEAMS = ("KC", "BUF", "DAL", "SF")
+B3 = ("rec_yds", "receptions", "anytime_td")
 
 
 def _real_tables(seasons=(2023, 2024, 2025), weeks=8, future=(9, 10)):
@@ -251,7 +232,7 @@ def _real_tables(seasons=(2023, 2024, 2025), weeks=8, future=(9, 10)):
     return pd.DataFrame(rows), pd.DataFrame(trows)
 
 
-def _fit_small(p, t, markets=("rec_yds", "receptions", "anytime_td")):
+def _fit_small(p, t, markets=B3):
     kept = frozenset(KEPT)
     lm = learned.fit_models(p, t, kept, upto=(2025, 9), test_season=2025, decay=0.8, max_iter=5)
     cols = learned.feature_columns(p, kept)
@@ -268,7 +249,7 @@ def small_fit():
 
 
 def _config(p, lm, b, pipeline=None):
-    return fpf.build_config(pipeline or _pipeline(), learned_models=lm, b_models=b,
+    return fpf.build_config(pipeline or _pipeline_b(b), learned_models=lm, b_models=b,
                             a_fit={"season": 2025, "decay": 0.8, "max_iter": 300},
                             trained_through=(2025, 8), market_max={"rec_yds": 200, "receptions": 15},
                             role_cols=fpf.role_columns(p, b), identity=IDENT,
@@ -277,13 +258,15 @@ def _config(p, lm, b, pipeline=None):
 
 def test_save_load_round_trip_gives_identical_predictions(tmp_path, small_fit):
     p, t, lm, b = small_fit
-    cal = fpf.calibration_maps(_pipeline()["markets"], None, {m: 1.0 for m in MARKETS})
+    out = tmp_path / "models"
+    cal = _calib(_pipeline_b(b))
     cfg = _config(p, lm, b)
-    fpf.save_artifacts(tmp_path, lm, b, cal, cfg)
-    assert sorted(x.name for x in tmp_path.iterdir()) == sorted(
+    fpf.save_artifacts(out, lm, b, cal, cfg)
+    assert sorted(x.name for x in out.iterdir()) == sorted(
         ["learned.joblib", "b_rec_yds.joblib", "b_receptions.joblib", "b_anytime_td.joblib",
          "calibration.json", "props_ml_config.json"])
-    art = fpf.load_artifacts(tmp_path, p, t)
+    assert sorted(x.name for x in tmp_path.iterdir()) == ["models"]   # no temp dirs left
+    art = fpf.load_artifacts(out, p, t)
     X, T = p[p.season == 2025], t[t.season == 2025]
     for name in ("targets", "carries"):
         np.testing.assert_array_equal(getattr(lm, name).predict(X), getattr(art.learned, name).predict(X))
@@ -300,11 +283,11 @@ def test_save_load_round_trip_gives_identical_predictions(tmp_path, small_fit):
     assert art.learned.share_fallbacks == 0
 
 
-def test_config_records_everything_serving_needs(tmp_path, small_fit):
+def test_config_records_everything_serving_needs(small_fit):
     p, t, lm, b = small_fit
     cfg = _config(p, lm, b)
-    for k in ("kept_a_toggles", "tuned", "markets"):
-        assert cfg[k] == _pipeline()[k]
+    for k in ("kept_a_toggles", "tuned", "markets", "data_end"):
+        assert cfg[k] == _pipeline_b(b)[k]
     assert cfg["trained_through"] == [2025, 8] and cfg["fit_upto"] == [2025, 9]
     assert cfg["git"] == "deadbeef"
     assert cfg["features"] == {"player": IDENT["player_features"], "team": IDENT["team_features"]}
@@ -312,6 +295,7 @@ def test_config_records_everything_serving_needs(tmp_path, small_fit):
     assert cfg["q_weight"] == 1.0
     assert cfg["a_fit"] == {"season": 2025, "decay": 0.8, "max_iter": 300}
     assert cfg["b_fit"] == {"decay": 1.0, "max_iter": 150}
+    assert cfg["b_markets"] == list(B3)
     assert cfg["role_subsets"] == ROLE_SUBSETS
     assert cfg["market_max"] == {"rec_yds": 200, "receptions": 15, "anytime_td": 1}
     fc = cfg["feature_columns"]
@@ -328,29 +312,63 @@ def test_config_records_everything_serving_needs(tmp_path, small_fit):
 
 def test_load_verifies_feature_columns_exist_in_the_tables(tmp_path, small_fit):
     p, t, lm, b = small_fit
-    fpf.save_artifacts(tmp_path, lm, b, {}, _config(p, lm, b))
-    req = fpf.required_columns(json.loads((tmp_path / "props_ml_config.json").read_text()))
-    assert {"p_target_share_ewm", "mk_total", "position", "player_id", "team"} <= set(req["player"])
-    assert {"tm_pass_rate", "team"} <= set(req["team"])
-    fpf.load_artifacts(tmp_path)  # no tables -> no check
-    with pytest.raises(ValueError, match="mk_total"):
-        fpf.load_artifacts(tmp_path, p.drop(columns=["mk_total"]), t)
-    with pytest.raises(ValueError, match="tm_pass_rate"):
-        fpf.load_artifacts(tmp_path, p, t.drop(columns=["tm_pass_rate"]))
-    with pytest.raises(ValueError, match="position"):
-        fpf.load_artifacts(tmp_path, p.drop(columns=["position"]), t)
+    out = tmp_path / "models"
+    fpf.save_artifacts(out, lm, b, _calib(_pipeline_b(b)), _config(p, lm, b))
+    req = fpf.required_columns(json.loads((out / "props_ml_config.json").read_text()))
+    assert {"p_target_share_ewm", "mk_total", "position", "player_id", "team", "season", "week",
+            "st_questionable", "opponent"} <= set(req["player"])
+    assert {"tm_pass_rate", "team", "season", "week", "opponent"} <= set(req["team"])
+    fpf.load_artifacts(out)  # no tables -> no column check
+    for tbl, col in ((p, "mk_total"), (p, "position"), (p, "st_questionable"), (t, "tm_pass_rate")):
+        args = (p.drop(columns=[col]), t) if tbl is p else (p, t.drop(columns=[col]))
+        with pytest.raises(ValueError, match=col):
+            fpf.load_artifacts(out, *args)
 
 
-def test_save_artifacts_removes_stale_models_but_keeps_quick_gate(tmp_path, small_fit):
+def test_load_verifies_role_subsets_and_the_b_model_set(tmp_path, small_fit):
+    p, t, lm, b = small_fit
+    out = tmp_path / "models"
+    cfg = _config(p, lm, b)
+    bad_roles = {**cfg, "role_subsets": {**ROLE_SUBSETS, "anytime_td": {"positions": None,
+                                                                      "col": "x", "min": 1.0}}}
+    fpf.save_artifacts(out, lm, b, _calib(_pipeline_b(b)), bad_roles)
+    with pytest.raises(ValueError, match="role_subsets"):
+        fpf.load_artifacts(out)
+    # config says rush_att reads B too, but no rush_att model was saved
+    pipe = _pipeline_b(B3 + ("rush_att",))
+    fpf.save_artifacts(out, lm, b, _calib(pipe), _config(p, lm, b, pipe))
+    with pytest.raises(ValueError, match="rush_att"):
+        fpf.load_artifacts(out)
+
+
+def test_save_artifacts_swaps_atomically_keeps_quick_gate_and_drops_stale(tmp_path, small_fit,
+                                                                         monkeypatch):
     p, t, lm, b_all = small_fit
+    out = tmp_path / "models"
     b = {m: b_all[m] for m in ("receptions", "anytime_td")}
-    fpf.save_artifacts(tmp_path, lm, b, {}, _config(p, lm, b))
-    (tmp_path / "quick_gate.json").write_text("{}")
-    b2 = {"receptions": b["receptions"]}
-    fpf.save_artifacts(tmp_path, lm, b2, {}, _config(p, lm, b2))
-    assert not (tmp_path / "b_anytime_td.joblib").exists()
-    assert (tmp_path / "quick_gate.json").exists()
-    assert set(fpf.load_artifacts(tmp_path).b_models) == {"receptions"}
+    fpf.save_artifacts(out, lm, b, _calib(_pipeline_b(b)), _config(p, lm, b))
+    (out / "quick_gate.json").write_text('{"pass": true}')
+    # a crash mid-save leaves the previous artifacts loadable, and no temp dir behind
+    real_dump, calls = fpf.joblib.dump, []
+
+    def flaky(obj, path, *a, **k):
+        calls.append(path)
+        if len(calls) == 2:
+            raise OSError("disk full")
+        return real_dump(obj, path, *a, **k)
+
+    monkeypatch.setattr(fpf.joblib, "dump", flaky)
+    b1 = {"receptions": b["receptions"]}
+    with pytest.raises(OSError, match="disk full"):
+        fpf.save_artifacts(out, lm, b1, _calib(_pipeline_b(b1)), _config(p, lm, b1))
+    assert set(fpf.load_artifacts(out, p, t).b_models) == {"receptions", "anytime_td"}
+    assert sorted(x.name for x in tmp_path.iterdir()) == ["models"]
+    monkeypatch.setattr(fpf.joblib, "dump", real_dump)
+    fpf.save_artifacts(out, lm, b1, _calib(_pipeline_b(b1)), _config(p, lm, b1))
+    assert not (out / "b_anytime_td.joblib").exists()
+    assert (out / "quick_gate.json").read_text() == '{"pass": true}'
+    assert set(fpf.load_artifacts(out).b_models) == {"receptions"}
+    assert sorted(x.name for x in tmp_path.iterdir()) == ["models"]
 
 
 # ---- run_final_fit (real tiny fits behind spies) --------------------------------------------
@@ -384,42 +402,47 @@ def _spy_fits(monkeypatch):
 def test_run_final_fit_fits_on_every_completed_week_and_writes_artifacts(tmp_path, monkeypatch):
     calls = _spy_fits(monkeypatch)
     p, t = _real_tables()
-    pipe = _pipeline(w=0.5, calibrate=True)
-    oof = _oof(seasons=(2023, 2024), n=2)
+    pipe = _pipeline(w={m: (1.0 if m == "rush_att" else 0.5) for m in MARKETS}, calibrate=True)
+    cal = _calib(pipe)
+    cal["markets"]["anytime_td"]["map"] = [0.8, 0.3]
+    out = tmp_path / "models"
     cfg = fpf.run_final_fit(bsn=_Bsn(), player_tbl=p, team_tbl=t, pipeline=pipe, a_gate=A_GATE,
-                            oof=oof, identity=IDENT, out_dir=tmp_path, log=lambda m: None,
+                            calibration=cal, identity=IDENT, out_dir=out, log=lambda m: None,
                             created_at="2026-09-25T00:00:00+00:00")
     # A: kept toggles, most recent tuned season, all rows before trained_through + 1 week
     assert calls["a"] == [{"toggles": frozenset(KEPT), "upto": (2025, 9), "test_season": 2025,
                            "decay": 0.8, "max_iter": 300}]
-    # B: served (source "ml") markets only, unweighted, max_iter 150, kept-A columns
+    # B: only markets that read it (ml AND w_final < 1), unweighted, max_iter 150, kept-A cols
+    want_b = [m for m in MARKETS if m not in ("pass_tds", "rush_att")]
     cols = learned.feature_columns(p, frozenset(KEPT))
-    assert sorted(c["market"] for c in calls["b"]) == sorted(m for m in MARKETS if m != "pass_tds")
+    assert [c["market"] for c in calls["b"]] == want_b
     assert all(c["upto"] == (2025, 9) and c["decay"] == 1.0 and c["max_iter"] == 150
                and c["cols"] == cols for c in calls["b"])
-    assert cfg["trained_through"] == [2025, 8]
+    assert cfg["trained_through"] == [2025, 8] and cfg["b_markets"] == want_b
     assert cfg["market_max"] == {**_Bsn.MARKET_MAX, "anytime_td": 1}
-    art = fpf.load_artifacts(tmp_path, p, t)
-    assert set(art.b_models) == set(MARKETS) - {"pass_tds"}
+    art = fpf.load_artifacts(out, p, t)
+    assert set(art.b_models) == set(want_b)
     assert art.config["markets"]["rec_yds"] == {"source": "ml", "w_final": 0.5, "calibrate": True}
-    assert art.calibration["anytime_td"]["kind"] == "platt"
-    assert art.calibration["rec_yds"]["n"] == len(oof[oof.market == "rec_yds"])
-    assert not (tmp_path / "quick_gate.json").exists()
+    assert art.calibration == cal                     # the committed maps, copied
+    assert not (out / "quick_gate.json").exists()
 
 
-def test_run_final_fit_needs_oof_when_calibrating(tmp_path, monkeypatch):
+def test_run_final_fit_refuses_a_calibration_from_another_ladder_run(tmp_path, monkeypatch):
     _spy_fits(monkeypatch)
     p, t = _real_tables()
-    with pytest.raises(ValueError, match="OOF"):
-        fpf.run_final_fit(bsn=_Bsn(), player_tbl=p, team_tbl=t, pipeline=_pipeline(calibrate=True),
-                          a_gate=A_GATE, oof=None, identity=IDENT, out_dir=tmp_path,
-                          log=lambda m: None)
-    assert not (tmp_path / "props_ml_config.json").exists()
+    pipe = _pipeline(calibrate=True)
+    with pytest.raises(ValueError, match="data_end"):
+        fpf.run_final_fit(bsn=_Bsn(), player_tbl=p, team_tbl=t, pipeline=pipe, a_gate=A_GATE,
+                          calibration={**_calib(pipe), "data_end": [2024, 18]}, identity=IDENT,
+                          out_dir=tmp_path / "models", log=lambda m: None)
+    assert not (tmp_path / "models").exists()
 
 
 # ---- run_quick_gate with a stubbed backtest --------------------------------------------------
 
-GAMES, PLAYERS, WEEKS = 3, 2, 6   # labelled weeks 1..6 of 2025; week 7 is upcoming
+GAMES, PLAYERS = 3, 2
+PLAYED = [(2025, w) for w in range(1, 7)]          # completed weeks
+UPCOMING = [(2025, 7)]
 
 
 def _truth(season, week, g, k, m):
@@ -428,26 +451,28 @@ def _truth(season, week, g, k, m):
     return rng.dirichlet(np.ones(n)), int(rng.integers(0, n))
 
 
-def _schedule():
-    rows = [{"season": 2025, "week": w, "game_type": "REG", "home_team": f"H{g}",
-             "away_team": f"A{g}", "home_score": 20.0 if w <= WEEKS else np.nan,
-             "away_score": 17.0 if w <= WEEKS else np.nan}
-            for w in range(1, WEEKS + 2) for g in range(GAMES)]
-    return pd.DataFrame(rows)
+def _schedule(played, upcoming):
+    return pd.DataFrame([{"season": s, "week": w, "game_type": "REG", "home_team": f"H{g}",
+                          "away_team": f"A{g}",
+                          "home_score": 20.0 if (s, w) in played else np.nan,
+                          "away_score": 17.0 if (s, w) in played else np.nan}
+                         for s, w in played + upcoming for g in range(GAMES)])
 
 
 class _FakeBsn:
     SIM_SEED = 42
     MARKET_MAX = {m: KMAX for m in MARKETS if m != "anytime_td"}
 
-    def __init__(self, worse=(), drop_game=False):
-        self.worse, self.drop_game, self.runs, self.fetches = worse, drop_game, [], []
-        self.src = {"schedules": _schedule(), "pbp": pd.DataFrame({"x": [1]})}
+    def __init__(self, worse=(), drop_game=None, played=PLAYED, upcoming=UPCOMING, fail=False):
+        self.worse, self.drop_game, self.fail, self.runs, self.fetches = worse, drop_game, fail, [], []
+        self.src = {"schedules": _schedule(played, upcoming), "pbp": pd.DataFrame({"x": [1]})}
 
     def backtest_fetch_seasons(self, seasons):
         return [min(seasons) - 1] + list(seasons)
 
     def fetch_backtest_sources(self, fetch_seasons):
+        if self.fail:
+            raise ConnectionError("nflverse unreachable")
         self.fetches.append(list(fetch_seasons))
         return self.src
 
@@ -464,7 +489,7 @@ class _FakeBsn:
             s, w, home, away = int(row.season), int(row.week), row.home_team, row.away_team
             g = int(home[1:])
             if spec_hook is not None:
-                if self.drop_game and g == 0 and w == WEEKS:
+                if self.drop_game == (s, w) and g == 0:
                     continue
                 spec_hook(s, w, home, away, "spec")
             on_game(s, w, home, away, None)
@@ -496,16 +521,16 @@ _ROLE = {0: {"position": "QB", "p_y_pass_att_ewm": 30.0, "p_y_carries_ewm": 5.0,
              "p_y_targets_ewm": 6.0}}
 
 
-def _qtbl():
-    rows = [{"player_id": f"H{g}p{k}", "season": 2025, "week": w, "team": f"H{g}",
-             "is_stub": False, "st_questionable": 0.0, "p_signal": 1.0, **_ROLE[k],
-             "y_targets": 3.0 if w <= WEEKS else np.nan}
-            for w in range(1, WEEKS + 2) for g in range(GAMES) for k in range(PLAYERS)]
-    return pd.DataFrame(rows)
+def _qtbl(played=PLAYED, upcoming=UPCOMING):
+    return pd.DataFrame([{"player_id": f"H{g}p{k}", "season": s, "week": w, "team": f"H{g}",
+                          "is_stub": False, "st_questionable": 0.0, "p_signal": 1.0, **_ROLE[k],
+                          "y_targets": 3.0 if (s, w) in played else np.nan}
+                         for s, w in played + upcoming for g in range(GAMES)
+                         for k in range(PLAYERS)])
 
 
 def _stub_quick(monkeypatch):
-    calls = {"a": [], "b": [], "hook_models": set()}
+    calls = {"a": [], "b": [], "hook": []}
     fitted = _Models()
 
     def fa(p, t, toggles, *, upto, test_season, decay, max_iter):
@@ -514,7 +539,8 @@ def _stub_quick(monkeypatch):
         return fitted
 
     def apply(spec, models, prow, trow, questionable, q_weight):
-        calls["hook_models"].add(id(models))
+        calls["hook"].append((id(models), sorted({(int(s), int(w)) for s, w in
+                                                  zip(prow["season"], prow["week"])})))
         assert q_weight == 1.0
         return spec
 
@@ -541,34 +567,31 @@ def _stub_quick(monkeypatch):
     return calls
 
 
-def _quick(tmp_path, bsn, pipeline, oof=None, n_weeks=2):
-    return fpf.run_quick_gate(n_weeks, bsn=bsn, player_tbl=_qtbl(),
+def _quick(tmp_path, bsn, pipeline, calibration=None, n_weeks=2, ptbl=None):
+    return fpf.run_quick_gate(n_weeks, bsn=bsn, player_tbl=_qtbl() if ptbl is None else ptbl,
                               team_tbl=pd.DataFrame({"team": ["H0"], "season": [2025],
                                                      "week": [1], "tm_x": [1.0]}),
-                              pipeline=pipeline, a_gate=A_GATE, oof=oof, identity=IDENT,
-                              out_dir=tmp_path, n_sims=17, log=lambda m: None,
+                              pipeline=pipeline, a_gate=A_GATE,
+                              calibration=_calib(pipeline) if calibration is None else calibration,
+                              identity=IDENT, out_dir=tmp_path, n_sims=17, log=lambda m: None,
                               created_at="2026-09-25T00:00:00+00:00")
 
 
 def test_quick_gate_fits_before_the_holdout_and_scores_only_holdout_weeks(tmp_path, monkeypatch):
     calls = _stub_quick(monkeypatch)
     bsn = _FakeBsn()
-    oof = _oof(seasons=(2024, 2025), weeks=(1, 4, 5, 6), n=2)
-    cal_seen = []
-    real_cal = fpf.calibration_maps
-    monkeypatch.setattr(fpf, "calibration_maps",
-                        lambda markets, o, w, before=None: cal_seen.append(before)
-                        or real_cal(markets, o, w, before=before))
-    gate = _quick(tmp_path, bsn, _pipeline(w=0.5, calibrate=True), oof=oof)
+    pipe = _pipeline(w={m: (1.0 if m == "rush_att" else 0.5) for m in MARKETS}, calibrate=True,
+                     data_end=(2025, 4))
+    gate = _quick(tmp_path, bsn, pipe)
 
     # models: fit strictly before the first holdout week (2025, 5)
     assert calls["a"] == [{"toggles": frozenset(KEPT), "upto": (2025, 5), "test_season": 2025,
                            "decay": 0.8, "max_iter": 300}]
-    assert sorted(c["market"] for c in calls["b"]) == sorted(m for m in MARKETS if m != "pass_tds")
+    assert [c["market"] for c in calls["b"]] == [m for m in MARKETS
+                                                 if m not in ("pass_tds", "rush_att")]
     assert all(c["upto"] == (2025, 5) and c["decay"] == 1.0 and c["max_iter"] == 150
                for c in calls["b"])
-    assert calls["hook_models"] == {id(calls["fitted"])}
-    assert cal_seen == [(2025, 5)]
+    assert {i for i, _ in calls["hook"]} == {id(calls["fitted"])}
     # two runs (baseline, pipeline A) on the holdout weeks only, one fetch, pmfs recorded
     assert bsn.fetches == [[2024, 2025]]
     assert [r["hook"] for r in bsn.runs] == [False, True]
@@ -577,14 +600,49 @@ def test_quick_gate_fits_before_the_holdout_and_scores_only_holdout_weeks(tmp_pa
 
     assert gate["pass"] is True and gate["reasons"] == []
     assert gate["holdout_weeks"] == [[2025, 5], [2025, 6]] and gate["fit_upto"] == [2025, 5]
+    assert gate["data_end"] == [2025, 4]
     assert gate["skill"] > 0 and gate["n_games"] == 2 * GAMES
     assert gate["per_market"]["pass_tds"]["rps_c"] == gate["per_market"]["pass_tds"]["rps_b"]
     assert gate["sources"]["pass_tds"] == "baseline"
-    assert set(gate["weights"]) == set(MARKETS)
+    assert gate["weights"] == {m: v["w_final"] for m, v in pipe["markets"].items()}  # committed
     saved = json.loads((tmp_path / "quick_gate.json").read_text())
     assert saved["pass"] is True and saved["holdout_weeks"] == [[2025, 5], [2025, 6]]
     assert saved["thresholds"] == {"min_skill": 0.0, "max_rps_ratio": 1.05}
     assert not (tmp_path / "props_ml_config.json").exists()  # quick gate writes no models
+
+
+def test_quick_gate_holdout_never_includes_weeks_up_to_data_end(tmp_path, monkeypatch):
+    calls = _stub_quick(monkeypatch)
+    bsn = _FakeBsn()
+    gate = _quick(tmp_path, bsn, _pipeline(data_end=(2025, 5)))
+    assert gate["holdout_weeks"] == [[2025, 6]] and calls["a"][0]["upto"] == (2025, 6)
+    assert all(r["weeks"] == [(2025, 6)] for r in bsn.runs)
+
+
+def test_quick_gate_fails_when_no_completed_week_follows_data_end(tmp_path, monkeypatch):
+    calls = _stub_quick(monkeypatch)
+    bsn = _FakeBsn()
+    gate = _quick(tmp_path, bsn, _pipeline(data_end=(2025, 6)))
+    assert gate["pass"] is False
+    assert gate["reasons"] == ["no completed weeks after ladder data_end (2025, 6)"]
+    assert bsn.runs == [] and calls["a"] == []
+    saved = json.loads((tmp_path / "quick_gate.json").read_text())
+    assert saved["pass"] is False and saved["reasons"] == gate["reasons"]
+
+
+def test_quick_gate_holdout_can_span_two_seasons(tmp_path, monkeypatch):
+    calls = _stub_quick(monkeypatch)
+    played = [(2025, 16), (2025, 17), (2025, 18), (2026, 1)]
+    bsn = _FakeBsn(played=played, upcoming=[(2026, 2)])
+    gate = _quick(tmp_path, bsn, _pipeline(data_end=(2025, 17)),
+                  ptbl=_qtbl(played, [(2026, 2)]))
+    assert gate["holdout_weeks"] == [[2025, 18], [2026, 1]] and gate["pass"] is True
+    assert calls["a"][0]["upto"] == (2025, 18) and calls["a"][0]["test_season"] == 2025
+    assert bsn.fetches == [[2024, 2025, 2026]]
+    assert all(r["weeks"] == [(2025, 18), (2026, 1)] for r in bsn.runs)
+    # the hook serves both seasons' games with the one fitted A, on that week's feature rows
+    assert {i for i, _ in calls["hook"]} == {id(calls["fitted"])}
+    assert sorted({wk for _, wks in calls["hook"] for wk in wks}) == [(2025, 18), (2026, 1)]
 
 
 def test_quick_gate_fails_with_market_named_reason_and_still_writes_json(tmp_path, monkeypatch):
@@ -597,10 +655,29 @@ def test_quick_gate_fails_with_market_named_reason_and_still_writes_json(tmp_pat
 
 def test_quick_gate_coverage_failure_is_a_reason_not_a_crash(tmp_path, monkeypatch):
     _stub_quick(monkeypatch)
-    gate = _quick(tmp_path, _FakeBsn(drop_game=True), _pipeline())
+    gate = _quick(tmp_path, _FakeBsn(drop_game=(2025, 6)), _pipeline())
     assert gate["pass"] is False and gate["skill"] is None
     assert any("coverage" in r for r in gate["reasons"])
     assert json.loads((tmp_path / "quick_gate.json").read_text())["pass"] is False
+
+
+def test_quick_gate_crash_writes_a_failing_record_and_no_stale_pass_survives(tmp_path,
+                                                                             monkeypatch):
+    _stub_quick(monkeypatch)
+    (tmp_path / "quick_gate.json").write_text('{"pass": true}')
+    with pytest.raises(ConnectionError):
+        _quick(tmp_path, _FakeBsn(fail=True), _pipeline())
+    saved = json.loads((tmp_path / "quick_gate.json").read_text())
+    assert saved["pass"] is False
+    assert saved["reasons"] == ["error: ConnectionError: nflverse unreachable"]
+    assert saved["holdout_weeks"] == [[2025, 5], [2025, 6]] and saved["identity"] == IDENT
+    # an error before the holdout is known (mismatched calibration) is recorded too
+    (tmp_path / "quick_gate.json").write_text('{"pass": true}')
+    pipe = _pipeline()
+    with pytest.raises(ValueError):
+        _quick(tmp_path, _FakeBsn(), pipe, calibration={**_calib(pipe), "data_end": [2020, 1]})
+    saved = json.loads((tmp_path / "quick_gate.json").read_text())
+    assert saved["pass"] is False and saved["reasons"][0].startswith("error: ValueError:")
 
 
 def test_main_exit_codes(monkeypatch, tmp_path):
@@ -613,3 +690,5 @@ def test_main_exit_codes(monkeypatch, tmp_path):
     assert fpf.main(["--holdout-weeks", "2", "--out-dir", str(tmp_path)]) == 1
     assert fpf.main(["--out-dir", str(tmp_path)]) == 0
     assert seen == [("quick", 2, 1000), ("final",)]
+    with pytest.raises(SystemExit):
+        fpf.main(["--oof", "x.parquet"])      # no OOF input any more

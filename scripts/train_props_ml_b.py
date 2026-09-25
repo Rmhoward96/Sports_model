@@ -27,10 +27,18 @@ gated OFFLINE on stored pmfs from ONE baseline run and ONE kept-A run (both
    served composite (those sources) must beat the baseline pooled AND on 2025
    alone. The UNSELECTED decision (ladder sources, no per-market swap) is
    recorded next to it: the selected one is optimistic by construction. ``w_final`` = ``choose_weight`` on
-   all seasons (1.0 if the blend was not kept); ``calibrate`` = calibration
-   rung kept.
+   all seasons' OOF rows that have a B pmf (1.0 if the blend was not kept);
+   ``calibrate`` = calibration rung kept.
+8. Serving calibration maps (``calibration.json``, committed): each OOF row's
+   pre-calibration pmf is recomputed at its market's ``w_final``
+   (``apply_pipeline``, identity calib) and the PIT map / Platt is fit on ALL
+   OOF rows of every ``calibrate`` market (>= 300 PITs / >= 100 per class,
+   else identity). pipeline.json and calibration.json record ``data_end``, the
+   last (season, week) of the OOF rows: the weekly quick gate only scores
+   weeks after it.
 
-Outputs: ``b_gate.json``, ``pipeline.json`` (consumed by fit_props_ml_final),
+Outputs: ``b_gate.json``, ``pipeline.json`` + ``calibration.json`` (consumed by
+fit_props_ml_final),
 ``docs/superpowers/reports/<date>-props-ml-b-gate.md`` (other run tags are
 suffixed) and ``data/props_ml/oof_b7__<tag>.parquet`` -- the final pipeline's
 PRE-calibration OOF records (Task 6 fits its calibration maps on them).
@@ -111,6 +119,7 @@ MAX_B_MISSING = 0.02
 A_GATE_PATH = tpm.GATE_PATH
 GATE_PATH = A_GATE_PATH.with_name("b_gate.json")
 PIPELINE_PATH = A_GATE_PATH.with_name("pipeline.json")
+CALIBRATION_PATH = A_GATE_PATH.with_name("calibration.json")
 ECE_TOL = tpm.ECE_TOL
 # P3 OOF records (PRE-calibration, at the per-season OOF weights ``w``). Task 6
 # must recompute pre-calibration values at ``w_final`` via ``apply_pipeline``
@@ -255,6 +264,41 @@ def season_calibrations(rows, seasons, markets) -> dict[int, dict]:
     return out
 
 
+def calib_json(c, market: str):
+    """A map as JSON: Platt ``[a, b]`` for anytime_td, else knots ``[[u], [g]]``."""
+    if market == BINARY_MARKET:
+        return [float(c[0]), float(c[1])]
+    return np.asarray(c, dtype=float).tolist()
+
+
+def final_weights(rows, markets, blend_kept: bool) -> dict[str, float]:
+    """``w_final``: ``choose_weight`` over each market's rows (in role) that
+    HAVE a B pmf; 1.0 when the blend was not kept or there are none."""
+    g = _by_market(r for r in rows if r["pmf_b"] is not None)
+    return {m: (float(choose_weight(g[m], m)) if blend_kept and g.get(m) else 1.0)
+            for m in markets}
+
+
+def final_calibration(rows, markets: Mapping) -> dict[str, dict]:
+    """Serving maps ``{m: {calibrate, kind, map, n}}`` (``calibration.json``).
+    A ``calibrate`` market's map is fit on ALL its OOF rows after recomputing
+    each row's pre-calibration pmf at the market's ``w_final`` via
+    ``apply_pipeline`` (rows carry pmf_a / pmf_b / actual; the stored values are
+    at the per-season OOF weights); others get identity with n 0."""
+    g = _by_market(rows)
+    out = {}
+    for m, v in markets.items():
+        kind = "platt" if m == BINARY_MARKET else "pit"
+        recs = g.get(m, []) if v["calibrate"] else []
+        pre = apply_pipeline([{**r, "pmf": r["pmf_a"]} for r in recs],
+                             {rec_key(r): r["pmf_b"] for r in recs if r["pmf_b"] is not None},
+                             {m: float(v["w_final"])}) if recs else []
+        c = fit_calibration(pre, m) if pre else identity_calibration(m)
+        out[m] = {"calibrate": bool(v["calibrate"]), "kind": kind, "map": calib_json(c, m),
+                  "n": len(pre)}
+    return out
+
+
 def calib_label(c, market: str):
     """JSON summary of one map: ``"identity"``, ``"pit"`` or ``[a, b]``."""
     if market == BINARY_MARKET:
@@ -279,13 +323,14 @@ def per_market_scores(df: pd.DataFrame) -> dict[str, dict]:
 
 
 def pipeline_config(kept_a, tuned: Mapping, sources: Mapping, w_final: Mapping,
-                    calibrate: bool) -> dict:
+                    calibrate: bool, data_end: tuple[int, int]) -> dict:
     """``pipeline.json``: ``{kept_a_toggles, tuned: {season: [decay, max_iter]},
-    markets: {m: {source, w_final, calibrate}}}``."""
+    markets: {m: {source, w_final, calibrate}}, data_end: [season, week]}``."""
     return {"kept_a_toggles": [r for r in tpm.LADDER if r in kept_a],
             "tuned": {str(s): [float(d), int(i)] for s, (d, i) in sorted(tuned.items())},
             "markets": {m: {"source": str(sources[m]), "w_final": float(w_final[m]),
-                            "calibrate": bool(calibrate)} for m in MARKETS}}
+                            "calibrate": bool(calibrate)} for m in MARKETS},
+            "data_end": [int(data_end[0]), int(data_end[1])]}
 
 
 def oof_frame(ml_recs, out_of_role: set) -> pd.DataFrame:
@@ -299,12 +344,14 @@ def oof_frame(ml_recs, out_of_role: set) -> pd.DataFrame:
 
 def output_paths(tag: str, run_date: str, *, gate_path: Path = GATE_PATH,
                  pipeline_path: Path = PIPELINE_PATH,
-                 report_dir: Path = tpm.REPORT_DIR) -> tuple[Path, Path, Path]:
-    """(b_gate json, pipeline json, report md); non-default tags are suffixed."""
+                 report_dir: Path = tpm.REPORT_DIR) -> tuple[Path, Path, Path, Path]:
+    """(b_gate json, pipeline json, calibration json -- next to pipeline.json --,
+    report md); non-default tags are suffixed."""
     sfx = "" if tag == tpm.DEFAULT_TAG else f"__{tag}"
     gate_path, pipeline_path = Path(gate_path), Path(pipeline_path)
     return (gate_path.with_name(f"{gate_path.stem}{sfx}{gate_path.suffix}"),
             pipeline_path.with_name(f"{pipeline_path.stem}{sfx}{pipeline_path.suffix}"),
+            pipeline_path.with_name(f"calibration{sfx}.json"),
             Path(report_dir) / f"{run_date}-props-ml-b-gate{sfx}.md")
 
 
@@ -654,10 +701,13 @@ def run_b_ladder(env: Mapping[str, str], *, bsn, player_tbl: pd.DataFrame,
                 "pass": bool(d_all["pass"] and d25 is not None and d25["pass"])}
 
     selected, unselected = final_decision(sources, "final"), final_decision(a_sources, "final-un")
-    rows_b = _by_market(with_b(pre_calib))
-    w_final = {m: (float(choose_weight(rows_b[m], m)) if "blend" in kept_rungs and rows_b.get(m)
-                   else 1.0) for m in MARKETS}
-    pipeline = pipeline_config(kept_a, tuned, sources, w_final, "calibration" in kept_rungs)
+    w_final = final_weights(with_b(pre_calib), MARKETS, "blend" in kept_rungs)
+    data_end = max((int(r["season"]), int(r["week"])) for r in pre_calib)
+    pipeline = pipeline_config(kept_a, tuned, sources, w_final, "calibration" in kept_rungs,
+                               data_end)
+    log("stage=serving calibration maps at w_final (all OOF rows)")
+    serving_cal = {"data_end": list(data_end),
+                   "markets": final_calibration(pre_calib, pipeline["markets"])}
     for label, f in (("selected", selected), ("unselected", unselected)):
         log(f"FINAL {label} all: {tpm._fmt_decision_line(f['all'])}; sources {f['sources']}")
         if f["season_2025"] is not None:
@@ -676,14 +726,14 @@ def run_b_ladder(env: Mapping[str, str], *, bsn, player_tbl: pd.DataFrame,
             "blend": blend, "calibration": calib, "kept_rungs": kept_rungs,
             "final": {**selected, "ml_per_market": ml_pm, "unselected": unselected},
             "pipeline": pipeline, "oof_path": str(oof_path), "elapsed_s": time.time() - t0}
-    out_gate, out_pipe, out_report = output_paths(base_tag, run_date, gate_path=gate_path,
-                                                  pipeline_path=pipeline_path,
-                                                  report_dir=report_dir)
+    out_gate, out_pipe, out_cal, out_report = output_paths(
+        base_tag, run_date, gate_path=gate_path, pipeline_path=pipeline_path,
+        report_dir=report_dir)
     for path, text in ((out_gate, tpm.gate_json(gate)), (out_pipe, tpm.gate_json(pipeline)),
-                       (out_report, render_report(gate))):
+                       (out_cal, tpm.gate_json(serving_cal)), (out_report, render_report(gate))):
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(text)
-    log(f"wrote {out_gate}, {out_pipe}, {out_report}, {oof_path}")
+    log(f"wrote {out_gate}, {out_pipe}, {out_cal}, {out_report}, {oof_path}")
     return gate
 
 
