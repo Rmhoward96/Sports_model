@@ -194,15 +194,18 @@ def test_fit_pit_map_uniform_is_near_identity():
 
 
 def test_fit_pit_map_ignores_nonfinite_and_clips():
-    pits = np.array([np.nan, np.inf, -np.inf, -0.5, 1.5, 0.25, 0.75])
+    pits = np.tile([np.nan, np.inf, -np.inf, -0.5, 1.5, 0.25, 0.75], 100)  # 400 finite
     u, g = fit_pit_map(pits)
+    # finite: -0.5 -> 0, 1.5 -> 1, 0.25, 0.75; half of them are <= 0.5
+    assert g[np.searchsorted(u, 0.5)] == pytest.approx(0.5)
     assert np.all(np.isfinite(g))
     assert g.min() >= 0.0 and g.max() <= 1.0
     assert np.all(np.diff(g) >= 0)
 
 
 def test_fit_pit_map_is_json_serialisable():
-    knots = fit_pit_map(np.linspace(0, 1, 50))
+    knots = fit_pit_map(np.linspace(0, 1, 500))
+    assert knots.shape == (2, 201)
     back = np.asarray(json.loads(json.dumps(knots.tolist())))
     np.testing.assert_array_equal(back, knots)
 
@@ -277,3 +280,67 @@ def test_apply_platt_identity_and_shape():
 
 def test_fit_platt_single_class_falls_back_to_identity():
     assert fit_platt([0.2, 0.3, 0.4], [0, 0, 0]) == (1.0, 0.0)
+
+
+# --- Props-2 Task 3 rulings: robustness guards ------------------------------------
+
+
+def test_fit_pit_map_needs_min_pits_else_identity():
+    from sportsmodel.model.props_ml.pit_calibration import IDENTITY_KNOTS, MIN_PITS
+    assert MIN_PITS == 300
+    rng = np.random.default_rng(7)
+    few = np.concatenate([rng.beta(0.3, 0.3, MIN_PITS - 1), [np.nan] * 50])
+    np.testing.assert_array_equal(fit_pit_map(few), IDENTITY_KNOTS)
+    enough = fit_pit_map(rng.beta(0.3, 0.3, MIN_PITS))
+    assert enough.shape == (2, 201)
+    assert np.interp(0.1, *enough) > 0.15  # a real (non-identity) map
+
+
+def test_fit_platt_needs_min_per_class_else_identity():
+    from sportsmodel.model.props_ml.pit_calibration import MIN_CLASS
+    assert MIN_CLASS == 100
+    rng = np.random.default_rng(8)
+    p = rng.uniform(0.05, 0.6, 5_000)
+    y = np.zeros(len(p), dtype=int)
+    y[:MIN_CLASS - 1] = 1                     # 99 positives: too few to identify
+    assert fit_platt(p, y) == (1.0, 0.0)
+    y[:MIN_CLASS] = 1                         # 100 of each: fitted
+    assert fit_platt(p, y) != (1.0, 0.0)
+
+
+def test_fit_platt_separable_data_stays_finite():
+    p = np.concatenate([np.full(200, 0.2), np.full(200, 0.8)])
+    y = np.concatenate([np.zeros(200, dtype=int), np.ones(200, dtype=int)])
+    a, b = fit_platt(p, y)                    # finite penalty (C=1e4): no divergence
+    assert np.isfinite(a) and np.isfinite(b) and 1.0 < a < 20.0
+
+
+def test_fit_platt_uses_finite_penalty(monkeypatch):
+    import sportsmodel.model.props_ml.pit_calibration as pc
+    seen = {}
+    real = pc.LogisticRegression
+
+    def spy(**kw):
+        seen.update(kw)
+        return real(**kw)
+
+    monkeypatch.setattr(pc, "LogisticRegression", spy)
+    rng = np.random.default_rng(10)
+    p = rng.uniform(0.05, 0.9, 2_000)
+    fit_platt(p, (rng.random(len(p)) < p).astype(int))
+    assert seen["C"] == 1e4
+
+
+def test_choose_weight_binary_reads_p_any_as_one_minus_p0():
+    from sportsmodel.model.props_ml.blend import prob_at_least_one
+    assert prob_at_least_one([0.6, 0.3, 0.1]) == pytest.approx(0.4)
+    assert prob_at_least_one(np.array([0.25, 0.75], dtype=np.float32)) == pytest.approx(0.75)
+    # a TD-count pmf (3 bins) scores exactly like its collapsed [P(0), P(>=1)] form
+    rng = np.random.default_rng(9)
+    rows3, rows2 = [], []
+    for _ in range(60):
+        a, b = rng.dirichlet(np.ones(3)), rng.dirichlet(np.ones(3))
+        y = int(rng.random() < 0.4)
+        rows3.append({"pmf_a": a, "pmf_b": b, "actual": y})
+        rows2.append({"pmf_a": [a[0], 1 - a[0]], "pmf_b": [b[0], 1 - b[0]], "actual": y})
+    assert choose_weight(rows3, "anytime_td") == choose_weight(rows2, "anytime_td")

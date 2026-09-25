@@ -603,3 +603,35 @@ def test_ladder_non_default_tag_writes_tagged_outputs_and_checkpoints(tmp_path, 
     assert (tmp_path / "reports" / "2026-09-24-props-ml-a-gate__s2025__every4.md").exists()
     assert {p.name for p in (tmp_path / "data").glob("*.parquet")} == {
         f"records_{n}__s2025__every4.parquet" for n in ("baseline", *tpm.LADDER)}
+
+
+# ---- Props-2 Task 1 ruling: the A gate scores only its four markets ------------------
+
+class _FakeBsn7(_FakeBsn):
+    """Backtest records now span seven markets; the extra ones must not reach
+    the Props-1 population / pairing (its committed verdict stays reproducible)."""
+
+    def run_backtest(self, seasons, n_sims, *, seed, on_game, spec_hook, record, sources, **prod):
+        mine: list = []
+        super().run_backtest(seasons, n_sims, seed=seed, on_game=on_game, spec_hook=spec_hook,
+                             record=mine, sources=sources, **prod)
+        extra = [{**r, "market": "anytime_td", "mean": 0.4,
+                  "rps": 5.0 if spec_hook is not None else 0.1} for r in mine]
+        record.extend(mine + extra)
+
+
+def test_gate_filters_records_to_the_four_props1_markets(tmp_path, monkeypatch):
+    assert tpm.GATED_MARKETS == ("pass_yds", "rush_yds", "rec_yds", "receptions")
+    monkeypatch.setattr(tpm.learned, "tune", lambda p, s, t: (0.8, 150))
+    monkeypatch.setattr(tpm.learned, "fit_models", lambda *a, **k: _Models())
+    env = {"PROPS_ML_SEASONS": "2025", "PROPS_ML_N_SIMS": "10", "PROPS_ML_TOGGLES": "volume"}
+    gate = tpm.run_harness(env, bsn=_FakeBsn7(), player_tbl=_player_tbl().assign(season=2025),
+                           team_tbl=_team_tbl(), identity={"git_head": "deadbeef"},
+                           data_dir=tmp_path / "data", gate_path=tmp_path / "a_gate.json",
+                           report_dir=tmp_path / "reports", log=lambda m: None,
+                           run_date="2026-09-24")
+    assert set(gate["decision"]["per_market"]) == {"rec_yds"}
+    assert set(gate["baseline_ece"]["per_market"]) == {"rec_yds"}
+    assert gate["decision"]["skill"] > 0
+    for p in (tmp_path / "data").glob("*.parquet"):
+        assert set(pd.read_parquet(p)["market"]) == {"rec_yds"}

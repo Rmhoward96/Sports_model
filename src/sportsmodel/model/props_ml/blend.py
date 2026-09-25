@@ -2,7 +2,8 @@
 
 A is the learned sim's per-player pmf, B the direct per-market model's
 (``dist_models``). Count/yards markets use a linear pool of the two pmfs;
-the binary ``anytime_td`` market uses a logit blend of P(1). ``choose_weight``
+the binary ``anytime_td`` market uses a logit blend of P(>=1), read from any
+pmf as ``1 - pmf[0]`` (``prob_at_least_one``; shape-agnostic). ``choose_weight``
 picks the pool weight on A from a fixed grid by walk-forward score (mean RPS;
 for a 2-bin pmf RPS equals the Brier score), breaking ties toward larger w
 (prefer the gated A).
@@ -63,9 +64,14 @@ def blend_binary(p_a, p_b, w: float):
     return _scalar_or_array(_sigmoid(w * _logit(p_a) + (1.0 - w) * _logit(p_b)))
 
 
+def prob_at_least_one(pmf) -> float:
+    """P(X >= 1) = ``1 - pmf[0]`` for a pmf of any length (2-bin or count)."""
+    return float(1.0 - np.asarray(pmf, dtype=float)[0])
+
+
 def _blend_row(pmf_a, pmf_b, w: float, market: str) -> np.ndarray:
     if market == BINARY_MARKET:
-        p1 = blend_binary(np.asarray(pmf_a, dtype=float)[1], np.asarray(pmf_b, dtype=float)[1], w)
+        p1 = blend_binary(prob_at_least_one(pmf_a), prob_at_least_one(pmf_b), w)
         return np.array([1.0 - p1, p1])
     return blend_pmf(pmf_a, pmf_b, w)
 
@@ -75,8 +81,8 @@ def choose_weight(rows: Iterable[Mapping] | pd.DataFrame, market: str,
     """Grid weight on A minimising the mean score of the blend over ``rows``
     (dicts or a DataFrame with ``pmf_a``, ``pmf_b``, ``actual``).
 
-    ``anytime_td``: 2-bin pmfs ``[P(0), P(1)]``, logit blend of P(1), scored by
-    Brier (= RPS of the 2-bin pmf). Other markets: linear pool, mean RPS.
+    ``anytime_td``: logit blend of P(>=1) = ``1 - pmf[0]``, scored as the 2-bin
+    pmf ``[1-p, p]`` by Brier (= RPS of the 2-bin pmf). Other markets: linear pool, mean RPS.
     Scores within 1e-12 of the minimum count as ties; ties go to the larger w.
     """
     if isinstance(rows, pd.DataFrame):

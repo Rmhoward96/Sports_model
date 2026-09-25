@@ -102,6 +102,10 @@ PROD = dict(season_decay=0.4, questionable_weight=0.75, home_field=0.07, ratings
 # further down-weight would double-count. Baseline shares keep PROD's 0.75.
 Q_WEIGHT = 1.0
 TUNE_TOGGLES = frozenset({"volume"})
+# The four markets the A gate scores. Backtest records now span seven markets
+# (Props-2); the harness filters to these before population / pairing so the
+# committed Props-1 verdict stays reproducible.
+GATED_MARKETS: tuple[str, ...] = ("pass_yds", "rush_yds", "rec_yds", "receptions")
 FINAL_SEASON = 2025
 DEFAULT_N_SIMS = 1000
 ECE_TOL = 0.005  # same tolerance rung_decision applies vs the kept config
@@ -643,7 +647,7 @@ def run_harness(env: Mapping[str, str], *, bsn, player_tbl: pd.DataFrame, team_t
             got = load_records(path, meta)
             if got is not None:
                 log(f"run={name}: loaded {len(got[0])} records from checkpoint {path.name}")
-                return got
+                return [r for r in got[0] if r["market"] in GATED_MARKETS], got[1]
             log(f"run={name}: no matching checkpoint, running")
         hook, models = make() if make is not None else (None, {})
         start = time.time()
@@ -665,6 +669,7 @@ def run_harness(env: Mapping[str, str], *, bsn, player_tbl: pd.DataFrame, team_t
         bsn.run_backtest(seasons, n_sims, seed=seed, on_game=on_game, spec_hook=hook,
                          record=recs, sources=sources, **PROD)
         raise_hook_errors(errors, name)
+        recs = [r for r in recs if r["market"] in GATED_MARKETS]
         stats = {"seconds": time.time() - start, "games": state["games"],
                  "share_fallbacks": sum(m.share_fallbacks for m in models.values())}
         save_records(path, recs, meta, stats)

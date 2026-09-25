@@ -10,6 +10,11 @@ which moves mass into the tails -- the pmf widens.
 Platt (binary ``anytime_td``): ``p' = sigmoid(a*logit(p) + b)``, fitted by
 logistic regression on ``logit(p)``; identity is ``(1, 0)``.
 
+Robustness guards (real-data fitting): a PIT map needs at least ``MIN_PITS``
+finite PITs and Platt at least ``MIN_CLASS`` observations of EACH class,
+otherwise the identity map is returned; Platt uses a finite penalty
+(``C = 1e4``) so (near-)separable data cannot diverge.
+
 Serialization: knots are a ``(2, K)`` float array (``.tolist()`` for JSON;
 ``apply_pit_map`` accepts lists), Platt params a tuple of two Python floats.
 """
@@ -23,15 +28,19 @@ from sportsmodel.model.props_ml.blend import _logit, _scalar_or_array, _sigmoid
 N_KNOTS = 201
 IDENTITY_KNOTS = np.array([[0.0, 1.0], [0.0, 1.0]])
 IDENTITY_PLATT = (1.0, 0.0)
+MIN_PITS = 300
+MIN_CLASS = 100
+PLATT_C = 1e4
 
 
 def fit_pit_map(pits) -> np.ndarray:
     """Knots ``(2, K)`` of the empirical CDF of the finite PITs (clipped to
     [0, 1]) on ``K = 201`` evenly spaced u in [0, 1], anchored at (0, 0) and
-    (1, 1) and made monotone. No finite PITs -> identity knots."""
+    (1, 1) and made monotone. Fewer than ``MIN_PITS`` finite PITs -> identity
+    knots."""
     p = np.asarray(pits, dtype=float).ravel()
     p = np.sort(np.clip(p[np.isfinite(p)], 0.0, 1.0))
-    if p.size == 0:
+    if p.size < MIN_PITS:
         return IDENTITY_KNOTS.copy()
     u = np.linspace(0.0, 1.0, N_KNOTS)
     g = np.searchsorted(p, u, side="right") / p.size
@@ -52,14 +61,15 @@ def apply_pit_map(pmf, knots) -> np.ndarray:
 
 
 def fit_platt(p, y) -> tuple[float, float]:
-    """Unpenalized logistic regression of ``y`` on ``logit(p)`` (p clipped to
-    [1e-4, 1-1e-4]); returns ``(a, b)``. A single observed class cannot
-    identify the map -> identity ``(1.0, 0.0)``."""
+    """Logistic regression (L2, ``C = PLATT_C``) of ``y`` on ``logit(p)`` (p
+    clipped to [1e-4, 1-1e-4]); returns ``(a, b)``. Fewer than ``MIN_CLASS``
+    observations of either class -> identity ``(1.0, 0.0)``."""
     x = _logit(np.asarray(p, dtype=float).ravel()).reshape(-1, 1)
     y = np.asarray(y).ravel().astype(int)
-    if np.unique(y).size < 2:
+    n_pos = int((y == 1).sum())
+    if n_pos < MIN_CLASS or y.size - n_pos < MIN_CLASS:
         return IDENTITY_PLATT
-    lr = LogisticRegression(C=np.inf, max_iter=1000).fit(x, y)
+    lr = LogisticRegression(C=PLATT_C, max_iter=1000).fit(x, y)
     return float(lr.coef_[0, 0]), float(lr.intercept_[0])
 
 
