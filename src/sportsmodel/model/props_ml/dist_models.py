@@ -68,8 +68,10 @@ def quantiles_to_pmf(qvals: np.ndarray, kmax: int) -> np.ndarray:
 
     Quantiles are sorted (monotone rearrangement) and clipped to
     ``[0, kmax]``. The CDF is piecewise linear through the knots
-    ``(-0.5, 0)``, ``(q_i, tau_i)``, ``(kmax + 0.5, 1)`` (knots sharing an x
-    keep the larger tau); ``pmf[k] = F(k + 0.5) - F(k - 0.5)``, renormalized.
+    ``(-0.5, 0)``, ``(q_i, tau_i)``, ``(kmax + 0.5, 1)``; knots sharing an x
+    keep both the smallest and the largest tau there, i.e. F steps at that x
+    (right-continuous) and the tied taus' mass is a point mass on it.
+    ``pmf[k] = F(k + 0.5) - F(k - 0.5)``, renormalized.
     """
     q = np.asarray(qvals, dtype=float)
     if q.shape != TAUS.shape:
@@ -77,9 +79,12 @@ def quantiles_to_pmf(qvals: np.ndarray, kmax: int) -> np.ndarray:
     q = np.clip(np.sort(q), 0.0, float(kmax))
     x = np.concatenate([[-0.5], q, [kmax + 0.5]])
     y = np.concatenate([[0.0], TAUS, [1.0]])
-    # x is sorted and y increasing, so the LAST knot of each equal-x run holds
-    # the larger tau.
-    keep = np.append(x[1:] != x[:-1], True)
+    # x is sorted and y increasing: keep the FIRST (smallest tau) and LAST
+    # (largest tau) knot of each equal-x run. np.interp takes the later knot
+    # at a duplicated x, so F is right-continuous at the step.
+    first = np.insert(x[1:] != x[:-1], 0, True)
+    last = np.append(x[1:] != x[:-1], True)
+    keep = first | last
     F = np.interp(np.arange(kmax + 2) - 0.5, x[keep], y[keep])
     pmf = np.clip(np.diff(F), 0.0, None)
     return pmf / pmf.sum()
@@ -90,8 +95,10 @@ def nb_pmf(mu: float, r: float | None, kmax: int) -> np.ndarray:
 
     ``r is None`` or ``r > 1e6`` gives the Poisson limit. Computed in log
     space via ``math.lgamma``; the tail mass beyond ``kmax`` is folded into
-    ``pmf[kmax]``. ``mu <= 0`` is a point mass at 0.
+    ``pmf[kmax]``. ``mu <= 0`` is a point mass at 0; NaN ``mu`` raises.
     """
+    if mu != mu:
+        raise ValueError("nb_pmf: mu is NaN")
     pmf = np.zeros(kmax + 1)
     if not mu > 0:
         pmf[0] = 1.0
@@ -182,6 +189,9 @@ def fit_market(df: pd.DataFrame, market: str, cols: list[str], *,
                max_iter: int) -> MarketModel:
     """Fit the B model for ``market`` on played rows before ``upto`` with the
     label present; sample weight ``decay ** (test_season - season)``.
+    ``decay == 1.0`` fits UNWEIGHTED (``sample_weight=None``): scikit-learn's
+    weighted binning path costs ~12 s per fit on the real table even when all
+    weights are equal.
 
     Raises ``ValueError`` for an unknown market, an empty training slice, or
     no usable (non-all-NaN) feature column.
@@ -197,7 +207,8 @@ def fit_market(df: pd.DataFrame, market: str, cols: list[str], *,
         raise ValueError(f"fit_market({market}): every feature column is all-NaN")
     X = tr[used]
     y = tr[label].to_numpy(dtype=float)
-    w = decay ** (test_season - tr["season"].to_numpy(dtype=float))
+    w = (None if decay == 1.0
+         else decay ** (test_season - tr["season"].to_numpy(dtype=float)))
 
     if kind == "quantile":
         y = np.clip(y, 0.0, None)

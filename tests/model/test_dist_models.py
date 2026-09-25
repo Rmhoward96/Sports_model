@@ -5,7 +5,9 @@ parquet, never the network.
 """
 from __future__ import annotations
 
+import importlib.util
 import math
+import pathlib
 
 import numpy as np
 import pandas as pd
@@ -26,9 +28,12 @@ from sportsmodel.model.props_ml.dist_models import (
 from sportsmodel.model.props_ml.dist_models import _tier_dispersion, _tiers
 from sportsmodel.sim.nfl.learned import feature_columns
 
-# Mirrors scripts/backtest_sim_nfl.MARKET_MAX (+ anytime_td, 2 bins).
-KMAX = {"pass_yds": 400, "rush_yds": 200, "rec_yds": 200, "receptions": 15,
-        "pass_tds": 6, "rush_att": 40, "anytime_td": 1}
+# Support from the backtest's single MARKET_MAX constant (+ anytime_td, 2 bins).
+_p = pathlib.Path(__file__).resolve().parents[2] / "scripts" / "backtest_sim_nfl.py"
+_spec = importlib.util.spec_from_file_location("backtest_sim_nfl", _p)
+_bsn = importlib.util.module_from_spec(_spec)
+_spec.loader.exec_module(_bsn)
+KMAX = {**_bsn.MARKET_MAX, "anytime_td": 1}
 SEASONS = (2021, 2022, 2023)
 WEEKS = range(1, 11)
 UPTO = (2023, 4)
@@ -145,6 +150,17 @@ def test_nb_pmf_mean_and_poisson_limit():
     assert np.allclose(nb_pmf(4.0, None, 60), nb_pmf(4.0, 1e9, 60), atol=1e-9)
 
 
+def test_nb_pmf_large_r_approaches_poisson():
+    # r = 1e5 takes the NB branch (not the > 1e6 Poisson shortcut)
+    assert np.allclose(nb_pmf(4.0, 1e5, 60), nb_pmf(4.0, None, 60), atol=1e-3)
+    assert not np.array_equal(nb_pmf(4.0, 1e5, 60), nb_pmf(4.0, None, 60))
+
+
+def test_nb_pmf_nan_mu_raises():
+    with pytest.raises(ValueError):
+        nb_pmf(float("nan"), 2.0, 10)
+
+
 def test_fit_market_respects_upto(small_tbl, fitted):
     _, calls = fitted  # rows at/after upto never train
     for market, label in LABELS.items():
@@ -183,9 +199,19 @@ def test_quantiles_to_pmf_cdf_rule():
 
 def test_quantiles_to_pmf_clips_to_support():
     hi = quantiles_to_pmf(np.full(19, 500.0), 200)
-    assert hi.shape == (201,) and abs(hi.sum() - 1) < 1e-9 and hi.argmax() == 200
+    assert hi.shape == (201,) and abs(hi.sum() - 1) < 1e-9 and hi[200] >= 0.95 - 1e-9
     lo = quantiles_to_pmf(np.full(19, -30.0), 200)
-    assert abs(lo.sum() - 1) < 1e-9 and lo[0] >= 0.95
+    assert abs(lo.sum() - 1) < 1e-9 and lo[0] >= 0.95 - 1e-9
+
+
+def test_quantiles_to_pmf_mid_range_tie_is_a_cdf_step():
+    # taus 0.40..0.60 (indices 7..11) all at 20 -> F jumps .40 -> .60 at 20
+    q = np.concatenate([2.0 * np.arange(1, 8), np.full(5, 20.0), 10.0 * np.arange(3, 10)])
+    assert (np.diff(q) >= 0).all() and list(TAUS[7:12]) == [0.4, 0.45, 0.5, 0.55, 0.6]
+    p = quantiles_to_pmf(q, 200)
+    assert abs(p.sum() - 1) < 1e-9
+    assert p[20] == pytest.approx(0.20, abs=0.01)
+    assert p.argmax() == 20
 
 
 def test_nb_pmf_tail_folded_and_zero_mean():
@@ -321,6 +347,17 @@ def test_tier_ties_stay_in_lower_tier():
     assert d["cuts"] == [pytest.approx(0.03), pytest.approx(0.03)]
     assert list(_tiers(d["cuts"], np.array([0.03, 1.5]))) == [0, 2]
     assert d["r"][1] is None  # empty middle tier
+
+
+def test_fit_market_unweighted_when_decay_is_one(small_tbl, cols, monkeypatch):
+    calls = _spy_fits(monkeypatch)
+    for market in ("receptions", "anytime_td", "rush_yds"):
+        calls.clear()
+        fit_market(small_tbl, market, cols, **{**FIT, "decay": 1.0})
+        assert calls and all(c["w"] is None for c in calls), market
+        calls.clear()
+        fit_market(small_tbl, market, cols, **{**FIT, "decay": 0.9})
+        assert calls and all(isinstance(c["w"], np.ndarray) for c in calls), market
 
 
 def test_fit_market_no_training_rows_raises(small_tbl, cols):
