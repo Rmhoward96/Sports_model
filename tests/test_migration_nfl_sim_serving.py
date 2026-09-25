@@ -6,7 +6,7 @@ from pathlib import Path
 
 
 MIGRATION_PATH = Path(__file__).parent.parent / "db" / "migration_nfl_sim_serving.sql"
-ORIGINAL_MIGRATION_PATH = Path(__file__).parent.parent / "db" / "migration_nfl_sim.sql"
+DB_DIR = Path(__file__).parent.parent / "db"
 
 # LIVE column lists verified against Supabase information_schema on 2026-09-25.
 # These are the definitive column orders the views MUST have.
@@ -43,6 +43,36 @@ def extract_select_cols(view_name, migration_text):
     # Split on comma and strip whitespace, clean up newlines
     cols = [c.strip() for c in cols_text.split(",")]
     return cols
+
+
+def find_all_view_definitions(view_name):
+    """Find all CREATE OR REPLACE VIEW definitions for a view across all db/*.sql files.
+
+    Excludes migration_nfl_sim_serving.sql. Returns dict of {filepath: column_list}.
+    """
+    definitions = {}
+    for sql_file in sorted(DB_DIR.glob("*.sql")):
+        if sql_file.name == "migration_nfl_sim_serving.sql":
+            continue
+        content = sql_file.read_text()
+        pattern = rf"CREATE OR REPLACE VIEW {view_name}\s+AS\s+SELECT\s+(?:DISTINCT ON\s*\([^)]*\)\s+)?(.+?)\s+FROM"
+        match = re.search(pattern, content, re.DOTALL | re.IGNORECASE)
+        if match:
+            cols_text = match.group(1)
+            cols = [c.strip() for c in cols_text.split(",")]
+            definitions[sql_file.name] = cols
+    return definitions
+
+
+def get_view_block(view_name, migration_text):
+    """Extract the text block for a view (from CREATE OR REPLACE VIEW to next statement).
+
+    Returns the view's SQL block as a single string.
+    """
+    pattern = rf"CREATE OR REPLACE VIEW {view_name}\s+AS.*?(?=CREATE OR REPLACE VIEW|GRANT SELECT|$)"
+    match = re.search(pattern, migration_text, re.DOTALL | re.IGNORECASE)
+    assert match, f"Could not extract view block for {view_name}"
+    return match.group(0)
 
 
 class TestNflSimServingMigration:
@@ -86,32 +116,14 @@ class TestNflSimServingMigration:
     def test_nfl_sim_current_has_serving_filter(self):
         """nfl_sim_current view must have model_version serving filter."""
         migration = read_migration(MIGRATION_PATH)
-        # The view must have the filter in its WHERE clause
-        assert "AND model_version = (SELECT model_version FROM nfl_sim_serving WHERE id = 1)" in migration
-        # Verify it's in the nfl_sim_current view
-        match = re.search(
-            r"CREATE OR REPLACE VIEW nfl_sim_current AS.*?"
-            r"(CREATE OR REPLACE VIEW|GRANT SELECT|$)",
-            migration,
-            re.DOTALL | re.IGNORECASE
-        )
-        nfl_sim_current_block = match.group(0)
-        assert "AND model_version = (SELECT model_version FROM nfl_sim_serving WHERE id = 1)" in nfl_sim_current_block
+        view_block = get_view_block("nfl_sim_current", migration)
+        assert "AND model_version = (SELECT model_version FROM nfl_sim_serving WHERE id = 1)" in view_block
 
     def test_nfl_player_sim_current_has_serving_filter(self):
         """nfl_player_sim_current view must have model_version serving filter."""
         migration = read_migration(MIGRATION_PATH)
-        # The view must have the filter in its WHERE clause
-        assert "AND model_version = (SELECT model_version FROM nfl_sim_serving WHERE id = 1)" in migration
-        # Verify it's in the nfl_player_sim_current view
-        match = re.search(
-            r"CREATE OR REPLACE VIEW nfl_player_sim_current AS.*?"
-            r"(GRANT SELECT|$)",
-            migration,
-            re.DOTALL | re.IGNORECASE
-        )
-        nfl_player_sim_current_block = match.group(0)
-        assert "AND model_version = (SELECT model_version FROM nfl_sim_serving WHERE id = 1)" in nfl_player_sim_current_block
+        view_block = get_view_block("nfl_player_sim_current", migration)
+        assert "AND model_version = (SELECT model_version FROM nfl_sim_serving WHERE id = 1)" in view_block
 
     def test_nfl_sim_current_column_list_matches_live_definition(self):
         """nfl_sim_current SELECT columns must match LIVE definition (12 cols from migration_nfl_sim_dist.sql)."""
@@ -119,33 +131,38 @@ class TestNflSimServingMigration:
         new_cols = extract_select_cols("nfl_sim_current", new)
         assert new_cols == LIVE_NFL_SIM_CURRENT_COLS, f"Column mismatch: {new_cols} != {LIVE_NFL_SIM_CURRENT_COLS}"
 
-    def test_nfl_sim_current_contains_all_columns_from_original_migrations(self):
-        """nfl_sim_current must contain all columns from migration_nfl_sim.sql."""
+    def test_nfl_sim_current_contains_all_columns_from_all_earlier_migrations(self):
+        """nfl_sim_current must contain all columns from every earlier definition across all db/*.sql."""
         new = read_migration(MIGRATION_PATH)
-        original = read_migration(ORIGINAL_MIGRATION_PATH)
-
         new_cols = extract_select_cols("nfl_sim_current", new)
-        original_cols = extract_select_cols("nfl_sim_current", original)
 
-        for col in original_cols:
-            assert col in new_cols, f"Column {col} from original migration missing in new"
+        # Find all earlier definitions
+        earlier_defs = find_all_view_definitions("nfl_sim_current")
+        assert len(earlier_defs) > 0, "Must find at least one earlier nfl_sim_current definition in db/*.sql"
+
+        # Assert new version contains all columns from each earlier definition
+        for filepath, earlier_cols in earlier_defs.items():
+            for col in earlier_cols:
+                assert col in new_cols, f"Column {col} from {filepath} missing in new nfl_sim_current"
 
     def test_nfl_sim_current_from_clause(self):
-        """nfl_sim_current must SELECT FROM nfl_sim."""
+        """nfl_sim_current must SELECT FROM nfl_sim (not subquery)."""
         migration = read_migration(MIGRATION_PATH)
+        view_block = get_view_block("nfl_sim_current", migration)
         match = re.search(
-            r"CREATE OR REPLACE VIEW nfl_sim_current AS.*?FROM\s+nfl_sim",
-            migration,
+            r"FROM\s+nfl_sim\s+WHERE",
+            view_block,
             re.DOTALL | re.IGNORECASE
         )
-        assert match, "nfl_sim_current must SELECT FROM nfl_sim"
+        assert match, "nfl_sim_current must SELECT FROM nfl_sim (with word boundary)"
 
     def test_nfl_sim_current_distinct_on(self):
         """nfl_sim_current must use DISTINCT ON (game_pk)."""
         migration = read_migration(MIGRATION_PATH)
+        view_block = get_view_block("nfl_sim_current", migration)
         match = re.search(
-            r"CREATE OR REPLACE VIEW nfl_sim_current AS.*?DISTINCT ON\s*\(\s*game_pk\s*\)",
-            migration,
+            r"DISTINCT ON\s*\(\s*game_pk\s*\)",
+            view_block,
             re.DOTALL | re.IGNORECASE
         )
         assert match, "nfl_sim_current must use DISTINCT ON (game_pk)"
@@ -153,9 +170,10 @@ class TestNflSimServingMigration:
     def test_nfl_sim_current_where_clause_has_commence_time_check(self):
         """nfl_sim_current WHERE clause must filter by commence_time > now()."""
         migration = read_migration(MIGRATION_PATH)
+        view_block = get_view_block("nfl_sim_current", migration)
         match = re.search(
-            r"CREATE OR REPLACE VIEW nfl_sim_current AS.*?WHERE\s+commence_time\s*>\s*now\(\)",
-            migration,
+            r"WHERE\s+commence_time\s*>\s*now\(\)",
+            view_block,
             re.DOTALL | re.IGNORECASE
         )
         assert match, "nfl_sim_current must have WHERE commence_time > now()"
@@ -163,9 +181,10 @@ class TestNflSimServingMigration:
     def test_nfl_sim_current_order_by(self):
         """nfl_sim_current must ORDER BY game_pk, created_at DESC."""
         migration = read_migration(MIGRATION_PATH)
+        view_block = get_view_block("nfl_sim_current", migration)
         match = re.search(
-            r"CREATE OR REPLACE VIEW nfl_sim_current AS.*?ORDER BY\s+game_pk\s*,\s*created_at\s+DESC",
-            migration,
+            r"ORDER BY\s+game_pk\s*,\s*created_at\s+DESC",
+            view_block,
             re.DOTALL | re.IGNORECASE
         )
         assert match, "nfl_sim_current must ORDER BY game_pk, created_at DESC"
@@ -176,33 +195,38 @@ class TestNflSimServingMigration:
         new_cols = extract_select_cols("nfl_player_sim_current", new)
         assert new_cols == LIVE_NFL_PLAYER_SIM_CURRENT_COLS, f"Column mismatch: {new_cols} != {LIVE_NFL_PLAYER_SIM_CURRENT_COLS}"
 
-    def test_nfl_player_sim_current_contains_all_columns_from_original_migrations(self):
-        """nfl_player_sim_current must contain all columns from migration_nfl_sim.sql."""
+    def test_nfl_player_sim_current_contains_all_columns_from_all_earlier_migrations(self):
+        """nfl_player_sim_current must contain all columns from every earlier definition across all db/*.sql."""
         new = read_migration(MIGRATION_PATH)
-        original = read_migration(ORIGINAL_MIGRATION_PATH)
-
         new_cols = extract_select_cols("nfl_player_sim_current", new)
-        original_cols = extract_select_cols("nfl_player_sim_current", original)
 
-        for col in original_cols:
-            assert col in new_cols, f"Column {col} from original migration missing in new"
+        # Find all earlier definitions
+        earlier_defs = find_all_view_definitions("nfl_player_sim_current")
+        assert len(earlier_defs) > 0, "Must find at least one earlier nfl_player_sim_current definition in db/*.sql"
+
+        # Assert new version contains all columns from each earlier definition
+        for filepath, earlier_cols in earlier_defs.items():
+            for col in earlier_cols:
+                assert col in new_cols, f"Column {col} from {filepath} missing in new nfl_player_sim_current"
 
     def test_nfl_player_sim_current_from_clause(self):
-        """nfl_player_sim_current must SELECT FROM nfl_player_sim."""
+        """nfl_player_sim_current must SELECT FROM nfl_player_sim (not subquery)."""
         migration = read_migration(MIGRATION_PATH)
+        view_block = get_view_block("nfl_player_sim_current", migration)
         match = re.search(
-            r"CREATE OR REPLACE VIEW nfl_player_sim_current AS.*?FROM\s+nfl_player_sim",
-            migration,
+            r"FROM\s+nfl_player_sim\s+WHERE",
+            view_block,
             re.DOTALL | re.IGNORECASE
         )
-        assert match, "nfl_player_sim_current must SELECT FROM nfl_player_sim"
+        assert match, "nfl_player_sim_current must SELECT FROM nfl_player_sim (with word boundary)"
 
     def test_nfl_player_sim_current_distinct_on(self):
         """nfl_player_sim_current must use DISTINCT ON (game_pk, player_id, market)."""
         migration = read_migration(MIGRATION_PATH)
+        view_block = get_view_block("nfl_player_sim_current", migration)
         match = re.search(
-            r"CREATE OR REPLACE VIEW nfl_player_sim_current AS.*?DISTINCT ON\s*\(\s*game_pk\s*,\s*player_id\s*,\s*market\s*\)",
-            migration,
+            r"DISTINCT ON\s*\(\s*game_pk\s*,\s*player_id\s*,\s*market\s*\)",
+            view_block,
             re.DOTALL | re.IGNORECASE
         )
         assert match, "nfl_player_sim_current must use DISTINCT ON (game_pk, player_id, market)"
@@ -210,9 +234,10 @@ class TestNflSimServingMigration:
     def test_nfl_player_sim_current_where_clause_has_commence_time_check(self):
         """nfl_player_sim_current WHERE clause must filter by commence_time > now()."""
         migration = read_migration(MIGRATION_PATH)
+        view_block = get_view_block("nfl_player_sim_current", migration)
         match = re.search(
-            r"CREATE OR REPLACE VIEW nfl_player_sim_current AS.*?WHERE\s+commence_time\s*>\s*now\(\)",
-            migration,
+            r"WHERE\s+commence_time\s*>\s*now\(\)",
+            view_block,
             re.DOTALL | re.IGNORECASE
         )
         assert match, "nfl_player_sim_current must have WHERE commence_time > now()"
@@ -220,9 +245,10 @@ class TestNflSimServingMigration:
     def test_nfl_player_sim_current_order_by(self):
         """nfl_player_sim_current must ORDER BY game_pk, player_id, market, created_at DESC."""
         migration = read_migration(MIGRATION_PATH)
+        view_block = get_view_block("nfl_player_sim_current", migration)
         match = re.search(
-            r"CREATE OR REPLACE VIEW nfl_player_sim_current AS.*?ORDER BY\s+game_pk\s*,\s*player_id\s*,\s*market\s*,\s*created_at\s+DESC",
-            migration,
+            r"ORDER BY\s+game_pk\s*,\s*player_id\s*,\s*market\s*,\s*created_at\s+DESC",
+            view_block,
             re.DOTALL | re.IGNORECASE
         )
         assert match, "nfl_player_sim_current must ORDER BY game_pk, player_id, market, created_at DESC"
