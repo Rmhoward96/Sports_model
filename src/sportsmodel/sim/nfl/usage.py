@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import pandas as pd
 
+from sportsmodel.nfl.injury_report import name_key
 from sportsmodel.nfl.teams import normalize_team
 from sportsmodel.sim.nfl.spec import PlayerInput
 
@@ -167,6 +168,7 @@ def active_usage(
     *,
     out_ids: set[str] | None = None,
     questionable_ids: set[str] | None = None,
+    match_name_keys: bool = False,
 ) -> tuple[list[PlayerInput], str | None]:
     """Per-week active-roster usage: the dilution fix over season averages.
 
@@ -185,7 +187,12 @@ def active_usage(
        ``gsis_id`` is in the optional ``out_ids`` (union with the name match --
        ids catch nickname/suffix spellings like "Hollywood Brown" vs "Marquise
        Brown"; ``questionable_ids`` likewise unions with ``questionable_names``;
-       both default None = name-only). The target-week depth chart and
+       both default None = name-only). With ``match_name_keys=True`` every
+       name compare (out and questionable, report and depth side) goes through
+       ``sportsmodel.nfl.injury_report.name_key`` instead of a plain
+       lowercase, so "D.J. Moore Jr." matches "DJ Moore" (punctuation and
+       Jr/Sr/II.. suffixes dropped); the default False keeps the plain
+       lowercase compare. The target-week depth chart and
        the injury list are pre-game info and ARE allowed to define who's active;
        everything else is strictly leakage-free.
 
@@ -243,19 +250,16 @@ def active_usage(
     """
     del snaps_df, pfr2gsis  # reserved for future snap weighting (see docstring)
 
-    injuries = {
-        str(n).strip().lower()
-        for n in (injuries_out_names or set())
-    }
+    def _norm_name(n: object) -> str:
+        return name_key(n) if match_name_keys else str(n).strip().lower()
+
+    injuries = {_norm_name(n) for n in (injuries_out_names or set())}
     # Questionable players stay ACTIVE but get their volume (targets/carries/TDs)
     # scaled by questionable_weight (<1 => reduced expected usage; freed share
     # redistributes to healthy teammates via the step-5 renorm). weight 1.0 or an
     # empty set is a no-op. Efficiency (ypt/ypc/...) is untouched -- a hobbled
     # player isn't worse per touch, just gets fewer.
-    questionable = {
-        str(n).strip().lower()
-        for n in (questionable_names or set())
-    }
+    questionable = {_norm_name(n) for n in (questionable_names or set())}
     out_gsis = {str(g).strip() for g in (out_ids or set()) if not _is_missing_id(g)}
     q_ids = {str(g).strip() for g in (questionable_ids or set()) if not _is_missing_id(g)}
     questionable_gsis: set[str] = set()
@@ -293,10 +297,10 @@ def active_usage(
         full_name = getattr(row, "full_name", None)
         football_name = getattr(row, "football_name", None)
         names_lower = {
-            str(n).strip().lower()
+            _norm_name(n)
             for n in (full_name, football_name)
             if not _is_missing_id(n)
-        }
+        } - {""}   # a name that keys to "" (e.g. ".") must never match
         if names_lower & injuries or gsis in out_gsis:
             continue
 

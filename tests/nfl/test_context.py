@@ -110,3 +110,78 @@ def test_short_week_and_off_bye_are_nan_when_rest_is_unknown():
     assert cx.loc[(2, "LAC"), "cx_short_week"] == 1 and cx.loc[(2, "LAC"), "cx_off_bye"] == 0
     assert cx.loc[(2, "KC"), "cx_short_week"] == 0 and cx.loc[(2, "KC"), "cx_off_bye"] == 1
     assert cx.loc[(1, "KC"), "cx_short_week"] == 0 and cx.loc[(1, "KC"), "cx_off_bye"] == 0
+
+
+# --- live kickoff forecast (Open-Meteo hourly, requested in degF / mph, UTC) ---
+
+def _hourly(times, temps, winds):
+    return {"hourly": {"time": times, "temperature_2m": temps, "wind_speed_10m": winds}}
+
+
+def test_parse_kickoff_forecast_picks_nearest_hour_and_converts_nothing():
+    from sportsmodel.nfl.context import parse_kickoff_forecast
+    p = _hourly(["2026-09-27T16:00", "2026-09-27T17:00", "2026-09-27T18:00"],
+                [60.1, 62.5, 64.0], [5.0, 7.5, 9.0])
+    assert parse_kickoff_forecast(p, pd.Timestamp("2026-09-27T17:25Z")) == (62.5, 7.5)
+    assert parse_kickoff_forecast(p, pd.Timestamp("2026-09-27T17:40Z")) == (64.0, 9.0)
+    assert parse_kickoff_forecast(p, pd.Timestamp("2026-09-27T15:50Z")) == (60.1, 5.0)
+
+
+def test_parse_kickoff_forecast_missing_is_nan():
+    from sportsmodel.nfl.context import parse_kickoff_forecast
+    ko = pd.Timestamp("2026-09-27T17:00Z")
+    for payload in ({}, {"hourly": {}}, _hourly([], [], []),
+                    _hourly(["2026-09-27T17:00"], [None], [None]),
+                    _hourly(["2026-09-29T17:00"], [70.0], [4.0])):   # nowhere near kickoff
+        temp, wind = parse_kickoff_forecast(payload, ko)
+        assert pd.isna(temp) and pd.isna(wind)
+    temp, wind = parse_kickoff_forecast(_hourly(["2026-09-27T17:00"], [66.0], [None]), ko)
+    assert temp == 66.0 and pd.isna(wind)
+
+
+def _live_games():
+    # now = 2026-09-24 12:00Z. Gametimes are US-Eastern (13:00 EDT = 17:00Z).
+    return pd.DataFrame({
+        "game_id": ["past", "near", "dome", "far"], "season": [2026] * 4, "week": [2, 3, 3, 4],
+        "game_type": ["REG"] * 4,
+        "gameday": ["2026-09-20", "2026-09-27", "2026-09-27", "2026-10-04"],
+        "gametime": ["13:00", "13:00", "16:25", "13:00"],
+        "home_team": ["KC", "KC", "LAC", "KC"], "away_team": ["DEN", "BUF", "LV", "LV"],
+        "home_rest": [7] * 4, "away_rest": [7] * 4, "roof": ["outdoors", "", "", ""],
+        "surface": ["grass"] * 4, "temp": [75.0, None, None, None], "wind": [8.0, None, None, None],
+        "div_game": [1, 0, 1, 1], "stadium_id": ["KAN00", "KAN00", "LAX01", "KAN00"],
+        "spread_line": [3.0] * 4, "total_line": [45.0] * 4,
+    })
+
+
+def test_fill_forecast_weather_fills_only_near_outdoor_nan_rows():
+    from sportsmodel.nfl.context import fill_forecast_weather
+    calls = []
+
+    def fake_fetch(lat, lon):
+        calls.append((lat, lon))
+        return _hourly(["2026-09-27T16:00", "2026-09-27T17:00", "2026-09-27T18:00"],
+                       [55.0, 58.0, 61.0], [12.0, 14.0, 16.0])
+
+    games = _live_games()
+    ctx = team_game_context(games, STAD)
+    before = ctx.copy()
+    out = fill_forecast_weather(ctx, STAD, games, fake_fetch, now=pd.Timestamp("2026-09-24T12:00Z"))
+    pd.testing.assert_frame_equal(ctx, before)                     # input not mutated
+    assert calls == [(STAD["KAN00"]["lat"], STAD["KAN00"]["lon"])]  # only the near outdoor game
+    o = out.set_index(["week", "team"])
+    for team in ("KC", "BUF"):                                     # kickoff 17:00Z
+        assert o.loc[(3, team), "cx_temp"] == 58.0 and o.loc[(3, team), "cx_wind"] == 14.0
+    assert o.loc[(2, "KC"), "cx_temp"] == 75.0 and o.loc[(2, "KC"), "cx_wind"] == 8.0   # past: recorded
+    assert o.loc[(3, "LAC"), "cx_temp"] == 70.0 and o.loc[(3, "LAC"), "cx_wind"] == 0.0  # dome untouched
+    assert pd.isna(o.loc[(4, "KC"), "cx_temp"]) and pd.isna(o.loc[(4, "LV"), "cx_wind"])  # > 7 days out
+    other = [c for c in out.columns if c not in ("cx_temp", "cx_wind")]
+    pd.testing.assert_frame_equal(out[other], ctx[other])
+
+
+def test_fill_forecast_weather_missing_payload_leaves_nan():
+    from sportsmodel.nfl.context import fill_forecast_weather
+    games = _live_games()
+    out = fill_forecast_weather(team_game_context(games, STAD), STAD, games, lambda lat, lon: None,
+                                now=pd.Timestamp("2026-09-24T12:00Z")).set_index(["week", "team"])
+    assert pd.isna(out.loc[(3, "KC"), "cx_temp"]) and pd.isna(out.loc[(3, "BUF"), "cx_wind"])

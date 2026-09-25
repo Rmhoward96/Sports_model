@@ -1,10 +1,13 @@
 """Per team-game context features (rest, travel, time zones, roof/surface,
 weather) and market features (spread, total, implied team total) for the
-props-ML feature table. PURE except `load_stadiums` (reads a committed asset).
+props-ML feature table. PURE except `load_stadiums` (reads a committed asset)
+and `fetch_hourly_forecast` (the only network call; injected into
+`fill_forecast_weather`, so tests pass a fake).
 
 Leakage: every value here is known before kickoff (schedule, rest days, roof,
-the line). Historical weather is the recorded game weather (live will use a
-forecast -- a stated train/serve difference in the spec).
+the line). Historical weather is the recorded game weather; live serving fills the
+still-NaN outdoor rows with the Open-Meteo kickoff-hour forecast
+(`fill_forecast_weather`) -- a stated train/serve difference in the spec.
 """
 from __future__ import annotations
 
@@ -12,8 +15,10 @@ import json
 import math
 from datetime import datetime
 from pathlib import Path
+from typing import Callable
 from zoneinfo import ZoneInfo
 
+import httpx
 import pandas as pd
 
 from sportsmodel.nfl.teams import normalize_team
@@ -21,6 +26,9 @@ from sportsmodel.nfl.teams import normalize_team
 _STADIUMS = Path(__file__).resolve().parents[3] / "assets" / "nfl" / "stadiums.json"
 _INDOOR_TEMP_F, _INDOOR_WIND_MPH = 70.0, 0.0
 _PACIFIC = {"America/Los_Angeles"}
+_FORECAST_URL = "https://api.open-meteo.com/v1/forecast"
+_FORECAST_DAYS = 7
+_ET = "America/New_York"                     # nflverse gameday/gametime are US-Eastern local
 
 
 def load_stadiums() -> dict[str, dict]:
@@ -139,3 +147,109 @@ def team_game_context(schedules: pd.DataFrame, stadiums: dict[str, dict]) -> pd.
                 "mk_implied": (total + sign * spread) / 2 if not (math.isnan(total) or math.isnan(spread)) else float("nan"),
             })
     return pd.DataFrame(rows)
+
+
+def fetch_hourly_forecast(lat: float, lon: float) -> dict | None:
+    """Open-Meteo hourly forecast (degF, mph, UTC timestamps) for a venue --
+    the real `fetch` for `fill_forecast_weather`. None on any failure, so a
+    weather hiccup leaves the features NaN instead of breaking serving."""
+    try:
+        with httpx.Client(timeout=8) as client:
+            resp = client.get(_FORECAST_URL, params={
+                "latitude": lat, "longitude": lon,
+                "hourly": "temperature_2m,wind_speed_10m",
+                "temperature_unit": "fahrenheit", "wind_speed_unit": "mph",
+                "timezone": "UTC", "forecast_days": _FORECAST_DAYS + 1,
+            })
+            resp.raise_for_status()
+            return resp.json()
+    except Exception:
+        return None
+
+
+def _utc(ts) -> pd.Timestamp:
+    t = pd.Timestamp(ts)
+    return t.tz_localize("UTC") if t.tzinfo is None else t.tz_convert("UTC")
+
+
+def _num(v) -> float:
+    try:
+        return float("nan") if v is None or pd.isna(v) else float(v)
+    except (TypeError, ValueError):
+        return float("nan")
+
+
+def parse_kickoff_forecast(payload: dict, kickoff_utc: pd.Timestamp) -> tuple[float, float]:
+    """(temp degF, wind mph) at the forecast hour nearest kickoff. Values are
+    returned as-is (units were requested in degF / mph). NaN when the payload
+    lacks the series or has no hour within 1h of kickoff (ties -> earlier hour)."""
+    nan = (float("nan"), float("nan"))
+    hourly = (payload or {}).get("hourly") or {}
+    times = hourly.get("time") or []
+    if not times:
+        return nan
+    t = pd.to_datetime(pd.Series(times), errors="coerce")
+    t = t.dt.tz_localize("UTC") if t.dt.tz is None else t.dt.tz_convert("UTC")
+    gap = (t - _utc(kickoff_utc)).abs()
+    if gap.isna().all() or gap.min() > pd.Timedelta(hours=1):
+        return nan
+    i = int(gap.idxmin())
+
+    def at(key: str) -> float:
+        vals = hourly.get(key) or []
+        return _num(vals[i]) if i < len(vals) else float("nan")
+
+    return at("temperature_2m"), at("wind_speed_10m")
+
+
+def _game_kickoffs(games: pd.DataFrame) -> dict[tuple[int, int, str], pd.Timestamp]:
+    """(season, week, team) -> kickoff UTC for REG games (both sides)."""
+    g = games[games["game_type"] == "REG"]
+    local = pd.to_datetime(g["gameday"].astype(str) + " " + g["gametime"].fillna("13:00").astype(str),
+                           errors="coerce")
+    ko = local.dt.tz_localize(_ET, ambiguous="NaT", nonexistent="NaT").dt.tz_convert("UTC")
+    out: dict[tuple[int, int, str], pd.Timestamp] = {}
+    for season, week, home, away, k in zip(g["season"], g["week"], g["home_team"], g["away_team"], ko):
+        if pd.isna(k):
+            continue
+        for team in (home, away):
+            try:
+                out[(int(season), int(week), normalize_team(str(team)))] = k
+            except ValueError:
+                continue
+    return out
+
+
+def fill_forecast_weather(ctx: pd.DataFrame, stadiums: dict[str, dict], games: pd.DataFrame,
+                          fetch: Callable[[float, float], dict | None], *,
+                          now: pd.Timestamp | None = None) -> pd.DataFrame:
+    """Live serving: fill NaN `cx_temp` / `cx_wind` from the kickoff-hour
+    forecast for rows not known to be indoor (`cx_indoor != 1`) whose kickoff
+    is within the next 7 days of `now` (default: current UTC). `fetch(lat,
+    lon)` returns an Open-Meteo hourly payload (or None) and is called at most
+    once per venue, only for eligible rows. Returns a copy; other columns and
+    ineligible rows are untouched."""
+    out = ctx.copy()
+    now = _utc(now if now is not None else pd.Timestamp.now(tz="UTC"))
+    kickoffs = _game_kickoffs(games)
+    payloads: dict[tuple[float, float], dict | None] = {}
+    for idx, r in out.iterrows():
+        if not (pd.isna(r["cx_temp"]) or pd.isna(r["cx_wind"])) or r["cx_indoor"] == 1:
+            continue
+        ko = kickoffs.get((int(r["season"]), int(r["week"]), str(r["team"])))
+        if ko is None or not (now <= ko <= now + pd.Timedelta(days=_FORECAST_DAYS)):
+            continue
+        st = stadiums.get(r["stadium_id"]) if pd.notna(r["stadium_id"]) else None
+        if not st:
+            continue
+        loc = (st["lat"], st["lon"])
+        if loc not in payloads:
+            payloads[loc] = fetch(*loc)
+        if not payloads[loc]:
+            continue
+        temp, wind = parse_kickoff_forecast(payloads[loc], ko)
+        if pd.isna(r["cx_temp"]):
+            out.at[idx, "cx_temp"] = temp
+        if pd.isna(r["cx_wind"]):
+            out.at[idx, "cx_wind"] = wind
+    return out
