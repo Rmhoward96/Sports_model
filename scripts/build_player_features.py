@@ -15,6 +15,7 @@ Pure seams (unit tested in tests/scripts/test_build_player_features.py):
   depth_rank_distribution -- per-season p_depth_rank shares for one position
   dropped_snap_mappings   -- snap rows lost to a missing pfr -> gsis id mapping
   nan_share_by_group      -- NaN share per feature prefix group
+build_tables (no IO) is shared with live serving (generate_sim_nfl).
 fetch_sources()/build_and_write()/main() are IO (network + parquet writes)
 and not unit tested.
 
@@ -25,6 +26,7 @@ from __future__ import annotations
 
 import sys
 import time
+from collections.abc import Callable
 from pathlib import Path
 
 import pandas as pd
@@ -167,48 +169,63 @@ def _load_pbp(seasons: list[int]) -> pd.DataFrame:
     return pd.concat(frames, ignore_index=True)
 
 
-def fetch_sources() -> dict:
-    """IO: every nflverse input for SEASONS (network)."""
+def fetch_sources(seasons: list[int] | None = None) -> dict:
+    """IO: every nflverse input for `seasons` (default SEASONS; network).
+    Live serving (generate_sim_nfl's SIM_ML_MODE path) passes
+    SEASONS[0]..current season."""
     import nfl_data_py as nfl
 
     from sportsmodel.nfl.nflverse import import_by_season, load_release
     from sportsmodel.sim.nfl.usage import build_pfr_to_gsis, depth_charts_asof
 
-    sched = load_release("schedules", SEASONS)
+    seasons = SEASONS if seasons is None else list(seasons)
+    sched = load_release("schedules", seasons)
     return {
         "sched": sched,
-        "pbp": _load_pbp(SEASONS),
-        "weekly": load_release("weekly", SEASONS),
-        "snaps": load_release("snaps", SEASONS),
-        "depth": depth_charts_asof(load_release("depth", SEASONS), sched),
-        "injuries": import_by_season(nfl.import_injuries, SEASONS, "injuries", required=False),
-        "ngs": {k: load_release(f"ngs_{v}", SEASONS, required=False)
+        "pbp": _load_pbp(seasons),
+        "weekly": load_release("weekly", seasons),
+        "snaps": load_release("snaps", seasons),
+        "depth": depth_charts_asof(load_release("depth", seasons), sched),
+        "injuries": import_by_season(nfl.import_injuries, seasons, "injuries", required=False),
+        "ngs": {k: load_release(f"ngs_{v}", seasons, required=False)
                 for k, v in (("rec", "receiving"), ("rush", "rushing"), ("pass", "passing"))},
         "pfr2gsis": build_pfr_to_gsis(nfl.import_ids()),
     }
 
 
-def build_and_write(src: dict, t0: float, t_fetch: float) -> None:
-    """Build both tables from fetched sources, write the parquets, print the summary."""
-    from sportsmodel.nfl.context import load_stadiums, team_game_context
-    from sportsmodel.nfl.efficiency import team_game_epa
-    from sportsmodel.nfl.player_features import (
-        build_feature_table, build_team_table, player_games, player_redzone, team_games,
-    )
+def build_tables(src: dict, ctx_fill: Callable[[pd.DataFrame, dict, pd.DataFrame], pd.DataFrame] | None = None
+                 ) -> dict:
+    """Both feature tables from fetched sources (no IO). The one builder shared
+    by the parquet build (training) and live serving: serving passes
+    `ctx_fill(ctx, stadiums, sched)` (e.g. context.fill_forecast_weather with
+    a fetcher) to fill upcoming games' forecast weather before both tables
+    are built. Returns {"feats", "team", "pg", "tg", "stubs"}."""
+    from sportsmodel.nfl import context, efficiency, player_features
 
     sched, pbp, injuries, depth = src["sched"], src["pbp"], src["injuries"], src["depth"]
-    dropped = dropped_snap_mappings(src["snaps"], src["pfr2gsis"])
-    pg = player_games(src["weekly"], src["snaps"], src["pfr2gsis"])
-    tg = team_games(pbp)
-    rz = player_redzone(pbp)
-    ctx = team_game_context(sched, load_stadiums())
-    game_epa = team_game_epa(pbp)
+    pg = player_features.player_games(src["weekly"], src["snaps"], src["pfr2gsis"])
+    tg = player_features.team_games(pbp)
+    rz = player_features.player_redzone(pbp)
+    stadiums = context.load_stadiums()
+    ctx = context.team_game_context(sched, stadiums)
+    if ctx_fill is not None:
+        ctx = ctx_fill(ctx, stadiums, sched)
+    game_epa = efficiency.team_game_epa(pbp)
     stubs = active_stubs(depth, injuries, pg, sched)
-    print(f"sources ready ({t_fetch:.1f}s): {len(pg)} player-games, {len(tg)} team-games, {len(stubs)} stubs; "
-          "building feature tables...", flush=True)
+    feats = player_features.build_feature_table(pg, tg, rz, ctx, src["ngs"], injuries, depth, game_epa,
+                                                stubs=stubs)
+    team = player_features.build_team_table(tg, ctx, game_epa)
+    return {"feats": feats, "team": team, "pg": pg, "tg": tg, "stubs": stubs}
 
-    feats = build_feature_table(pg, tg, rz, ctx, src["ngs"], injuries, depth, game_epa, stubs=stubs)
-    team = build_team_table(tg, ctx, game_epa)
+
+def build_and_write(src: dict, t0: float, t_fetch: float) -> None:
+    """Build both tables from fetched sources, write the parquets, print the summary."""
+    sched, depth = src["sched"], src["depth"]
+    dropped = dropped_snap_mappings(src["snaps"], src["pfr2gsis"])
+    print(f"sources ready ({t_fetch:.1f}s); building feature tables...", flush=True)
+    built = build_tables(src)
+    feats, team, stubs = built["feats"], built["team"], built["stubs"]
+    print(f"{len(built['pg'])} player-games, {len(built['tg'])} team-games, {len(stubs)} stubs", flush=True)
 
     OUT_DIR.mkdir(parents=True, exist_ok=True)
     feats.to_parquet(OUT_DIR / "player_week_features.parquet", index=False)
