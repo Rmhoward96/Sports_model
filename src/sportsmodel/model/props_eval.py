@@ -263,18 +263,40 @@ def rung_decision(df: pd.DataFrame) -> dict:
     }
 
 
+# Props-2 new-market populations (props-ML local; the serving
+# PROJECTED_USAGE_GATE is deliberately untouched). pass_tds already has a
+# serving gate entry and uses it.
+RUSH_ATT_MIN_MEAN = 5.0
+# anytime_td's population = player-weeks in any of these markets' populations.
+ANYTIME_TD_PARENT_MARKETS: tuple[str, ...] = ("rec_yds", "rush_yds")
+
+
 def population_from_baseline(base_records: list[dict]) -> set[tuple]:
     """Filter baseline records by projected-usage gate.
 
     Returns set of (season, week, player_id, market) tuples for records whose
-    baseline mean passes is_propable_projected(market, mean).
+    baseline mean passes the market's gate: is_propable_projected(market,
+    mean) for the serving-gated markets (incl. pass_tds); rush_att needs
+    mean >= RUSH_ATT_MIN_MEAN; anytime_td needs the same (season, week,
+    player_id) to be in the rec_yds or rush_yds population.
     """
     population = set()
+    td_keys = []
     for r in base_records:
         market = r.get("market")
         mean = r.get("mean")
-        if market is not None and mean is not None:
-            if is_propable_projected(market, mean):
-                key = (r["season"], r["week"], r["player_id"], market)
+        if market is None or mean is None:
+            continue
+        key = (r["season"], r["week"], r["player_id"], market)
+        if market == "anytime_td":
+            td_keys.append(key)
+        elif market == "rush_att":
+            if float(mean) >= RUSH_ATT_MIN_MEAN:
                 population.add(key)
+        elif is_propable_projected(market, mean):
+            population.add(key)
+    for key in td_keys:
+        season, week, player_id, _ = key
+        if any((season, week, player_id, m) in population for m in ANYTIME_TD_PARENT_MARKETS):
+            population.add(key)
     return population

@@ -208,3 +208,29 @@ def test_rung_fails_on_ece_regression():
     assert ece_c > ece_b + 0.005, f"Expected ECE regression: {ece_c} > {ece_b + 0.005}"
     assert any("ece_c" in r for r in d["reasons"]), f"Expected ECE reason in {d['reasons']}"
     assert any("rec_yds" in r for r in d["reasons"]), f"Expected market name in reasons: {d['reasons']}"
+
+
+def test_population_new_markets():
+    recs = [{"season": 2024, "week": 1, "player_id": "r", "market": "rush_yds", "mean": 60.0},
+            {"season": 2024, "week": 1, "player_id": "r", "market": "rush_att", "mean": 14.0},
+            {"season": 2024, "week": 1, "player_id": "r", "market": "anytime_td", "mean": 0.4},
+            {"season": 2024, "week": 1, "player_id": "x", "market": "rush_att", "mean": 2.0},
+            {"season": 2024, "week": 1, "player_id": "x", "market": "anytime_td", "mean": 0.05}]
+    pop = population_from_baseline(recs)
+    assert (2024, 1, "r", "rush_att") in pop and (2024, 1, "r", "anytime_td") in pop
+    assert (2024, 1, "x", "rush_att") not in pop and (2024, 1, "x", "anytime_td") not in pop
+
+
+def test_population_new_market_gate_edges():
+    recs = [{"season": 2024, "week": 1, "player_id": "a", "market": "rush_att", "mean": 5.0},
+            {"season": 2024, "week": 1, "player_id": "b", "market": "rush_att", "mean": 4.99},
+            {"season": 2024, "week": 1, "player_id": "w", "market": "rec_yds", "mean": 40.0},
+            {"season": 2024, "week": 1, "player_id": "w", "market": "anytime_td", "mean": 0.2},
+            # anytime_td gate is same season/week/player only
+            {"season": 2024, "week": 2, "player_id": "w", "market": "anytime_td", "mean": 0.2},
+            {"season": 2024, "week": 1, "player_id": "q", "market": "pass_tds", "mean": 1.4},
+            {"season": 2024, "week": 1, "player_id": "z", "market": "pass_tds", "mean": 0.3}]
+    pop = population_from_baseline(recs)
+    assert (2024, 1, "a", "rush_att") in pop and (2024, 1, "b", "rush_att") not in pop
+    assert (2024, 1, "w", "anytime_td") in pop and (2024, 2, "w", "anytime_td") not in pop
+    assert (2024, 1, "q", "pass_tds") in pop and (2024, 1, "z", "pass_tds") not in pop
