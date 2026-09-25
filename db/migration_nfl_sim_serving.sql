@@ -4,8 +4,9 @@
 -- Idempotent -- safe to re-run. Run in the Supabase SQL Editor.
 -- Shadow mode writes a second model_version (nfl-sim-ml-v1) into nfl_sim /
 -- nfl_player_sim; the *_current views serve ONLY the version named here.
--- Go live:   UPDATE nfl_sim_serving SET model_version = 'nfl-sim-ml-v1';
--- Roll back: UPDATE nfl_sim_serving SET model_version = 'sim-nfl-v1';
+-- Go live:   UPDATE nfl_sim_serving SET model_version = 'nfl-sim-ml-v1', updated_at = now();
+-- Roll back: UPDATE nfl_sim_serving SET model_version = 'sim-nfl-v1', updated_at = now();
+-- Verify: SELECT count(*) FROM nfl_sim_current;  -- non-zero when the served version has upcoming games
 CREATE TABLE IF NOT EXISTS nfl_sim_serving (
     id            INT PRIMARY KEY DEFAULT 1 CHECK (id = 1),
     model_version TEXT NOT NULL,
@@ -27,7 +28,11 @@ CREATE OR REPLACE VIEW nfl_sim_current AS
     sim_home_win_prob,
     sim_margin,
     sim_total,
-    disagreement
+    disagreement,
+    margin_dist,
+    total_dist,
+    away_score_dist,
+    home_score_dist
   FROM nfl_sim
   WHERE commence_time > now()
     AND model_version = (SELECT model_version FROM nfl_sim_serving WHERE id = 1)
