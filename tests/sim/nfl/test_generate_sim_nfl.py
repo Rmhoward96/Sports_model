@@ -369,33 +369,50 @@ def _install_io(monkeypatch, tmp_path, mode):
     return rec
 
 
-def _install_ml(monkeypatch, rec, tmp_path, *, artifacts="ok", dists_raise=None, config_file=True):
-    """Fake the ML branch: model dir, feature-table builder + ml_serving functions."""
+_ML_MARKET_MAX = {"pass_yds": 400, "rush_yds": 200, "rec_yds": 200, "receptions": 15, "anytime_td": 1}
+_ALL_PLAYERS = ["KC_p", "BAL_p", "BUF_p", "MIA_p"]
+
+
+def _install_ml(monkeypatch, rec, tmp_path, *, artifacts="ok", dists_raise=None, config_file=True,
+                sched=None, feats=None, team=None, share_fallback_games=(), market_max=None):
+    """Fake the ML branch: model dir, feature-table builder + ml_serving functions.
+    `dists_raise`: exception ml_player_dists raises (or {home_team: exc});
+    `share_fallback_games`: home abbrevs whose build_ml_spec bumps
+    learned.share_fallbacks."""
     model_dir = tmp_path / "models"
     model_dir.mkdir()
     if config_file:
         (model_dir / "props_ml_config.json").write_text("{}")
     monkeypatch.setattr(gsn, "ML_MODEL_DIR", model_dir)
-    feats = pd.DataFrame({"player_id": ["KC_p"], "season": [2026], "week": [3], "team": ["KC"]})
-    team = pd.DataFrame({"team": ["KC"], "season": [2026], "week": [3]})
-    sched = pd.DataFrame({"season": [2026, 2026], "week": [3, 3], "game_type": ["REG", "REG"],
-                          "home_team": ["KC", "BUF"], "away_team": ["BAL", "MIA"]})
+    if feats is None:
+        feats = pd.DataFrame({"player_id": _ALL_PLAYERS, "season": 2026, "week": 3,
+                              "team": [p.split("_")[0] for p in _ALL_PLAYERS]})
+    if team is None:
+        team = pd.DataFrame({"team": ["KC", "BAL", "BUF", "MIA"], "season": 2026, "week": 3})
+    if sched is None:
+        sched = pd.DataFrame({"season": [2026, 2026], "week": [3, 3], "game_type": ["REG", "REG"],
+                              "home_team": ["KC", "BUF"], "away_team": ["BAL", "MIA"]})
     monkeypatch.setattr(gsn, "_build_ml_tables", lambda upto_season, now: (feats, team, sched))
-    arts = None if artifacts is None else types.SimpleNamespace(config={"markets": _ML_MARKETS})
+    learned = types.SimpleNamespace(share_fallbacks=0)
+    cfg = {"markets": _ML_MARKETS, "market_max": dict(_ML_MARKET_MAX if market_max is None else market_max)}
+    arts = None if artifacts is None else types.SimpleNamespace(config=cfg, learned=learned)
 
     def fake_load(model_dir, player_tbl=None, team_tbl=None):
         rec.load_artifacts_args.append((model_dir, player_tbl, team_tbl))
         return arts
 
     def fake_build_ml_spec(spec, artifacts, feature_rows, team_rows):
+        if spec.home_team in share_fallback_games:
+            artifacts.learned.share_fallbacks += 1
         return NflGameSpec(home_team=_ML_SPEC_TAG + spec.home_team, away_team=spec.away_team,
                            home=spec.home, away=spec.away, home_players=spec.home_players,
                            away_players=spec.away_players)
 
     def fake_ml_dists(spec, sims_ml, feature_rows, team_rows, artifacts, rng):
         rec.ml_dists_calls += 1
-        if dists_raise is not None:
-            raise dists_raise
+        exc = dists_raise.get(spec.home_team[len(_ML_SPEC_TAG):]) if isinstance(dists_raise, dict) else dists_raise
+        if exc is not None:
+            raise exc
         return {p.player_id: {"rec_yds": {"kind": "pmf", "pmf": [0.0, 1.0], "mean": 99.0},
                               "anytime_td": {"kind": "pmf", "pmf": [0.3, 0.7], "mean": 0.7}}
                 for p in (*spec.home_players, *spec.away_players)}
@@ -458,7 +475,7 @@ def test_main_shadow_writes_both_versions(monkeypatch, tmp_path, capsys):
     (_, p_arg, t_arg), = rec.load_artifacts_args
     assert p_arg is feats and t_arg is team
     assert rec.ml_dists_calls == 2
-    assert _ml_summary_lines(out) == ["ml_mode=shadow ml_games=2 ml_players=20 ml_status=ok"]
+    assert _ml_summary_lines(out) == ["ml_mode=shadow ml_games=2 ml_players=20 ml_fallback_games=0 ml_status=ok"]
 
 
 def test_main_ml_uses_per_game_seed(monkeypatch, tmp_path):
@@ -500,7 +517,7 @@ def test_main_live_missing_artifacts_writes_current_then_exits_1(monkeypatch, tm
     assert {r["model_version"] for _, rows in rec.upserts for r in rows} == {"sim-nfl-v1"}
     assert "ML: FAILED" in out
     assert any(ln.startswith("::warning::props-ml: ") for ln in out.splitlines())
-    assert _ml_summary_lines(out) == ["ml_mode=live ml_games=0 ml_players=0 ml_status=failed"]
+    assert _ml_summary_lines(out) == ["ml_mode=live ml_games=0 ml_players=0 ml_fallback_games=0 ml_status=failed"]
 
 
 def test_main_shadow_missing_artifacts_exits_0(monkeypatch, tmp_path, capsys):
@@ -510,21 +527,138 @@ def test_main_shadow_missing_artifacts_exits_0(monkeypatch, tmp_path, capsys):
     out = capsys.readouterr().out
     assert [k for k, _ in rec.upserts] == ["sim", "player"]
     assert "ML: FAILED" in out
-    assert _ml_summary_lines(out) == ["ml_mode=shadow ml_games=0 ml_players=0 ml_status=failed"]
+    assert _ml_summary_lines(out) == ["ml_mode=shadow ml_games=0 ml_players=0 ml_fallback_games=0 ml_status=failed"]
 
 
-def test_main_shadow_exception_in_ml_path_keeps_current_and_exits_0(monkeypatch, tmp_path, capsys):
+def _assert_game_copied_from_current(rec, game_pk):
+    """The ML version of `game_pk` is the current sim's rows, re-labelled."""
+    def strip(rows):
+        return sorted((tuple((k, repr(v)) for k, v in sorted(r.items()) if k != "model_version"))
+                      for r in rows if r["game_pk"] == game_pk)
+    for kind in ("sim", "player"):
+        cur, ml = _written(rec, kind, "sim-nfl-v1"), _written(rec, kind, "nfl-sim-ml-v1")
+        assert strip(ml) and strip(ml) == strip(cur)
+
+
+def _fallback_warnings(out):
+    return [ln for ln in out.splitlines()
+            if ln.startswith("::warning::props-ml: ") and "served from the current sim" in ln]
+
+
+def test_main_per_game_exception_falls_back_and_run_stays_ok(monkeypatch, tmp_path, capsys):
+    rec = _install_io(monkeypatch, tmp_path, "live")
+    _install_ml(monkeypatch, rec, tmp_path, dists_raise={"BUF": RuntimeError("boom\nsecond line")})
+    gsn.main()   # live, but a per-game failure is not a global failure: no SystemExit
+    out = capsys.readouterr().out
+    assert [k for k, _ in rec.upserts] == ["sim", "player", "sim", "player"]
+    assert {r["game_pk"] for r in _written(rec, "sim", "nfl-sim-ml-v1")} == {11, 12}
+    _assert_game_copied_from_current(rec, 12)
+    ml11 = [r for r in _written(rec, "player", "nfl-sim-ml-v1") if r["game_pk"] == 11]
+    assert any(r["market"] == "rec_yds" and r["mean"] == pytest.approx(99.0) for r in ml11)
+    assert "ML: FAILED" not in out
+    (warn,) = _fallback_warnings(out)
+    assert warn.startswith("::warning::props-ml: 1 game(s) served from the current sim: 12: ")
+    assert "boom second line" in warn
+    assert _ml_summary_lines(out) == ["ml_mode=live ml_games=2 ml_players=20 ml_fallback_games=1 ml_status=ok"]
+
+
+def test_main_postseason_game_falls_back_while_reg_game_gets_ml(monkeypatch, tmp_path, capsys):
     rec = _install_io(monkeypatch, tmp_path, "shadow")
-    _install_ml(monkeypatch, rec, tmp_path, dists_raise=RuntimeError("boom\nsecond line"))
+    sched = pd.DataFrame({"season": [2026, 2026], "week": [3, 19], "game_type": ["REG", "WC"],
+                          "home_team": ["KC", "BUF"], "away_team": ["BAL", "MIA"]})
+    _install_ml(monkeypatch, rec, tmp_path, sched=sched)
+    gsn.main()
+    out = capsys.readouterr().out
+    assert rec.ml_dists_calls == 1   # only the REG game ran the ML pipeline
+    _assert_game_copied_from_current(rec, 12)
+    ml_sims = {r["game_pk"]: r for r in _written(rec, "sim", "nfl-sim-ml-v1")}
+    assert set(ml_sims) == {11, 12}                       # the ML slate covers every game
+    assert ml_sims[11]["sim_margin"] == pytest.approx(21.5)   # ML sims
+    (warn,) = _fallback_warnings(out)
+    assert "12: " in warn and "REG" in warn
+    assert _ml_summary_lines(out)[0].endswith("ml_fallback_games=1 ml_status=ok")
+
+
+def test_main_missing_feature_rows_fall_back(monkeypatch, tmp_path, capsys):
+    rec = _install_io(monkeypatch, tmp_path, "shadow")
+    feats = pd.DataFrame({"player_id": ["KC_p", "BAL_p", "BUF_p"], "season": 2026, "week": 3,
+                          "team": ["KC", "BAL", "BUF"]})            # MIA_p has no row
+    team = pd.DataFrame({"team": ["KC", "BUF", "MIA"], "season": 2026, "week": 3})  # BAL has none
+    _install_ml(monkeypatch, rec, tmp_path, feats=feats, team=team)
+    gsn.main()
+    out = capsys.readouterr().out
+    assert rec.ml_dists_calls == 0
+    _assert_game_copied_from_current(rec, 11)
+    _assert_game_copied_from_current(rec, 12)
+    (warn,) = _fallback_warnings(out)
+    assert "2 game(s)" in warn
+    assert "11: missing feature rows (team rows: BAL)" in warn
+    assert "12: missing feature rows (players: MIA_p)" in warn
+    assert _ml_summary_lines(out)[0].endswith("ml_fallback_games=2 ml_status=ok")
+
+
+def test_main_share_fallback_routes_game_to_current_sim(monkeypatch, tmp_path, capsys):
+    rec = _install_io(monkeypatch, tmp_path, "shadow")
+    _install_ml(monkeypatch, rec, tmp_path, share_fallback_games=("KC",))
+    gsn.main()
+    out = capsys.readouterr().out
+    assert rec.ml_dists_calls == 1
+    _assert_game_copied_from_current(rec, 11)
+    (warn,) = _fallback_warnings(out)
+    assert "11: share fallback" in warn
+
+
+def test_main_shadow_global_db_failure_keeps_current_and_exits_0(monkeypatch, tmp_path, capsys):
+    rec = _install_io(monkeypatch, tmp_path, "shadow")
+    _install_ml(monkeypatch, rec, tmp_path)
+
+    def upsert(rows):
+        if rows and rows[0]["model_version"] == "nfl-sim-ml-v1":
+            raise ConnectionError("db gone\nretry later")
+        rec.upserts.append(("sim", list(rows)))
+
+    monkeypatch.setattr(gsn, "upsert_nfl_sim", upsert)
     gsn.main()
     out = capsys.readouterr().out
     assert [k for k, _ in rec.upserts] == ["sim", "player"]
     assert {r["model_version"] for _, rows in rec.upserts for r in rows} == {"sim-nfl-v1"}
     failed = [ln for ln in out.splitlines() if ln.startswith("ML: FAILED")]
-    assert len(failed) == 1 and "boom" in failed[0]
+    assert len(failed) == 1 and "db gone" in failed[0]
     warn = [ln for ln in out.splitlines() if ln.startswith("::warning::props-ml: ")]
-    assert len(warn) == 1 and "second line" in warn[0]   # one annotation line
-    assert _ml_summary_lines(out) == ["ml_mode=shadow ml_games=0 ml_players=0 ml_status=failed"]
+    assert len(warn) == 1 and "retry later" in warn[0]   # one annotation line
+    assert _ml_summary_lines(out) == ["ml_mode=shadow ml_games=0 ml_players=0 ml_fallback_games=0 ml_status=failed"]
+
+
+def test_main_live_market_max_mismatch_is_global_failure(monkeypatch, tmp_path, capsys):
+    rec = _install_io(monkeypatch, tmp_path, "live")
+    _install_ml(monkeypatch, rec, tmp_path, market_max=dict(_ML_MARKET_MAX, rec_yds=250))
+    with pytest.raises(SystemExit) as exc:
+        gsn.main()
+    assert exc.value.code == 1
+    out = capsys.readouterr().out
+    assert [k for k, _ in rec.upserts] == ["sim", "player"]
+    assert rec.ml_dists_calls == 0
+    assert "market_max mismatch" in out and "rec_yds" in out
+
+
+def test_check_market_max():
+    assert gsn._market_max_mismatches({"markets": {"rec_yds": {"source": "ml"},
+                                                   "anytime_td": {"source": "ml"},
+                                                   "pass_yds": {"source": "baseline"}},
+                                       "market_max": {"rec_yds": 200, "anytime_td": 1, "pass_yds": 999}}) == []
+    bad = gsn._market_max_mismatches({"markets": {"rec_yds": {"source": "ml"}, "odd": {"source": "ml"}},
+                                      "market_max": {"rec_yds": 150, "odd": 3}})
+    assert bad == ["odd: config 3 vs sim None", "rec_yds: config 150 vs sim 200"]
+
+
+def test_missing_feature_rows_helper():
+    spec = NflGameSpec(home_team="KC", away_team="BAL", home=_team_rates(), away=_team_rates(),
+                       home_players=[_player("a", "A")], away_players=[_player("b", "B")])
+    p = pd.DataFrame({"player_id": ["a"]})
+    t = pd.DataFrame({"team": ["KC"]})
+    assert gsn._missing_feature_rows(spec, "KC", "BAL", p, t) == "team rows: BAL; players: b"
+    assert gsn._missing_feature_rows(spec, "KC", "BAL", pd.DataFrame({"player_id": ["a", "b"]}),
+                                     pd.DataFrame({"team": ["KC", "BAL"]})) is None
 
 
 def test_main_live_exception_in_feature_build_exits_1(monkeypatch, tmp_path, capsys):
@@ -563,7 +697,7 @@ def test_main_invalid_mode_writes_current_then_exits_1(monkeypatch, tmp_path, ca
     out = capsys.readouterr().out
     assert [k for k, _ in rec.upserts] == ["sim", "player"]
     assert "ML: FAILED" in out and "lvie" in out
-    assert _ml_summary_lines(out) == ["ml_mode=invalid ml_games=0 ml_players=0 ml_status=failed"]
+    assert _ml_summary_lines(out) == ["ml_mode=invalid ml_games=0 ml_players=0 ml_fallback_games=0 ml_status=failed"]
 
 
 def test_schedule_week_resolves_reg_game_by_normalized_teams():

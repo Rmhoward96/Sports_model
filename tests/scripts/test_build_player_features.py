@@ -182,8 +182,35 @@ def test_build_tables_applies_ctx_fill_before_both_builders(monkeypatch):
     assert seen["feats_ctx"] is raw_ctx and seen["team_ctx"] is raw_ctx
 
 
-def test_fetch_sources_seasons_default_and_override():
-    import inspect
+def test_fetch_sources_passes_seasons_to_every_loader(monkeypatch):
+    import nfl_data_py
 
-    sig = inspect.signature(bpf.fetch_sources)
-    assert "seasons" in sig.parameters and sig.parameters["seasons"].default is None
+    import sportsmodel.nfl.nflverse as nv
+    import sportsmodel.sim.nfl.usage as usage
+
+    calls: list[tuple[str, list[int]]] = []
+
+    def fake_load_release(dataset, seasons, **kw):
+        calls.append((dataset, list(seasons)))
+        return pd.DataFrame({"season": list(seasons)})
+
+    def fake_import_by_season(fn, seasons, name, **kw):
+        calls.append((name, list(seasons)))
+        return pd.DataFrame()
+
+    monkeypatch.setattr(nv, "load_release", fake_load_release)
+    monkeypatch.setattr(nv, "import_by_season", fake_import_by_season)
+    monkeypatch.setattr(usage, "depth_charts_asof", lambda raw, sched: raw)
+    monkeypatch.setattr(usage, "build_pfr_to_gsis", lambda ids: {})
+    monkeypatch.setattr(nfl_data_py, "import_ids", lambda: pd.DataFrame())
+
+    bpf.fetch_sources([2020, 2021])
+    datasets = {d for d, _ in calls}
+    assert {"schedules", "weekly", "snaps", "depth", "injuries", "ngs_receiving"} <= datasets
+    # pbp is read season by season
+    assert ("pbp", [2020]) in calls and ("pbp", [2021]) in calls
+    assert all(s == [2020, 2021] for d, s in calls if d != "pbp")
+
+    calls.clear()
+    bpf.fetch_sources()
+    assert all(s == bpf.SEASONS for d, s in calls if d != "pbp")

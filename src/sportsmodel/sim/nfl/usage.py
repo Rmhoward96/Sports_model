@@ -599,9 +599,11 @@ def _safe_team(code: object) -> str | None:
 
 
 def _kickoffs_utc(schedules: pd.DataFrame) -> pd.DataFrame:
-    """One row per (season, week, team) with that team's kickoff in UTC.
-    nflverse `gameday`/`gametime` are US-Eastern local."""
-    s = schedules[schedules["game_type"] == "REG"]
+    """One row per (season, week, team) with that team's kickoff in UTC, for
+    EVERY game type (REG and postseason: WC/DIV/CON/SB), so a postseason week
+    gets its own as-of chart. nflverse `gameday`/`gametime` are US-Eastern
+    local."""
+    s = schedules
     local = pd.to_datetime(s["gameday"].astype(str) + " " + s["gametime"].fillna("13:00").astype(str),
                            errors="coerce")
     ko = local.dt.tz_localize(_ET, ambiguous="NaT", nonexistent="NaT").dt.tz_convert("UTC")
@@ -659,7 +661,7 @@ def depth_charts_asof(raw: pd.DataFrame, schedules: pd.DataFrame) -> pd.DataFram
       Its `formation` (Offense / Defense / Special Teams) is passed through --
       KR/PR slots are listed under the player's own position there.
     - Snapshot schema (2025+: `dt`, `team`, `pos_abb`, `pos_rank`): for each
-      team's REG-season game, take that team's latest snapshot with
+      team's game (REG and postseason), take that team's latest snapshot with
       `dt <= kickoff` (UTC) — never a later one — stamped with that game's
       (season, week). A team with no snapshot before kickoff gets no rows
       (active_usage's _latest_depth_week fallback then applies). Snapshot
