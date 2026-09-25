@@ -18,6 +18,9 @@ name: injury-watch
 #
 # Requires repo secrets: DATABASE_URL, SPORTSDATA_API_KEY, ANTHROPIC_API_KEY.
 # Optional repo variable DESK_SYNTH_MODEL overrides the synthesis model.
+# Optional repo variable SIM_ML_MODE (off | shadow | live; unset = off) turns on
+# props-ML serving in the NFL sim step; the models are downloaded from the
+# props-ml-latest Release (train-props-ml.yml) only when it is not off.
 on:
   schedule:
     - cron: "0 15,22 * * *"  # 3 PM and 10 PM UTC daily
@@ -29,9 +32,10 @@ permissions:
 jobs:
   nfl:
     runs-on: ubuntu-latest
-    timeout-minutes: 40
+    timeout-minutes: 60    # the props-ML path (shadow/live) rebuilds the feature tables
     env:
       SPORT: nfl
+      SIM_ML_MODE: ${{ vars.SIM_ML_MODE || 'off' }}
     concurrency:
       group: injury-pipeline-nfl
       cancel-in-progress: false
@@ -57,6 +61,12 @@ jobs:
           DATABASE_URL: ${{ secrets.DATABASE_URL }}
           SM_DATA_DIR: ${{ github.workspace }}/data
         run: uv run python scripts/generate_nfl.py
+
+      - name: Download props-ML models (Release props-ml-latest)
+        if: steps.check.outputs.changed == 'true' && env.SIM_ML_MODE != 'off'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release download props-ml-latest -D data/props_ml/models --clobber || echo "no props-ml release"
 
       - name: Generate NFL sim predictions (Monte Carlo + player distributions)
         if: steps.check.outputs.changed == 'true'

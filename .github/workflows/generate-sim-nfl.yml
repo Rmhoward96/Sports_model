@@ -6,6 +6,13 @@ name: generate-sim-nfl
 # ~1 hour before desk-auto-nfl at 22:15 UTC. generate_sim_nfl.py is idempotent
 # (upsert on game keys), so duplicate or slightly-late runs just re-upsert the
 # same rows. Manual runs (workflow_dispatch) proceed the same way.
+#
+# Props-ML serving: the repo variable SIM_ML_MODE (off | shadow | live; unset =
+# off) is passed to generate_sim_nfl.py. When it is not off, the latest models
+# are downloaded from the props-ml-latest Release (train-props-ml.yml) first; a
+# missing Release only prints a note and the script applies its shadow/live
+# failure semantics. With SIM_ML_MODE off nothing is downloaded and the run is
+# exactly the current sim.
 on:
   schedule:
     - cron: "0 21 * * 0,3,6"  # Wed/Sat/Sun 21:00 UTC (~4-5pm ET)
@@ -17,7 +24,9 @@ permissions:
 jobs:
   generate:
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 35    # the ML path (shadow/live) rebuilds the feature tables
+    env:
+      SIM_ML_MODE: ${{ vars.SIM_ML_MODE || 'off' }}
     steps:
       - uses: actions/checkout@v5
 
@@ -26,6 +35,12 @@ jobs:
 
       - name: Set up Python + sync deps
         run: uv sync
+
+      - name: Download props-ML models (Release props-ml-latest)
+        if: env.SIM_ML_MODE != 'off'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release download props-ml-latest -D data/props_ml/models --clobber || echo "no props-ml release"
 
       - name: Generate NFL sim predictions (Monte Carlo + player distributions)
         env:

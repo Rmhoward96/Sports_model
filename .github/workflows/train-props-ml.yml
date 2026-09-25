@@ -1,0 +1,201 @@
+name: train-props-ml
+
+# Weekly props-ML retrain + Release publish (docs/superpowers/plans/
+# 2026-09-25-nfl-props-ml-p2.md, Task 11).
+#
+# train job (every Tuesday, after Monday Night Football):
+#  1. rebuild the feature tables from nflverse (data/props_ml/*.parquet);
+#  2. QUICK GATE -- fit_props_ml_final.py --holdout-weeks 2 scores the pipeline
+#     vs the current sim on the last 2 completed weeks after pipeline.json's
+#     data_end and EXITS 1 ON FAILURE. The step's exit code is the gate (never
+#     quick_gate.json: a stale file can survive an input-load failure); a
+#     failure stops the job, so nothing below runs and nothing is published;
+#  3. final fit on every completed game -> data/props_ml/models/;
+#  4. publish: the current props-ml-latest assets are copied into props-ml-prev
+#     (deleted + recreated: one-step rollback), then the new models are
+#     uploaded to props-ml-latest with --clobber (created with --latest=false
+#     when missing; stale assets no longer produced are removed).
+# Serving (generate-sim-nfl.yml, injury-watch.yml) downloads props-ml-latest
+# only when the repo variable SIM_ML_MODE is shadow/live.
+#
+# recheck job (runs beside train, which runs on every trigger; never publishes,
+# never commits; outputs go to a run artifact):
+#  * first Tuesday of the month (scheduled run, day-of-month <= 7): the
+#    fixed-configuration A re-check -- scripts/train_props_ml.py with
+#    PROPS_ML_TOGGLES = the kept toggles in assets/nfl/props_ml/a_gate.json and
+#    PROPS_ML_SEASONS = the previous 2 completed seasons + the current one;
+#  * workflow_dispatch with full_ladder=true: the full offline B / blend /
+#    calibration ladder (scripts/train_props_ml_b.py) instead. Its outputs
+#    (b_gate / pipeline / calibration json, report, OOF parquet) are uploaded
+#    for review; committing them is a manual decision.
+#
+# Rollback: `gh release download props-ml-prev` and re-upload to
+# props-ml-latest, or set the repo variable SIM_ML_MODE=off.
+on:
+  schedule:
+    - cron: "0 14 * * 2"   # Tuesdays 14:00 UTC
+  workflow_dispatch:
+    inputs:
+      full_ladder:
+        description: "Run the full B/blend/calibration ladder (train_props_ml_b.py) instead of the monthly re-check"
+        type: boolean
+        default: false
+
+permissions:
+  contents: write          # create / upload the props-ml-latest and props-ml-prev Releases
+
+concurrency:
+  group: props-ml-train
+  cancel-in-progress: false
+
+jobs:
+  train:
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v10.0.1
+
+      - name: Sync deps
+        run: uv sync
+
+      - name: Build props-ML feature tables (nflverse)
+        run: uv run python scripts/build_player_features.py
+
+      - name: Quick gate (last 2 completed weeks; exit 1 blocks the fit and publish)
+        id: quick_gate
+        run: uv run python scripts/fit_props_ml_final.py --holdout-weeks 2
+
+      - name: Final fit (data/props_ml/models)
+        run: uv run python scripts/fit_props_ml_final.py
+
+      # No `if:` on purpose: runs only when every step above succeeded.
+      - name: Publish models (props-ml-latest; previous assets -> props-ml-prev)
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          files=()
+          for f in data/props_ml/models/*; do
+            [ -f "$f" ] && files+=("$f")
+          done
+          if [ "${#files[@]}" -eq 0 ] || [ ! -f data/props_ml/models/props_ml_config.json ]; then
+            echo "::error::no model artifacts in data/props_ml/models"
+            exit 1
+          fi
+
+          if gh release view props-ml-latest >/dev/null 2>&1; then
+            prev_dir="$RUNNER_TEMP/props-ml-prev"
+            rm -rf "$prev_dir"
+            if gh release download props-ml-latest -D "$prev_dir"; then
+              gh release delete props-ml-prev -y --cleanup-tag || true
+              gh release create props-ml-prev "$prev_dir"/* --latest=false --target "$GITHUB_SHA" \
+                --title "props-ml models (previous)" \
+                --notes "props-ml-latest assets as of run $GITHUB_RUN_ID, kept for one-step rollback."
+            else
+              echo "::warning::could not download the current props-ml-latest assets; props-ml-prev left as is"
+            fi
+          else
+            gh release create props-ml-latest --latest=false --target "$GITHUB_SHA" \
+              --title "props-ml models" \
+              --notes "Weekly props-ML models (train-props-ml.yml). Previous set: props-ml-prev."
+          fi
+
+          gh release upload props-ml-latest "${files[@]}" --clobber
+
+          # drop assets the new fit no longer produces (e.g. a b_<market> model)
+          keep=" "
+          for f in "${files[@]}"; do keep="$keep$(basename "$f") "; done
+          gh release view props-ml-latest --json assets --jq '.assets[].name' | while read -r name; do
+            case "$keep" in
+              *" $name "*) ;;
+              *) gh release delete-asset props-ml-latest "$name" -y ;;
+            esac
+          done
+          echo "published ${#files[@]} files to props-ml-latest"
+
+  recheck:
+    runs-on: ubuntu-latest
+    timeout-minutes: 350     # the full B ladder is long; hosted runners cap jobs at 360
+    permissions:
+      contents: read         # re-check / ladder never publish or commit
+    steps:
+      # mode: recheck (scheduled first Tuesday) | ladder (dispatch full_ladder) | none.
+      # seasons: previous 2 completed + current, where "current" is this year's
+      # season from October on (the first Tuesday of September is always before
+      # kickoff) and last year's season otherwise (Jan-Feb playoffs / offseason).
+      - name: Plan (first Tuesday re-check / full ladder / nothing)
+        id: plan
+        env:
+          EVENT: ${{ github.event_name }}
+          FULL_LADDER: ${{ inputs.full_ladder }}
+        run: |
+          day=$((10#$(date -u +%d)))
+          month=$((10#$(date -u +%m)))
+          year=$((10#$(date -u +%Y)))
+          mode=none
+          if [ "$EVENT" = "schedule" ] && [ "$day" -le 7 ]; then
+            mode=recheck
+          fi
+          if [ "$EVENT" = "workflow_dispatch" ] && [ "$FULL_LADDER" = "true" ]; then
+            mode=ladder
+          fi
+          if [ "$month" -ge 10 ]; then current=$year; else current=$((year - 1)); fi
+          seasons="$((current - 2)),$((current - 1)),$current"
+          echo "mode=$mode" >> "$GITHUB_OUTPUT"
+          echo "seasons=$seasons" >> "$GITHUB_OUTPUT"
+          echo "props-ml recheck plan: mode=$mode seasons=$seasons"
+
+      - uses: actions/checkout@v5
+        if: steps.plan.outputs.mode != 'none'
+
+      - name: Install uv
+        if: steps.plan.outputs.mode != 'none'
+        uses: astral-sh/setup-uv@v10.0.1
+
+      - name: Sync deps
+        if: steps.plan.outputs.mode != 'none'
+        run: uv sync
+
+      - name: Build props-ML feature tables (nflverse)
+        if: steps.plan.outputs.mode != 'none'
+        run: |
+          uv run python scripts/build_player_features.py
+          touch "$RUNNER_TEMP/props-ml-run.start"
+
+      - name: Monthly fixed-config re-check (kept A toggles, 2 completed seasons + current)
+        if: steps.plan.outputs.mode == 'recheck'
+        env:
+          PROPS_ML_SEASONS: ${{ steps.plan.outputs.seasons }}
+        run: |
+          PROPS_ML_TOGGLES="$(jq -r '.kept | join(",")' assets/nfl/props_ml/a_gate.json)"
+          export PROPS_ML_TOGGLES
+          echo "PROPS_ML_TOGGLES=$PROPS_ML_TOGGLES PROPS_ML_SEASONS=$PROPS_ML_SEASONS"
+          uv run python scripts/train_props_ml.py
+
+      - name: Full B / blend / calibration ladder (dispatch full_ladder)
+        if: steps.plan.outputs.mode == 'ladder'
+        run: uv run python scripts/train_props_ml_b.py
+
+      - name: Collect outputs
+        if: steps.plan.outputs.mode != 'none' && !cancelled()
+        run: |
+          out="$RUNNER_TEMP/props-ml-${{ steps.plan.outputs.mode }}"
+          mkdir -p "$out"
+          find assets/nfl/props_ml docs/superpowers/reports data/props_ml -maxdepth 1 -type f \
+            -newer "$RUNNER_TEMP/props-ml-run.start" \
+            \( -name '*.json' -o -name '*.md' -o -name 'oof_*.parquet' \) \
+            -exec cp {} "$out"/ \;
+          ls -la "$out"
+          echo "dir=$out" >> "$GITHUB_OUTPUT"
+        id: collect
+
+      - name: Upload re-check / ladder outputs
+        if: steps.plan.outputs.mode != 'none' && !cancelled()
+        uses: actions/upload-artifact@v4
+        with:
+          name: props-ml-${{ steps.plan.outputs.mode }}-${{ github.run_id }}
+          path: ${{ steps.collect.outputs.dir }}
+          if-no-files-found: error
