@@ -164,6 +164,9 @@ def active_usage(
     n_recent: int = 5,
     questionable_names: set[str] | None = None,
     questionable_weight: float = 1.0,
+    *,
+    out_ids: set[str] | None = None,
+    questionable_ids: set[str] | None = None,
 ) -> tuple[list[PlayerInput], str | None]:
     """Per-week active-roster usage: the dilution fix over season averages.
 
@@ -178,7 +181,11 @@ def active_usage(
        to offensive skill positions (QB/RB/WR/TE), keyed by ``gsis_id`` and
        de-duplicated to each player's most prominent (lowest ``depth_team``)
        row. Players whose ``full_name`` or ``football_name`` (case-insensitive)
-       is in ``injuries_out_names`` are dropped. The target-week depth chart and
+       is in ``injuries_out_names`` are dropped, as are players whose
+       ``gsis_id`` is in the optional ``out_ids`` (union with the name match --
+       ids catch nickname/suffix spellings like "Hollywood Brown" vs "Marquise
+       Brown"; ``questionable_ids`` likewise unions with ``questionable_names``;
+       both default None = name-only). The target-week depth chart and
        the injury list are pre-game info and ARE allowed to define who's active;
        everything else is strictly leakage-free.
 
@@ -249,6 +256,8 @@ def active_usage(
         str(n).strip().lower()
         for n in (questionable_names or set())
     }
+    out_gsis = {str(g).strip() for g in (out_ids or set()) if not _is_missing_id(g)}
+    q_ids = {str(g).strip() for g in (questionable_ids or set()) if not _is_missing_id(g)}
     questionable_gsis: set[str] = set()
 
     # --- 1. Active set from the target-week depth chart ---
@@ -288,7 +297,7 @@ def active_usage(
             for n in (full_name, football_name)
             if not _is_missing_id(n)
         }
-        if names_lower & injuries:
+        if names_lower & injuries or gsis in out_gsis:
             continue
 
         dt = _depth_team_int(getattr(row, "depth_team", None))
@@ -303,7 +312,7 @@ def active_usage(
         if prior is None or dt < prior["depth_team"]:
             active[gsis] = {"pos": pos, "name": display_name, "depth_team": dt}
 
-        if names_lower & questionable:
+        if names_lower & questionable or gsis in q_ids:
             questionable_gsis.add(gsis)
 
     # --- 2. Recent (leakage-free) weekly rows, grouped by player_id (== gsis) ---

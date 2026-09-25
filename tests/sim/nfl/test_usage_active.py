@@ -474,3 +474,56 @@ def test_returns_playerinput_instances():
     ])
     players, _qb = active_usage("KC", 2023, 5, depth, weekly, _EMPTY_SNAPS, {}, set())
     assert all(isinstance(p, PlayerInput) for p in players)
+
+
+def _two_wr_depth(name_b="Hollywood Brown"):
+    return _depth([
+        dict(season=2023, week=5, club_code="KC", depth_team="1", position="WR",
+             gsis_id="gA", full_name="Alpha Star", football_name=None),
+        dict(season=2023, week=5, club_code="KC", depth_team="1", position="WR",
+             gsis_id="gB", full_name=name_b, football_name=None),
+    ])
+
+
+def _two_wr_weekly():
+    return _weekly([
+        _wrow("gA", "Alpha Star", "WR", "KC", 2023, 4, targets=8, receptions=6, rec_yds=90),
+        _wrow("gB", "Hollywood Brown", "WR", "KC", 2023, 4, targets=8, receptions=6, rec_yds=90),
+    ])
+
+
+def test_out_player_dropped_by_gsis_even_when_names_differ():
+    # depth says "Hollywood Brown", the injury report says "Marquise Brown":
+    # the name filter misses him, the gsis filter catches him.
+    by_name = {p.player_id for p in active_usage(
+        "KC", 2023, 5, _two_wr_depth(), _two_wr_weekly(), _EMPTY_SNAPS, {}, {"marquise brown"})[0]}
+    assert by_name == {"gA", "gB"}                     # name alone misses
+    by_id = {p.player_id for p in active_usage(
+        "KC", 2023, 5, _two_wr_depth(), _two_wr_weekly(), _EMPTY_SNAPS, {}, {"marquise brown"},
+        out_ids={"gB"})[0]}
+    assert by_id == {"gA"}
+
+
+def test_out_ids_union_with_name_match():
+    depth = _depth([
+        dict(season=2023, week=5, club_code="KC", depth_team="1", position="WR",
+             gsis_id="gA", full_name="Alpha Star", football_name=None),
+        dict(season=2023, week=5, club_code="KC", depth_team="2", position="WR",
+             gsis_id="gB", full_name="Hollywood Brown", football_name=None),
+        dict(season=2023, week=5, club_code="KC", depth_team="3", position="WR",
+             gsis_id="gC", full_name="Charlie Third", football_name=None),
+    ])
+    got = {p.player_id for p in active_usage(
+        "KC", 2023, 5, depth, _two_wr_weekly(), _EMPTY_SNAPS, {}, {"alpha star"},
+        out_ids={"gB"})[0]}
+    assert got == {"gC"}                               # name drops gA, id drops gB
+
+
+def test_questionable_by_gsis_gets_volume_downweight():
+    q = {p.player_id: p for p in active_usage(
+        "KC", 2023, 5, _two_wr_depth(), _two_wr_weekly(), _EMPTY_SNAPS, {}, set(),
+        questionable_names={"marquise brown"}, questionable_ids={"gB"},
+        questionable_weight=0.5)[0]}
+    assert set(q) == {"gA", "gB"}                      # Q player NOT dropped
+    assert q["gA"].target_share == pytest.approx(8 / 12)
+    assert q["gB"].target_share == pytest.approx(4 / 12)

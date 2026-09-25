@@ -315,6 +315,49 @@ def questionable_names_by_team_week(
     return out
 
 
+def _ids_by_team_week(
+    injuries_df: pd.DataFrame, season: int, week: int, statuses: frozenset[str]
+) -> dict[str, set[str]]:
+    """team -> {gsis_id} of injury rows for one (season, week) whose
+    `report_status` (case-insensitive) is in `statuses`. Same row/team rules as
+    the name helpers; a NaN/blank `gsis_id` (or no `gsis_id` column) is skipped.
+    PURE."""
+    out: dict[str, set[str]] = {}
+    if "gsis_id" not in injuries_df.columns:
+        return out
+    rows = injuries_df[
+        (injuries_df["season"] == season) & (injuries_df["week"] == week)
+    ]
+    for row in rows.itertuples(index=False):
+        status = getattr(row, "report_status", None)
+        if pd.isna(status) or str(status).strip().lower() not in statuses:
+            continue
+        gsis = getattr(row, "gsis_id", None)
+        if pd.isna(gsis) or not str(gsis).strip():
+            continue
+        team = str(getattr(row, "team", "")).strip()
+        out.setdefault(team, set()).add(str(gsis).strip())
+    return out
+
+
+def out_ids_by_team_week(
+    injuries_df: pd.DataFrame, season: int, week: int
+) -> dict[str, set[str]]:
+    """team -> {gsis_id} ruled OUT/Doubtful for one (season, week), for
+    active_usage's `out_ids`. The id twin of out_names_by_team_week: catches
+    players whose depth-chart name differs from the injury name (nicknames,
+    Jr./III suffixes). PURE."""
+    return _ids_by_team_week(injuries_df, season, week, _OUT_STATUSES)
+
+
+def questionable_ids_by_team_week(
+    injuries_df: pd.DataFrame, season: int, week: int
+) -> dict[str, set[str]]:
+    """team -> {gsis_id} tagged QUESTIONABLE for one (season, week), for
+    active_usage's `questionable_ids`. PURE."""
+    return _ids_by_team_week(injuries_df, season, week, frozenset({"questionable"}))
+
+
 def actual_qb_pass_yds(
     qb_gsis: str | None, actual_stats: dict[str, dict[str, float]]
 ) -> float | None:
@@ -536,6 +579,8 @@ def run_backtest(
     actual_stats: dict = {}
     out_by_team: dict[str, set[str]] = {}
     q_by_team: dict[str, set[str]] = {}
+    out_ids_by_team: dict[str, set[str]] = {}
+    q_ids_by_team: dict[str, set[str]] = {}
     # (team, season, week) -> active_usage's (players, qb_gsis) result.
     # Memoized so each team's active roster for a given week is computed
     # ONCE (active_usage does a league-wide weekly groupby internally) even
@@ -556,6 +601,8 @@ def run_backtest(
                 out_by_team.get(team, set()),
                 questionable_names=q_by_team.get(team, set()),
                 questionable_weight=questionable_weight,
+                out_ids=out_ids_by_team.get(team, set()),
+                questionable_ids=q_ids_by_team.get(team, set()),
             )
         return active_cache[key]
 
@@ -569,6 +616,8 @@ def run_backtest(
             actual_stats = _actual_player_stats(weekly, season, week)
             out_by_team = out_names_by_team_week(injuries_df, season, week)
             q_by_team = questionable_names_by_team_week(injuries_df, season, week)
+            out_ids_by_team = out_ids_by_team_week(injuries_df, season, week)
+            q_ids_by_team = questionable_ids_by_team_week(injuries_df, season, week)
             cutoff_key = key
 
         try:

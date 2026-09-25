@@ -492,3 +492,46 @@ def test_fetch_backtest_sources_keys_match_what_run_backtest_reads():
     src = inspect.getsource(bsn.fetch_backtest_sources)
     for key in ("pbp", "weekly", "snaps", "pfr2gsis", "schedules", "depth", "injuries"):
         assert f'"{key}"' in src
+
+
+# =============================================================================
+# out_ids_by_team_week / questionable_ids_by_team_week
+# =============================================================================
+
+def _injuries_ids_df() -> pd.DataFrame:
+    nan = float("nan")
+    return pd.DataFrame([
+        {"season": 2023, "week": 1, "team": "KC", "gsis_id": "g1", "full_name": "Player Out", "report_status": "Out"},
+        {"season": 2023, "week": 1, "team": "KC", "gsis_id": "g2", "full_name": nan, "report_status": "doubtful"},
+        {"season": 2023, "week": 1, "team": "KC", "gsis_id": "g3", "full_name": "Q", "report_status": "Questionable"},
+        {"season": 2023, "week": 1, "team": "KC", "gsis_id": nan, "full_name": "No Id", "report_status": "Out"},
+        {"season": 2023, "week": 1, "team": "KC", "gsis_id": " ", "full_name": "Blank Id", "report_status": "Out"},
+        {"season": 2023, "week": 1, "team": "KC", "gsis_id": "g4", "full_name": "Nan St", "report_status": nan},
+        {"season": 2023, "week": 1, "team": "BUF", "gsis_id": "g5", "full_name": "B", "report_status": "OUT"},
+        {"season": 2023, "week": 1, "team": "BUF", "gsis_id": "g6", "full_name": "BQ", "report_status": "QUESTIONABLE"},
+        {"season": 2023, "week": 2, "team": "KC", "gsis_id": "g7", "full_name": "W", "report_status": "Out"},
+    ])
+
+
+def test_out_ids_by_team_week_out_and_doubtful_skip_nan_ids():
+    result = bsn.out_ids_by_team_week(_injuries_ids_df(), 2023, 1)
+    assert result == {"KC": {"g1", "g2"}, "BUF": {"g5"}}   # id kept even with NaN name
+
+
+def test_questionable_ids_by_team_week():
+    result = bsn.questionable_ids_by_team_week(_injuries_ids_df(), 2023, 1)
+    assert result == {"KC": {"g3"}, "BUF": {"g6"}}
+
+
+def test_id_helpers_no_rows_or_no_gsis_column_return_empty():
+    assert bsn.out_ids_by_team_week(_injuries_ids_df(), 2099, 1) == {}
+    assert bsn.out_ids_by_team_week(_injuries_df(), 2023, 1) == {}      # no gsis_id column
+    assert bsn.questionable_ids_by_team_week(_injuries_df(), 2023, 1) == {}
+
+
+def test_run_backtest_passes_id_sets_to_active_usage():
+    import inspect
+
+    src = inspect.getsource(bsn.run_backtest)
+    assert "out_ids=" in src and "questionable_ids=" in src
+    assert "out_ids_by_team_week(" in src and "questionable_ids_by_team_week(" in src
