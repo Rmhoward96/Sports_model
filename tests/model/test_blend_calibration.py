@@ -344,3 +344,35 @@ def test_choose_weight_binary_reads_p_any_as_one_minus_p0():
         rows3.append({"pmf_a": a, "pmf_b": b, "actual": y})
         rows2.append({"pmf_a": [a[0], 1 - a[0]], "pmf_b": [b[0], 1 - b[0]], "actual": y})
     assert choose_weight(rows3, "anytime_td") == choose_weight(rows2, "anytime_td")
+
+
+# ---- pipeline.blend_calibrate: the per-record A -> blend -> calibrate step ---------------
+
+def test_blend_calibrate_count_market_blend_then_pit_map():
+    from sportsmodel.model.props_ml.pipeline import blend_calibrate
+    a, b = _discrete_normal(10.0, 3.0), _discrete_normal(14.0, 3.0)
+    knots = fit_pit_map(np.random.default_rng(0).beta(0.5, 0.5, 500))
+    pre, post = blend_calibrate(a, b, 0.3, "rec_yds", knots)
+    np.testing.assert_allclose(pre, blend_pmf(a, b, 0.3))
+    np.testing.assert_allclose(post, apply_pit_map(blend_pmf(a, b, 0.3), knots))
+    pre, post = blend_calibrate(a, b, 0.3, "rec_yds")          # no map -> post is pre
+    np.testing.assert_allclose(post, pre)
+
+
+def test_blend_calibrate_without_b_keeps_a():
+    from sportsmodel.model.props_ml.pipeline import blend_calibrate
+    a = _discrete_normal(10.0, 3.0)
+    pre, post = blend_calibrate(a, None, 0.3, "receptions")
+    np.testing.assert_allclose(pre, a)
+    np.testing.assert_allclose(post, a)
+    pre, _ = blend_calibrate(np.array([0.6, 0.3, 0.1]), None, 0.5, "anytime_td")
+    np.testing.assert_allclose(pre, [0.6, 0.4])                 # P(>=1) = 1 - pmf[0]
+
+
+def test_blend_calibrate_anytime_td_logit_blend_and_platt():
+    from sportsmodel.model.props_ml.pipeline import blend_calibrate
+    pre, post = blend_calibrate([0.7, 0.3], [0.5, 0.5], 0.5, "anytime_td", (0.8, 0.3))
+    p = blend_binary(0.3, 0.5, 0.5)
+    np.testing.assert_allclose(pre, [1 - p, p])
+    q = apply_platt(p, (0.8, 0.3))
+    np.testing.assert_allclose(post, [1 - q, q])

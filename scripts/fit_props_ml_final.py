@@ -24,6 +24,11 @@ writes ``data/props_ml/models/`` atomically (temp dir, then swap):
   ``role_subsets``, ``market_max``, ``feature_columns`` and ``artifact_files``
   -- everything serving needs without importing the training scripts.
 
+Loading / verifying the artifacts (``load_artifacts``, ``required_columns``,
+``calib_for_apply``, ``b_markets``, the file names) lives in
+``sportsmodel.model.props_ml.artifacts`` (shared with live serving,
+``sim.nfl.ml_serving``); this script re-exports those names.
+
 ``trained_through`` = the last (season, week) with a played label in the player
 table; every model trains on rows strictly before ``trained_through + 1 week``
 (``fit_upto``).
@@ -56,16 +61,28 @@ import tempfile
 import time
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Callable, Mapping, NamedTuple
+from typing import Callable, Mapping
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
 
 import joblib  # noqa: E402
-import numpy as np  # noqa: E402
 import pandas as pd  # noqa: E402
 
 from sportsmodel.model.props_eval import population_from_baseline, rung_decision  # noqa: E402
+from sportsmodel.model.props_ml.artifacts import (  # noqa: E402,F401  (re-exported)
+    CALIB_FILE,
+    CONFIG_FILE,
+    FORMAT_VERSION,
+    LEARNED_FILE,
+    Artifacts,
+    _is_artifact,
+    b_markets,
+    calib_for_apply,
+    load_artifacts,
+    required_columns,
+    verify_feature_columns,
+)
 from sportsmodel.model.props_ml.blend import BINARY_MARKET  # noqa: E402
 from sportsmodel.model.props_ml.dist_models import (  # noqa: E402
     ROLE_SUBSETS,
@@ -88,11 +105,7 @@ tpb = _load_script("train_props_ml_b")
 tpm = tpb.tpm
 
 MODEL_DIR = tpm.DATA_DIR / "models"
-CONFIG_FILE = "props_ml_config.json"
-LEARNED_FILE = "learned.joblib"
-CALIB_FILE = "calibration.json"
 QUICK_GATE_FILE = "quick_gate.json"
-FORMAT_VERSION = 1
 QUICK_MIN_SKILL = 0.0
 QUICK_MAX_RPS_RATIO = 1.05
 KEY = ["season", "week", "player_id"]
@@ -174,12 +187,6 @@ def kept_toggles(pipeline: Mapping, a_gate: Mapping) -> frozenset[str]:
     return kept
 
 
-def b_markets(pipeline: Mapping) -> list[str]:
-    """Markets whose served pmf READS B: ``source == "ml"`` and ``w_final < 1``."""
-    return [m for m, v in pipeline["markets"].items()
-            if v["source"] == "ml" and float(v["w_final"]) < 1.0]
-
-
 def role_columns(player_tbl: pd.DataFrame, markets) -> list[str]:
     """Columns ``in_role`` reads for ``markets`` (sorted)."""
     cols = set()
@@ -200,16 +207,6 @@ def holdout_sources(sources: Mapping, weeks) -> dict:
     keep = pd.Series([(int(s), int(w)) in want for s, w in zip(sch["season"], sch["week"])],
                      index=sch.index)
     return {**sources, "schedules": sch[keep]}
-
-
-def calib_for_apply(calibration: Mapping) -> dict | None:
-    """``apply_pipeline``'s ``calib`` from calibration.json (None when no
-    market calibrates)."""
-    ms = calibration["markets"]
-    if not any(v["calibrate"] for v in ms.values()):
-        return None
-    return {m: (tuple(v["map"]) if v["kind"] == "platt" else np.asarray(v["map"], dtype=float))
-            for m, v in ms.items()}
 
 
 # ---- pure helpers: B fit / predict ----------------------------------------------------------
@@ -278,10 +275,6 @@ def _learned_columns(lm) -> dict:
                        "eff": ({n: cols(m) for n, m in lm.eff.items()} if lm.eff else None)}}
 
 
-def _jsonable(x):
-    return json.loads(json.dumps(tpm.to_jsonable(x)))
-
-
 def build_config(pipeline: Mapping, *, learned_models, b_models: Mapping, a_fit: Mapping,
                  trained_through: tuple[int, int], market_max: Mapping, role_cols: list[str],
                  identity: Mapping, created_at: str) -> dict:
@@ -301,49 +294,6 @@ def build_config(pipeline: Mapping, *, learned_models, b_models: Mapping, a_fit:
                                 "role": list(role_cols)},
             "artifact_files": {"learned": LEARNED_FILE, "calibration": CALIB_FILE,
                                "b": {m: f"b_{m}.joblib" for m in b_models}}}
-
-
-def required_columns(config: Mapping) -> dict[str, list[str]]:
-    """``{"player": [...], "team": [...]}``: every column the saved models and
-    the A hook read (fitted columns, role columns, ``st_questionable``, keys)."""
-    fc = config["feature_columns"]
-    player = {"season", "week", "player_id", "team", "opponent", "st_questionable", *fc["role"]}
-    team = {"season", "week", "team", "opponent"}
-    lf = fc["learned"]["fitted"]
-    for n in ("targets", "carries"):
-        player |= set(lf[n] or [])
-    for cols in (lf["eff"] or {}).values():
-        player |= set(cols or [])
-    for n in ("team_pass", "team_rush"):
-        team |= set(lf[n] or [])
-    for cols in fc["b"].values():
-        player |= set(cols)
-    return {"player": sorted(player), "team": sorted(team)}
-
-
-def verify_feature_columns(config: Mapping, player_tbl: pd.DataFrame | None = None,
-                           team_tbl: pd.DataFrame | None = None) -> None:
-    """ValueError naming every required column absent from a given table."""
-    req, bad = required_columns(config), []
-    for name, tbl in (("player", player_tbl), ("team", team_tbl)):
-        if tbl is not None:
-            miss = [c for c in req[name] if c not in tbl.columns]
-            if miss:
-                bad.append(f"{name} table is missing {miss}")
-    if bad:
-        raise ValueError("props-ML artifacts do not match the feature tables: " + "; ".join(bad))
-
-
-class Artifacts(NamedTuple):
-    config: dict
-    learned: object
-    b_models: dict
-    calibration: dict
-
-
-def _is_artifact(name: str) -> bool:
-    return name in (CONFIG_FILE, LEARNED_FILE, CALIB_FILE) or (
-        name.startswith("b_") and name.endswith(".joblib"))
 
 
 def save_artifacts(out_dir: Path, learned_models, b_models: Mapping, calibration: Mapping,
@@ -378,31 +328,6 @@ def save_artifacts(out_dir: Path, learned_models, b_models: Mapping, calibration
             tmp.rename(out)
     finally:
         shutil.rmtree(tmp, ignore_errors=True)
-
-
-def load_artifacts(out_dir: Path, player_tbl: pd.DataFrame | None = None,
-                   team_tbl: pd.DataFrame | None = None) -> Artifacts:
-    """Load what ``save_artifacts`` wrote. ValueError on a format mismatch, a
-    config ``role_subsets`` differing from ``dist_models.ROLE_SUBSETS``, a B
-    model set differing from the markets that read B, or (with tables) a
-    required feature column missing (``verify_feature_columns``)."""
-    out = Path(out_dir)
-    config = json.loads((out / CONFIG_FILE).read_text())
-    if config.get("format_version") != FORMAT_VERSION:
-        raise ValueError(f"props_ml_config.json format_version {config.get('format_version')} "
-                         f"!= {FORMAT_VERSION}")
-    if config.get("role_subsets") != _jsonable(ROLE_SUBSETS):
-        raise ValueError("props_ml_config.json role_subsets differ from dist_models.ROLE_SUBSETS: "
-                         "refit the models")
-    files = config["artifact_files"]
-    if set(files["b"]) != set(b_markets(config)):
-        raise ValueError(f"B models {sorted(files['b'])} != markets reading B "
-                         f"{sorted(b_markets(config))}")
-    if player_tbl is not None or team_tbl is not None:
-        verify_feature_columns(config, player_tbl, team_tbl)
-    return Artifacts(config=config, learned=joblib.load(out / files["learned"]),
-                     b_models={m: joblib.load(out / f) for m, f in files["b"].items()},
-                     calibration=json.loads((out / files["calibration"]).read_text()))
 
 
 # ---- quick-gate decision -------------------------------------------------------------------

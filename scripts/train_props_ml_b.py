@@ -75,13 +75,7 @@ from sportsmodel.model.props_eval import (  # noqa: E402
     rps_pmf,
     rung_decision,
 )
-from sportsmodel.model.props_ml.blend import (  # noqa: E402
-    BINARY_MARKET,
-    blend_binary,
-    blend_pmf,
-    choose_weight,
-    prob_at_least_one,
-)
+from sportsmodel.model.props_ml.blend import BINARY_MARKET, choose_weight  # noqa: E402
 from sportsmodel.model.props_ml.dist_models import (  # noqa: E402
     ROLE_SUBSETS,
     fit_market,
@@ -91,11 +85,10 @@ from sportsmodel.model.props_ml.dist_models import (  # noqa: E402
 from sportsmodel.model.props_ml.pit_calibration import (  # noqa: E402
     IDENTITY_KNOTS,
     IDENTITY_PLATT,
-    apply_pit_map,
-    apply_platt,
     fit_pit_map,
     fit_platt,
 )
+from sportsmodel.model.props_ml.pipeline import blend_calibrate  # noqa: E402
 from sportsmodel.sim.nfl import learned  # noqa: E402
 
 
@@ -179,21 +172,9 @@ def apply_pipeline(records_a, b_pmfs: Mapping, weights: Mapping[str, float],
     out = []
     for r in records_a:
         m, key = r["market"], rec_key(r)
-        pa, pb = np.asarray(r["pmf"], dtype=float), b_pmfs.get(key)
+        pb = b_pmfs.get(key)
         w = float(weights[m]) if pb is not None else float("nan")
-        if m == BINARY_MARKET:
-            p = (blend_binary(prob_at_least_one(pa), prob_at_least_one(pb), w) if pb is not None
-                 else prob_at_least_one(pa))
-            pre = np.array([1.0 - p, p])
-        else:
-            pre = blend_pmf(pa, pb, w) if pb is not None else pa
-        post = pre
-        if calib is not None:
-            if m == BINARY_MARKET:
-                p = apply_platt(pre[1], calib[m])
-                post = np.array([1.0 - p, p])
-            else:
-                post = apply_pit_map(pre, calib[m])
+        pre, post = blend_calibrate(r["pmf"], pb, w, m, None if calib is None else calib[m])
         a, u = r["actual"], pit_uniform(*key)
         pit = pit_pmf(post, a, u)
         out.append({"season": r["season"], "week": r["week"], "home": r["home"],
