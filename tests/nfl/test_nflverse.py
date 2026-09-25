@@ -76,3 +76,83 @@ def test_load_release_required_raises_when_none(monkeypatch):
     _patch_release(monkeypatch, set())
     with pytest.raises(RuntimeError):
         load_release("pbp", [2026])
+
+
+def test_single_file_dataset_is_read_once_and_filtered(monkeypatch):
+    calls = []
+    frame = pd.DataFrame({"season": [2020, 2021, 2022], "week": [1, 1, 1],
+                          "player_gsis_id": ["a", "b", "c"], "avg_separation": [3.0, 3.1, 3.2],
+                          "avg_cushion": [6.0] * 3, "avg_intended_air_yards": [9.0] * 3,
+                          "avg_yac_above_expectation": [0.1] * 3, "season_type": ["REG"] * 3})
+    monkeypatch.setattr(nflverse.pd, "read_parquet", lambda url: calls.append(url) or frame)
+    out = nflverse.load_release("ngs_receiving", [2021, 2022])
+    assert len(calls) == 1 and calls[0].endswith("nextgen_stats/ngs_receiving.parquet")
+    assert sorted(out["season"].tolist()) == [2021, 2022]
+
+
+def test_validate_columns_names_missing(monkeypatch):
+    with pytest.raises(ValueError, match="avg_separation"):
+        nflverse.validate_columns(pd.DataFrame({"season": [2021]}), "ngs_receiving")
+
+
+def test_depth_release_url_is_per_season(monkeypatch):
+    urls = []
+    old = pd.DataFrame({"season": [2021], "club_code": ["KC"], "week": [1], "depth_team": ["1"],
+                        "gsis_id": ["x"], "position": ["QB"], "football_name": ["P"], "last_name": ["M"],
+                        "first_name": ["P"]})
+    monkeypatch.setattr(nflverse.pd, "read_parquet", lambda url: urls.append(url) or old)
+    nflverse.load_release("depth", [2021])
+    assert urls == ["https://github.com/nflverse/nflverse-data/releases/download/depth_charts/depth_charts_2021.parquet"]
+
+
+def test_schedules_validated(monkeypatch):
+    bad = pd.DataFrame({"season": [2021], "week": [1]})
+    monkeypatch.setattr(nflverse.pd, "read_parquet", lambda url: bad)
+    with pytest.raises(ValueError, match="home_rest"):
+        nflverse.load_release("schedules", [2021])
+
+
+# --- depth: per-season schema validation (either nflverse schema) ---
+
+_OLD_DEPTH = {"season": [2024], "club_code": ["KC"], "week": [1.0], "depth_team": ["1"],
+              "gsis_id": ["x"], "position": ["QB"]}
+_SNAP_DEPTH = {"dt": ["2025-09-01T10:00:00Z"], "team": ["KC"], "gsis_id": ["y"], "pos_abb": ["QB"],
+               "pos_rank": [1]}
+
+
+def _patch_depth(monkeypatch, frames: dict[int, dict]):
+    def _read(path, *a, **k):
+        yr = int(path.rsplit("_", 1)[1].split(".")[0])
+        return pd.DataFrame(frames[yr])
+    monkeypatch.setattr(nflverse.pd, "read_parquet", _read)
+
+
+def test_depth_accepts_old_and_snapshot_schemas_per_season(monkeypatch):
+    _patch_depth(monkeypatch, {2024: _OLD_DEPTH, 2025: _SNAP_DEPTH})
+    out = load_release("depth", [2024, 2025])
+    assert len(out) == 2 and {"club_code", "pos_rank"} <= set(out.columns)
+
+
+@pytest.mark.parametrize("season,frame,missing", [
+    (2024, {k: v for k, v in _OLD_DEPTH.items() if k != "depth_team"}, "depth_team"),
+    (2025, {k: v for k, v in _SNAP_DEPTH.items() if k != "pos_rank"}, "pos_rank"),
+])
+def test_depth_season_missing_a_schema_column_raises_naming_season(monkeypatch, season, frame, missing):
+    """Validated per season inside the loop (a concat would hide one season's
+    drift behind the other schema's columns) and NOT swallowed as 'unavailable'."""
+    good = {2024: _OLD_DEPTH, 2025: _SNAP_DEPTH}
+    _patch_depth(monkeypatch, {**good, season: frame})
+    with pytest.raises(ValueError, match=rf"(?s)depth.*{season}.*{missing}"):
+        load_release("depth", [2024, 2025])
+
+
+@pytest.mark.parametrize("bad", [[0], [-1], [1.5], ["x"]])
+def test_depth_snapshot_pos_rank_must_be_positive_integers(monkeypatch, bad):
+    _patch_depth(monkeypatch, {2025: {**_SNAP_DEPTH, "pos_rank": bad}})
+    with pytest.raises(ValueError, match="pos_rank"):
+        load_release("depth", [2025])
+
+
+def test_depth_snapshot_pos_rank_numeric_strings_ok(monkeypatch):
+    _patch_depth(monkeypatch, {2025: {**_SNAP_DEPTH, "pos_rank": ["2"]}})
+    assert len(load_release("depth", [2025])) == 1

@@ -1,0 +1,515 @@
+{
+  "run_date": "2026-09-24",
+  "seasons": [
+    2021,
+    2022,
+    2023,
+    2024,
+    2025
+  ],
+  "n_sims": 1000,
+  "refit_schedule": "every 4 weeks",
+  "refit_weeks": [
+    1,
+    5,
+    9,
+    13,
+    17
+  ],
+  "run_tag": "s2021-2025__every4",
+  "learned_q_weight": 1.0,
+  "alignment": "per-game seeded random streams (game-level alignment across runs)",
+  "identity": {
+    "player_features": {
+      "size": 25767614,
+      "sha256": "6ba250c35b6006c07dacdf306a8b130eb61b4f14288ebfde9c5b4c963fd86857"
+    },
+    "team_features": {
+      "size": 1216370,
+      "sha256": "5b7afd3a670b3c858cd491804dc1be52193109e643ea32a3a4447a2173d6f703"
+    },
+    "git_head": "a976e8822afa0906e394ec320cc355b5a7c0b0b5",
+    "prod": {
+      "season_decay": 0.4,
+      "questionable_weight": 0.75,
+      "home_field": 0.07,
+      "ratings_weight": 0.5
+    },
+    "seed": 42,
+    "backtest_sources": {
+      "depth": {
+        "rows": 224175,
+        "hash": "6f321fcb9d1c26fce3aed3bc88661eb21984c32d73252d16c95b5ed3a470c365"
+      },
+      "injuries": {
+        "rows": 34812,
+        "hash": "7cc1f5342829b3ea1be07367e9dffa88a553fbbc3992fdf58c009053449b91da"
+      },
+      "pbp": {
+        "rows": 294989,
+        "hash": "6cc159bc67fd8b2ce274fffed712bd77d2bcf7aa8d25dedcf5ecec43720132b6"
+      },
+      "pfr2gsis": {
+        "rows": 7813,
+        "hash": "ad2674e6a38de171f59a08edb0922044b1d72665aed460f4d56e95721080b413"
+      },
+      "schedules": {
+        "rows": 1693,
+        "hash": "baddabe5a7013938d084b98099651af924c654ccaca26a5dffa8d1a31a7a67f5"
+      },
+      "snaps": {
+        "rows": 157616,
+        "hash": "228d0c2502c5916da4b4b3f4d8400d7b9d80405bdbebd0e4490b1b740c270de0"
+      },
+      "weekly": {
+        "rows": 112450,
+        "hash": "aee6a2c931ef9ce270ed124b57cd57ebf5df0c5b9107693cbf11ea202fd465a8"
+      }
+    }
+  },
+  "tuned": {
+    "2021": [
+      1.0,
+      300
+    ],
+    "2022": [
+      1.0,
+      150
+    ],
+    "2023": [
+      0.8,
+      150
+    ],
+    "2024": [
+      1.0,
+      150
+    ],
+    "2025": [
+      0.8,
+      300
+    ]
+  },
+  "n_games_baseline": 1359,
+  "mode": "ladder",
+  "ladder": [
+    {
+      "rung": "volume",
+      "toggles": [
+        "volume"
+      ],
+      "compared_against": [],
+      "decision": {
+        "skill": 0.01105121697189973,
+        "lo": 0.0057860495966302284,
+        "hi": 0.016368340686821997,
+        "per_market": {
+          "pass_yds": {
+            "n": 2511,
+            "rps_b": 46.27206926961368,
+            "rps_c": 46.964219294305046,
+            "ece_b": 0.033166069295101554,
+            "ece_c": 0.03149342891278375
+          },
+          "rec_yds": {
+            "n": 9038,
+            "rps_b": 18.586110638415576,
+            "rps_c": 18.34398910588625,
+            "ece_b": 0.00913919008630228,
+            "ece_c": 0.011816773622482851
+          },
+          "receptions": {
+            "n": 8642,
+            "rps_b": 1.3223992811849108,
+            "rps_c": 1.2885485333256192,
+            "ece_b": 0.004596158296690576,
+            "ece_c": 0.006984494330016198
+          },
+          "rush_yds": {
+            "n": 4123,
+            "rps_b": 18.64473543002668,
+            "rps_c": 18.261807177540625,
+            "ece_b": 0.006398253698763035,
+            "ece_c": 0.0070434149890856185
+          }
+        },
+        "pass": false,
+        "reasons": [
+          "market pass_yds: rps_c (46.9642) > 1.01 * rps_b (46.7348)"
+        ]
+      },
+      "baseline_ece": {
+        "pass": true,
+        "reasons": [],
+        "per_market": {
+          "pass_yds": {
+            "n": 2511,
+            "ece_base": 0.033166069295101554,
+            "ece_cand": 0.03149342891278375
+          },
+          "rec_yds": {
+            "n": 9038,
+            "ece_base": 0.00913919008630228,
+            "ece_cand": 0.011816773622482851
+          },
+          "receptions": {
+            "n": 8642,
+            "ece_base": 0.004596158296690576,
+            "ece_cand": 0.006984494330016198
+          },
+          "rush_yds": {
+            "n": 4123,
+            "ece_base": 0.006398253698763035,
+            "ece_cand": 0.0070434149890856185
+          }
+        }
+      },
+      "pass": false,
+      "kept_after": [],
+      "note": null,
+      "n_records": 107276,
+      "n_games": 1359,
+      "share_fallbacks": 19,
+      "seconds": 2365.783207178116
+    },
+    {
+      "rung": "efficiency",
+      "toggles": [
+        "efficiency",
+        "volume"
+      ],
+      "compared_against": [],
+      "decision": {
+        "skill": 0.03654706119803061,
+        "lo": 0.03031380812369865,
+        "hi": 0.043345832328558286,
+        "per_market": {
+          "pass_yds": {
+            "n": 2511,
+            "rps_b": 46.27206926961368,
+            "rps_c": 45.857574252887275,
+            "ece_b": 0.033166069295101554,
+            "ece_c": 0.035794504181600954
+          },
+          "rec_yds": {
+            "n": 9038,
+            "rps_b": 18.586110638415576,
+            "rps_c": 17.45804610798849,
+            "ece_b": 0.00913919008630228,
+            "ece_c": 0.013060411595485728
+          },
+          "receptions": {
+            "n": 8642,
+            "rps_b": 1.3223992811849108,
+            "rps_c": 1.2658073158990972,
+            "ece_b": 0.004596158296690576,
+            "ece_c": 0.0068456375838926165
+          },
+          "rush_yds": {
+            "n": 4123,
+            "rps_b": 18.64473543002668,
+            "rps_c": 18.015632296143583,
+            "ece_b": 0.006398253698763035,
+            "ece_c": 0.009080766432209555
+          }
+        },
+        "pass": true,
+        "reasons": []
+      },
+      "baseline_ece": {
+        "pass": true,
+        "reasons": [],
+        "per_market": {
+          "pass_yds": {
+            "n": 2511,
+            "ece_base": 0.033166069295101554,
+            "ece_cand": 0.035794504181600954
+          },
+          "rec_yds": {
+            "n": 9038,
+            "ece_base": 0.00913919008630228,
+            "ece_cand": 0.013060411595485728
+          },
+          "receptions": {
+            "n": 8642,
+            "ece_base": 0.004596158296690576,
+            "ece_cand": 0.0068456375838926165
+          },
+          "rush_yds": {
+            "n": 4123,
+            "ece_base": 0.006398253698763035,
+            "ece_cand": 0.009080766432209555
+          }
+        }
+      },
+      "pass": true,
+      "kept_after": [
+        "efficiency",
+        "volume"
+      ],
+      "note": "volume was not kept; efficiency evaluated as {efficiency, volume} anyway",
+      "n_records": 107276,
+      "n_games": 1359,
+      "share_fallbacks": 19,
+      "seconds": 2510.919250011444
+    },
+    {
+      "rung": "context",
+      "toggles": [
+        "context",
+        "efficiency",
+        "volume"
+      ],
+      "compared_against": [
+        "efficiency",
+        "volume"
+      ],
+      "decision": {
+        "skill": 0.003422189694830463,
+        "lo": 0.0009879290893242034,
+        "hi": 0.005987308757185266,
+        "per_market": {
+          "pass_yds": {
+            "n": 2511,
+            "rps_b": 45.857574252887275,
+            "rps_c": 45.53172912504976,
+            "ece_b": 0.035794504181600954,
+            "ece_c": 0.03628036638789327
+          },
+          "rec_yds": {
+            "n": 9038,
+            "rps_b": 17.45804610798849,
+            "rps_c": 17.448502822859037,
+            "ece_b": 0.013060411595485728,
+            "ece_c": 0.013374640407169725
+          },
+          "receptions": {
+            "n": 8642,
+            "rps_b": 1.2658073158990972,
+            "rps_c": 1.262731401758852,
+            "ece_b": 0.0068456375838926165,
+            "ece_c": 0.007012265679240915
+          },
+          "rush_yds": {
+            "n": 4123,
+            "rps_b": 18.015632296143583,
+            "rps_c": 17.95065845549357,
+            "ece_b": 0.009080766432209555,
+            "ece_c": 0.009711375212224108
+          }
+        },
+        "pass": true,
+        "reasons": []
+      },
+      "baseline_ece": {
+        "pass": true,
+        "reasons": [],
+        "per_market": {
+          "pass_yds": {
+            "n": 2511,
+            "ece_base": 0.033166069295101554,
+            "ece_cand": 0.03628036638789327
+          },
+          "rec_yds": {
+            "n": 9038,
+            "ece_base": 0.00913919008630228,
+            "ece_cand": 0.013374640407169725
+          },
+          "receptions": {
+            "n": 8642,
+            "ece_base": 0.004596158296690576,
+            "ece_cand": 0.007012265679240915
+          },
+          "rush_yds": {
+            "n": 4123,
+            "ece_base": 0.006398253698763035,
+            "ece_cand": 0.009711375212224108
+          }
+        }
+      },
+      "pass": true,
+      "kept_after": [
+        "context",
+        "efficiency",
+        "volume"
+      ],
+      "note": null,
+      "n_records": 107276,
+      "n_games": 1359,
+      "share_fallbacks": 19,
+      "seconds": 2517.691472053528
+    },
+    {
+      "rung": "market",
+      "toggles": [
+        "context",
+        "efficiency",
+        "market",
+        "volume"
+      ],
+      "compared_against": [
+        "context",
+        "efficiency",
+        "volume"
+      ],
+      "decision": {
+        "skill": 0.005875508675886404,
+        "lo": 0.0030736278025088304,
+        "hi": 0.00875814220922158,
+        "per_market": {
+          "pass_yds": {
+            "n": 2511,
+            "rps_b": 45.53172912504976,
+            "rps_c": 44.741306110314596,
+            "ece_b": 0.03628036638789327,
+            "ece_c": 0.037873357228195945
+          },
+          "rec_yds": {
+            "n": 9038,
+            "rps_b": 17.448502822859037,
+            "rps_c": 17.377000636977204,
+            "ece_b": 0.013374640407169725,
+            "ece_c": 0.013927860146050009
+          },
+          "receptions": {
+            "n": 8642,
+            "rps_b": 1.262731401758852,
+            "rps_c": 1.2597943386947466,
+            "ece_b": 0.007012265679240915,
+            "ece_c": 0.006915065956954407
+          },
+          "rush_yds": {
+            "n": 4123,
+            "rps_b": 17.95065845549357,
+            "rps_c": 17.955714298811547,
+            "ece_b": 0.009711375212224108,
+            "ece_c": 0.009405772495755516
+          }
+        },
+        "pass": true,
+        "reasons": []
+      },
+      "baseline_ece": {
+        "pass": true,
+        "reasons": [],
+        "per_market": {
+          "pass_yds": {
+            "n": 2511,
+            "ece_base": 0.033166069295101554,
+            "ece_cand": 0.037873357228195945
+          },
+          "rec_yds": {
+            "n": 9038,
+            "ece_base": 0.00913919008630228,
+            "ece_cand": 0.013927860146050009
+          },
+          "receptions": {
+            "n": 8642,
+            "ece_base": 0.004596158296690576,
+            "ece_cand": 0.006915065956954407
+          },
+          "rush_yds": {
+            "n": 4123,
+            "ece_base": 0.006398253698763035,
+            "ece_cand": 0.009405772495755516
+          }
+        }
+      },
+      "pass": true,
+      "kept_after": [
+        "context",
+        "efficiency",
+        "market",
+        "volume"
+      ],
+      "note": null,
+      "n_records": 107276,
+      "n_games": 1359,
+      "share_fallbacks": 19,
+      "seconds": 2524.506620168686
+    }
+  ],
+  "kept": [
+    "context",
+    "efficiency",
+    "market",
+    "volume"
+  ],
+  "final": {
+    "pass": true,
+    "all": {
+      "skill": 0.04560837244417604,
+      "lo": 0.038479898771169356,
+      "hi": 0.052316644251037304,
+      "per_market": {
+        "pass_yds": {
+          "n": 2511,
+          "rps_b": 46.27206926961368,
+          "rps_c": 44.741306110314596,
+          "ece_b": 0.033166069295101554,
+          "ece_c": 0.037873357228195945
+        },
+        "rec_yds": {
+          "n": 9038,
+          "rps_b": 18.586110638415576,
+          "rps_c": 17.377000636977204,
+          "ece_b": 0.00913919008630228,
+          "ece_c": 0.013927860146050009
+        },
+        "receptions": {
+          "n": 8642,
+          "rps_b": 1.3223992811849108,
+          "rps_c": 1.2597943386947466,
+          "ece_b": 0.004596158296690576,
+          "ece_c": 0.006915065956954407
+        },
+        "rush_yds": {
+          "n": 4123,
+          "rps_b": 18.64473543002668,
+          "rps_c": 17.955714298811547,
+          "ece_b": 0.006398253698763035,
+          "ece_c": 0.009405772495755516
+        }
+      },
+      "pass": true,
+      "reasons": []
+    },
+    "season_2025": {
+      "skill": 0.03561470212339232,
+      "lo": 0.018482189421489468,
+      "hi": 0.05292467375057849,
+      "per_market": {
+        "pass_yds": {
+          "n": 531,
+          "rps_b": 44.20684913182672,
+          "rps_c": 43.39651815065911,
+          "ece_b": 0.03822975517890772,
+          "ece_c": 0.03781544256120527
+        },
+        "rec_yds": {
+          "n": 1567,
+          "rps_b": 18.20455563433312,
+          "rps_c": 17.260599730057432,
+          "ece_b": 0.01966815571155073,
+          "ece_c": 0.018736439055520103
+        },
+        "receptions": {
+          "n": 1446,
+          "rps_b": 1.293829939142462,
+          "rps_c": 1.2319007828492392,
+          "ece_b": 0.01623789764868603,
+          "ece_c": 0.012973720608575379
+        },
+        "rush_yds": {
+          "n": 752,
+          "rps_b": 19.14267658643617,
+          "rps_c": 18.675391414893618,
+          "ece_b": 0.017978723404255315,
+          "ece_c": 0.0151063829787234
+        }
+      },
+      "pass": true,
+      "reasons": []
+    }
+  },
+  "elapsed_s": 20492.310929775238
+}

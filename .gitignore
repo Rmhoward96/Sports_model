@@ -32,3 +32,6 @@ data/
 
 # OS
 .DS_Store
+
+# Props-ML feature tables (regenerable via scripts/build_player_features.py)
+data/props_ml/

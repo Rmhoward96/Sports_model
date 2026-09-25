@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import pandas as pd
 
+from sportsmodel.nfl.teams import normalize_team
 from sportsmodel.sim.nfl.spec import PlayerInput
 
 # Offensive skill positions that participate in the target/carry usage model.
@@ -114,6 +115,35 @@ def _latest_depth_week(
     return (best_season, best_week)
 
 
+def chart_weeks_asof(depth_df: pd.DataFrame, team_weeks: pd.DataFrame) -> pd.DataFrame:
+    """Vectorized `_latest_depth_week` for many team-weeks. PURE.
+
+    For each (team, season, week) row of `team_weeks`, the (season, week) of
+    the depth chart `active_usage` builds that team's active set from: the
+    exact week if `depth_df` has any `club_code == team` row that week, else
+    the team's latest earlier chart (compound (season, week) order), else NaN.
+    Returns `team_weeks[["team", "season", "week"]]` (same row order) plus
+    `chart_season` / `chart_week`.
+    """
+    tw = team_weeks[["team", "season", "week"]].reset_index(drop=True)
+    out = tw.assign(chart_season=float("nan"), chart_week=float("nan"))
+    if depth_df is None or not len(depth_df) or not len(tw):
+        return out
+    charts = depth_df[["club_code", "season", "week"]].dropna().drop_duplicates()
+    charts = pd.DataFrame({"team": charts["club_code"].astype(str).to_numpy(),
+                           "_ord": (charts["season"].astype("int64") * 100
+                                    + charts["week"].astype("int64")).to_numpy()})
+    charts = charts.assign(chart_season=charts["_ord"] // 100, chart_week=charts["_ord"] % 100)
+    q = pd.DataFrame({"team": tw["team"].astype(str).to_numpy(),
+                      "_ord": (tw["season"].astype("int64") * 100 + tw["week"].astype("int64")).to_numpy(),
+                      "_i": range(len(tw))})
+    m = pd.merge_asof(q.sort_values("_ord"), charts.sort_values("_ord"), on="_ord", by="team",
+                      direction="backward", allow_exact_matches=True).sort_values("_i")
+    out["chart_season"] = m["chart_season"].to_numpy(dtype=float)
+    out["chart_week"] = m["chart_week"].to_numpy(dtype=float)
+    return out
+
+
 def _depth_team_int(value: object) -> int:
     """Coerce a depth-chart slot ("1"/"2"/2/…) to int; unknown -> 99 (deep backup)."""
     try:
@@ -134,6 +164,9 @@ def active_usage(
     n_recent: int = 5,
     questionable_names: set[str] | None = None,
     questionable_weight: float = 1.0,
+    *,
+    out_ids: set[str] | None = None,
+    questionable_ids: set[str] | None = None,
 ) -> tuple[list[PlayerInput], str | None]:
     """Per-week active-roster usage: the dilution fix over season averages.
 
@@ -148,7 +181,11 @@ def active_usage(
        to offensive skill positions (QB/RB/WR/TE), keyed by ``gsis_id`` and
        de-duplicated to each player's most prominent (lowest ``depth_team``)
        row. Players whose ``full_name`` or ``football_name`` (case-insensitive)
-       is in ``injuries_out_names`` are dropped. The target-week depth chart and
+       is in ``injuries_out_names`` are dropped, as are players whose
+       ``gsis_id`` is in the optional ``out_ids`` (union with the name match --
+       ids catch nickname/suffix spellings like "Hollywood Brown" vs "Marquise
+       Brown"; ``questionable_ids`` likewise unions with ``questionable_names``;
+       both default None = name-only). The target-week depth chart and
        the injury list are pre-game info and ARE allowed to define who's active;
        everything else is strictly leakage-free.
 
@@ -219,6 +256,8 @@ def active_usage(
         str(n).strip().lower()
         for n in (questionable_names or set())
     }
+    out_gsis = {str(g).strip() for g in (out_ids or set()) if not _is_missing_id(g)}
+    q_ids = {str(g).strip() for g in (questionable_ids or set()) if not _is_missing_id(g)}
     questionable_gsis: set[str] = set()
 
     # --- 1. Active set from the target-week depth chart ---
@@ -258,7 +297,7 @@ def active_usage(
             for n in (full_name, football_name)
             if not _is_missing_id(n)
         }
-        if names_lower & injuries:
+        if names_lower & injuries or gsis in out_gsis:
             continue
 
         dt = _depth_team_int(getattr(row, "depth_team", None))
@@ -273,7 +312,7 @@ def active_usage(
         if prior is None or dt < prior["depth_team"]:
             active[gsis] = {"pos": pos, "name": display_name, "depth_team": dt}
 
-        if names_lower & questionable:
+        if names_lower & questionable or gsis in q_ids:
             questionable_gsis.add(gsis)
 
     # --- 2. Recent (leakage-free) weekly rows, grouped by player_id (== gsis) ---
@@ -542,3 +581,130 @@ def fetch_usage_sources(seasons: list[int]) -> dict:
         "snaps": import_by_season(nfl.import_snap_counts, seasons, "snaps"),
         "ids": nfl.import_ids(),
     }
+
+
+_ET = "America/New_York"
+
+
+def _safe_team(code: object) -> str | None:
+    """`normalize_team`, or None for a code it rejects (row then dropped)."""
+    try:
+        return normalize_team(str(code))
+    except ValueError:
+        return None
+
+
+def _kickoffs_utc(schedules: pd.DataFrame) -> pd.DataFrame:
+    """One row per (season, week, team) with that team's kickoff in UTC.
+    nflverse `gameday`/`gametime` are US-Eastern local."""
+    s = schedules[schedules["game_type"] == "REG"]
+    local = pd.to_datetime(s["gameday"].astype(str) + " " + s["gametime"].fillna("13:00").astype(str),
+                           errors="coerce")
+    ko = local.dt.tz_localize(_ET, ambiguous="NaT", nonexistent="NaT").dt.tz_convert("UTC")
+    rows = []
+    for side in ("home_team", "away_team"):
+        rows.append(pd.DataFrame({"season": s["season"].astype(int), "week": s["week"].astype(int),
+                                  "team": s[side].map(_safe_team), "kickoff": ko}))
+    return pd.concat(rows, ignore_index=True).dropna(subset=["team", "kickoff"])
+
+
+def _snapshot_formation(chart: pd.DataFrame) -> pd.Series:
+    """Old-schema-style `formation` for snapshot rows from `pos_grp` (e.g.
+    "3WR 1TE" -> Offense, "Base 4-3 D" -> Defense, "Special Teams")."""
+    if "pos_grp" not in chart.columns:
+        return pd.Series(pd.NA, index=chart.index, dtype="string")
+    g = chart["pos_grp"].astype("string").str.strip()
+    out = pd.Series("Offense", index=chart.index, dtype="string")
+    out[g.str.endswith(" D").fillna(False)] = "Defense"
+    out[(g == "Special Teams").fillna(False)] = "Special Teams"
+    out[g.isna()] = pd.NA
+    return out
+
+
+def _old_schema_full_name(old: pd.DataFrame) -> pd.Series:
+    """Display/injury-match name for old-schema (<= 2024) depth rows.
+
+    Precedence: the release's own `full_name` (the common name, e.g. "Josh
+    Jacobs" -- what the injury report uses); else `football_name + last_name`;
+    else `first_name + last_name` (`first_name` is the LEGAL name, e.g.
+    "Joshua", so it is the weakest source); else `football_name` alone. Blank
+    strings count as missing. NaN-safe (no `x or ""` on pandas NA)."""
+    def col(name: str) -> pd.Series:
+        s = old.get(name, pd.Series(pd.NA, index=old.index)).astype("string").str.strip()
+        return s.where(s != "")                     # "" / whitespace -> NA
+
+    def join(a: pd.Series, b: pd.Series) -> pd.Series:
+        return (a + " " + b).where(a.notna() & b.notna())
+
+    raw_full, football = col("full_name"), col("football_name")
+    first, last = col("first_name"), col("last_name")
+    return (raw_full.fillna(join(football, last))
+            .fillna(join(first, last))
+            .fillna(football))
+
+
+def depth_charts_asof(raw: pd.DataFrame, schedules: pd.DataFrame) -> pd.DataFrame:
+    """Per-(season, week, team) depth charts in the OLD columns `active_usage`
+    reads, from a frame mixing nflverse's two schemas. PURE.
+
+    - Old weekly schema (has a non-null `club_code`, seasons <= 2024): passed
+      through; `full_name` = the release's own `full_name` (common name, what
+      the injury report uses), else "football_name last", else "first last",
+      else football_name -- see `_old_schema_full_name`.
+      Rows with a null season/week (the "SBBYE" game_type) are dropped.
+      Its `formation` (Offense / Defense / Special Teams) is passed through --
+      KR/PR slots are listed under the player's own position there.
+    - Snapshot schema (2025+: `dt`, `team`, `pos_abb`, `pos_rank`): for each
+      team's REG-season game, take that team's latest snapshot with
+      `dt <= kickoff` (UTC) — never a later one — stamped with that game's
+      (season, week). A team with no snapshot before kickoff gets no rows
+      (active_usage's _latest_depth_week fallback then applies). Snapshot
+      `team` codes are `normalize_team`-normalized first (LAR -> LA, ...) so
+      they match the normalized schedule; codes it rejects are dropped.
+      `formation` is derived from `pos_grp` ("Special Teams" -> Special
+      Teams, "... D" -> Defense, other groups -> Offense; NaN without it).
+    """
+    cols = ["season", "week", "club_code", "depth_team", "position", "gsis_id", "full_name", "football_name",
+            "formation"]
+    if raw is None or len(raw) == 0:
+        return pd.DataFrame(columns=cols)
+    parts: list[pd.DataFrame] = []
+    is_old = raw["club_code"].notna() if "club_code" in raw.columns else pd.Series(False, index=raw.index)
+    # Old-schema rows with no season/week (e.g. game_type "SBBYE", the Super
+    # Bowl bye) key to no game -- drop them.
+    old = raw[is_old]
+    if len(old):
+        old = old.dropna(subset=["season", "week"])
+    if len(old):
+        full = _old_schema_full_name(old)
+        parts.append(pd.DataFrame({
+            "season": old["season"].astype(int), "week": old["week"].astype(int),
+            "club_code": old["club_code"].astype("string"),
+            "depth_team": pd.to_numeric(old["depth_team"], errors="coerce"),
+            "position": old["position"].astype("string"), "gsis_id": old["gsis_id"].astype("string"),
+            "full_name": full, "football_name": old["football_name"].astype("string"),
+            "formation": old.get("formation", pd.Series(pd.NA, index=old.index)).astype("string"),
+        }))
+    new = raw[~is_old]
+    if len(new) and {"dt", "team", "pos_abb", "gsis_id"}.issubset(new.columns):
+        # format="ISO8601": dates and full timestamps may mix (a plain parse infers
+        # one format from the first value and NaTs the rest)
+        snaps = new.assign(_dt=pd.to_datetime(new["dt"], errors="coerce", utc=True, format="ISO8601"),
+                           _team=new["team"].map(_safe_team)).dropna(subset=["_dt", "_team"])
+        ko = _kickoffs_utc(schedules)
+        for team, tsnaps in snaps.groupby("_team"):
+            times = tsnaps["_dt"].drop_duplicates().sort_values()
+            for g in ko[ko["team"] == team].itertuples(index=False):
+                eligible = times[times <= g.kickoff]
+                if eligible.empty:
+                    continue
+                chart = tsnaps[tsnaps["_dt"] == eligible.iloc[-1]]
+                name = chart["player_name"].astype("string")
+                parts.append(pd.DataFrame({
+                    "season": g.season, "week": g.week, "club_code": str(team),
+                    "depth_team": pd.to_numeric(chart.get("pos_rank"), errors="coerce"),
+                    "position": chart["pos_abb"].astype("string"), "gsis_id": chart["gsis_id"].astype("string"),
+                    "full_name": name, "football_name": name,
+                    "formation": _snapshot_formation(chart),
+                }))
+    return pd.concat(parts, ignore_index=True)[cols] if parts else pd.DataFrame(columns=cols)

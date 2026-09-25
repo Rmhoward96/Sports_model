@@ -76,6 +76,7 @@ from __future__ import annotations
 
 import os
 import sys
+import zlib
 from pathlib import Path
 from typing import Callable
 
@@ -91,6 +92,7 @@ from sportsmodel.sim.engine import GameSims, pred_scores
 from sportsmodel.sim.nfl.aggregate import nfl_player_prop_dists
 from sportsmodel.sim.nfl.inputs import build_spec_from_usage
 from sportsmodel.sim.nfl.kernel import simulate_game
+from sportsmodel.sim.nfl.spec import NflGameSpec
 from sportsmodel.nfl.elo import EloConfig, run_elo
 from sportsmodel.sim.nfl.rates import (fetch_nflverse, ratings_tilt, team_rates_from_pbp,
                                        team_defense_rates_from_pbp)
@@ -98,9 +100,10 @@ from sportsmodel.sim.nfl.usage import (
     abbrev_alignment,
     active_usage,
     build_pfr_to_gsis,
+    depth_charts_asof,
     fetch_usage_sources,
-    normalize_depth_charts,
 )
+from sportsmodel.model.props_eval import pit_pmf, pit_uniform, rps_pmf
 
 DEFAULT_N_SIMS = 2000
 SIM_SEED = 42
@@ -151,6 +154,19 @@ _MARKET_USAGE_GATE: dict[str, tuple[str, float]] = {
 # =============================================================================
 # PURE metric helpers (unit-tested)
 # =============================================================================
+
+def game_seed(seed: int, season: int, week: int, home: str, away: str) -> list[int]:
+    """Per-game seed sequence for `np.random.default_rng`.
+
+    Each game gets its own random stream derived only from (seed, season,
+    week, home, away), so a game's draws do not depend on which games were
+    simulated before it or on how many draws they consumed (the kernel's draw
+    count is data-dependent). Two runs that differ only in their specs (e.g.
+    the props-ML spec_hook) therefore get per-game seeded random streams --
+    game-level alignment across runs.
+    """
+    return [int(seed), int(season), int(week), zlib.crc32(f"{home}|{away}".encode())]
+
 
 def brier(probs: list[float], outcomes: list[float]) -> float:
     """Mean squared error between predicted probabilities and 0/1 (or 0.5-tie)
@@ -299,6 +315,49 @@ def questionable_names_by_team_week(
     return out
 
 
+def _ids_by_team_week(
+    injuries_df: pd.DataFrame, season: int, week: int, statuses: frozenset[str]
+) -> dict[str, set[str]]:
+    """team -> {gsis_id} of injury rows for one (season, week) whose
+    `report_status` (case-insensitive) is in `statuses`. Same row/team rules as
+    the name helpers; a NaN/blank `gsis_id` (or no `gsis_id` column) is skipped.
+    PURE."""
+    out: dict[str, set[str]] = {}
+    if "gsis_id" not in injuries_df.columns:
+        return out
+    rows = injuries_df[
+        (injuries_df["season"] == season) & (injuries_df["week"] == week)
+    ]
+    for row in rows.itertuples(index=False):
+        status = getattr(row, "report_status", None)
+        if pd.isna(status) or str(status).strip().lower() not in statuses:
+            continue
+        gsis = getattr(row, "gsis_id", None)
+        if pd.isna(gsis) or not str(gsis).strip():
+            continue
+        team = str(getattr(row, "team", "")).strip()
+        out.setdefault(team, set()).add(str(gsis).strip())
+    return out
+
+
+def out_ids_by_team_week(
+    injuries_df: pd.DataFrame, season: int, week: int
+) -> dict[str, set[str]]:
+    """team -> {gsis_id} ruled OUT/Doubtful for one (season, week), for
+    active_usage's `out_ids`. The id twin of out_names_by_team_week: catches
+    players whose depth-chart name differs from the injury name (nicknames,
+    Jr./III suffixes). PURE."""
+    return _ids_by_team_week(injuries_df, season, week, _OUT_STATUSES)
+
+
+def questionable_ids_by_team_week(
+    injuries_df: pd.DataFrame, season: int, week: int
+) -> dict[str, set[str]]:
+    """team -> {gsis_id} tagged QUESTIONABLE for one (season, week), for
+    active_usage's `questionable_ids`. PURE."""
+    return _ids_by_team_week(injuries_df, season, week, frozenset({"questionable"}))
+
+
 def actual_qb_pass_yds(
     qb_gsis: str | None, actual_stats: dict[str, dict[str, float]]
 ) -> float | None:
@@ -360,6 +419,43 @@ def _actual_player_stats(weekly_df, season: int, week: int) -> dict[str, dict[st
     return out
 
 
+def backtest_fetch_seasons(seasons: list[int]) -> list[int]:
+    """The seasons run_backtest's sources span: `seasons` plus
+    WARMUP_SEASONS_BACK earlier warm-up seasons. PURE."""
+    return list(range(min(seasons) - WARMUP_SEASONS_BACK, max(seasons) + 1))
+
+
+def fetch_backtest_sources(fetch_seasons: list[int]) -> dict:
+    """Every nflverse input run_backtest reads, fetched once (IO, not unit
+    tested). Keys: pbp, weekly, snaps (usage snaps), pfr2gsis, schedules,
+    depth (per-week charts via depth_charts_asof), injuries."""
+    print(f"fetching nflverse seasons {fetch_seasons}")
+    nflverse = fetch_nflverse(fetch_seasons)
+
+    print(f"fetching usage sources for seasons {fetch_seasons}")
+    usage_src = fetch_usage_sources(fetch_seasons)
+    schedules = load_schedules(fetch_seasons)
+
+    from sportsmodel.nfl.nflverse import load_release
+    # Per-week charts: old weekly schema <= 2024; 2025+ snapshots resolved to the
+    # latest chart at/before each team's kickoff (the prior collapse applied one
+    # stale chart to every 2025 week).
+    depth_df = depth_charts_asof(load_release("depth", fetch_seasons), schedules)
+
+    print(f"fetching historical injuries for seasons {fetch_seasons}")
+    import nfl_data_py as nfl
+
+    return {
+        "pbp": nflverse["pbp"],
+        "weekly": nflverse["weekly"],
+        "snaps": usage_src["snaps"],
+        "pfr2gsis": build_pfr_to_gsis(usage_src["ids"]),
+        "schedules": schedules,
+        "depth": depth_df,
+        "injuries": nfl.import_injuries(fetch_seasons),
+    }
+
+
 def run_backtest(
     seasons: list[int],
     n_sims: int,
@@ -370,8 +466,19 @@ def run_backtest(
     home_field: float = 0.0,
     use_defense: bool = True,
     ratings_weight: float = 0.0,
+    spec_hook: Callable[[int, int, str, str, NflGameSpec], NflGameSpec] | None = None,
+    record: list | None = None,
+    sources: dict | None = None,
 ) -> dict:
     """Walk forward over every completed REG-season game in `seasons`.
+
+    sources: optional `fetch_backtest_sources(backtest_fetch_seasons(seasons))`
+        result; when given nothing is fetched (the props-ML harness fetches
+        once and reuses it for every run). None -> fetched here (unchanged).
+
+    seed: base seed; each game is simulated with its own stream
+        `np.random.default_rng(game_seed(seed, season, week, home, away))`,
+        so runs that differ only in their specs stay aligned game by game.
 
     on_game: optional callback invoked once per successfully-simulated game
         as `on_game(season, week, home, away, sims)` (`home`/`away` already
@@ -382,6 +489,14 @@ def run_backtest(
         (via `sim.engine.margin_pmf`/`total_pmf`) without duplicating this
         function's rates/usage/spec-building wiring. Not called for a game
         the per-game try/except below skips.
+    spec_hook: optional `spec_hook(season, week, home, away, spec) -> spec`
+        applied after `build_spec_from_usage` and before `simulate_game` -- the
+        props-ML harness uses it to swap in learned team volume / player shares.
+    record: optional list; when given, one dict per (player, market in
+        PLAYER_MARKETS) with a paired actual is appended: season, week, home,
+        player_id, market, mean, p50, p90, rps, pit, actual. Ungated (the
+        caller applies the population gate). Small records, not pmfs, so five
+        full walk-forwards fit in memory.
 
     Returns a dict of raw sample lists for `report()` to summarize:
       game_probs/game_outcomes, margin_preds/margin_actuals,
@@ -398,29 +513,11 @@ def run_backtest(
       `active_usage` handed back an empty roster for either side -- see
       `abbrev_alignment`'s docstring for why this can happen silently).
     """
-    fetch_seasons = list(range(min(seasons) - WARMUP_SEASONS_BACK, max(seasons) + 1))
-    print(f"fetching nflverse seasons {fetch_seasons}")
-    nflverse = fetch_nflverse(fetch_seasons)
-    pbp, weekly, snaps = nflverse["pbp"], nflverse["weekly"], nflverse["snaps"]
-
-    print(f"fetching usage sources for seasons {fetch_seasons}")
-    usage_src = fetch_usage_sources(fetch_seasons)
-    pfr2gsis = build_pfr_to_gsis(usage_src["ids"])
-    # Normalize nflverse's current (snapshot-based) depth schema onto the old
-    # columns active_usage expects. Stamped at (earliest fetch season, week 1)
-    # so active_usage's _latest_depth_week fallback resolves it for EVERY
-    # walk-forward (season, week). LIMITATION: the new feed carries only recent
-    # snapshots, so every historical week gets the CURRENT chart (upstream has
-    # no depth history) -- acceptable for this rough/bounded backfill; a
-    # no-op passthrough when the old (frozen) schema is what's installed.
-    depth_df = normalize_depth_charts(usage_src["depth"], min(fetch_seasons), 1)
-
-    print(f"fetching historical injuries for seasons {fetch_seasons}")
-    import nfl_data_py as nfl
-
-    injuries_df = nfl.import_injuries(fetch_seasons)
-
-    schedules = load_schedules(fetch_seasons)
+    if sources is None:
+        sources = fetch_backtest_sources(backtest_fetch_seasons(seasons))
+    pbp, weekly = sources["pbp"], sources["weekly"]
+    usage_snaps, pfr2gsis = sources["snaps"], sources["pfr2gsis"]
+    schedules, depth_df, injuries_df = sources["schedules"], sources["depth"], sources["injuries"]
 
     # Leakage-free per-game pre-game Elo from the full committed schedule (well
     # warmed). run_elo records elo_home/elo_away as the ratings BEFORE each game,
@@ -458,8 +555,6 @@ def run_backtest(
     else:
         print("abbrev alignment: OK (depth/injuries/schedule codes all known)")
 
-    rng = np.random.default_rng(seed)
-
     game_probs: list[float] = []
     game_outcomes: list[float] = []
     margin_preds: list[float] = []
@@ -484,6 +579,8 @@ def run_backtest(
     actual_stats: dict = {}
     out_by_team: dict[str, set[str]] = {}
     q_by_team: dict[str, set[str]] = {}
+    out_ids_by_team: dict[str, set[str]] = {}
+    q_ids_by_team: dict[str, set[str]] = {}
     # (team, season, week) -> active_usage's (players, qb_gsis) result.
     # Memoized so each team's active roster for a given week is computed
     # ONCE (active_usage does a league-wide weekly groupby internally) even
@@ -499,11 +596,13 @@ def run_backtest(
                 week,
                 depth_df,
                 weekly,
-                usage_src["snaps"],
+                usage_snaps,
                 pfr2gsis,
                 out_by_team.get(team, set()),
                 questionable_names=q_by_team.get(team, set()),
                 questionable_weight=questionable_weight,
+                out_ids=out_ids_by_team.get(team, set()),
+                questionable_ids=q_ids_by_team.get(team, set()),
             )
         return active_cache[key]
 
@@ -517,6 +616,8 @@ def run_backtest(
             actual_stats = _actual_player_stats(weekly, season, week)
             out_by_team = out_names_by_team_week(injuries_df, season, week)
             q_by_team = questionable_names_by_team_week(injuries_df, season, week)
+            out_ids_by_team = out_ids_by_team_week(injuries_df, season, week)
+            q_ids_by_team = questionable_ids_by_team_week(injuries_df, season, week)
             cutoff_key = key
 
         try:
@@ -535,9 +636,13 @@ def run_backtest(
                 home, away, rates, home_players, away_players, home_qb, away_qb,
                 def_rates=def_rates,
             )
+            if spec_hook is not None:
+                spec = spec_hook(season, week, home, away, spec)
             eh, ea = elo_by_game.get((season, week, home, away), (_ELO_BASE, _ELO_BASE))
             rtilt = ratings_tilt(eh, ea, ratings_weight)
-            sims = simulate_game(spec, n_sims, rng, home_field=home_field, ratings_tilt=rtilt)
+            game_rng = np.random.default_rng(game_seed(seed, season, week, home, away))
+            sims = simulate_game(spec, n_sims, game_rng, home_field=home_field,
+                                 ratings_tilt=rtilt)
         except Exception as exc:  # noqa: BLE001 -- one bad game must not abort the walk
             print(f"skipping {season} wk{week} {row.away_team}@{row.home_team}: {exc}")
             n_skipped += 1
@@ -568,6 +673,17 @@ def run_backtest(
                     continue
                 dist = markets[market]
                 a = actual[market]
+                # a == a skips a NaN actual (float(nan or 0.0) keeps NaN), which
+                # would make rps_pmf/pit_pmf raise outside the per-game try.
+                if record is not None and a == a:
+                    record.append({
+                        "season": season, "week": week, "home": home, "player_id": player_id,
+                        "market": market, "mean": float(dist["mean"]),
+                        "p50": quantile_from_pmf(dist, 0.50), "p90": quantile_from_pmf(dist, 0.90),
+                        "rps": rps_pmf(dist["pmf"], a),
+                        "pit": pit_pmf(dist["pmf"], a, pit_uniform(season, week, player_id, market)),
+                        "actual": a,
+                    })
                 if is_propable(market, actual):
                     player_mean_pairs[market].append((dist["mean"], a))
                     player_p50_pairs[market].append((quantile_from_pmf(dist, 0.50), a))
