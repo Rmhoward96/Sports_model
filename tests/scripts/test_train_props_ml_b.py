@@ -1,0 +1,423 @@
+"""Tests for scripts/train_props_ml_b.py (props-ML Props-2 offline B / blend /
+calibration ladder). Stubbed backtest, stubbed B fits, tiny tables -- no
+network, no real model fits."""
+import importlib.util
+import json
+import pathlib
+
+import numpy as np
+import pandas as pd
+import pytest
+
+from sportsmodel.model import props_eval
+from sportsmodel.model.props_eval import pit_pmf, pit_uniform, rps_pmf
+from sportsmodel.model.props_ml.pit_calibration import IDENTITY_KNOTS, IDENTITY_PLATT
+
+_p = pathlib.Path(__file__).resolve().parents[2] / "scripts" / "train_props_ml_b.py"
+_spec = importlib.util.spec_from_file_location("train_props_ml_b", _p)
+tpb = importlib.util.module_from_spec(_spec)
+_spec.loader.exec_module(tpb)
+
+MARKETS = ("pass_yds", "rush_yds", "rec_yds", "receptions", "rush_att", "pass_tds", "anytime_td")
+KMAX = 8
+MEANS = {"pass_yds": 220.0, "rush_yds": 45.0, "rec_yds": 45.0, "receptions": 4.0,
+         "rush_att": 9.0, "pass_tds": 1.6, "anytime_td": 0.4}
+A_GATE = {"kept": ["context", "efficiency", "market", "volume"],
+          "tuned": {"2021": [1.0, 300], "2022": [1.0, 150], "2023": [0.8, 150],
+                    "2024": [1.0, 150], "2025": [0.8, 300]}}
+WEEKS, GAMES, PLAYERS = 6, 3, 2
+
+
+@pytest.fixture(autouse=True)
+def _fast_bootstrap(monkeypatch):
+    real = props_eval.cluster_bootstrap
+    monkeypatch.setattr(props_eval, "cluster_bootstrap",
+                        lambda df, stat, n_boot=1000, seed=0: real(df, stat, n_boot=40, seed=seed))
+
+
+def test_constants():
+    assert tpb.MARKETS == MARKETS
+    assert tpb.B_DECAY == 1.0 and tpb.B_MAX_ITER == 150
+    assert tpb.A_WORSE_TOL == 1.01
+
+
+# ---- pure: A config / sources / config shape ------------------------------------------
+
+def test_a_config_reads_kept_toggles_and_tuned_per_season():
+    kept, tuned = tpb.a_config(A_GATE, [2021, 2025])
+    assert kept == frozenset({"volume", "efficiency", "context", "market"})
+    assert tuned == {2021: (1.0, 300), 2025: (0.8, 300)}
+    with pytest.raises(ValueError, match="2026"):
+        tpb.a_config(A_GATE, [2026])
+
+
+def test_market_sources_marks_markets_worse_beyond_tolerance_as_baseline():
+    pm = {"rec_yds": {"rps_b": 1.0, "rps_c": 1.009}, "pass_tds": {"rps_b": 1.0, "rps_c": 1.02},
+          "receptions": {"rps_b": 1.0, "rps_c": 0.9}}
+    got = tpb.market_sources(pm, ("rec_yds", "pass_tds", "receptions", "rush_att"), 1.01)
+    assert got == {"rec_yds": "ml", "pass_tds": "baseline", "receptions": "ml",
+                   "rush_att": "baseline"}  # no scored rows -> baseline, never silently ml
+    final = tpb.market_sources(pm, ("rec_yds", "receptions"), 1.0)
+    assert final == {"rec_yds": "baseline", "receptions": "ml"}
+
+
+def test_pipeline_config_shape():
+    cfg = tpb.pipeline_config(frozenset({"volume", "market", "efficiency", "context"}),
+                              {2025: (0.8, 300), 2024: (1.0, 150)},
+                              {m: ("baseline" if m == "pass_tds" else "ml") for m in MARKETS},
+                              {m: 0.7 for m in MARKETS}, True)
+    assert set(cfg) == {"kept_a_toggles", "tuned", "markets"}
+    assert cfg["kept_a_toggles"] == ["volume", "efficiency", "context", "market"]
+    assert cfg["tuned"] == {"2024": [1.0, 150], "2025": [0.8, 300]}
+    assert set(cfg["markets"]) == set(MARKETS)
+    assert cfg["markets"]["pass_tds"] == {"source": "baseline", "w_final": 0.7, "calibrate": True}
+    json.dumps(cfg)  # native types only
+
+
+def test_output_paths_default_and_tagged(tmp_path):
+    kw = dict(gate_path=tmp_path / "b_gate.json", pipeline_path=tmp_path / "pipeline.json",
+              report_dir=tmp_path / "r")
+    assert tpb.output_paths("s2021-2025__every4", "2026-09-25", **kw) == (
+        tmp_path / "b_gate.json", tmp_path / "pipeline.json",
+        tmp_path / "r" / "2026-09-25-props-ml-b-gate.md")
+    assert tpb.output_paths("s2025__every4", "2026-09-25", **kw) == (
+        tmp_path / "b_gate__s2025__every4.json", tmp_path / "pipeline__s2025__every4.json",
+        tmp_path / "r" / "2026-09-25-props-ml-b-gate__s2025__every4.md")
+
+
+# ---- pure: apply_pipeline ---------------------------------------------------------------
+
+def _rec(market, pmf, actual, season=2023, week=3, pid="p1"):
+    return {"season": season, "week": week, "home": "KC", "player_id": pid, "market": market,
+            "pmf": np.asarray(pmf, dtype=np.float32), "actual": float(actual)}
+
+
+def test_apply_pipeline_pure_a_and_pure_b_and_rescoring():
+    a, b = [0.5, 0.3, 0.2], [0.1, 0.2, 0.7]
+    r = _rec("receptions", a, 2)
+    key = (2023, 3, "p1", "receptions")
+    u = pit_uniform(*key)
+    out = tpb.apply_pipeline([r], {key: np.array(b)}, {"receptions": 1.0})[0]
+    np.testing.assert_allclose(out["pmf"], a, atol=1e-7)
+    assert out["rps"] == pytest.approx(rps_pmf(a, 2), abs=1e-6)
+    assert out["pit"] == pytest.approx(pit_pmf(a, 2, u), abs=1e-6)
+    assert out["pit_pre"] == out["pit"] and out["b_missing"] is False and out["w"] == 1.0
+    out = tpb.apply_pipeline([r], {key: np.array(b)}, {"receptions": 0.0})[0]
+    np.testing.assert_allclose(out["pmf"], b, atol=1e-12)
+    assert out["rps"] == pytest.approx(rps_pmf(b, 2))
+    for k in ("season", "week", "home", "player_id", "market", "actual"):
+        assert out[k] == r[k]
+
+
+def test_apply_pipeline_missing_b_keeps_a_and_flags_it():
+    out = tpb.apply_pipeline([_rec("rec_yds", [0.2, 0.8], 1)], {}, {"rec_yds": 0.3})[0]
+    np.testing.assert_allclose(out["pmf"], [0.2, 0.8], atol=1e-7)
+    assert out["b_missing"] is True and out["pmf_b"] is None and np.isnan(out["w"])
+
+
+def test_apply_pipeline_anytime_td_logit_blend_of_one_minus_p0_and_platt():
+    key = (2023, 3, "p1", "anytime_td")
+    r = _rec("anytime_td", [0.7, 0.3], 1)
+    b = np.array([0.4, 0.5, 0.1])  # any shape: P(>=1) = 1 - pmf[0] = 0.6
+    out = tpb.apply_pipeline([r], {key: b}, {"anytime_td": 0.5})[0]
+    lg = 0.5 * np.log(0.3 / 0.7) + 0.5 * np.log(0.6 / 0.4)
+    p = 1 / (1 + np.exp(-lg))
+    np.testing.assert_allclose(out["pmf"], [1 - p, p], atol=1e-6)
+    assert out["p_pre"] == pytest.approx(p, abs=1e-6)
+    assert out["rps"] == pytest.approx((1 - p) ** 2, abs=1e-6)  # Brier
+    cal = tpb.apply_pipeline([r], {key: b}, {"anytime_td": 0.5}, {"anytime_td": (1.0, 1.0)})[0]
+    assert cal["p_pre"] == pytest.approx(p, abs=1e-6)
+    assert cal["pmf"][1] > p                     # Platt b=1 pushes P(TD) up
+    assert cal["pit_pre"] == pytest.approx(out["pit"])
+
+
+def test_apply_pipeline_pit_calibration_changes_post_not_pre():
+    rng = np.random.default_rng(1)
+    knots = np.vstack([np.linspace(0, 1, 201), np.linspace(0, 1, 201) ** 2])
+    r = _rec("rush_att", rng.dirichlet(np.ones(9)), 4)
+    plain = tpb.apply_pipeline([r], {}, {"rush_att": 1.0})[0]
+    cal = tpb.apply_pipeline([r], {}, {"rush_att": 1.0}, {"rush_att": knots})[0]
+    assert cal["pit_pre"] == pytest.approx(plain["pit"])
+    assert cal["pit"] != pytest.approx(plain["pit"])
+    assert cal["pmf"].sum() == pytest.approx(1.0)
+
+
+# ---- pure: weights / calibration per season (leakage) -------------------------------------
+
+def _oof_rows(seasons=(2021, 2022, 2023), n=4):
+    rng = np.random.default_rng(0)
+    rows = []
+    for s in seasons:
+        for m in MARKETS:
+            k = 2 if m == "anytime_td" else KMAX + 1
+            for i in range(n):
+                a, b = rng.dirichlet(np.ones(k)), rng.dirichlet(np.ones(k))
+                rows.append({"season": s, "week": 1 + i, "player_id": f"p{i}", "market": m,
+                             "pmf_a": a, "pmf_b": b, "actual": float(rng.integers(0, k)),
+                             "pit_pre": float(rng.random()), "p_pre": float(1 - a[0])})
+    return rows
+
+
+def test_season_weights_first_season_is_pure_a_and_never_sees_its_own_season(monkeypatch):
+    seen = []
+
+    def spy(rows, market):
+        seen.append((market, sorted({r["season"] for r in rows})))
+        return 0.3
+
+    monkeypatch.setattr(tpb, "choose_weight", spy)
+    w = tpb.season_weights(_oof_rows(), [2021, 2022, 2023], MARKETS)
+    assert w[2021] == {m: 1.0 for m in MARKETS}
+    assert w[2022] == {m: 0.3 for m in MARKETS} and w[2023] == {m: 0.3 for m in MARKETS}
+    assert sorted(seen) == sorted([(m, [2021]) for m in MARKETS] + [(m, [2021, 2022]) for m in MARKETS])
+
+
+def test_season_weights_skip_rows_without_b():
+    rows = [{**r, "pmf_b": None} if r["season"] == 2021 else r for r in _oof_rows()]
+    w = tpb.season_weights(rows, [2021, 2022], MARKETS)
+    assert w[2022] == {m: 1.0 for m in MARKETS}  # no prior row with a B pmf
+
+
+def test_season_calibrations_first_season_identity_and_prior_seasons_only(monkeypatch):
+    seen = []
+    monkeypatch.setattr(tpb, "fit_pit_map",
+                        lambda pits: seen.append(("pit", len(pits))) or np.array([[0, 1], [0, 1.0]]))
+    monkeypatch.setattr(tpb, "fit_platt",
+                        lambda p, y: seen.append(("platt", len(p))) or (0.9, 0.1))
+    c = tpb.season_calibrations(_oof_rows(n=4), [2021, 2022, 2023], MARKETS)
+    for m in MARKETS:
+        want = IDENTITY_PLATT if m == "anytime_td" else IDENTITY_KNOTS
+        np.testing.assert_array_equal(np.asarray(c[2021][m]), np.asarray(want))
+    assert c[2022]["anytime_td"] == (0.9, 0.1)
+    # 2022 fits on 2021's 4 rows per market, 2023 on 2021+2022's 8
+    assert sorted(seen) == sorted([("pit", 4)] * 6 + [("pit", 8)] * 6 + [("platt", 4), ("platt", 8)])
+
+
+def test_fit_calibration_uses_pre_calibration_pits_and_p():
+    rows = _oof_rows(seasons=(2021,), n=400)
+    knots = tpb.fit_calibration([r for r in rows if r["market"] == "rec_yds"], "rec_yds")
+    assert np.asarray(knots).shape == (2, 201)
+    ab = tpb.fit_calibration([r for r in rows if r["market"] == "anytime_td"], "anytime_td")
+    assert len(ab) == 2
+
+
+# ---- run_b_ladder with a stubbed backtest ---------------------------------------------------
+
+def _truth(season, week, g, k, m):
+    rng = np.random.default_rng([season, week, g, k, MARKETS.index(m)])
+    n = 2 if m == "anytime_td" else KMAX + 1
+    return rng.dirichlet(np.ones(n)), int(rng.integers(0, n))
+
+
+class _FakeBsn:
+    SIM_SEED = 42
+    MARKET_MAX = {m: KMAX for m in MARKETS if m != "anytime_td"}
+    RECORD_MARKETS = MARKETS
+
+    def __init__(self, worse=("pass_tds",)):
+        self.worse, self.fetches, self.runs = worse, [], []
+        self.src = {"pbp": pd.DataFrame({"season": [2021], "week": [1], "epa": [0.1]})}
+
+    def backtest_fetch_seasons(self, seasons):
+        return [min(seasons) - 1] + list(seasons)
+
+    def fetch_backtest_sources(self, fetch_seasons):
+        self.fetches.append(list(fetch_seasons))
+        return self.src
+
+    def run_backtest(self, seasons, n_sims, *, seed, on_game, spec_hook, record, sources,
+                     record_pmf=False, **prod):
+        self.runs.append({"hook": spec_hook is not None, "record_pmf": record_pmf,
+                          "sources": sources})
+        for s in seasons:
+            for w in range(1, WEEKS + 1):
+                for g in range(GAMES):
+                    home = f"H{g}"
+                    on_game(s, w, home, f"A{g}", None)
+                    for k in range(PLAYERS):
+                        pid = f"{home}p{k}"
+                        for m in MARKETS:
+                            base, actual = _truth(s, w, g, k, m)
+                            pmf = base
+                            if spec_hook is not None:  # A: sharper around the actual ...
+                                n = len(base)
+                                tgt = (actual + n // 2) % n if m in self.worse else actual
+                                pmf = 0.7 * base + 0.3 * np.eye(n)[tgt]  # ... or away from it
+                            rec = {"season": s, "week": w, "home": home, "player_id": pid,
+                                   "market": m, "mean": MEANS[m], "p50": 0.0, "p90": 0.0,
+                                   "rps": rps_pmf(pmf, actual),
+                                   "pit": pit_pmf(pmf, actual, pit_uniform(s, w, pid, m)),
+                                   "actual": float(actual)}
+                            if record_pmf:
+                                rec["pmf"] = np.asarray(pmf, dtype=np.float32)
+                            record.append(rec)
+
+
+class _Models:
+    share_fallbacks = 0
+
+
+def _ptbl(seasons):
+    rows = [{"player_id": f"H{g}p{k}", "season": s, "week": w, "team": f"H{g}",
+             "is_stub": False, "st_questionable": 0.0, "p_signal": 1.0}
+            for s in seasons for w in range(1, WEEKS + 1) for g in range(GAMES)
+            for k in range(PLAYERS)]
+    return pd.DataFrame(rows)
+
+
+def _ttbl():
+    return pd.DataFrame({"team": ["H0"], "season": [2021], "week": [1], "tm_x": [1.0]})
+
+
+def _stub_b(monkeypatch, mode):
+    """fit_market/predict_pmfs stubs. mode 'bad': point mass away from the
+    actual (A always wins -> w = 1.0); 'good': the true pmf."""
+    fits = []
+    monkeypatch.setattr(tpb.learned, "fit_models", lambda *a, **k: _Models())
+
+    def fake_fit(df, market, cols, *, upto, test_season, decay, max_iter):
+        fits.append({"market": market, "cols": list(cols), "upto": upto, "test_season": test_season,
+                     "decay": decay, "max_iter": max_iter})
+        return {"market": market, "upto": upto}
+
+    def fake_predict(model, rows, kmax):
+        m = model["market"]
+        s0, r0 = model["upto"]  # predicted rows lie in the fitted block: season S, week >= r
+        assert all(int(s) == s0 and int(w) >= r0 for s, w in zip(rows["season"], rows["week"]))
+        out = []
+        for s, w, pid in zip(rows["season"], rows["week"], rows["player_id"]):
+            n = 2 if m == "anytime_td" else kmax + 1
+            truth, actual = _truth(int(s), int(w), int(pid[1]), int(pid[3]), m)
+            out.append(np.eye(n)[(actual + n // 2) % n] if mode == "bad" else truth)
+        return out
+
+    monkeypatch.setattr(tpb, "fit_market", fake_fit)
+    monkeypatch.setattr(tpb, "predict_pmfs", fake_predict)
+    return fits
+
+
+def _run(tmp_path, bsn, seasons=(2021, 2022), env_extra=None, player_tbl=None):
+    env = {"PROPS_ML_SEASONS": ",".join(str(s) for s in seasons), "PROPS_ML_N_SIMS": "10",
+           **(env_extra or {})}
+    return tpb.run_b_ladder(env, bsn=bsn, player_tbl=_ptbl(seasons) if player_tbl is None else player_tbl,
+                            team_tbl=_ttbl(),
+                            identity={"git_head": "deadbeef",
+                                      "player_features": {"size": 1, "sha256": "a" * 64},
+                                      "team_features": {"size": 1, "sha256": "b" * 64}},
+                            a_gate=A_GATE, data_dir=tmp_path / "data",
+                            gate_path=tmp_path / "b_gate.json",
+                            pipeline_path=tmp_path / "pipeline.json",
+                            report_dir=tmp_path / "reports", log=lambda m: None,
+                            run_date="2026-09-25")
+
+
+def test_ladder_failing_blend_keeps_pipeline_at_a(tmp_path, monkeypatch):
+    fits = _stub_b(monkeypatch, "bad")
+    bsn = _FakeBsn()
+    gate = _run(tmp_path, bsn)
+
+    # one fetch; two runs (baseline, kept A), both recording pmfs, sharing the sources
+    assert bsn.fetches == [[2020, 2021, 2022]]
+    assert [r["hook"] for r in bsn.runs] == [False, True]
+    assert all(r["record_pmf"] and r["sources"] is bsn.src for r in bsn.runs)
+
+    # B: 7 markets per (season, block with games), unweighted, fixed max_iter, kept-A columns
+    assert {(f["test_season"], f["upto"]) for f in fits} == {(s, (s, r)) for s in (2021, 2022)
+                                                              for r in (1, 5)}
+    assert len(fits) == 2 * 2 * 7
+    assert all(f["decay"] == 1.0 and f["max_iter"] == 150 for f in fits)
+    assert all(f["cols"] == ["st_questionable", "p_signal"] for f in fits)
+
+    # 2021 is pure A with identity calibration; weights exist for every market
+    assert gate["blend"]["weights"]["2021"] == {m: 1.0 for m in MARKETS}
+    assert gate["calibration"]["maps"]["2021"] == {m: "identity" for m in MARKETS}
+    assert gate["blend"]["weights"]["2022"] == {m: 1.0 for m in MARKETS}  # bad B: A wins
+
+    # A re-check: pass_tds is worse under A -> starts with source baseline
+    assert gate["a_recheck"]["sources"]["pass_tds"] == "baseline"
+    assert gate["a_recheck"]["sources"]["rec_yds"] == "ml"
+
+    # blend candidate == A -> rung fails; the kept pipeline stays at A
+    assert gate["blend"]["pass"] is False
+    assert "blend" not in gate["kept_rungs"]
+    pipe = json.loads((tmp_path / "pipeline__s2021-2022__every4.json").read_text())
+    assert set(pipe) == {"kept_a_toggles", "tuned", "markets"}
+    assert pipe["kept_a_toggles"] == ["volume", "efficiency", "context", "market"]
+    assert pipe["tuned"] == {"2021": [1.0, 300], "2022": [1.0, 150]}
+    assert set(pipe["markets"]) == set(MARKETS)
+    for v in pipe["markets"].values():
+        assert set(v) == {"source", "w_final", "calibrate"}
+        assert v["w_final"] == 1.0 and v["calibrate"] is False
+    assert pipe["markets"]["pass_tds"]["source"] == "baseline"
+    assert pipe["markets"]["rec_yds"]["source"] == "ml"
+
+    # OOF (pre-calibration) = pure A: its PIT is the A record's PIT
+    oof = pd.read_parquet(tmp_path / "data" / "oof_b7__s2021-2022__every4.parquet")
+    assert {"season", "week", "home", "player_id", "market", "pit_pre", "p_pre", "actual",
+            "pmf_a", "pmf_b", "w"} <= set(oof.columns)
+    assert len(oof) == 2 * WEEKS * GAMES * PLAYERS * 7
+    a_pit = {(r["season"], r["week"], r["player_id"], r["market"]): r["pit"]
+             for r in pd.read_parquet(tmp_path / "data" /
+                                      "records_kept_a__s2021-2022__every4__b7.parquet")
+             .to_dict("records")}
+    for r in oof.to_dict("records"):
+        assert r["pit_pre"] == pytest.approx(a_pit[(r["season"], r["week"], r["player_id"],
+                                                    r["market"])], abs=1e-5)
+
+    # outputs + tagged checkpoints (never colliding with Props-1's)
+    assert (tmp_path / "b_gate__s2021-2022__every4.json").exists()
+    md = (tmp_path / "reports" / "2026-09-25-props-ml-b-gate__s2021-2022__every4.md").read_text()
+    assert md.split("\n\n")[1].startswith("**Verdict:")
+    assert "anytime_td" in md and "Brier" in md and "not an independent holdout" in md
+    names = {p.name for p in (tmp_path / "data").glob("*.parquet")}
+    assert {"records_baseline__s2021-2022__every4__b7.parquet",
+            "records_kept_a__s2021-2022__every4__b7.parquet",
+            "b_oof__s2021-2022__every4__b7.parquet"} <= names
+    meta = json.loads((tmp_path / "data" /
+                       "records_kept_a__s2021-2022__every4__b7.meta.json").read_text())["meta"]
+    assert meta["record_pmf"] is True and meta["identity"]["seed"] == 42
+    assert meta["identity"]["git_head"] == "deadbeef" and "pbp" in meta["identity"]["backtest_sources"]
+    assert meta["identity"]["prod"] == tpb.tpm.PROD
+
+
+def test_ladder_resume_reuses_all_checkpoints(tmp_path, monkeypatch):
+    _stub_b(monkeypatch, "bad")
+    first = _run(tmp_path, _FakeBsn())
+    fits = _stub_b(monkeypatch, "bad")
+    bsn = _FakeBsn()
+    again = _run(tmp_path, bsn, env_extra={"PROPS_ML_RESUME": "1"})
+    assert bsn.runs == [] and fits == []
+    assert again["final"]["all"]["skill"] == first["final"]["all"]["skill"]
+
+
+def test_passing_blend_is_kept_and_feeds_calibration_and_w_final(tmp_path, monkeypatch):
+    _stub_b(monkeypatch, "good")
+    real_step = tpb.rung_step
+
+    def forced(name, *a, **k):
+        step = real_step(name, *a, **k)
+        if name == "blend":
+            step["pass"] = True
+        return step
+
+    monkeypatch.setattr(tpb, "rung_step", forced)
+    cal_rows = []
+    real_cal = tpb.season_calibrations
+    monkeypatch.setattr(tpb, "season_calibrations",
+                        lambda rows, *a: cal_rows.extend(rows) or real_cal(rows, *a))
+    gate = _run(tmp_path, _FakeBsn())
+    assert "blend" in gate["kept_rungs"]
+    w22 = gate["blend"]["weights"]["2022"]
+    assert any(w < 1.0 for w in w22.values())          # good B earns weight
+    # calibration fits on the BLENDED pre-calibration records
+    assert {r["w"] for r in cal_rows if r["season"] == 2022} != {1.0}
+    pipe = json.loads((tmp_path / "pipeline__s2021-2022__every4.json").read_text())
+    assert any(v["w_final"] < 1.0 for v in pipe["markets"].values())
+
+
+def test_ladder_aborts_when_b_features_missing_for_many_records(tmp_path, monkeypatch):
+    _stub_b(monkeypatch, "bad")
+    ptbl = _ptbl((2021, 2022))
+    ptbl = ptbl[ptbl["player_id"] != "H0p0"]           # 1 of 6 players: ~17% missing
+    with pytest.raises(RuntimeError, match="B feature rows missing"):
+        _run(tmp_path, _FakeBsn(), player_tbl=ptbl)
