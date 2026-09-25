@@ -241,3 +241,54 @@ def test_map_game_sims_deterministic_for_fixed_rng():
     for p in ("qb", "wr"):
         for m in sims.player_stats[p]:
             np.testing.assert_array_equal(a.player_stats[p][m], b.player_stats[p][m])
+
+
+# ------------------------------------- Task 9 rulings: td ranking, name checks
+
+
+def test_anytime_td_demotion_takes_the_lowest_counts_first():
+    # 6 scoring sims (counts 1,1,1,2,3,3); P(>=1) 6/8 -> 2/8: the survivors must
+    # be the two 3-TD sims (ranked on the ORIGINAL counts, not the indicator)
+    td = np.array([0, 3, 1, 0, 2, 1, 3, 1], dtype=np.int64)
+    sims = NflGameSims(np.zeros(8, np.int64), np.zeros(8, np.int64), {"wr": {"td": td.copy()}})
+    for seed in range(20):
+        out = map_game_sims(sims, {"wr": {"anytime_td": np.array([6 / 8, 2 / 8])}},
+                            np.random.default_rng(seed)).player_stats["wr"]["td"]
+        np.testing.assert_array_equal(out, [0, 3, 0, 0, 0, 0, 3, 0])
+    # P(>=1) 6/8 -> 3/8: both 3s survive plus the 2 (never a 1 over the 2)
+    out = map_game_sims(sims, {"wr": {"anytime_td": np.array([5 / 8, 3 / 8])}},
+                        np.random.default_rng(0)).player_stats["wr"]["td"]
+    np.testing.assert_array_equal(out, [0, 3, 0, 0, 2, 0, 3, 0])
+
+
+def test_unknown_market_name_raises_even_for_an_absent_player():
+    sims = _sims(200)
+    with pytest.raises(ValueError, match="rec_yards"):
+        map_game_sims(sims, {"wr": {"rec_yards": np.array([0.5, 0.5])}},
+                      np.random.default_rng(0))
+    with pytest.raises(ValueError, match="bogus"):
+        map_game_sims(sims, {"ghost": {"bogus": np.array([0.5, 0.5])}},
+                      np.random.default_rng(0))
+
+
+def test_td_and_anytime_td_targets_for_one_player_raise():
+    with pytest.raises(ValueError, match="anytime_td"):
+        map_game_sims(_sims(200), {"wr": {"td": np.array([0.5, 0.3, 0.2]),
+                                          "anytime_td": np.array([0.6, 0.4])}},
+                      np.random.default_rng(0))
+
+
+def test_td_count_target_maps_the_counts_directly():
+    sims = _sims(20000)
+    target = np.array([0.5, 0.3, 0.15, 0.05])
+    out = map_game_sims(sims, {"rb": {"td": target}}, np.random.default_rng(1))
+    td = out.player_stats["rb"]["td"]
+    assert 0.5 * np.abs(_empirical_pmf(td, 4) - target).sum() < 0.01
+
+
+def test_absent_targets_consume_no_rng():
+    sims = _sims(300)
+    rng = np.random.default_rng(9)
+    map_game_sims(sims, {"ghost": {"rec_yds": np.array([0.5, 0.5])},
+                         "rb": {"pass_yds": np.array([0.5, 0.5])}}, rng)
+    assert rng.random() == np.random.default_rng(9).random()

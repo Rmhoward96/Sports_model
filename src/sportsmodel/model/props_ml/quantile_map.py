@@ -13,10 +13,15 @@ within tied draws, whose order is broken at random by ``rng``.
 
 ``map_game_sims`` applies this to an ``NflGameSims`` container. The
 ``anytime_td`` market is the aggregator's ``td >= 1`` indicator
-(``sim.nfl.aggregate.nfl_player_prop_dists``); per Controller Ruling P1 the
-indicator is mapped onto the 2-bin target and the ``td`` counts rewritten:
-mapped 1 & original >= 1 keeps the original count, mapped 1 & original 0
-becomes 1, mapped 0 becomes 0.
+(``sim.nfl.aggregate.nfl_player_prop_dists``). The ORIGINAL ``td`` counts are
+ranked and mapped onto the 2-bin target (so a demotion takes the lowest counts
+first -- a 3-TD sim outlives a 1-TD sim), then the counts are rewritten per
+Controller Ruling P1: mapped 1 & original >= 1 keeps the original count,
+mapped 1 & original 0 becomes 1, mapped 0 becomes 0.
+
+Target market names must be sim stat names (``MARKETS``) or ``anytime_td``;
+an unknown name, or ``td`` and ``anytime_td`` targets for the same player,
+raise ``ValueError`` before any rng is consumed.
 """
 from __future__ import annotations
 
@@ -29,6 +34,10 @@ from sportsmodel.sim.nfl.spec import NflGameSims
 
 ANYTIME_TD = "anytime_td"
 TD_STAT = "td"
+# the NFL kernel's per-player stat names (``kernel._PLAYER_STAT_NAMES``) + anytime_td
+MARKETS: frozenset[str] = frozenset(
+    {"pass_yds", "rush_yds", "rec_yds", "receptions", TD_STAT, "pass_tds", "rush_att",
+     ANYTIME_TD})
 
 
 def _check_pmf(target_pmf) -> np.ndarray:
@@ -91,34 +100,41 @@ def map_game_sims(
     """Return a new ``NflGameSims`` whose targeted player stats follow ``targets``.
 
     ``targets[player_id][market]`` is a pmf on 0..K. Market names equal the sim
-    stat names (``pass_yds``, ``rec_yds``, ...), except ``anytime_td`` which
-    maps the ``td >= 1`` indicator onto a 2-bin pmf ``[P(0), P(>=1)]`` and
-    rewrites ``td`` counts per Ruling P1 (see module docstring).
+    stat names (``pass_yds``, ``rec_yds``, ``td``, ...), except ``anytime_td``
+    which ranks the original ``td`` counts onto a 2-bin pmf ``[P(0), P(>=1)]``
+    and rewrites them per Ruling P1 (see module docstring). An unknown market
+    name (``MARKETS``), a player with both ``td`` and ``anytime_td`` targets, or
+    an ``anytime_td`` target that is not 2 bins raises ``ValueError`` (checked
+    for every target before any mapping).
 
     The input is not mutated: the player-stats dict structure is copied and
     only mapped arrays are replaced; untouched players/stats (and the score
     arrays) are the caller's original array objects. A target whose player or
     stat is absent from ``sims`` is ignored (no error, no rng draw) — serving
     targets come from a projection slate that may list players the sim did not
-    roster. An ``anytime_td`` target that is not 2 bins raises ``ValueError``.
-    Mapped arrays keep the sim's dtype for that stat when it can hold the
+    roster. Mapped arrays keep the sim's dtype for that stat when it can hold the
     values. ``rng`` is consumed in ``targets`` iteration order, so the result
     is deterministic for a fixed rng state and targets ordering.
     """
+    for pid, markets in targets.items():
+        unknown = sorted(set(markets) - MARKETS)
+        if unknown:
+            raise ValueError(f"player {pid}: unknown target market(s) {unknown}")
+        if TD_STAT in markets and ANYTIME_TD in markets:
+            raise ValueError(f"player {pid}: both {TD_STAT!r} and {ANYTIME_TD!r} targets")
+        if ANYTIME_TD in markets and np.asarray(markets[ANYTIME_TD]).shape != (2,):
+            raise ValueError(f"{ANYTIME_TD} target must be a 2-bin pmf, got shape "
+                             f"{np.asarray(markets[ANYTIME_TD]).shape}")
     stats_out = {pid: dict(stats) for pid, stats in sims.player_stats.items()}
     for pid, markets in targets.items():
         for market, pmf in markets.items():
-            if market == ANYTIME_TD and np.asarray(pmf).shape != (2,):
-                raise ValueError(
-                    f"{ANYTIME_TD} target must be a 2-bin pmf, got shape {np.asarray(pmf).shape}"
-                )
             stats = stats_out.get(pid)
             stat = TD_STAT if market == ANYTIME_TD else market
             if stats is None or stat not in stats:
                 continue
             orig = np.asarray(stats[stat])
             if market == ANYTIME_TD:
-                ind = map_draws((orig >= 1).astype(np.int8), pmf, rng)
+                ind = map_draws(orig, pmf, rng)  # rank the counts: demote low counts first
                 new = np.where(ind == 1, np.maximum(orig, 1), 0)
                 max_value = int(new.max()) if new.size else 0
             else:
