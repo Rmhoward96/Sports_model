@@ -612,12 +612,36 @@ def _snapshot_formation(chart: pd.DataFrame) -> pd.Series:
     return out
 
 
+def _old_schema_full_name(old: pd.DataFrame) -> pd.Series:
+    """Display/injury-match name for old-schema (<= 2024) depth rows.
+
+    Precedence: the release's own `full_name` (the common name, e.g. "Josh
+    Jacobs" -- what the injury report uses); else `football_name + last_name`;
+    else `first_name + last_name` (`first_name` is the LEGAL name, e.g.
+    "Joshua", so it is the weakest source); else `football_name` alone. Blank
+    strings count as missing. NaN-safe (no `x or ""` on pandas NA)."""
+    def col(name: str) -> pd.Series:
+        s = old.get(name, pd.Series(pd.NA, index=old.index)).astype("string").str.strip()
+        return s.where(s != "")                     # "" / whitespace -> NA
+
+    def join(a: pd.Series, b: pd.Series) -> pd.Series:
+        return (a + " " + b).where(a.notna() & b.notna())
+
+    raw_full, football = col("full_name"), col("football_name")
+    first, last = col("first_name"), col("last_name")
+    return (raw_full.fillna(join(football, last))
+            .fillna(join(first, last))
+            .fillna(football))
+
+
 def depth_charts_asof(raw: pd.DataFrame, schedules: pd.DataFrame) -> pd.DataFrame:
     """Per-(season, week, team) depth charts in the OLD columns `active_usage`
     reads, from a frame mixing nflverse's two schemas. PURE.
 
     - Old weekly schema (has a non-null `club_code`, seasons <= 2024): passed
-      through; `full_name` = "first last" (falls back to football_name).
+      through; `full_name` = the release's own `full_name` (common name, what
+      the injury report uses), else "football_name last", else "first last",
+      else football_name -- see `_old_schema_full_name`.
       Rows with a null season/week (the "SBBYE" game_type) are dropped.
       Its `formation` (Offense / Defense / Special Teams) is passed through --
       KR/PR slots are listed under the player's own position there.
@@ -643,10 +667,7 @@ def depth_charts_asof(raw: pd.DataFrame, schedules: pd.DataFrame) -> pd.DataFram
     if len(old):
         old = old.dropna(subset=["season", "week"])
     if len(old):
-        first = old.get("first_name", pd.Series(pd.NA, index=old.index)).astype("string")
-        last = old.get("last_name", pd.Series(pd.NA, index=old.index)).astype("string")
-        full = (first.fillna("") + " " + last.fillna("")).str.strip()
-        full = full.where(full != "", old["football_name"].astype("string"))
+        full = _old_schema_full_name(old)
         parts.append(pd.DataFrame({
             "season": old["season"].astype(int), "week": old["week"].astype(int),
             "club_code": old["club_code"].astype("string"),

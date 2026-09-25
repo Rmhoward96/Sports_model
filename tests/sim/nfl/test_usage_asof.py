@@ -35,6 +35,7 @@ def test_old_schema_rows_pass_through_and_mix_with_snapshots():
     out = depth_charts_asof(pd.concat([old, new], ignore_index=True), SCHED)
     assert ((out["season"] == 2024) & (out["week"] == 3) & (out["gsis_id"] == "p")).any()
     assert ((out["season"] == 2025) & (out["week"] == 1) & (out["gsis_id"] == "q2")).any()
+    # no raw full_name column -> football_name + last_name ("Pat" + "M")
     assert out.loc[out["gsis_id"] == "p", "full_name"].iloc[0] == "Pat M"
 
 
@@ -155,3 +156,56 @@ def test_snapshot_formation_comes_from_pos_grp():
     out = depth_charts_asof(raw, SCHED)
     wk1 = out[out["week"] == 1].set_index("position")["formation"]
     assert wk1.to_dict() == {"WR": "Offense", "KR": "Special Teams", "LCB": "Defense"}
+
+
+def _old_row(**kw):
+    base = {"season": 2024, "week": 3, "club_code": "LV", "depth_team": "1", "gsis_id": "gJJ",
+            "position": "RB", "formation": "Offense"}
+    base.update(kw)
+    return base
+
+
+def test_old_schema_full_name_prefers_raw_full_name_over_legal_first_name():
+    # first_name is the LEGAL name ("Joshua"); the injury report uses the common
+    # name, which the release's own full_name column carries.
+    raw = pd.DataFrame([_old_row(full_name="Josh Jacobs", first_name="Joshua",
+                                 last_name="Jacobs", football_name="Josh")])
+    out = depth_charts_asof(raw, SCHED)
+    assert out["full_name"].iloc[0] == "Josh Jacobs"
+    assert out["football_name"].iloc[0] == "Josh"      # football_name output unchanged
+
+
+def test_old_schema_full_name_falls_back_to_football_plus_last_when_raw_missing():
+    import numpy as np
+    raw = pd.DataFrame([
+        _old_row(full_name=np.nan, first_name="Joshua", last_name="Jacobs", football_name="Josh"),
+        _old_row(gsis_id="gB", full_name="  ", first_name="Robert", last_name="Gronkowski",
+                 football_name="Rob"),
+        _old_row(gsis_id="gC", full_name=np.nan, first_name="Pat", last_name="Mahomes",
+                 football_name=np.nan),
+        _old_row(gsis_id="gD", full_name=np.nan, first_name=np.nan, last_name=np.nan,
+                 football_name="Solo"),
+    ])
+    out = depth_charts_asof(raw, SCHED).set_index("gsis_id")["full_name"]
+    assert out.loc["gJJ"] == "Josh Jacobs"            # football_name + last_name
+    assert out.loc["gB"] == "Rob Gronkowski"          # blank raw full_name treated as missing
+    assert out.loc["gC"] == "Pat Mahomes"             # first + last when no football_name
+    assert out.loc["gD"] == "Solo"                    # football_name alone as the last resort
+
+
+def test_active_usage_drops_out_player_whose_legal_first_name_differs():
+    from sportsmodel.sim.nfl.usage import active_usage
+    raw = pd.DataFrame([
+        _old_row(full_name="Josh Jacobs", first_name="Joshua", last_name="Jacobs", football_name="Josh"),
+        _old_row(gsis_id="gZW", depth_team="2", full_name="Zamir White", first_name="Zamir",
+                 last_name="White", football_name="Zamir"),
+    ])
+    depth = depth_charts_asof(raw, SCHED)
+    weekly = pd.DataFrame(columns=["player_id", "player_display_name", "position", "recent_team",
+                                   "season", "week", "targets", "carries", "receptions",
+                                   "receiving_yards", "rushing_yards", "receiving_tds", "rushing_tds"])
+    snaps = pd.DataFrame(columns=["pfr_player_id", "offense_pct", "season", "week"])
+    players, _qb = active_usage("LV", 2024, 3, depth, weekly, snaps, {}, {"Josh Jacobs"})
+    ids = {p.player_id for p in players}
+    assert "gJJ" not in ids                           # Out filter now matches the common name
+    assert "gZW" in ids
