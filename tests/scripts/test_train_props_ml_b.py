@@ -51,6 +51,14 @@ def test_a_config_reads_kept_toggles_and_tuned_per_season():
         tpb.a_config(A_GATE, [2026])
 
 
+def test_market_sources_final_rule_also_needs_ece_within_tolerance():
+    pm = {"rec_yds": {"rps_b": 1.0, "rps_c": 0.9, "ece_b": 0.010, "ece_c": 0.016},
+          "receptions": {"rps_b": 1.0, "rps_c": 0.9, "ece_b": 0.010, "ece_c": 0.015},
+          "rush_att": {"rps_b": 1.0, "rps_c": 1.1, "ece_b": 0.010, "ece_c": 0.0}}
+    got = tpb.market_sources(pm, ("rec_yds", "receptions", "rush_att"), 1.0, ece_tol=0.005)
+    assert got == {"rec_yds": "baseline", "receptions": "ml", "rush_att": "baseline"}
+
+
 def test_market_sources_marks_markets_worse_beyond_tolerance_as_baseline():
     pm = {"rec_yds": {"rps_b": 1.0, "rps_c": 1.009}, "pass_tds": {"rps_b": 1.0, "rps_c": 1.02},
           "receptions": {"rps_b": 1.0, "rps_c": 0.9}}
@@ -107,6 +115,26 @@ def test_apply_pipeline_pure_a_and_pure_b_and_rescoring():
     assert out["rps"] == pytest.approx(rps_pmf(b, 2))
     for k in ("season", "week", "home", "player_id", "market", "actual"):
         assert out[k] == r[k]
+
+
+def test_apply_pipeline_does_not_mutate_inputs():
+    import copy
+    recs = [_rec("receptions", [0.5, 0.3, 0.2], 2), _rec("anytime_td", [0.7, 0.3], 1)]
+    b = {(2023, 3, "p1", "receptions"): np.array([0.1, 0.2, 0.7]),
+         (2023, 3, "p1", "anytime_td"): np.array([0.4, 0.6])}
+    w = {"receptions": 0.4, "anytime_td": 0.4}
+    cal = {"receptions": np.vstack([np.linspace(0, 1, 5), np.linspace(0, 1, 5) ** 2]),
+           "anytime_td": (1.0, 0.5)}
+    before = copy.deepcopy((recs, b, w, cal))
+    tpb.apply_pipeline(recs, b, w, cal)
+    for x, y in zip(recs, before[0]):
+        assert x.keys() == y.keys()
+        for k in x:
+            np.testing.assert_array_equal(np.asarray(x[k]), np.asarray(y[k]))
+    for k in b:
+        np.testing.assert_array_equal(b[k], before[1][k])
+    assert w == before[2] and cal["anytime_td"] == before[3]["anytime_td"]
+    np.testing.assert_array_equal(cal["receptions"], before[3]["receptions"])
 
 
 def test_apply_pipeline_missing_b_keeps_a_and_flags_it():
@@ -257,9 +285,27 @@ class _Models:
     share_fallbacks = 0
 
 
+# p0: a QB-like runner (pass + rush roles, out of the receiving role);
+# p1: a WR (receiving role only). anytime_td has no role subset.
+_ROLE = {0: {"position": "QB", "p_y_pass_att_ewm": 30.0, "p_y_carries_ewm": 5.0,
+             "p_y_targets_ewm": 0.0},
+         1: {"position": "WR", "p_y_pass_att_ewm": 0.0, "p_y_carries_ewm": 0.0,
+             "p_y_targets_ewm": 6.0}}
+FEATURE_COLS = ["st_questionable", "p_signal", "p_y_pass_att_ewm", "p_y_carries_ewm",
+                "p_y_targets_ewm"]
+
+
+def _in_role(k, m):
+    if m in ("pass_yds", "pass_tds", "rush_yds", "rush_att"):
+        return k == 0
+    if m in ("rec_yds", "receptions"):
+        return k == 1
+    return True
+
+
 def _ptbl(seasons):
     rows = [{"player_id": f"H{g}p{k}", "season": s, "week": w, "team": f"H{g}",
-             "is_stub": False, "st_questionable": 0.0, "p_signal": 1.0}
+             "is_stub": False, "st_questionable": 0.0, "p_signal": 1.0, **_ROLE[k]}
             for s in seasons for w in range(1, WEEKS + 1) for g in range(GAMES)
             for k in range(PLAYERS)]
     return pd.DataFrame(rows)
@@ -271,7 +317,7 @@ def _ttbl():
 
 def _stub_b(monkeypatch, mode):
     """fit_market/predict_pmfs stubs. mode 'bad': point mass away from the
-    actual (A always wins -> w = 1.0); 'good': the true pmf."""
+    actual (A always wins -> w = 1.0); 'good': sharper around the actual than A."""
     fits = []
     monkeypatch.setattr(tpb.learned, "fit_models", lambda *a, **k: _Models())
 
@@ -282,13 +328,16 @@ def _stub_b(monkeypatch, mode):
 
     def fake_predict(model, rows, kmax):
         m = model["market"]
-        s0, r0 = model["upto"]  # predicted rows lie in the fitted block: season S, week >= r
-        assert all(int(s) == s0 and int(w) >= r0 for s, w in zip(rows["season"], rows["week"]))
+        s0, r0 = model["upto"]  # predicted rows lie in the fitted block: season S, r <= week < next r
+        nxt = min([r for r in tpb.tpm.REFIT_WEEKS if r > r0], default=99)
+        assert all(int(s) == s0 and r0 <= int(w) < nxt for s, w in zip(rows["season"], rows["week"]))
+        assert tpb.in_role(rows, m).all()  # B predicts only in-role rows
         out = []
         for s, w, pid in zip(rows["season"], rows["week"], rows["player_id"]):
             n = 2 if m == "anytime_td" else kmax + 1
             truth, actual = _truth(int(s), int(w), int(pid[1]), int(pid[3]), m)
-            out.append(np.eye(n)[(actual + n // 2) % n] if mode == "bad" else truth)
+            out.append(np.eye(n)[(actual + n // 2) % n] if mode == "bad"
+                       else 0.5 * truth + 0.5 * np.eye(n)[actual])  # sharper than A
         return out
 
     monkeypatch.setattr(tpb, "fit_market", fake_fit)
@@ -326,7 +375,7 @@ def test_ladder_failing_blend_keeps_pipeline_at_a(tmp_path, monkeypatch):
                                                               for r in (1, 5)}
     assert len(fits) == 2 * 2 * 7
     assert all(f["decay"] == 1.0 and f["max_iter"] == 150 for f in fits)
-    assert all(f["cols"] == ["st_questionable", "p_signal"] for f in fits)
+    assert all(f["cols"] == FEATURE_COLS for f in fits)
 
     # 2021 is pure A with identity calibration; weights exist for every market
     assert gate["blend"]["weights"]["2021"] == {m: 1.0 for m in MARKETS}
@@ -349,7 +398,13 @@ def test_ladder_failing_blend_keeps_pipeline_at_a(tmp_path, monkeypatch):
         assert set(v) == {"source", "w_final", "calibrate"}
         assert v["w_final"] == 1.0 and v["calibrate"] is False
     assert pipe["markets"]["pass_tds"]["source"] == "baseline"
-    assert pipe["markets"]["rec_yds"]["source"] == "ml"
+    # final source rule: ml iff RPS <= baseline AND ECE <= baseline + 0.005
+    pm = gate["final"]["ml_per_market"]
+    for m in MARKETS:
+        ok = pm[m]["rps_c"] <= pm[m]["rps_b"] and pm[m]["ece_c"] <= pm[m]["ece_b"] + 0.005
+        assert pipe["markets"][m]["source"] == ("ml" if ok else "baseline"), m
+    assert pm["rec_yds"]["rps_c"] < pm["rec_yds"]["rps_b"]
+    assert {v["source"] for v in pipe["markets"].values()} == {"ml", "baseline"}
 
     # OOF (pre-calibration) = pure A: its PIT is the A record's PIT
     oof = pd.read_parquet(tmp_path / "data" / "oof_b7__s2021-2022__every4.parquet")
@@ -364,9 +419,22 @@ def test_ladder_failing_blend_keeps_pipeline_at_a(tmp_path, monkeypatch):
         assert r["pit_pre"] == pytest.approx(a_pit[(r["season"], r["week"], r["player_id"],
                                                     r["market"])], abs=1e-5)
 
+    md = (tmp_path / "reports" / "2026-09-25-props-ml-b-gate__s2021-2022__every4.md").read_text()
+
+    # role subsets: out-of-role records are B := A, never "missing"
+    assert gate["b_oof"]["missing"] == {m: 0 for m in MARKETS}
+    assert gate["b_oof"]["out_of_role"]["pass_yds"] == 2 * WEEKS * GAMES  # every p1 row
+    assert gate["b_oof"]["out_of_role"]["anytime_td"] == 0
+    assert set(oof.loc[oof.market == "rec_yds", "in_role"]) == {True, False}
+
+    # final decisions: selected (per-market sources) and unselected, side by side
+    un = gate["final"]["unselected"]
+    assert set(un) >= {"all", "season_2025", "pass", "sources"}
+    assert un["sources"] == gate["a_recheck"]["sources"]
+    assert "optimistic by construction" in md
+
     # outputs + tagged checkpoints (never colliding with Props-1's)
     assert (tmp_path / "b_gate__s2021-2022__every4.json").exists()
-    md = (tmp_path / "reports" / "2026-09-25-props-ml-b-gate__s2021-2022__every4.md").read_text()
     assert md.split("\n\n")[1].startswith("**Verdict:")
     assert "anytime_td" in md and "Brier" in md and "not an independent holdout" in md
     names = {p.name for p in (tmp_path / "data").glob("*.parquet")}
@@ -378,6 +446,10 @@ def test_ladder_failing_blend_keeps_pipeline_at_a(tmp_path, monkeypatch):
     assert meta["record_pmf"] is True and meta["identity"]["seed"] == 42
     assert meta["identity"]["git_head"] == "deadbeef" and "pbp" in meta["identity"]["backtest_sources"]
     assert meta["identity"]["prod"] == tpb.tpm.PROD
+    b_meta = json.loads((tmp_path / "data" /
+                         "b_oof__s2021-2022__every4__b7.meta.json").read_text())["meta"]
+    assert b_meta["role_subsets"]["pass_yds"] == {"positions": ["QB"], "col": "p_y_pass_att_ewm",
+                                                  "min": 10.0}
 
 
 def test_ladder_resume_reuses_all_checkpoints(tmp_path, monkeypatch):
@@ -413,11 +485,39 @@ def test_passing_blend_is_kept_and_feeds_calibration_and_w_final(tmp_path, monke
     assert {r["w"] for r in cal_rows if r["season"] == 2022} != {1.0}
     pipe = json.loads((tmp_path / "pipeline__s2021-2022__every4.json").read_text())
     assert any(v["w_final"] < 1.0 for v in pipe["markets"].values())
+    # an out-of-role population record's blended pmf is its A pmf (B := A)
+    out = [r for r in cal_rows if r["season"] == 2022 and r["market"] == "rec_yds"
+           and r["player_id"].endswith("p0")]
+    inr = [r for r in cal_rows if r["season"] == 2022 and r["market"] == "rec_yds"
+           and r["player_id"].endswith("p1")]
+    assert out and inr and w22["rec_yds"] < 1.0
+    for r in out:
+        np.testing.assert_allclose(r["pmf"], np.asarray(r["pmf_a"], dtype=float), atol=1e-6)
+    assert any(not np.allclose(r["pmf"], np.asarray(r["pmf_a"], dtype=float), atol=1e-3)
+               for r in inr)
 
 
 def test_ladder_aborts_when_b_features_missing_for_many_records(tmp_path, monkeypatch):
     _stub_b(monkeypatch, "bad")
     ptbl = _ptbl((2021, 2022))
     ptbl = ptbl[ptbl["player_id"] != "H0p0"]           # 1 of 6 players: ~17% missing
-    with pytest.raises(RuntimeError, match="B feature rows missing"):
+    with pytest.raises(RuntimeError, match=r"B feature rows missing.*rec_yds"):
         _run(tmp_path, _FakeBsn(), player_tbl=ptbl)
+
+
+def test_missing_guard_is_per_market_and_counts_only_in_role(tmp_path, monkeypatch):
+    _stub_b(monkeypatch, "bad")
+    seasons = (2021, 2022, 2023)
+    ptbl = _ptbl(seasons)
+    # rec_yds: 54 in-role records (p1) + 54 out-of-role (p0, never "missing").
+    # Drop ONE p1 feature row: 1 of 54 = 1.9% < 2% -> runs. (A record without a
+    # feature row cannot be placed in a role, so it counts as missing in each
+    # of its markets.)
+    keep = ~((ptbl.player_id == "H0p1") & (ptbl.season == 2022) & (ptbl.week == 6))
+    gate = _run(tmp_path, _FakeBsn(), seasons=seasons, player_tbl=ptbl[keep])
+    assert gate["b_oof"]["missing"]["rec_yds"] == 1
+    assert gate["b_oof"]["out_of_role"]["rec_yds"] == 54
+    # two such rows (2 of 54 = 3.7% for rec_yds) abort, naming the market
+    keep2 = keep & ~((ptbl.player_id == "H1p1") & (ptbl.season == 2022) & (ptbl.week == 6))
+    with pytest.raises(RuntimeError, match=r"B feature rows missing.*rec_yds"):
+        _run(tmp_path / "b", _FakeBsn(), seasons=seasons, player_tbl=ptbl[keep2])

@@ -20,9 +20,13 @@ gated OFFLINE on stored pmfs from ONE baseline run and ONE kept-A run (both
    (none -> identity).
    A rung passes as in Props-1: ``rung_decision`` vs the kept composite AND
    ``baseline_ece_check``; a failed rung is skipped.
+   B trains and predicts only on each market's pre-game role subset
+   (``dist_models.ROLE_SUBSETS``); an out-of-role record gets B := A.
 7. Final: per market ``source = "ml"`` iff the kept ML pipeline's RPS <= the
-   baseline's on all seasons; the served composite (those sources) must beat
-   the baseline pooled AND on 2025 alone. ``w_final`` = ``choose_weight`` on
+   baseline's AND its ECE <= the baseline's + 0.005 on all seasons; the
+   served composite (those sources) must beat the baseline pooled AND on 2025
+   alone. The UNSELECTED decision (ladder sources, no per-market swap) is
+   recorded next to it: the selected one is optimistic by construction. ``w_final`` = ``choose_weight`` on
    all seasons (1.0 if the blend was not kept); ``calibrate`` = calibration
    rung kept.
 
@@ -56,6 +60,7 @@ import numpy as np  # noqa: E402
 import pandas as pd  # noqa: E402
 
 from sportsmodel.model.props_eval import (  # noqa: E402
+    decile_ece,
     pit_pmf,
     pit_uniform,
     population_from_baseline,
@@ -69,7 +74,12 @@ from sportsmodel.model.props_ml.blend import (  # noqa: E402
     choose_weight,
     prob_at_least_one,
 )
-from sportsmodel.model.props_ml.dist_models import fit_market, predict_pmfs  # noqa: E402
+from sportsmodel.model.props_ml.dist_models import (  # noqa: E402
+    ROLE_SUBSETS,
+    fit_market,
+    in_role,
+    predict_pmfs,
+)
 from sportsmodel.model.props_ml.pit_calibration import (  # noqa: E402
     IDENTITY_KNOTS,
     IDENTITY_PLATT,
@@ -101,8 +111,13 @@ MAX_B_MISSING = 0.02
 A_GATE_PATH = tpm.GATE_PATH
 GATE_PATH = A_GATE_PATH.with_name("b_gate.json")
 PIPELINE_PATH = A_GATE_PATH.with_name("pipeline.json")
+ECE_TOL = tpm.ECE_TOL
+# P3 OOF records (PRE-calibration, at the per-season OOF weights ``w``). Task 6
+# must recompute pre-calibration values at ``w_final`` via ``apply_pipeline``
+# from pmf_a / pmf_b before fitting its final maps. ``pmf_b`` is the effective
+# B: the A pmf for an out-of-role record (``in_role`` False; B := A).
 OOF_COLS = ("season", "week", "home", "player_id", "market", "w", "pit_pre", "p_pre", "actual",
-            "pmf_a", "pmf_b")
+            "pmf_a", "pmf_b", "in_role")
 
 
 # ---- pure helpers ---------------------------------------------------------------------
@@ -121,14 +136,19 @@ def a_config(a_gate: Mapping, seasons: list[int]) -> tuple[frozenset[str], dict[
     return frozenset(a_gate["kept"]), tuned
 
 
-def market_sources(per_market: Mapping, markets, tol: float) -> dict[str, str]:
+def market_sources(per_market: Mapping, markets, tol: float,
+                   ece_tol: float | None = None) -> dict[str, str]:
     """``"baseline"`` for a market whose candidate RPS exceeds ``tol`` x the
-    baseline's (or that has no scored rows), else ``"ml"``. A re-check:
-    ``tol`` 1.01; final decision: ``tol`` 1.0 (ml iff RPS_c <= RPS_b)."""
+    baseline's, whose ECE exceeds the baseline's + ``ece_tol`` (when given),
+    or that has no scored rows; else ``"ml"``. A re-check: ``tol`` 1.01;
+    final decision: ``tol`` 1.0 and ``ece_tol`` 0.005."""
     out = {}
     for m in markets:
         v = per_market.get(m)
-        out[m] = "ml" if v is not None and v["rps_c"] <= tol * v["rps_b"] else "baseline"
+        ok = v is not None and v["rps_c"] <= tol * v["rps_b"]
+        if ok and ece_tol is not None:
+            ok = v["ece_c"] <= v["ece_b"] + ece_tol
+        out[m] = "ml" if ok else "baseline"
     return out
 
 
@@ -136,8 +156,10 @@ def apply_pipeline(records_a, b_pmfs: Mapping, weights: Mapping[str, float],
                    calib: Mapping | None = None) -> list[dict]:
     """A -> blend with B -> (optional) calibration, re-scored per record. PURE.
 
-    ``records_a``: dicts with season, week, home, player_id, market, pmf (A),
-    actual. ``b_pmfs``: ``rec_key -> B pmf``; a record without one keeps its
+    Offline use: ``records_a`` are dicts with season, week, home, player_id,
+    market, pmf (A) and ``actual`` (required -- every record is re-scored),
+    and ``calib``, when given, must hold a map for every market present.
+    Inputs are not mutated. ``b_pmfs``: ``rec_key -> B pmf``; a record without one keeps its
     A pmf (``b_missing``; ``w`` NaN). ``weights``: market -> weight on A.
     anytime_td is a logit blend of P(>=1) = 1 - pmf[0] and always leaves as
     ``[1-p, p]``. ``calib``: market -> PIT knots (Platt ``(a, b)`` for
@@ -247,10 +269,13 @@ def composite(base_recs, ml_recs, sources: Mapping[str, str]) -> list[dict]:
             + [r for r in base_recs if sources.get(r["market"]) == "baseline"])
 
 
-def per_market_rps(df: pd.DataFrame) -> dict[str, dict]:
-    """``{m: {n, rps_b, rps_c}}`` of a paired frame (no bootstrap)."""
+def per_market_scores(df: pd.DataFrame) -> dict[str, dict]:
+    """``{m: {n, rps_b, rps_c, ece_b, ece_c}}`` of a paired frame (no bootstrap)."""
     return {str(m): {"n": len(g), "rps_b": float(g["rps_b"].mean()),
-                     "rps_c": float(g["rps_c"].mean())} for m, g in df.groupby("market")}
+                     "rps_c": float(g["rps_c"].mean()),
+                     "ece_b": float(decile_ece(g["pit_b"].to_numpy())),
+                     "ece_c": float(decile_ece(g["pit_c"].to_numpy()))}
+            for m, g in df.groupby("market")}
 
 
 def pipeline_config(kept_a, tuned: Mapping, sources: Mapping, w_final: Mapping,
@@ -263,12 +288,13 @@ def pipeline_config(kept_a, tuned: Mapping, sources: Mapping, w_final: Mapping,
                             "calibrate": bool(calibrate)} for m in MARKETS}}
 
 
-def oof_frame(ml_recs) -> pd.DataFrame:
-    """P3 OOF records (pre-calibration) for Task 6."""
+def oof_frame(ml_recs, out_of_role: set) -> pd.DataFrame:
+    """P3 OOF records (pre-calibration) for Task 6 (see ``OOF_COLS``)."""
     def f32(x):
         return None if x is None else np.asarray(x, dtype=np.float32)
-    return pd.DataFrame([{**{c: r[c] for c in OOF_COLS}, "pmf_a": f32(r["pmf_a"]),
-                          "pmf_b": f32(r["pmf_b"])} for r in ml_recs], columns=list(OOF_COLS))
+    return pd.DataFrame([{**{c: r[c] for c in OOF_COLS[:-3]}, "pmf_a": f32(r["pmf_a"]),
+                          "pmf_b": f32(r["pmf_b"]), "in_role": rec_key(r) not in out_of_role}
+                         for r in ml_recs], columns=list(OOF_COLS))
 
 
 def output_paths(tag: str, run_date: str, *, gate_path: Path = GATE_PATH,
@@ -301,16 +327,21 @@ def season_decision(base_recs, cand, population, season: int, name: str) -> dict
 
 
 def b_oof(player_tbl: pd.DataFrame, pop_recs, seasons, refit_weeks, cols: list[str],
-          market_max: Mapping[str, int], log: Callable[[str], None]) -> dict:
-    """``rec_key -> B pmf`` for population records: for each (S, r) block with
-    records, ``fit_market`` on rows before (S, r) and predict that block's
-    records from their (season, week, player_id) feature rows (a record
-    without a feature row gets no B pmf)."""
+          market_max: Mapping[str, int], log: Callable[[str], None]) -> tuple[dict, set]:
+    """``(rec_key -> B pmf, out-of-role keys)`` for population records: for
+    each (S, r) block with records, ``fit_market`` on rows before (S, r) and
+    predict that block's IN-ROLE records (``in_role``) from their (season,
+    week, player_id) feature rows. A record whose feature row is out of role
+    is returned in the set (B := A downstream); one without a feature row is
+    in neither (missing)."""
     blocks = defaultdict(list)
     for r in pop_recs:
         blocks[(r["season"], tpm.refit_block(r["week"], refit_weeks))].append(r)
-    feats = player_tbl[["season", "week", "player_id"] + cols]
+    role_cols = [c for c in ("position", "p_pos", "p_y_pass_att_ewm", "p_y_carries_ewm",
+                             "p_y_targets_ewm") if c in player_tbl.columns and c not in cols]
+    feats = player_tbl[["season", "week", "player_id"] + cols + role_cols]
     out: dict = {}
+    out_of_role: set = set()
     t0 = time.time()
     for s in seasons:
         for rw in refit_weeks:
@@ -320,18 +351,25 @@ def b_oof(player_tbl: pd.DataFrame, pop_recs, seasons, refit_weeks, cols: list[s
             for m in MARKETS:
                 if not recs.get(m):
                     continue
-                model = fit_market(player_tbl, m, cols, upto=(s, rw), test_season=s,
-                                   decay=B_DECAY, max_iter=B_MAX_ITER)
                 keys = pd.DataFrame([{"season": r["season"], "week": r["week"],
                                       "player_id": r["player_id"]} for r in recs[m]])
                 rows = keys.merge(feats, on=["season", "week", "player_id"], how="inner")
+                role = in_role(rows, m).to_numpy()
+                out_of_role |= {(int(a), int(b), str(c), m) for a, b, c in
+                                zip(rows["season"][~role], rows["week"][~role],
+                                    rows["player_id"][~role])}
+                rows = rows[role]
+                if rows.empty:
+                    continue
+                model = fit_market(player_tbl, m, cols, upto=(s, rw), test_season=s,
+                                   decay=B_DECAY, max_iter=B_MAX_ITER)
                 for (rs, rwk, pid), pmf in zip(
                         zip(rows["season"], rows["week"], rows["player_id"]),
                         predict_pmfs(model, rows, int(market_max.get(m, 1)))):
                     out[(int(rs), int(rwk), str(pid), m)] = pmf
             log(f"stage=b-oof season={s} block={rw}: {sum(map(len, recs.values()))} records, "
                 f"{(time.time() - t0) / 60:.1f} min in B so far")
-    return out
+    return out, out_of_role
 
 
 # ---- report ------------------------------------------------------------------------------
@@ -406,7 +444,11 @@ def render_report(gate: dict) -> str:
               "## B out-of-fold", "",
               f"- {b['fits']} fits (decay {B_DECAY}, max_iter {B_MAX_ITER}) in "
               f"{b['seconds'] / 60:.1f} min; records without a B feature row (kept A): "
-              + ", ".join(f"{m} {n}" for m, n in b["missing"].items()) + ".", "",
+              + ", ".join(f"{m} {n}" for m, n in b["missing"].items()) + ".",
+              "- B trains and predicts only on each market's pre-game role subset "
+              "(pass: QB with pass-att EWM >= 10; rush: carries EWM >= 3; receiving: WR/TE/RB "
+              "with targets EWM >= 2; anytime_td: all). Out-of-role records get B := A: "
+              + ", ".join(f"{m} {n}" for m, n in b["out_of_role"].items()) + ".", "",
               "## +B blend", ""]
     lines += _season_table("Weight on A per test season:", gate["blend"]["weights"],
                            lambda w: f"{w:.1f}")
@@ -416,18 +458,30 @@ def render_report(gate: dict) -> str:
                            gate["calibration"]["maps"],
                            lambda c: c if isinstance(c, str) else f"[{c[0]:.2f}, {c[1]:.2f}]")
     lines += _rung_section("calibration", gate["calibration"])
+    nan = float("nan")
     lines += ["## Final gate (served pipeline vs current sim)", "",
-              "| market | n | RPS base | RPS ML | source | w_final | calibrate |",
-              "|---|---:|---:|---:|---|---:|---|"]
+              f"A market is served from ML iff its RPS <= the baseline's AND its ECE <= the "
+              f"baseline's + {ECE_TOL} (all seasons).", "",
+              "| market | n | RPS base | RPS ML | ECE base | ECE ML | source | w_final | calibrate |",
+              "|---|---:|---:|---:|---:|---:|---|---:|---|"]
     for m, v in gate["pipeline"]["markets"].items():
-        pm = f["ml_per_market"].get(m, {"n": 0, "rps_b": float("nan"), "rps_c": float("nan")})
+        pm = f["ml_per_market"].get(m, {"n": 0, "rps_b": nan, "rps_c": nan, "ece_b": nan,
+                                        "ece_c": nan})
         lines.append(f"| {m} | {pm['n']} | {pm['rps_b']:.4f} | {pm['rps_c']:.4f} | "
-                     f"{v['source']} | {v['w_final']:.1f} | {v['calibrate']} |")
-    lines += ["", "### All seasons", ""] + tpm._decision_block(f["all"])
-    lines += ["", "### 2025 alone", ""]
-    lines += (tpm._decision_block(f["season_2025"]) if f.get("season_2025") is not None
-              else ["Season 2025 was not part of this run."])
-    lines += ["", f"final_pass = {f['pass']}", "", "## Caveats", "", *CAVEATS, ""]
+                     f"{pm['ece_b']:.4f} | {pm['ece_c']:.4f} | {v['source']} | "
+                     f"{v['w_final']:.1f} | {v['calibrate']} |")
+    un = f["unselected"]
+    for title, d in (("Selected (per-market sources above)", f),
+                     ("Unselected (ML wherever the ladder kept it; no per-market swap)", un)):
+        lines += ["", f"### {title}", "", "All seasons:", ""] + tpm._decision_block(d["all"])
+        lines += ["", "2025 alone:", ""]
+        lines += (tpm._decision_block(d["season_2025"]) if d.get("season_2025") is not None
+                  else ["Season 2025 was not part of this run."])
+        lines += ["", f"pass = {d['pass']}"]
+    lines += ["", "The selected verdict is optimistic by construction: its per-market sources "
+              "are chosen on the same seasons it is scored on; the unselected decision is not.",
+              "", f"final_pass = {f['pass']} (unselected: {un['pass']})", "",
+              "## Caveats", "", *CAVEATS, ""]
     return "\n".join(lines)
 
 
@@ -506,47 +560,64 @@ def run_b_ladder(env: Mapping[str, str], *, bsn, player_tbl: pd.DataFrame,
     tpm.check_coverage(base_games, a_recs, "kept_a")
     tpm.check_share_fallbacks(int(a_stats.get("share_fallbacks", 0)), len(base_games), "kept_a")
     population = population_from_baseline(base_recs)
+    # memory: only population records (and their pmfs) are needed from here on
+    base_recs = [r for r in base_recs if rec_key(r) in population]
+    pop_a = [r for r in a_recs if rec_key(r) in population]
+    del a_recs
     n_pop = {m: sum(1 for k in population if k[3] == m) for m in MARKETS}
     log(f"stage=population {n_pop}")
 
     log("stage=a-recheck")
-    a_step = rung_step("a_recheck", base_recs, a_recs, base_recs, population)
+    a_step = rung_step("a_recheck", base_recs, pop_a, base_recs, population)
     a_sources = market_sources(a_step["decision"]["per_market"], MARKETS, A_WORSE_TOL)
     log(f"A re-check: skill {a_step['decision']['skill']:+.4f}; sources {a_sources}")
 
-    pop_a = [r for r in a_recs if rec_key(r) in population]
     cols = learned.feature_columns(player_tbl, kept_a)
     b_meta = {"n_sims": n_sims, "seasons": seasons, "refit_weeks": list(refit_weeks),
               "kept_a": sorted(kept_a), "b_decay": B_DECAY, "b_max_iter": B_MAX_ITER,
-              "identity": identity}
+              "role_subsets": ROLE_SUBSETS, "identity": identity}
     b_path = Path(data_dir) / f"b_oof__{tag}.parquet"
     got = tpm.load_records(b_path, b_meta) if resume else None
     if got is not None:
-        b_pmfs, b_stats = {rec_key(r): r["pmf_b"] for r in got[0]}, got[1]
+        b_pmfs = {rec_key(r): r["pmf_b"] for r in got[0] if r["in_role"]}
+        out_of_role, b_stats = {rec_key(r) for r in got[0] if not r["in_role"]}, got[1]
         log(f"stage=b-oof: loaded {len(b_pmfs)} B pmfs from {b_path.name}")
     else:
         start = time.time()
-        b_pmfs = b_oof(player_tbl, pop_a, seasons, refit_weeks, cols, bsn.MARKET_MAX, log)
+        b_pmfs, out_of_role = b_oof(player_tbl, pop_a, seasons, refit_weeks, cols,
+                                    bsn.MARKET_MAX, log)
         b_stats = {"seconds": time.time() - start,
-                   "fits": len({(k[0], tpm.refit_block(k[1], refit_weeks), k[3]) for k in
-                                (rec_key(r) for r in pop_a)})}
+                   "fits": len({(k[0], tpm.refit_block(k[1], refit_weeks), k[3])
+                                for k in b_pmfs})}
         tpm.save_records(b_path, [{"season": k[0], "week": k[1], "player_id": k[2], "market": k[3],
-                                   "pmf_b": np.asarray(v, dtype=np.float32)}
-                                  for k, v in b_pmfs.items()], b_meta, b_stats)
-    missing = {m: sum(1 for r in pop_a if r["market"] == m and rec_key(r) not in b_pmfs)
-               for m in MARKETS}
-    if sum(missing.values()) > MAX_B_MISSING * max(len(pop_a), 1):
-        raise RuntimeError(f"B feature rows missing for {sum(missing.values())} of {len(pop_a)} "
-                           f"population records (> {MAX_B_MISSING:.0%}): {missing} -- rebuild "
-                           "the feature table")
+                                   "pmf_b": np.asarray(v, dtype=np.float32), "in_role": True}
+                                  for k, v in b_pmfs.items()]
+                         + [{"season": k[0], "week": k[1], "player_id": k[2], "market": k[3],
+                             "pmf_b": None, "in_role": False} for k in out_of_role],
+                         b_meta, b_stats)
+    in_role_n = {m: sum(1 for r in pop_a if r["market"] == m and rec_key(r) not in out_of_role)
+                 for m in MARKETS}
+    missing = {m: sum(1 for r in pop_a if r["market"] == m and rec_key(r) not in b_pmfs
+                      and rec_key(r) not in out_of_role) for m in MARKETS}
+    oor = {m: sum(1 for k in out_of_role if k[3] == m) for m in MARKETS}
+    bad = {m: n for m, n in missing.items() if n > MAX_B_MISSING * max(in_role_n[m], 1)}
+    if bad:
+        raise RuntimeError(f"B feature rows missing for > {MAX_B_MISSING:.0%} of in-role "
+                           f"population records in {sorted(bad)}: missing {missing} of "
+                           f"{in_role_n} -- rebuild the feature table")
+    # an out-of-role record gets B := A (blend output = A); it is not "missing"
+    b_eff = {**b_pmfs, **{rec_key(r): r["pmf"] for r in pop_a if rec_key(r) in out_of_role}}
+
+    def with_b(rows):
+        return [r for r in rows if rec_key(r) not in out_of_role]
 
     ones = {s: {m: 1.0 for m in MARKETS} for s in seasons}
-    kept_ml, kept_w, kept_rungs = apply_by_season(pop_a, b_pmfs, ones), ones, []
+    kept_ml, kept_w, kept_rungs = apply_by_season(pop_a, b_eff, ones), ones, []
     kept_comp = composite(base_recs, kept_ml, a_sources)
 
     log("stage=blend weights + rung")
-    weights = season_weights(kept_ml, seasons, MARKETS)
-    cand = apply_by_season(pop_a, b_pmfs, weights)
+    weights = season_weights(with_b(kept_ml), seasons, MARKETS)
+    cand = apply_by_season(pop_a, b_eff, weights)
     blend = {**rung_step("blend", kept_comp, composite(base_recs, cand, a_sources), base_recs,
                          population), "weights": {str(k): v for k, v in weights.items()}}
     log(f"DECISION rung=blend: {tpm._fmt_decision_line(blend['decision'])} => "
@@ -558,7 +629,7 @@ def run_b_ladder(env: Mapping[str, str], *, bsn, player_tbl: pd.DataFrame,
 
     log("stage=calibration maps + rung")
     calibs = season_calibrations(pre_calib, seasons, MARKETS)
-    cand = apply_by_season(pop_a, b_pmfs, kept_w, calibs)
+    cand = apply_by_season(pop_a, b_eff, kept_w, calibs)
     calib = {**rung_step("calibration", kept_comp, composite(base_recs, cand, a_sources),
                          base_recs, population),
              "maps": {str(s): {m: calib_label(c, m) for m, c in v.items()}
@@ -569,34 +640,41 @@ def run_b_ladder(env: Mapping[str, str], *, bsn, player_tbl: pd.DataFrame,
         kept_ml, kept_rungs = cand, kept_rungs + ["calibration"]
 
     log("stage=final gate")
-    ml_pm = per_market_rps(tpm.checked_paired_frame(base_recs, kept_ml, population, base_recs,
-                                                    "final-ml"))
-    sources = market_sources(ml_pm, MARKETS, 1.0)
-    served = composite(base_recs, kept_ml, sources)
-    final_all = rung_decision(tpm.checked_paired_frame(base_recs, served, population, base_recs,
-                                                       "final"))
-    final_25 = (season_decision(base_recs, served, population, tpm.FINAL_SEASON, "final:2025")
-                if tpm.FINAL_SEASON in seasons else None)
-    final_pass = bool(final_all["pass"] and final_25 is not None and final_25["pass"])
-    rows_b = _by_market(r for r in pre_calib if r["pmf_b"] is not None)
+    ml_pm = per_market_scores(tpm.checked_paired_frame(base_recs, kept_ml, population, base_recs,
+                                                       "final-ml"))
+    sources = market_sources(ml_pm, MARKETS, 1.0, ece_tol=ECE_TOL)
+
+    def final_decision(src: Mapping[str, str], name: str) -> dict:
+        served = composite(base_recs, kept_ml, src)
+        d_all = rung_decision(tpm.checked_paired_frame(base_recs, served, population, base_recs,
+                                                       name))
+        d25 = (season_decision(base_recs, served, population, tpm.FINAL_SEASON, f"{name}:2025")
+               if tpm.FINAL_SEASON in seasons else None)
+        return {"all": d_all, "season_2025": d25, "sources": dict(src),
+                "pass": bool(d_all["pass"] and d25 is not None and d25["pass"])}
+
+    selected, unselected = final_decision(sources, "final"), final_decision(a_sources, "final-un")
+    rows_b = _by_market(with_b(pre_calib))
     w_final = {m: (float(choose_weight(rows_b[m], m)) if "blend" in kept_rungs and rows_b.get(m)
                    else 1.0) for m in MARKETS}
     pipeline = pipeline_config(kept_a, tuned, sources, w_final, "calibration" in kept_rungs)
-    log(f"FINAL all: {tpm._fmt_decision_line(final_all)}; sources {sources}")
-    if final_25 is not None:
-        log(f"FINAL {tpm.FINAL_SEASON}: {tpm._fmt_decision_line(final_25)}")
-    log(f"FINAL kept_rungs={kept_rungs} final_pass={final_pass}")
+    for label, f in (("selected", selected), ("unselected", unselected)):
+        log(f"FINAL {label} all: {tpm._fmt_decision_line(f['all'])}; sources {f['sources']}")
+        if f["season_2025"] is not None:
+            log(f"FINAL {label} {tpm.FINAL_SEASON}: {tpm._fmt_decision_line(f['season_2025'])}")
+    log(f"FINAL kept_rungs={kept_rungs} final_pass={selected['pass']} "
+        f"(unselected {unselected['pass']})")
 
     oof_path = Path(data_dir) / f"oof_b7__{base_tag}.parquet"
-    oof_frame(pre_calib).to_parquet(oof_path, index=False)
+    oof_frame(pre_calib, out_of_role).to_parquet(oof_path, index=False)
     gate = {"run_date": run_date, "seasons": seasons, "n_sims": n_sims,
             "refit_weeks": list(refit_weeks), "run_tag": tag, "identity": identity,
             "tuned": tuned_json, "n_games_baseline": len(base_games), "n_population": n_pop,
             "a_recheck": {**a_step, "sources": a_sources},
-            "b_oof": {**b_stats, "fits": int(b_stats.get("fits", 0)), "missing": missing},
+            "b_oof": {**b_stats, "fits": int(b_stats.get("fits", 0)), "missing": missing,
+                      "out_of_role": oor, "role_subsets": ROLE_SUBSETS},
             "blend": blend, "calibration": calib, "kept_rungs": kept_rungs,
-            "final": {"pass": final_pass, "all": final_all, "season_2025": final_25,
-                      "ml_per_market": ml_pm, "sources": sources},
+            "final": {**selected, "ml_per_market": ml_pm, "unselected": unselected},
             "pipeline": pipeline, "oof_path": str(oof_path), "elapsed_s": time.time() - t0}
     out_gate, out_pipe, out_report = output_paths(base_tag, run_date, gate_path=gate_path,
                                                   pipeline_path=pipeline_path,

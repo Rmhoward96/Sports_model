@@ -15,10 +15,17 @@ calibrated, and served):
   predicted mean, see ``_tier_dispersion``); pmf via ``nb_pmf``.
 * ``binary`` (``anytime_td``) -- an HGB classifier; pmf ``[P(0), P(1)]``.
 
+Role subsets (``ROLE_SUBSETS`` / ``in_role``): each market's model trains
+(and, in the callers, predicts) only on a PRE-GAME role subset -- position
+plus a strictly-prior usage EWM (e.g. pass_yds: QB with ``p_y_pass_att_ewm``
+>= 10); a NaN EWM is out of role. Without it the yards quantile models fit
+mostly zero labels (non-QBs for pass_yds) and predict 0 for every tau < 0.95
+even for starting QBs.
+
 Leakage contract (same as ``sim.nfl.learned``): ``fit_market`` itself keeps
-only rows with ``(season, week) < upto``, the label present and ``is_stub``
-not set (B models E[stat | played]), so callers cannot leak by passing the
-full table. Walk-forward only; no random splits, no early stopping. A column
+only rows with ``(season, week) < upto``, the label present, ``is_stub``
+not set (B models E[stat | played]) and in the market's role, so callers
+cannot leak by passing the full table. Walk-forward only; no random splits, no early stopping. A column
 that is 100% NaN in the training slice is dropped for that fit and the used
 columns are recorded on the ``MarketModel``. Model hyper-parameters come from
 ``learned._hgb`` so A and B share one definition.
@@ -55,6 +62,18 @@ KINDS: dict[str, Kind] = {
     "rec_yds": "quantile", "rush_yds": "quantile", "pass_yds": "quantile",
     "receptions": "count", "rush_att": "count", "pass_tds": "count",
     "anytime_td": "binary",
+}
+
+# market -> pre-game role subset: ``positions`` (None = any) and a strictly
+# prior usage EWM column that must be >= ``min``. None = every row.
+_QB_ROLE = {"positions": ("QB",), "col": "p_y_pass_att_ewm", "min": 10.0}
+_RUSH_ROLE = {"positions": None, "col": "p_y_carries_ewm", "min": 3.0}
+_REC_ROLE = {"positions": ("WR", "TE", "RB"), "col": "p_y_targets_ewm", "min": 2.0}
+ROLE_SUBSETS: dict[str, dict | None] = {
+    "pass_yds": _QB_ROLE, "pass_tds": _QB_ROLE,
+    "rush_yds": _RUSH_ROLE, "rush_att": _RUSH_ROLE,
+    "rec_yds": _REC_ROLE, "receptions": _REC_ROLE,
+    "anytime_td": None,
 }
 
 # NB size above this is treated as Poisson.
@@ -149,8 +168,23 @@ def _classifier(max_iter: int) -> HistGradientBoostingClassifier:
         **{k: v for k, v in reg.items() if k in allowed and k != "loss"})
 
 
-def _training_slice(df: pd.DataFrame, label: str, upto: tuple[int, int]) -> pd.DataFrame:
-    m = _before(df, upto) & df[label].notna()
+def in_role(df: pd.DataFrame, market: str) -> pd.Series:
+    """Boolean Series: rows in ``market``'s pre-game role subset
+    (``ROLE_SUBSETS``). A NaN usage EWM is out of role; the position comes
+    from ``position`` (``p_pos`` if absent)."""
+    spec = ROLE_SUBSETS[market]
+    if spec is None:
+        return pd.Series(True, index=df.index, dtype=bool)
+    ok = (pd.to_numeric(df[spec["col"]], errors="coerce") >= spec["min"]).fillna(False)
+    if spec["positions"] is not None:
+        pos = df["position"] if "position" in df.columns else df["p_pos"]
+        ok &= pos.astype(object).isin(spec["positions"]).fillna(False)
+    return ok.astype(bool)
+
+
+def _training_slice(df: pd.DataFrame, label: str, upto: tuple[int, int],
+                    market: str) -> pd.DataFrame:
+    m = _before(df, upto) & df[label].notna() & in_role(df, market)
     if STUB_COL in df.columns:
         m &= ~df[STUB_COL].fillna(False).astype(bool)
     return df[m]
@@ -187,8 +221,8 @@ def _tier_dispersion(mu: np.ndarray, y: np.ndarray) -> dict:
 def fit_market(df: pd.DataFrame, market: str, cols: list[str], *,
                upto: tuple[int, int], test_season: int, decay: float,
                max_iter: int) -> MarketModel:
-    """Fit the B model for ``market`` on played rows before ``upto`` with the
-    label present; sample weight ``decay ** (test_season - season)``.
+    """Fit the B model for ``market`` on played, in-role (``in_role``) rows
+    before ``upto`` with the label present; sample weight ``decay ** (test_season - season)``.
     ``decay == 1.0`` fits UNWEIGHTED (``sample_weight=None``): scikit-learn's
     weighted binning path costs ~12 s per fit on the real table even when all
     weights are equal.
@@ -199,7 +233,7 @@ def fit_market(df: pd.DataFrame, market: str, cols: list[str], *,
     if market not in LABELS:
         raise ValueError(f"unknown market {market!r}")
     label, kind = LABELS[market], KINDS[market]
-    tr = _training_slice(df, label, upto)
+    tr = _training_slice(df, label, upto, market)
     if tr.empty:
         raise ValueError(f"fit_market({market}): no training rows before {upto}")
     used = [c for c in cols if tr[c].notna().any()]

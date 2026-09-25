@@ -18,9 +18,11 @@ from threadpoolctl import threadpool_limits  # scikit-learn's own dependency
 from sportsmodel.model.props_ml.dist_models import (
     LABELS,
     TAUS,
+    ROLE_SUBSETS,
     MarketModel,
     bernoulli_pmf,
     fit_market,
+    in_role,
     nb_pmf,
     predict_pmfs,
     quantiles_to_pmf,
@@ -77,7 +79,12 @@ def small_tbl() -> pd.DataFrame:
                     "y_pass_tds": float(ptds),
                     "y_anytime_td": float(rng.random() < 0.05 + 0.4 * (tshare + cshare)),
                     "p_target_share_ewm": tshare, "p_carry_share_ewm": cshare,
-                    "p_y_pass_att_ewm": 33.0 if pos == "QB" else 0.0,
+                    # role EWMs: QB p5 is a backup (< 10 pass att); week 1 has no
+                    # history (NaN -> out of every usage role)
+                    "p_y_pass_att_ewm": ((3.0 if i == 5 else 33.0) if pos == "QB" else 0.0)
+                    if week > 1 else np.nan,
+                    "p_y_carries_ewm": 25 * cshare if week > 1 else np.nan,
+                    "p_y_targets_ewm": 0.5 + 35 * tshare if week > 1 else np.nan,
                     "p_all_nan": np.nan, "p_pos": pos,
                     "tm_pass_att_ewm": rng.uniform(28, 40),
                 }
@@ -111,10 +118,22 @@ def fitted(small_tbl, cols):
     return models, calls
 
 
+def _role_mask(df: pd.DataFrame, market: str) -> pd.Series:
+    """The controller's role subsets, written out independently of ROLE_SUBSETS."""
+    if market in ("pass_yds", "pass_tds"):
+        return (df.position == "QB") & (df.p_y_pass_att_ewm >= 10)
+    if market in ("rush_yds", "rush_att"):
+        return df.p_y_carries_ewm >= 3
+    if market in ("rec_yds", "receptions"):
+        return df.position.isin(["WR", "TE", "RB"]) & (df.p_y_targets_ewm >= 2)
+    return pd.Series(True, index=df.index)
+
+
 def _train_mask(df: pd.DataFrame, label: str) -> pd.Series:
     s, w = UPTO
+    market = {v: k for k, v in LABELS.items()}[label]
     before = (df.season < s) | ((df.season == s) & (df.week < w))
-    return before & df[label].notna() & ~df["is_stub"]
+    return before & df[label].notna() & ~df["is_stub"] & _role_mask(df, market)
 
 
 def _spy_fits(monkeypatch):
@@ -369,3 +388,50 @@ def test_fit_market_no_training_rows_raises(small_tbl, cols):
 def test_predict_pmfs_empty_rows(small_tbl, fitted):
     m = fitted[0]["anytime_td"]
     assert predict_pmfs(m, small_tbl.iloc[:0], 1) == []
+
+
+# ---- role subsets (controller fix round 1) -------------------------------------------
+
+def test_role_subsets_definition():
+    assert ROLE_SUBSETS["pass_yds"] == ROLE_SUBSETS["pass_tds"] == {
+        "positions": ("QB",), "col": "p_y_pass_att_ewm", "min": 10.0}
+    assert ROLE_SUBSETS["rush_yds"] == ROLE_SUBSETS["rush_att"] == {
+        "positions": None, "col": "p_y_carries_ewm", "min": 3.0}
+    assert ROLE_SUBSETS["rec_yds"] == ROLE_SUBSETS["receptions"] == {
+        "positions": ("WR", "TE", "RB"), "col": "p_y_targets_ewm", "min": 2.0}
+    assert ROLE_SUBSETS["anytime_td"] is None
+
+
+def test_in_role_thresholds_positions_and_nan():
+    df = pd.DataFrame({
+        "position": ["QB", "QB", "WR", "QB", "RB", "TE", "QB", "WR"],
+        "p_y_pass_att_ewm": [10.0, 9.9, 30.0, np.nan, 0, 0, 0, 0],
+        "p_y_carries_ewm": [0, 0, 0, 0, 3.0, 2.9, 5.0, np.nan],
+        "p_y_targets_ewm": [0, 0, 2.0, 0, 1.9, 2.5, 6.0, np.nan],
+    })
+    assert in_role(df, "pass_yds").tolist() == [True, False, False, False, False, False, False, False]
+    assert in_role(df, "rush_att").tolist() == [False, False, False, False, True, False, True, False]
+    assert in_role(df, "receptions").tolist() == [False, False, True, False, False, True, False, False]
+    assert in_role(df, "anytime_td").all()
+    assert in_role(df, "rec_yds").dtype == bool
+
+
+def test_fit_market_trains_only_in_role_rows(small_tbl, cols, monkeypatch):
+    calls = _spy_fits(monkeypatch)
+    for market in ("pass_yds", "rush_att", "receptions", "anytime_td"):
+        calls.clear()
+        fit_market(small_tbl, market, cols, **FIT)
+        label = LABELS[market]
+        want = _train_mask(small_tbl, label)
+        without_role = (_train_mask(small_tbl.assign(position="QB", p_y_pass_att_ewm=99.0,
+                                                     p_y_carries_ewm=99.0), label)
+                        if market != "receptions" else want)
+        assert {c["n"] for c in calls} == {int(want.sum())}, market
+        if market in ("pass_yds", "rush_att"):
+            assert int(want.sum()) < int(without_role.sum())  # the role really excludes rows
+    # a QB backup (p5, pass-att EWM 3) and week-1 (NaN EWM) rows never train pass_yds
+    calls.clear()
+    fit_market(small_tbl, "pass_yds", cols, **FIT)
+    tr = small_tbl[_train_mask(small_tbl, "y_pass_yds")]
+    assert "p5" not in set(tr.player_id) and 1 not in set(tr.week)
+    assert set(tr.position) == {"QB"}
