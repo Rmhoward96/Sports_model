@@ -14,12 +14,15 @@ name: train-props-ml
 #  4. publish: the current props-ml-latest assets are copied into props-ml-prev
 #     (deleted + recreated: one-step rollback), then the new models are
 #     uploaded to props-ml-latest with --clobber (created with --latest=false
-#     when missing; stale assets no longer produced are removed).
+#     when missing; stale assets no longer produced are removed) and
+#     MANIFEST.sha256 (sha256 of every model file) is uploaded LAST. A failure
+#     mid-upload restores the saved previous assets and fails the job.
+# A full_ladder dispatch skips this job (it never publishes).
 # Serving (generate-sim-nfl.yml, injury-watch.yml) downloads props-ml-latest
 # only when the repo variable SIM_ML_MODE is shadow/live.
 #
-# recheck job (runs beside train, which runs on every trigger; never publishes,
-# never commits; outputs go to a run artifact):
+# recheck job (runs beside train; never publishes, never commits; outputs go
+# to a run artifact):
 #  * first Tuesday of the month (scheduled run, day-of-month <= 7): the
 #    fixed-configuration A re-check -- scripts/train_props_ml.py with
 #    PROPS_ML_TOGGLES = the kept toggles in assets/nfl/props_ml/a_gate.json and
@@ -50,6 +53,8 @@ concurrency:
 
 jobs:
   train:
+    # a full_ladder dispatch runs only the ladder: it must never publish
+    if: ${{ !inputs.full_ladder }}
     runs-on: ubuntu-latest
     timeout-minutes: 120
     steps:
@@ -72,29 +77,43 @@ jobs:
         run: uv run python scripts/fit_props_ml_final.py
 
       # No `if:` on purpose: runs only when every step above succeeded.
+      # Order: rotate prev -> upload models -> drop stale assets -> upload
+      # MANIFEST.sha256 LAST. Serving verifies the downloaded set against the
+      # manifest, so a half-published (mixed) set is rejected, never loaded.
+      # Any failure once the upload phase starts restores the saved previous
+      # assets into props-ml-latest (ERR trap) and fails the job.
       - name: Publish models (props-ml-latest; previous assets -> props-ml-prev)
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
+          models=data/props_ml/models
           files=()
-          for f in data/props_ml/models/*; do
-            [ -f "$f" ] && files+=("$f")
+          names=()
+          for f in "$models"/*; do
+            [ -f "$f" ] && [ "$(basename "$f")" != MANIFEST.sha256 ] || continue
+            files+=("$f")
+            names+=("$(basename "$f")")
           done
-          if [ "${#files[@]}" -eq 0 ] || [ ! -f data/props_ml/models/props_ml_config.json ]; then
-            echo "::error::no model artifacts in data/props_ml/models"
+          if [ "${#files[@]}" -eq 0 ] || [ ! -f "$models/props_ml_config.json" ]; then
+            echo "::error::no model artifacts in $models"
             exit 1
           fi
+          manifest_dir="$RUNNER_TEMP/props-ml-manifest"
+          rm -rf "$manifest_dir"
+          mkdir -p "$manifest_dir"
+          (cd "$models" && sha256sum "${names[@]}") > "$manifest_dir/MANIFEST.sha256"
 
+          prev_dir="$RUNNER_TEMP/props-ml-prev"
+          rm -rf "$prev_dir"
           if gh release view props-ml-latest >/dev/null 2>&1; then
-            prev_dir="$RUNNER_TEMP/props-ml-prev"
-            rm -rf "$prev_dir"
             if gh release download props-ml-latest -D "$prev_dir"; then
               gh release delete props-ml-prev -y --cleanup-tag || true
               gh release create props-ml-prev "$prev_dir"/* --latest=false --target "$GITHUB_SHA" \
                 --title "props-ml models (previous)" \
                 --notes "props-ml-latest assets as of run $GITHUB_RUN_ID, kept for one-step rollback."
             else
+              rm -rf "$prev_dir"
               echo "::warning::could not download the current props-ml-latest assets; props-ml-prev left as is"
             fi
           else
@@ -103,18 +122,50 @@ jobs:
               --notes "Weekly props-ML models (train-props-ml.yml). Previous set: props-ml-prev."
           fi
 
+          restore_latest() {
+            trap - ERR
+            set +e
+            echo "::error::props-ml publish failed during upload; restoring the previous props-ml-latest assets"
+            prev=()
+            keep_prev=" "
+            if [ -d "$prev_dir" ]; then
+              for f in "$prev_dir"/*; do
+                [ -f "$f" ] || continue
+                prev+=("$f")
+                keep_prev="$keep_prev$(basename "$f") "
+              done
+            fi
+            if [ "${#prev[@]}" -eq 0 ]; then
+              echo "::error::no previous assets to restore; props-ml-latest has no matching MANIFEST.sha256, so serving rejects it"
+              exit 1
+            fi
+            gh release upload props-ml-latest "${prev[@]}" --clobber
+            for name in $(gh release view props-ml-latest --json assets --jq '.assets[].name'); do
+              case "$keep_prev" in
+                *" $name "*) ;;
+                *) gh release delete-asset props-ml-latest "$name" -y ;;
+              esac
+            done
+            exit 1
+          }
+          trap restore_latest ERR
+
           gh release upload props-ml-latest "${files[@]}" --clobber
 
-          # drop assets the new fit no longer produces (e.g. a b_<market> model)
-          keep=" "
-          for f in "${files[@]}"; do keep="$keep$(basename "$f") "; done
-          gh release view props-ml-latest --json assets --jq '.assets[].name' | while read -r name; do
+          # drop assets the new fit no longer produces (e.g. a b_<market> model);
+          # the old MANIFEST.sha256 stays until the new one clobbers it
+          keep=" MANIFEST.sha256 ${names[*]} "
+          assets="$(gh release view props-ml-latest --json assets --jq '.assets[].name')"
+          for name in $assets; do
             case "$keep" in
               *" $name "*) ;;
               *) gh release delete-asset props-ml-latest "$name" -y ;;
             esac
           done
-          echo "published ${#files[@]} files to props-ml-latest"
+
+          gh release upload props-ml-latest "$manifest_dir/MANIFEST.sha256" --clobber
+          trap - ERR
+          echo "published ${#files[@]} files + MANIFEST.sha256 to props-ml-latest"
 
   recheck:
     runs-on: ubuntu-latest
@@ -160,6 +211,7 @@ jobs:
         run: uv sync
 
       - name: Build props-ML feature tables (nflverse)
+        id: build
         if: steps.plan.outputs.mode != 'none'
         run: |
           uv run python scripts/build_player_features.py
@@ -170,7 +222,11 @@ jobs:
         env:
           PROPS_ML_SEASONS: ${{ steps.plan.outputs.seasons }}
         run: |
-          PROPS_ML_TOGGLES="$(jq -r '.kept | join(",")' assets/nfl/props_ml/a_gate.json)"
+          PROPS_ML_TOGGLES="$(jq -r '(.kept // []) | join(",")' assets/nfl/props_ml/a_gate.json)"
+          if [ -z "$PROPS_ML_TOGGLES" ]; then
+            echo "::error::assets/nfl/props_ml/a_gate.json has no kept toggles: nothing to re-check"
+            exit 1
+          fi
           export PROPS_ML_TOGGLES
           echo "PROPS_ML_TOGGLES=$PROPS_ML_TOGGLES PROPS_ML_SEASONS=$PROPS_ML_SEASONS"
           uv run python scripts/train_props_ml.py
@@ -180,7 +236,7 @@ jobs:
         run: uv run python scripts/train_props_ml_b.py
 
       - name: Collect outputs
-        if: steps.plan.outputs.mode != 'none' && !cancelled()
+        if: steps.plan.outputs.mode != 'none' && !cancelled() && steps.build.outcome == 'success'
         run: |
           out="$RUNNER_TEMP/props-ml-${{ steps.plan.outputs.mode }}"
           mkdir -p "$out"
@@ -193,7 +249,7 @@ jobs:
         id: collect
 
       - name: Upload re-check / ladder outputs
-        if: steps.plan.outputs.mode != 'none' && !cancelled()
+        if: steps.plan.outputs.mode != 'none' && !cancelled() && steps.collect.outcome == 'success'
         uses: actions/upload-artifact@v4
         with:
           name: props-ml-${{ steps.plan.outputs.mode }}-${{ github.run_id }}

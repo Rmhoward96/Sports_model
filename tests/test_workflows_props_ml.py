@@ -18,7 +18,9 @@ from __future__ import annotations
 
 import os
 import re
+import shutil
 import subprocess
+import sys
 from pathlib import Path
 
 import pytest
@@ -27,6 +29,8 @@ ROOT = Path(__file__).resolve().parents[1]
 WF = ROOT / ".github" / "workflows"
 SIM_ML_ENV = "${{ vars.SIM_ML_MODE || 'off' }}"
 DOWNLOAD_RUN = 'gh release download props-ml-latest -D data/props_ml/models --clobber || echo "no props-ml release"'
+VERIFY_WARNING = "::warning::props-ml: release verification failed"
+needs_sha256sum = pytest.mark.skipif(shutil.which("sha256sum") is None, reason="sha256sum not installed")
 
 
 # ---- minimal block-YAML reader -----------------------------------------------------------
@@ -268,6 +272,8 @@ def test_train_triggers_permissions_concurrency(train_wf):
 
 def test_train_job_order_gate_before_publish(train_wf):
     job = train_wf["jobs"]["train"]
+    # a full_ladder dispatch must never publish: the train job is skipped
+    assert job["if"] == "${{ !inputs.full_ladder }}"
     assert job["timeout-minutes"] == "120"
     assert job.get("permissions", {"contents": "write"}) == {"contents": "write"}
     steps = steps_of(job)
@@ -309,6 +315,17 @@ def test_train_publish_step(train_wf):
     assert re.search(r"gh release create props-ml-prev[^\n]*--latest=false", script)
     assert re.search(r"gh release upload props-ml-latest[^\n]*--clobber", script)
     assert "data/props_ml/models" in script
+    # MANIFEST.sha256 is the LAST upload, after the models and the stale-asset cleanup
+    uploads = [m.start() for m in re.finditer(r"gh release upload props-ml-latest", script)]
+    manifest_up = [u for u in uploads if "MANIFEST.sha256" in script[u:script.index("\n", u)]]
+    assert len(manifest_up) == 1 and manifest_up[0] == max(uploads)
+    assert script.index("gh release delete-asset props-ml-latest") < manifest_up[0]
+    # a failure after the upload phase starts restores the saved previous assets
+    assert re.search(r"trap restore_latest ERR", script)
+    assert script.index("trap restore_latest ERR") < script.index('gh release upload props-ml-latest "${files[@]}"')
+    body = script[script.index("restore_latest() {"):]
+    assert re.search(r'gh release upload props-ml-latest "\$\{prev\[@\]\}" --clobber', body)
+    assert "exit 1" in body
 
 
 def test_train_only_the_publish_step_touches_releases_and_nothing_commits(train_wf):
@@ -336,10 +353,16 @@ def test_recheck_job(train_wf):
     assert recheck["env"]["PROPS_ML_SEASONS"] == "${{ steps.plan.outputs.seasons }}"
     assert "PROPS_ML_TOGGLES" in recheck["run"]
     assert ".kept" in recheck["run"] and "assets/nfl/props_ml/a_gate.json" in recheck["run"]
+    assert re.search(r'if \[ -z "\$PROPS_ML_TOGGLES" \]; then\s+echo "::error::[^"]*kept', recheck["run"])
+    build = steps[step_index(steps, runs("scripts/build_player_features.py"))]
+    collect = steps[step_index(steps, lambda s: s.get("id") == "collect")]
+    assert build["id"] == "build"
+    assert "steps.build.outcome == 'success'" in collect["if"]
     ladder = steps[step_index(steps, runs("scripts/train_props_ml_b.py"))]
     assert ladder["if"] == "steps.plan.outputs.mode == 'ladder'"
     upload = steps[step_index(steps, lambda s: str(s.get("uses", "")).startswith("actions/upload-artifact@"))]
     assert upload["with"]["if-no-files-found"] == "error"
+    assert "steps.collect.outcome == 'success'" in upload["if"]
     assert steps.index(upload) > max(steps.index(recheck), steps.index(ladder))
 
 
@@ -389,7 +412,13 @@ def _check_sim_wiring(job: dict, extra_if: str | None = None) -> None:
     sim = step_index(steps, runs("scripts/generate_sim_nfl.py"))
     assert dl < sim
     step = steps[dl]
-    assert step["run"].strip() == DOWNLOAD_RUN
+    assert step["run"].splitlines()[0].strip() == DOWNLOAD_RUN
+    # verify the downloaded set against the Release's MANIFEST.sha256; any
+    # failure removes the models dir (-> the sim's "no artifacts" ML path)
+    assert "sha256sum -c" in step["run"] and "MANIFEST.sha256" in step["run"]
+    assert "rm -rf data/props_ml/models" in step["run"]
+    assert VERIFY_WARNING in step["run"]
+    assert "continue-on-error" not in step
     assert step["env"] == {"GH_TOKEN": "${{ github.token }}"}
     assert "env.SIM_ML_MODE != 'off'" in step["if"]
     if extra_if:
@@ -423,3 +452,222 @@ def test_desk_auto_nfl_untouched():
     assert "SIM_ML_MODE" not in text and "props-ml" not in text
     job = load("desk-auto-nfl.yml")["jobs"]["desk"]
     assert job["timeout-minutes"] == "20"
+
+
+# ---- executed shell: sim-side Release verification ---------------------------------------
+
+def _download_step_run(name: str, job: str) -> str:
+    steps = steps_of(load(name)["jobs"][job])
+    return steps[step_index(steps, runs("gh release download props-ml-latest"))]["run"]
+
+
+def test_sim_download_steps_are_identical():
+    assert _download_step_run("generate-sim-nfl.yml", "generate") == \
+        _download_step_run("injury-watch.yml", "nfl")
+
+
+def _gh_noop(tmp_path: Path, rc: int = 0) -> Path:
+    bindir = tmp_path / "bin"
+    bindir.mkdir(exist_ok=True)
+    gh = bindir / "gh"
+    gh.write_text(f"#!/bin/bash\nexit {rc}\n")
+    gh.chmod(0o755)
+    return bindir
+
+
+def _models(tmp_path: Path, files: dict[str, str], manifest: bool = True) -> Path:
+    d = tmp_path / "ws" / "data" / "props_ml" / "models"
+    d.mkdir(parents=True)
+    for n, body in files.items():
+        (d / n).write_text(body)
+    if manifest:
+        out = subprocess.run(["sha256sum", *sorted(files)], cwd=d, check=True,
+                             capture_output=True, text=True).stdout
+        (d / "MANIFEST.sha256").write_text(out)
+    return d
+
+
+def _run_verify(tmp_path: Path, gh_rc: int = 0) -> subprocess.CompletedProcess:
+    script = _download_step_run("generate-sim-nfl.yml", "generate")
+    env = {"PATH": f"{_gh_noop(tmp_path, gh_rc)}:{os.environ['PATH']}"}
+    ws = tmp_path / "ws"
+    ws.mkdir(exist_ok=True)
+    return subprocess.run(["bash", "-e", "-o", "pipefail", "-c", script], cwd=ws, env=env,
+                          capture_output=True, text=True)
+
+
+MODEL_FILES = {"learned.joblib": "A", "b_receptions.joblib": "B", "calibration.json": "{}",
+               "props_ml_config.json": '{"x": 1}'}
+
+
+@needs_sha256sum
+def test_verify_good_manifest_keeps_models(tmp_path):
+    d = _models(tmp_path, MODEL_FILES)
+    r = _run_verify(tmp_path)
+    assert r.returncode == 0, r.stderr
+    assert VERIFY_WARNING not in r.stdout
+    assert sorted(p.name for p in d.iterdir()) == sorted([*MODEL_FILES, "MANIFEST.sha256"])
+
+
+@needs_sha256sum
+@pytest.mark.parametrize("case,reason", [
+    ("tampered", "checksum"), ("no_manifest", "MANIFEST.sha256 missing"),
+    ("extra", "not in MANIFEST.sha256"), ("missing_file", "checksum"),
+])
+def test_verify_failure_removes_models(tmp_path, case, reason):
+    d = _models(tmp_path, MODEL_FILES, manifest=case != "no_manifest")
+    if case == "tampered":
+        (d / "calibration.json").write_text('{"tampered": true}')
+    elif case == "extra":
+        (d / "b_stale.joblib").write_text("old")
+    elif case == "missing_file":
+        (d / "b_receptions.joblib").unlink()
+    r = _run_verify(tmp_path)
+    assert r.returncode == 0, r.stderr          # the step never fails the job
+    assert VERIFY_WARNING in r.stdout and reason in r.stdout
+    assert not d.exists()
+
+
+def test_verify_no_release_is_a_noop(tmp_path):
+    r = _run_verify(tmp_path, gh_rc=1)
+    assert r.returncode == 0, r.stderr
+    assert "no props-ml release" in r.stdout
+    assert not (tmp_path / "ws" / "data" / "props_ml" / "models").exists()
+
+
+# ---- executed shell: publish against a stateful fake gh -----------------------------------
+
+_FAKE_GH = r'''
+import shutil, sys
+from pathlib import Path
+state = Path(__import__("os").environ["GH_STATE"])
+log = state / "log"
+args = sys.argv[1:]
+with log.open("a") as fh:
+    fh.write(" ".join(Path(a).name if "/" in a else a for a in args) + "\n")
+VALUED = {"-D", "--target", "--title", "--notes", "--json", "--jq"}
+pos, flags, i = [], {}, 0
+while i < len(args):
+    if args[i] in VALUED:
+        flags[args[i]] = args[i + 1]; i += 2
+    else:
+        pos.append(args[i]); i += 1
+assert pos[0] == "release", args
+sub, tag, rest = pos[1], pos[2], pos[3:]
+rel = state / tag
+if sub == "view":
+    if not rel.is_dir():
+        sys.exit(1)
+    if "--json" in flags:
+        print("\n".join(sorted(p.name for p in rel.iterdir())))
+elif sub == "download":
+    if not rel.is_dir() or not any(rel.iterdir()):
+        sys.exit(1)
+    shutil.copytree(rel, flags["-D"])
+elif sub == "delete":
+    if not rel.is_dir():
+        sys.exit(1)
+    shutil.rmtree(rel)
+elif sub == "create":
+    rel.mkdir()
+    for f in rest:
+        if not f.startswith("-"):
+            shutil.copy(f, rel / Path(f).name)
+elif sub == "upload":
+    fail_on = __import__("os").environ.get("FAIL_ON", "")
+    for f in rest:
+        if f.startswith("-"):
+            continue
+        if Path(f).name == fail_on and "props-ml-prev" not in f:  # restores succeed
+            sys.exit(1)
+        shutil.copy(f, rel / Path(f).name)
+elif sub == "delete-asset":
+    (rel / rest[0]).unlink()
+else:
+    sys.exit(2)
+'''
+
+NEW_MODELS = {"learned.joblib": "A2", "b_receptions.joblib": "B2", "calibration.json": "{2}",
+              "props_ml_config.json": "{cfg2}", "quick_gate.json": "{pass}"}
+OLD_LATEST = {"learned.joblib": "A1", "b_stale.joblib": "S1", "calibration.json": "{1}",
+              "props_ml_config.json": "{cfg1}"}
+
+
+def _publish_env(tmp_path: Path, latest: dict | None, fail_on: str = "") -> tuple[dict, Path, Path]:
+    state = tmp_path / "gh_state"
+    state.mkdir()
+    if latest is not None:
+        rel = state / "props-ml-latest"
+        rel.mkdir()
+        for n, body in latest.items():
+            (rel / n).write_text(body)
+        man = subprocess.run(["sha256sum", *sorted(latest)], cwd=rel, check=True,
+                             capture_output=True, text=True).stdout
+        (rel / "MANIFEST.sha256").write_text(man)
+    bindir = tmp_path / "bin"
+    bindir.mkdir()
+    (bindir / "fake_gh.py").write_text(_FAKE_GH)
+    gh = bindir / "gh"   # bash wrapper: a shebang can't hold a path with spaces
+    gh.write_text(f'#!/bin/bash\nexec "{sys.executable}" "{bindir / "fake_gh.py"}" "$@"\n')
+    gh.chmod(0o755)
+    ws = tmp_path / "ws"
+    models = ws / "data" / "props_ml" / "models"
+    models.mkdir(parents=True)
+    for n, body in NEW_MODELS.items():
+        (models / n).write_text(body)
+    runner_temp = tmp_path / "runner_temp"
+    runner_temp.mkdir()
+    env = {"PATH": f"{bindir}:{os.environ['PATH']}", "GH_STATE": str(state), "FAIL_ON": fail_on,
+           "RUNNER_TEMP": str(runner_temp), "GITHUB_SHA": "abc123", "GITHUB_RUN_ID": "42"}
+    return env, ws, state
+
+
+def _run_publish(train_wf, env, ws) -> subprocess.CompletedProcess:
+    steps = steps_of(train_wf["jobs"]["train"])
+    script = steps[step_index(steps, runs("gh release upload props-ml-latest"))]["run"]
+    return subprocess.run(["bash", "-e", "-o", "pipefail", "-c", script], cwd=ws, env=env,
+                          capture_output=True, text=True)
+
+
+def _release(state: Path, tag: str) -> dict[str, str]:
+    return {p.name: p.read_text() for p in (state / tag).iterdir()}
+
+
+@needs_sha256sum
+def test_publish_rotates_prev_and_uploads_manifest_last(train_wf, tmp_path):
+    env, ws, state = _publish_env(tmp_path, OLD_LATEST)
+    old = _release(state, "props-ml-latest")
+    r = _run_publish(train_wf, env, ws)
+    assert r.returncode == 0, r.stdout + r.stderr
+    assert _release(state, "props-ml-prev") == old
+    latest = _release(state, "props-ml-latest")
+    assert set(latest) == {*NEW_MODELS, "MANIFEST.sha256"}      # b_stale.joblib removed
+    assert all(latest[n] == body for n, body in NEW_MODELS.items())
+    chk = subprocess.run(["sha256sum", "-c", "MANIFEST.sha256"], cwd=state / "props-ml-latest",
+                         capture_output=True, text=True)
+    assert chk.returncode == 0, chk.stdout
+    uploads = [ln for ln in (state / "log").read_text().splitlines()
+               if ln.startswith("release upload props-ml-latest")]
+    assert uploads[-1].split()[3:] == ["MANIFEST.sha256", "--clobber"]
+
+
+@needs_sha256sum
+def test_publish_creates_latest_when_missing(train_wf, tmp_path):
+    env, ws, state = _publish_env(tmp_path, None)
+    r = _run_publish(train_wf, env, ws)
+    assert r.returncode == 0, r.stdout + r.stderr
+    assert not (state / "props-ml-prev").exists()
+    assert set(_release(state, "props-ml-latest")) == {*NEW_MODELS, "MANIFEST.sha256"}
+    log = (state / "log").read_text()
+    assert re.search(r"release create props-ml-latest .*--latest=false", log)
+
+
+@needs_sha256sum
+@pytest.mark.parametrize("fail_on", ["calibration.json", "MANIFEST.sha256"])
+def test_publish_failure_restores_previous_latest(train_wf, tmp_path, fail_on):
+    env, ws, state = _publish_env(tmp_path, OLD_LATEST, fail_on=fail_on)
+    old = _release(state, "props-ml-latest")
+    r = _run_publish(train_wf, env, ws)
+    assert r.returncode != 0
+    assert "restoring" in r.stdout
+    assert _release(state, "props-ml-latest") == old
