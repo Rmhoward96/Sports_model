@@ -110,18 +110,67 @@ def test_anytime_td_actual_is_clipped_to_binary_support():
 def test_rows_with_missing_pmf_or_actual_are_skipped():
     v1 = [_sim(1, "a", "rec_yds", [0.5, 0.5]),
           {"game_pk": 2, "player_id": "a", "market": "rec_yds", "dist": None}]
-    ml = [_sim(1, "a", "rec_yds", [0.5, 0.5]), _sim(2, "a", "rec_yds", [0.5, 0.5])]
+    ml = [_sim(1, "a", "rec_yds", [0.4, 0.6]), _sim(2, "a", "rec_yds", [0.5, 0.5])]
     actuals = [_act(1, "a", "rec_yds", 1.0), _act(2, "a", "rec_yds", 1.0)]
     res = cps.score_shadow(v1, ml, actuals, [])
     assert res["markets"]["rec_yds"]["n"] == 1
     assert res["skipped"] == 1
 
 
-def test_identical_dists_are_no_difference():
+def test_identical_pairs_are_excluded_from_metrics_and_counted():
+    # Game 1: identical pmfs (fallback copy) -> excluded. Game 2: differs -> scored.
+    v1 = [_sim(1, "a", "rush_att", [0.5, 0.5]), _sim(2, "a", "rush_att", [0.5, 0.5])]
+    ml = [_sim(1, "a", "rush_att", [0.5, 0.5], as_json=True),
+          _sim(2, "a", "rush_att", [0.2, 0.8])]
+    actuals = [_act(1, "a", "rush_att", 0.0), _act(2, "a", "rush_att", 1.0)]
+    lines = [_line(1, "a", "rush_att", 0.5), _line(2, "a", "rush_att", 0.5)]
+    res = cps.score_shadow(v1, ml, actuals, lines)
+    m = res["markets"]["rush_att"]
+    assert m["n"] == 1
+    assert m["n_identical"] == 1
+    assert res["n_identical"] == 1
+    # Metrics are game 2 alone (game 1 would have pulled both RPS to 0.25).
+    assert m["rps_v1"] == pytest.approx(0.25)
+    assert m["rps_ml"] == pytest.approx(0.04)
+    assert m["n_line"] == 1
+    assert m["brier_ml"] == pytest.approx(0.04)
+
+
+def test_pmfs_of_different_length_are_not_identical():
+    v1 = [_sim(1, "a", "rush_att", [0.5, 0.5])]
+    ml = [_sim(1, "a", "rush_att", [0.5, 0.5, 0.0])]
+    m = cps.score_shadow(v1, ml, [_act(1, "a", "rush_att", 1.0)], [])["markets"]["rush_att"]
+    assert m["n"] == 1
+    assert m["n_identical"] == 0
+
+
+def test_all_identical_market_is_reported_and_does_not_block_the_verdict():
+    v1, ml, actuals, lines = [], [], [], []
+    for g in range(300):
+        v1.append(_sim(g, "a", "rush_att", [0.5, 0.5]))
+        ml.append(_sim(g, "a", "rush_att", [0.2, 0.8]))
+        actuals.append(_act(g, "a", "rush_att", 1.0))
+        lines.append(_line(g, "a", "rush_att", 0.5))
+    for g in range(3):  # baseline-sourced market: ML copies v1
+        v1.append(_sim(g, "q", "pass_tds", [0.5, 0.5]))
+        ml.append(_sim(g, "q", "pass_tds", [0.5, 0.5]))
+        actuals.append(_act(g, "q", "pass_tds", 1.0))
+    res = cps.score_shadow(v1, ml, actuals, lines)
+    p = res["markets"]["pass_tds"]
+    assert p["n"] == 0 and p["n_identical"] == 3
+    assert p["rps_v1"] is None and p["rps_ml"] is None
+    assert p["ece_v1"] is None and p["brier_v1"] is None
+    assert p["verdict"] == "all identical (n_identical=3)"
+    assert res["n_identical"] == 3
+    assert res["verdict"] == "ML better"
+
+
+def test_only_identical_pairs():
     v1 = [_sim(1, "a", "pass_tds", [0.5, 0.5])]
     ml = [_sim(1, "a", "pass_tds", [0.5, 0.5])]
-    m = cps.score_shadow(v1, ml, [_act(1, "a", "pass_tds", 0.0)], [])["markets"]["pass_tds"]
-    assert m["verdict"] == "no difference"
+    res = cps.score_shadow(v1, ml, [_act(1, "a", "pass_tds", 0.0)], [])
+    assert res["markets"]["pass_tds"]["n"] == 0
+    assert res["verdict"] == "no difference (all paired pmfs identical)"
 
 
 # ---------------------------------------------------------------- verdicts
@@ -132,10 +181,13 @@ def test_identical_dists_are_no_difference():
     (1.0, 1.1, 0.25, 0.30, "ML worse"),
     (1.0, 0.9, 0.25, 0.30, "mixed"),        # better RPS, worse Brier
     (1.0, 1.1, 0.25, 0.20, "mixed"),        # worse RPS, better Brier
-    (1.0, 1.1, 0.25, 0.25, "mixed"),        # worse RPS, Brier tie
+    (1.0, 1.1, 0.25, 0.25, "ML worse"),     # worse RPS, Brier tie (mirror of better)
+    (1.0, 1.0, 0.25, 0.20, "ML better"),    # RPS tie, Brier strictly better
+    (1.0, 1.0, 0.25, 0.30, "ML worse"),     # RPS tie, Brier strictly worse
     (1.0, 0.9, None, None, "ML better"),    # no lines -> RPS decides
     (1.0, 1.1, None, None, "ML worse"),
     (1.0, 1.0, 0.25, 0.25, "no difference"),
+    (1.0, 1.0, None, None, "no difference"),
 ])
 def test_market_verdict(rps_v1, rps_ml, b_v1, b_ml, expected):
     assert cps.market_verdict(rps_v1, rps_ml, b_v1, b_ml) == expected
@@ -155,6 +207,11 @@ def _mk(n, verdict):
     ({"rec_yds": _mk(300, "ML better"), "pass_yds": _mk(400, "ML worse")}, "mixed"),
     ({"rec_yds": _mk(300, "ML better"), "pass_yds": _mk(400, "mixed")}, "mixed"),
     ({"pass_tds": _mk(300, "no difference")}, "no difference"),
+    # An all-identical market (n = 0) is exempt from the n < 300 gate.
+    ({"rec_yds": _mk(300, "ML better"), "pass_tds": _mk(0, "all identical (n_identical=5)")},
+     "ML better"),
+    ({"pass_tds": _mk(0, "all identical (n_identical=5)")},
+     "no difference (all paired pmfs identical)"),
 ])
 def test_overall_verdict(markets, expected):
     assert cps.overall_verdict(markets) == expected
@@ -179,16 +236,21 @@ def test_render_report_has_verdict_table_and_per_market_n():
     ml = [_sim(1, "a", "rush_att", [0.2, 0.8]), _sim(1, "a", "pass_tds", [0.5, 0.5])]
     actuals = [_act(1, "a", "rush_att", 1.0), _act(1, "a", "pass_tds", 0.0)]
     res = cps.score_shadow(v1, ml, actuals, [_line(1, "a", "rush_att", 0.5)])
-    md = cps.render_report(res, since="2026-09-20T00:00:00+00:00", run_date="2026-09-27")
+    md = cps.render_report(res, since="2026-09-20T00:00:00+00:00", run_date="2026-09-27",
+                           null_commence=4)
     assert md.startswith("# Props-ML shadow comparison — 2026-09-27")
     assert "**Verdict: inconclusive (n < 300 per market).**" in md
-    assert "| rush_att | 1 | 0.2500 | 0.0400 |" in md
-    assert "| pass_tds | 1 |" in md
+    assert "Per-market n: rush_att 1, pass_tds 0." in md
+    assert "| rush_att | 1 | 0 | 0.2500 | 0.0400 | 0.1800 | 0.1800 | 1 | 0.2500 | 0.0400 | ML better |" in md
     assert "Since: 2026-09-20T00:00:00+00:00" in md
     # Markets are listed in the canonical order (rush_att before pass_tds).
     assert md.index("| rush_att |") < md.index("| pass_tds |")
-    # pass_tds carries no book line: Brier cells are a dash.
-    assert "| pass_tds | 1 | 0.2500 | 0.2500 | 0.1800 | 0.1800 | 0 | – | – | no difference |" in md
+    # pass_tds is all identical (no scored rows) and carries no book line: dashes.
+    assert ("| pass_tds | 0 | 1 | – | – | – | – | 0 | – | – | all identical (n_identical=1) |"
+            in md)
+    assert "Identical-pmf pairs excluded: 1 (pass_tds 1)." in md
+    assert "nfl_player_sim rows dropped for NULL commence_time: 4." in md
+    assert "Brier is over the n line keys" in md
 
 
 # ---------------------------------------------------------------- main (loader stubbed)
@@ -205,7 +267,8 @@ def test_main_writes_report(monkeypatch, tmp_path, capsys):
             "v1": [_sim(1, "a", "rush_att", [0.5, 0.5])],
             "ml": [_sim(1, "a", "rush_att", [0.2, 0.8])],
             "actuals": [_act(1, "a", "rush_att", 1.0)],
-            "lines": [_line(1, "a", "rush_att", 0.5)]}
+            "lines": [_line(1, "a", "rush_att", 0.5)],
+            "null_commence": 2}
     seen = {}
 
     def fake_load(since):
@@ -221,4 +284,6 @@ def test_main_writes_report(monkeypatch, tmp_path, capsys):
     printed = capsys.readouterr().out
     assert "| rush_att | 1 |" in printed
     assert "inconclusive (n < 300 per market)" in printed
-    assert "ML better" in out.read_text()
+    text = out.read_text()
+    assert "ML better" in text
+    assert "nfl_player_sim rows dropped for NULL commence_time: 2." in text

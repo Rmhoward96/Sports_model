@@ -6,28 +6,35 @@ After a week or more of SIM_ML_MODE=shadow, this report decides whether to
 switch the site to the ML version (see db/migration_nfl_sim_serving.sql).
 
 Population: (game_pk, player_id, market) keys present in BOTH versions with a
-realized stat in `nfl_player_actuals` (paired). Per market and version:
-  - n       paired keys
+realized stat in `nfl_player_actuals` (paired). Pairs whose ML and v1 pmfs are
+identical (same length and np.array_equal -- per-game ML fallbacks and markets
+the ML pipeline sources from the current sim) are EXCLUDED from n and every
+metric and reported separately as n_identical (per market and total); a market
+with only identical pairs shows "all identical (n_identical=K)". Per market and
+version, over the remaining (differing) pairs:
+  - n       paired keys with differing pmfs
   - RPS     ranked probability score of the pmf vs the actual (lower is better)
   - ECE     decile ECE of the randomized PIT (keyed U(0,1), identical across
             versions so the PITs are paired)
-  - Brier   of P(over line) vs the line outcome, on the paired keys that have a
-            graded book line in `nfl_prop_grades`; pushes are excluded.
-            P(over) = 1 - F(floor(line)) from the version's pmf.
+  - Brier   of P(over line) vs the line outcome, over the `n line` keys: the
+            n keys that have a graded book line in `nfl_prop_grades`, pushes
+            excluded. P(over) = 1 - F(floor(line)) from the version's pmf.
 
 `nfl_prop_grades` carries pass_yds / rush_yds / rec_yds / receptions /
 rush_att (serving.props_ev.LINE_MARKETS; its `market` column already uses the
 sim's names, rec_yds included). pass_tds and anytime_td have no graded lines,
 so they are compared on RPS/ECE only.
 
-Verdict per market: "ML better" if ML RPS < v1 RPS and ML Brier <= v1 Brier
-(when lines exist); "ML worse" if ML RPS > v1 RPS and ML Brier > v1 Brier (when
-lines exist); "no difference" if RPS (and Brier) are identical (a market the ML
-version serves from the current sim); else "mixed". Overall: "inconclusive
-(n < 300 per market)" when any compared market has n < 300; otherwise
-"ML better" / "ML worse" when every differing market agrees, else "mixed".
+Verdict per market (symmetric dominance; Brier only when n line > 0, ties
+within 1e-12): "ML better" if neither RPS nor Brier is worse and at least one
+is strictly better (RPS lower with Brier <= , or RPS tied with Brier strictly
+lower); "ML worse" is the mirror image; "no difference" if every metric ties;
+else "mixed". Overall: markets with n = 0 (all identical) are ignored;
+"inconclusive (n < 300 per market)" when any remaining market has n < 300;
+otherwise "ML better" / "ML worse" when every differing market agrees, else
+"mixed"; "no difference (all paired pmfs identical)" when nothing differs.
 
-Read-only. `--since` defaults to the first nfl-sim-ml-v1 row's created_at;
+Read-only (the DB session is set read_only). `--since` defaults to the first nfl-sim-ml-v1 row's created_at;
 with no ML rows it prints a message and exits 0 without writing a report.
 
 Usage:
@@ -93,25 +100,33 @@ def _cmp(a: float, b: float) -> int:
 
 def market_verdict(rps_v1: float, rps_ml: float,
                    brier_v1: float | None, brier_ml: float | None) -> str:
-    """Per-market verdict (ML relative to v1); Brier is ignored when None."""
-    r = _cmp(rps_ml, rps_v1)
-    b = None if brier_v1 is None or brier_ml is None else _cmp(brier_ml, brier_v1)
-    if r == 0 and b in (None, 0):
+    """Per-market verdict (ML relative to v1), symmetric dominance: "ML better"
+    iff no metric is worse and at least one is strictly better, "ML worse" the
+    mirror, "no difference" if all tie, else "mixed". Brier is ignored when
+    None (no graded lines)."""
+    signs = [_cmp(rps_ml, rps_v1)]
+    if brier_v1 is not None and brier_ml is not None:
+        signs.append(_cmp(brier_ml, brier_v1))
+    if all(x == 0 for x in signs):
         return "no difference"
-    if r < 0 and b in (None, -1, 0):
+    if all(x <= 0 for x in signs):
         return "ML better"
-    if r > 0 and b in (None, 1):
+    if all(x >= 0 for x in signs):
         return "ML worse"
     return "mixed"
 
 
 def overall_verdict(markets: dict) -> str:
-    """Overall verdict from per-market {n, verdict}."""
+    """Overall verdict from per-market {n, verdict}. Markets with n = 0 (only
+    identical pmf pairs) are ignored, including by the n < MIN_N gate."""
     if not markets:
         return "inconclusive (no paired rows)"
-    if any(m["n"] < MIN_N for m in markets.values()):
+    scored = {k: m for k, m in markets.items() if m["n"] > 0}
+    if not scored:
+        return "no difference (all paired pmfs identical)"
+    if any(m["n"] < MIN_N for m in scored.values()):
         return f"inconclusive (n < {MIN_N} per market)"
-    differing = {m["verdict"] for m in markets.values()} - {"no difference"}
+    differing = {m["verdict"] for m in scored.values()} - {"no difference"}
     if not differing:
         return "no difference"
     if differing == {"ML better"}:
@@ -128,15 +143,20 @@ def score_shadow(v1_rows: list[dict], ml_rows: list[dict],
     (dict or JSON str)}; actuals {game_pk, player_id, market, actual, season,
     week}; lines {game_pk, player_id, market, line}.
 
-    Returns {"markets": {market: {n, rps_v1, rps_ml, ece_v1, ece_ml, n_line,
-    brier_v1, brier_ml, verdict}}, "skipped": int, "verdict": str}; `skipped`
-    counts paired keys with an actual dropped for a missing/empty pmf."""
+    Pairs whose pmfs are identical (equal length and np.array_equal) are
+    excluded from n and every metric and counted in n_identical.
+
+    Returns {"markets": {market: {n, n_identical, rps_v1, rps_ml, ece_v1,
+    ece_ml, n_line, brier_v1, brier_ml, verdict}}, "n_identical": int,
+    "skipped": int, "verdict": str}; metrics are None for a market with n = 0.
+    `skipped` counts paired keys with an actual dropped for a missing/empty pmf."""
     v1 = {_key(r): r for r in v1_rows}
     ml = {_key(r): r for r in ml_rows}
     act = {_key(r): r for r in actuals if r.get("actual") is not None}
     line_by = {_key(r): float(r["line"]) for r in lines if r.get("line") is not None}
 
     per: dict[str, dict[str, list]] = {}
+    identical: dict[str, int] = {}
     skipped = 0
     for key in sorted(set(v1) & set(ml) & set(act)):
         pmf_v1, pmf_ml = _pmf(v1[key].get("dist")), _pmf(ml[key].get("dist"))
@@ -144,6 +164,10 @@ def score_shadow(v1_rows: list[dict], ml_rows: list[dict],
             skipped += 1
             continue
         _, player_id, market = key
+        arr_v1, arr_ml = np.asarray(pmf_v1, dtype=float), np.asarray(pmf_ml, dtype=float)
+        if arr_v1.shape == arr_ml.shape and np.array_equal(arr_v1, arr_ml):
+            identical[market] = identical.get(market, 0) + 1
+            continue
         a = act[key]
         y = float(a["actual"])
         u = pit_uniform(a.get("season"), a.get("week"), player_id, market)
@@ -160,19 +184,30 @@ def score_shadow(v1_rows: list[dict], ml_rows: list[dict],
             acc["br_ml"].append((p_over_pmf(pmf_ml, line) - hit) ** 2)
 
     markets: dict[str, dict] = {}
-    for market, acc in per.items():
+    for market in set(per) | set(identical):
+        n_ident = identical.get(market, 0)
+        acc = per.get(market)
+        if acc is None:  # only identical pairs: nothing to score
+            markets[market] = {
+                "n": 0, "n_identical": n_ident,
+                "rps_v1": None, "rps_ml": None, "ece_v1": None, "ece_ml": None,
+                "n_line": 0, "brier_v1": None, "brier_ml": None,
+                "verdict": f"all identical (n_identical={n_ident})",
+            }
+            continue
         rps_v1, rps_ml = float(np.mean(acc["rps_v1"])), float(np.mean(acc["rps_ml"]))
         n_line = len(acc["br_v1"])
         brier_v1 = float(np.mean(acc["br_v1"])) if n_line else None
         brier_ml = float(np.mean(acc["br_ml"])) if n_line else None
         markets[market] = {
-            "n": len(acc["rps_v1"]),
+            "n": len(acc["rps_v1"]), "n_identical": n_ident,
             "rps_v1": rps_v1, "rps_ml": rps_ml,
             "ece_v1": decile_ece(acc["pit_v1"]), "ece_ml": decile_ece(acc["pit_ml"]),
             "n_line": n_line, "brier_v1": brier_v1, "brier_ml": brier_ml,
             "verdict": market_verdict(rps_v1, rps_ml, brier_v1, brier_ml),
         }
-    return {"markets": markets, "skipped": skipped, "verdict": overall_verdict(markets)}
+    return {"markets": markets, "n_identical": sum(identical.values()),
+            "skipped": skipped, "verdict": overall_verdict(markets)}
 
 
 # ---------------------------------------------------------------- rendering
@@ -187,19 +222,25 @@ def _f(x: float | None) -> str:
 
 
 def format_table(result: dict) -> str:
-    rows = ["| market | n | RPS v1 | RPS ML | ECE v1 | ECE ML | n line | Brier v1 | Brier ML | verdict |",
-            "|---|---:|---:|---:|---:|---:|---:|---:|---:|---|"]
+    rows = ["| market | n | n identical | RPS v1 | RPS ML | ECE v1 | ECE ML | n line "
+            "| Brier v1 | Brier ML | verdict |",
+            "|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---|"]
     for market in _ordered(result["markets"]):
         m = result["markets"][market]
         rows.append(
-            f"| {market} | {m['n']} | {_f(m['rps_v1'])} | {_f(m['rps_ml'])} | "
+            f"| {market} | {m['n']} | {m['n_identical']} | {_f(m['rps_v1'])} | {_f(m['rps_ml'])} | "
             f"{_f(m['ece_v1'])} | {_f(m['ece_ml'])} | {m['n_line']} | "
             f"{_f(m['brier_v1'])} | {_f(m['brier_ml'])} | {m['verdict']} |")
     return "\n".join(rows)
 
 
-def render_report(result: dict, since: str, run_date: str) -> str:
-    n_by = ", ".join(f"{m} {result['markets'][m]['n']}" for m in _ordered(result["markets"]))
+def render_report(result: dict, since: str, run_date: str, null_commence: int = 0) -> str:
+    order = _ordered(result["markets"])
+    n_by = ", ".join(f"{m} {result['markets'][m]['n']}" for m in order)
+    ident_by = ", ".join(f"{m} {result['markets'][m]['n_identical']}" for m in order
+                         if result["markets"][m]["n_identical"])
+    ident_line = f"- Identical-pmf pairs excluded: {result['n_identical']}"
+    ident_line += f" ({ident_by})." if ident_by else "."
     lines = [
         f"# Props-ML shadow comparison — {run_date}",
         "",
@@ -212,14 +253,22 @@ def render_report(result: dict, since: str, run_date: str) -> str:
         f"- Versions: {V1_VERSION} (current sim) vs {ML_VERSION} (ML), from nfl_player_sim.",
         f"- Since: {since} (games with commence_time on or after this, already kicked off).",
         "- Population: (game_pk, player_id, market) keys present in both versions with a "
-        "realized stat in nfl_player_actuals (paired).",
+        "realized stat in nfl_player_actuals (paired). Pairs whose ML and v1 pmfs are "
+        "identical (per-game ML fallbacks, baseline-sourced markets) are excluded from n "
+        "and every metric and counted as n identical.",
+        ident_line,
         f"- Paired keys skipped for a missing/empty pmf: {result['skipped']}.",
+        f"- nfl_player_sim rows dropped for NULL commence_time: {null_commence}.",
         "- RPS: ranked probability score vs the actual (lower is better). ECE: decile ECE of "
         "the randomized PIT (paired uniforms).",
         "- Brier: P(over line) = 1 - F(floor(line)) vs the graded line outcome from "
-        "nfl_prop_grades; pushes excluded. pass_tds and anytime_td have no graded lines.",
-        f"- Market verdict: ML better = lower RPS and Brier no worse; ML worse = higher RPS and "
-        f"higher Brier; otherwise mixed. Overall is inconclusive while any market has n < {MIN_N}.",
+        "nfl_prop_grades. Brier is over the n line keys (the n keys with a graded line, "
+        "pushes excluded). pass_tds and anytime_td have no graded lines.",
+        "- Market verdict (symmetric; Brier only when n line > 0): ML better = no metric "
+        "worse and at least one strictly better; ML worse = the mirror; no difference = all "
+        "tie; otherwise mixed. A market with only identical pairs shows all identical.",
+        f"- Overall: inconclusive while any market with n > 0 has n < {MIN_N}; all-identical "
+        "markets are ignored.",
         "",
         "## Per market",
         "",
@@ -232,18 +281,32 @@ def render_report(result: dict, since: str, run_date: str) -> str:
 # ---------------------------------------------------------------- DB (read-only)
 
 def load_shadow_data(since: str | None) -> dict | None:
-    """The only DB access. Returns None when no nfl-sim-ml-v1 rows exist, else
-    {"since", "v1", "ml", "actuals", "lines"} for games with commence_time in
-    [since, now()]. `since` defaults to the first ML row's created_at."""
+    """The only DB access (read-only session). Returns None when no
+    nfl-sim-ml-v1 rows exist, else {"since", "v1", "ml", "actuals", "lines",
+    "null_commence"} for games with commence_time in [since, now()]. `since`
+    defaults to the first ML row's created_at. `null_commence` counts sim rows
+    (either version, created since `since`) the window drops for a NULL
+    commence_time."""
     from sportsmodel.db import get_postgres
 
-    with get_postgres() as pg, pg.cursor() as cur:
+    with get_postgres() as pg:
+        pg.read_only = True  # before any statement: the session cannot write
+        cur = pg.cursor()
         cur.execute("SELECT min(created_at) FROM nfl_player_sim WHERE model_version = %s",
                     (ML_VERSION,))
         first = cur.fetchone()[0]
         if first is None:
             return None
         since_val = since if since is not None else first
+        cur.execute(
+            """
+            SELECT count(*) FROM nfl_player_sim
+            WHERE model_version IN (%s, %s) AND commence_time IS NULL
+              AND created_at >= %s::timestamptz
+            """,
+            (V1_VERSION, ML_VERSION, since_val),
+        )
+        null_commence = int(cur.fetchone()[0])
         cur.execute(
             """
             SELECT game_pk, player_id, model_version, market, dist
@@ -285,6 +348,7 @@ def load_shadow_data(since: str | None) -> dict | None:
         "actuals": [dict(zip(("game_pk", "player_id", "market", "actual", "season", "week"), r))
                     for r in actuals],
         "lines": [dict(zip(("game_pk", "player_id", "market", "line"), r)) for r in lines],
+        "null_commence": null_commence,
     }
 
 
@@ -306,13 +370,16 @@ def main(argv: list[str] | None = None) -> int:
 
     result = score_shadow(data["v1"], data["ml"], data["actuals"], data["lines"])
     run_date = args.run_date or date.today().isoformat()
-    print(f"Props-ML shadow comparison since {data['since']}: {result['verdict']}")
+    print(f"Props-ML shadow comparison since {data['since']}: {result['verdict']} "
+          f"(identical-pmf pairs excluded: {result['n_identical']}; "
+          f"NULL commence_time rows dropped: {data.get('null_commence', 0)})")
     print(format_table(result))
 
     out_dir = Path(args.out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
     out = out_dir / f"{run_date}-props-ml-shadow.md"
-    out.write_text(render_report(result, since=data["since"], run_date=run_date))
+    out.write_text(render_report(result, since=data["since"], run_date=run_date,
+                                 null_commence=data.get("null_commence", 0)))
     print(f"wrote {out}")
     return 0
 
