@@ -61,17 +61,39 @@ builds the props-ML feature tables with the training builder
 artifacts in data/props_ml/models (with the tables, so a column mismatch is
 rejected at load), and per game: `ml_serving.build_ml_spec` -> simulate with
 the backtest's per-game seed -> `ml_player_dists` once -> writes nfl_sim +
-nfl_player_sim under `nfl-sim-ml-v1` (ML markets + the current sim's dists
-for every other market, so the ML version is a complete slate). A game the
-ML path can't serve (postseason, missing feature rows, share fallback, any
-per-game exception) gets the current sim's rows under `nfl-sim-ml-v1` and is
-listed on one `::warning::props-ml:` line. A GLOBAL ML failure (artifacts,
-market_max mismatch, feature build, DB write) prints `ML: FAILED <reason>`
-and a `::warning::props-ml:` Actions annotation; shadow then exits 0, live
-exits 1 (the current sim is already written either way). An unknown
-SIM_ML_MODE value is treated like a live failure. One `ml_mode=...
-ml_games=... ml_players=... ml_fallback_games=... ml_status=ok|failed` line
-is printed whenever the mode is not off.
+nfl_player_sim under `nfl-sim-ml-v1` in ONE transaction
+(`db.upsert_nfl_sim_slate`). The ML version is a complete slate: its GAME
+rows are the CURRENT sim's (props were gated, game predictions were not --
+the ML sims feed player dists only), its player rows are the ML dists for
+`source == "ml"` markets of the player-markets inside the gated population
+(`props_eval.gate_population` on the current sim's dist means) and the
+current sim's dists for everything else. A game the ML path can't serve
+(postseason, missing feature rows, share fallback, any per-game exception)
+gets the current sim's rows under `nfl-sim-ml-v1` and is listed on one
+`::warning::props-ml:` line; when EVERY REG game falls back (a
+postseason-only slate excepted) that is a GLOBAL failure. A GLOBAL ML
+failure (artifacts, market_max mismatch, feature build, DB write, every REG
+game falling back) prints `ML: FAILED <reason>` and a `::warning::props-ml:`
+Actions annotation; shadow then exits 0, live exits 1 (the current sim is
+already written either way). An unknown SIM_ML_MODE value is treated like a
+live failure. One `ml_mode=... ml_games=<ML-served games>
+ml_players=<their player rows> ml_fallback_games=... ml_status=ok|failed`
+line is printed whenever the mode is not off.
+
+The SERVED version decides what must be written (`nfl_sim_serving`, read
+once after the current sim is written -- `db.served_nfl_sim_version`):
+  * table missing (None): the *_current views are unfiltered, so anything
+    under `nfl-sim-ml-v1` would be served live -- shadow/live are a GLOBAL
+    failure ("nfl_sim_serving missing ...") that writes NOTHING under the ML
+    version; off is unchanged.
+  * `sim-nfl-v1`: shadow/live write the ML slate best-effort; a global
+    failure writes nothing under the ML version; off writes nothing ML.
+  * `nfl-sim-ml-v1`: an ML-version slate is written EVERY run in every mode
+    -- ML where it succeeds, else a full copy of the current sim's rows (a
+    global failure writes the copy, then applies the exit semantics); off
+    writes the copy and prints a rollback `::warning::`.
+  * the read itself fails: shadow/live are a global failure writing nothing;
+    off prints a `::warning::` and exits 1 (the served slate may be stale).
 
 Usage:
     PYTHONPATH=src uv run python scripts/generate_sim_nfl.py
@@ -94,7 +116,8 @@ import numpy as np
 import pandas as pd
 
 from sportsmodel import config
-from sportsmodel.db import get_postgres, upsert_nfl_player_sim, upsert_nfl_sim
+from sportsmodel.db import (get_postgres, served_nfl_sim_version, upsert_nfl_player_sim, upsert_nfl_sim,
+                            upsert_nfl_sim_slate)
 from sportsmodel.nfl.injuries_nflverse import nfl_season
 from sportsmodel.nfl.injury_report import current_report, resolve_target_week
 from sportsmodel.nfl.nflverse import load_release
@@ -348,6 +371,14 @@ def _schedule_week(sched: pd.DataFrame, season: int, home: str, away: str) -> in
     return int(hit["week"].iloc[0])
 
 
+def _is_postseason_game(sched: pd.DataFrame, season: int, home: str, away: str) -> bool:
+    """True when `season`'s schedule has `away` @ `home` as a non-REG
+    (postseason) game. PURE."""
+    g = sched[(sched["season"] == season) & (sched["game_type"] != "REG")]
+    hit = g[(g["home_team"].map(_norm_team) == home) & (g["away_team"].map(_norm_team) == away)]
+    return len(hit) > 0
+
+
 def _ml_mode() -> str:
     """SIM_ML_MODE, normalized; ValueError for anything but off/shadow/live."""
     mode = os.environ.get("SIM_ML_MODE", "off").strip().lower() or "off"
@@ -473,6 +504,17 @@ class _MlGameFallback(Exception):
     """A game the ML path cannot serve (it gets the current sim's rows)."""
 
 
+class _MlPostseason(_MlGameFallback):
+    """A postseason game (the props-ML feature tables cover REG weeks only).
+    A slate where only postseason games fall back is not a global failure."""
+
+
+SERVING_MISSING = "nfl_sim_serving missing — run db/migration_nfl_sim_serving.sql"
+OFF_SERVED_ML_WARNING = (
+    "::warning::props-ml: SIM_ML_MODE=off but the site serves nfl-sim-ml-v1 — served the current "
+    "sim under the ML version; UPDATE nfl_sim_serving back to sim-nfl-v1 to roll back")
+
+
 def _market_max_mismatches(config: dict) -> list[str]:
     """ML-sourced markets whose artifacts-config `market_max` differs from
     this script's MARKET_MAX (the binning of the current sim's dists, which
@@ -507,15 +549,18 @@ def _missing_feature_rows(spec, home: str, away: str, p_rows: pd.DataFrame,
 
 def _ml_game(game_pk, *, game_keys, specs_by_game, sims_by_game, feats, team, sched, artifacts,
              sources, upto_season, n_sims, ml_serving, game_seed):
-    """One game's (mapped ML sims, merged player dists). Raises
-    `_MlGameFallback` (or anything else) when the game can't be ML-served."""
+    """One game's merged player dists (the ML sims are used for player dists
+    only; the game row stays on the current sim). Raises `_MlGameFallback`
+    (or anything else) when the game can't be ML-served."""
     home_abbrev, away_abbrev, rtilt = game_keys[game_pk]
     # normalized codes, as the feature tables / schedule / backtest seeds use
     home, away = _norm_team(home_abbrev) or home_abbrev, _norm_team(away_abbrev) or away_abbrev
     try:
         week = _schedule_week(sched, upto_season, home, away)
     except ValueError as exc:
-        raise _MlGameFallback(f"not a REG game ({exc})") from exc
+        if _is_postseason_game(sched, upto_season, home, away):
+            raise _MlPostseason(f"not a REG game ({exc})") from exc
+        raise _MlGameFallback(f"no REG schedule row ({exc})") from exc
     spec = specs_by_game[game_pk]
     teams = (home, away)
     p_rows = feats[(feats["season"] == upto_season) & (feats["week"] == week) & feats["team"].isin(teams)]
@@ -535,34 +580,36 @@ def _ml_game(game_pk, *, game_keys, specs_by_game, sims_by_game, feats, team, sc
     if n_fallback:
         print(f"WARN props-ML: game_pk={game_pk}: {n_fallback} ML-sourced player-markets had no "
               f"ML dist; served from the current sim")
-    return sims_ml, merged
+    return merged
 
 
 def run_ml(*, ok_games: list[dict], game_keys: dict[Any, tuple[str, str, float]],
            specs_by_game: dict, sims_by_game: dict, analytic_by_game: dict,
            upto_season: int, n_sims: int, now: datetime) -> tuple[int, int, int]:
     """The props-ML slate for the games the current sim produced; writes it
-    under ML_MODEL_VERSION and returns (ml_games, ml_player_rows,
-    ml_fallback_games).
+    under ML_MODEL_VERSION in ONE transaction (`upsert_nfl_sim_slate`) and
+    returns (ml_games, ml_players, ml_fallback_games): the ML-SERVED games,
+    their player rows, and the games served from the current sim.
 
-    GLOBAL failures raise (`main` applies the SIM_ML_MODE failure
-    semantics): artifacts missing/incompatible, a config market_max that
-    differs from MARKET_MAX, the feature build, the DB writes. Every game is
+    GLOBAL failures raise (`main` applies the served-version + SIM_ML_MODE
+    failure semantics): artifacts missing/incompatible, a config market_max
+    that differs from MARKET_MAX, the feature build, EVERY REG game falling
+    back (a postseason-only slate excepted), the DB write. Every game is
     computed before anything is written, so a global failure writes no
     partial ML slate.
 
     PER-GAME failures fall back: a game that is not a REG game (postseason),
     lacks feature rows (team rows for both teams, a row per active player),
     trips a learned share fallback, or raises anywhere in its ML work gets
-    the CURRENT sim's nfl_sim + nfl_player_sim rows under ML_MODEL_VERSION
-    (the ML slate always covers every current-sim game), is counted, and all
-    such games are listed on one `::warning::props-ml:` line.
+    the CURRENT sim's nfl_player_sim rows under ML_MODEL_VERSION (the ML
+    slate always covers every current-sim game), is counted, and all such
+    games are listed on one `::warning::props-ml:` line.
 
     Per ML game: `ml_serving.build_ml_spec` on the current spec -> simulate
     with a per-game rng (`backtest_sim_nfl.game_seed`, as the backtest /
-    training runs) -> `ml_player_dists` exactly once (maps the ML sims in
-    place) -> nfl_sim row from the mapped ML sims + the complete player slate
-    from `merge_ml_dists` (ML markets + the current sim's dists for the rest).
+    training runs) -> `ml_player_dists` exactly once -> the complete player
+    slate from `merge_ml_dists`. Every game's nfl_sim row comes from the
+    CURRENT sim (`sims_by_game`): the gate covered props, not game outputs.
     `game_keys`: {game_pk -> (home_abbrev, away_abbrev, ratings_tilt)}.
     """
     from sportsmodel.model.props_ml.artifacts import CONFIG_FILE
@@ -580,33 +627,45 @@ def run_ml(*, ok_games: list[dict], game_keys: dict[Any, tuple[str, str, float]]
         raise RuntimeError("props-ML market_max mismatch with the sim's MARKET_MAX: " + "; ".join(mismatches))
     sources = {m: str(v["source"]) for m, v in artifacts.config["markets"].items()}
 
-    sims_out: dict = {}
     dists_by_game: dict = {}
     fallbacks: list[tuple[Any, str]] = []
+    n_postseason = 0
     for g in ok_games:
         game_pk = g["game_pk"]
         try:
-            sims_out[game_pk], dists_by_game[game_pk] = _ml_game(
+            dists_by_game[game_pk] = _ml_game(
                 game_pk, game_keys=game_keys, specs_by_game=specs_by_game, sims_by_game=sims_by_game,
                 feats=feats, team=team, sched=sched, artifacts=artifacts, sources=sources,
                 upto_season=upto_season, n_sims=n_sims, ml_serving=ml_serving, game_seed=bsn.game_seed)
         except Exception as exc:  # noqa: BLE001 -- per-game: serve this game from the current sim
             reason = str(exc) if isinstance(exc, _MlGameFallback) else f"{type(exc).__name__}: {exc}"
+            n_postseason += isinstance(exc, _MlPostseason)
             fallbacks.append((game_pk, " ".join(reason.split())))
-            sims_out[game_pk] = sims_by_game[game_pk]   # no dists override -> current sim's dists
-            dists_by_game.pop(game_pk, None)
+            dists_by_game.pop(game_pk, None)   # no dists override -> current sim's dists
+    listed = "; ".join(f"{pk}: {why}" for pk, why in fallbacks)
+    if not dists_by_game and len(ok_games) > n_postseason:
+        raise RuntimeError(f"every REG game fell back to the current sim "
+                           f"({len(fallbacks)} game(s)): {listed}")
     if fallbacks:
-        listed = "; ".join(f"{pk}: {why}" for pk, why in fallbacks)
         print(f"::warning::props-ml: {len(fallbacks)} game(s) served from the current sim: {listed}",
               flush=True)
 
-    sim_rows, player_rows = assemble_sim_rows(ok_games, sims_out, specs_by_game, analytic_by_game,
+    sim_rows, player_rows = assemble_sim_rows(ok_games, sims_by_game, specs_by_game, analytic_by_game,
                                               model_version=ML_MODEL_VERSION, dists_by_game=dists_by_game)
-    if sim_rows:
-        upsert_nfl_sim(sim_rows)
-    if player_rows:
-        upsert_nfl_player_sim(player_rows)
-    return len(sim_rows), len(player_rows), len(fallbacks)
+    upsert_nfl_sim_slate(sim_rows, player_rows)
+    ml_players = sum(1 for r in player_rows if r["game_pk"] in dists_by_game)
+    return len(dists_by_game), ml_players, len(fallbacks)
+
+
+def _write_copy_slate(ok_games: list[dict], sims_by_game: dict, specs_by_game: dict,
+                      analytic_by_game: dict) -> tuple[int, int]:
+    """The current sim's rows re-labelled ML_MODEL_VERSION, in one
+    transaction: (game rows, player rows). For when the site serves the ML
+    version but the ML path produced nothing (off mode / global failure)."""
+    sim_rows, player_rows = assemble_sim_rows(ok_games, sims_by_game, specs_by_game, analytic_by_game,
+                                              model_version=ML_MODEL_VERSION)
+    upsert_nfl_sim_slate(sim_rows, player_rows)
+    return len(sim_rows), len(player_rows)
 
 
 def _ml_failed(reason: str) -> None:
@@ -794,14 +853,37 @@ def main() -> None:
     )
 
     # --- props-ML (SIM_ML_MODE). The current sim above is already written. ---
+    # The SERVED version decides what must be written (module docstring).
+    try:
+        served, served_error = served_nfl_sim_version(), None
+    except Exception as exc:  # noqa: BLE001 -- unknown served version: see below per mode
+        served, served_error = None, f"could not read nfl_sim_serving ({type(exc).__name__}: {exc})"
+    must_write = served_error is None and served == ML_MODEL_VERSION
+    slate = dict(ok_games=ok_games, sims_by_game=sims_by_game, specs_by_game=specs_by_game,
+                 analytic_by_game=analytic_by_game)
+
     if ml_mode == "off":
+        if served_error is not None:
+            print(f"::warning::props-ml: {' '.join(served_error.split())}; if the site serves "
+                  f"{ML_MODEL_VERSION} its slate was not refreshed", flush=True)
+            sys.exit(1)
+        if must_write:
+            n_g, n_p = _write_copy_slate(**slate)
+            print(f"props-ML: SIM_ML_MODE=off, served={served}: wrote the current sim under "
+                  f"{ML_MODEL_VERSION} (games={n_g} players={n_p})", flush=True)
+            print(OFF_SERVED_ML_WARNING, flush=True)
         return
-    ml_games = ml_players = ml_fallback_games = 0
+
+    counts = (0, 0, 0)
     if ml_mode_error is not None:
         reason = ml_mode_error
+    elif served_error is not None:
+        reason = served_error
+    elif served is None:
+        reason = SERVING_MISSING
     else:
         try:
-            ml_games, ml_players, ml_fallback_games = run_ml(
+            counts = run_ml(
                 ok_games=ok_games, game_keys=game_keys, specs_by_game=specs_by_game,
                 sims_by_game=sims_by_game, analytic_by_game=analytic_by_game,
                 upto_season=upto_season, n_sims=n_sims, now=now)
@@ -809,10 +891,20 @@ def main() -> None:
         except Exception as exc:  # noqa: BLE001 -- any ML failure -> SIM_ML_MODE failure semantics
             reason = f"{type(exc).__name__}: {exc}"
     if reason is None:
-        _ml_summary(ml_mode, ml_games, ml_players, ml_fallback_games, "ok")
+        _ml_summary(ml_mode, *counts, "ok")
         return
     _ml_failed(reason)
-    _ml_summary(ml_mode, 0, 0, 0, "failed")
+    if must_write:   # the site serves the ML version: it must get this run's (current-sim) slate
+        try:
+            n_g, n_p = _write_copy_slate(**slate)
+            counts = (0, n_p, n_g)
+            print(f"props-ML: served={served}: wrote the current sim under {ML_MODEL_VERSION} "
+                  f"(games={n_g} players={n_p})", flush=True)
+        except Exception as exc:  # noqa: BLE001 -- report it; the exit semantics still apply
+            flat = " ".join(f"{type(exc).__name__}: {exc}".split())
+            print(f"::warning::props-ml: copy slate write failed too ({flat}); the served "
+                  f"{ML_MODEL_VERSION} slate was not refreshed", flush=True)
+    _ml_summary(ml_mode, *counts, "failed")
     if ml_mode != "shadow":   # live (or an invalid mode): red run
         sys.exit(1)
 

@@ -640,6 +640,14 @@ def upsert_nfl_sim(records: list[dict]) -> int:
     """
     if not records:
         return 0
+    with get_postgres() as conn, conn.cursor() as cur:
+        n = _write_nfl_sim(cur, records)
+        conn.commit()
+    return n
+
+
+def _write_nfl_sim(cur, records: list[dict]) -> int:
+    """`upsert_nfl_sim`'s statement on an open cursor (no commit)."""
     key = ("game_pk", "model_version")
     updates = ", ".join(f"{c} = EXCLUDED.{c}" for c in _NFL_SIM_COLS if c not in key)
     placeholders = ", ".join(["%s"] * len(_NFL_SIM_COLS))
@@ -656,9 +664,7 @@ def upsert_nfl_sim(records: list[dict]) -> int:
         )
         for r in records
     ]
-    with get_postgres() as conn, conn.cursor() as cur:
-        cur.executemany(sql, rows)
-        conn.commit()
+    cur.executemany(sql, rows)
     return len(rows)
 
 
@@ -689,6 +695,15 @@ def upsert_nfl_player_sim(records: list[dict]) -> int:
     nfl_player_sim (db/migration_nfl_sim.sql)."""
     if not records:
         return 0
+    with get_postgres() as conn, conn.cursor() as cur:
+        n = _write_nfl_player_sim(cur, records)
+        conn.commit()
+    return n
+
+
+def _write_nfl_player_sim(cur, records: list[dict]) -> int:
+    """`upsert_nfl_player_sim`'s DELETE-per-(game, version) + INSERT on an
+    open cursor (no commit)."""
     game_versions = {
         (r.get("game_pk"), r.get("model_version", _NFL_SIM_DEFAULT_MODEL_VERSION))
         for r in records
@@ -706,15 +721,46 @@ def upsert_nfl_player_sim(records: list[dict]) -> int:
         )
         for r in records
     ]
-    with get_postgres() as conn, conn.cursor() as cur:
-        for game_pk, model_version in game_versions:
-            cur.execute(
-                "DELETE FROM nfl_player_sim WHERE game_pk = %s AND model_version = %s",
-                (game_pk, model_version),
-            )
-        cur.executemany(insert_sql, rows)
-        conn.commit()
+    for game_pk, model_version in game_versions:
+        cur.execute(
+            "DELETE FROM nfl_player_sim WHERE game_pk = %s AND model_version = %s",
+            (game_pk, model_version),
+        )
+    cur.executemany(insert_sql, rows)
     return len(rows)
+
+
+def upsert_nfl_sim_slate(sim_records: list[dict], player_records: list[dict]) -> tuple[int, int]:
+    """`upsert_nfl_sim(sim_records)` + `upsert_nfl_player_sim(player_records)`
+    -- the same per-(game_pk, model_version) semantics (game rows upserted,
+    each game's player rows replaced) -- on ONE connection in ONE
+    transaction, so a failure leaves neither half written. Used for the
+    props-ML (`nfl-sim-ml-v1`) slate. Returns (game rows, player rows); both
+    empty touches no DB."""
+    if not sim_records and not player_records:
+        return 0, 0
+    with get_postgres() as conn, conn.cursor() as cur:
+        n_sim = _write_nfl_sim(cur, sim_records) if sim_records else 0
+        n_player = _write_nfl_player_sim(cur, player_records) if player_records else 0
+        conn.commit()
+    return n_sim, n_player
+
+
+def served_nfl_sim_version() -> str | None:
+    """The model_version the site serves: `SELECT model_version FROM
+    nfl_sim_serving WHERE id = 1`. None when the table does not exist
+    (db/migration_nfl_sim_serving.sql not run -- the *_current views are then
+    UNFILTERED) or has no row; only the undefined-table error is caught,
+    anything else (connection loss, ...) propagates."""
+    import psycopg  # the driver is already required by get_postgres
+
+    with get_postgres() as conn, conn.cursor() as cur:
+        try:
+            cur.execute("SELECT model_version FROM nfl_sim_serving WHERE id = 1")
+        except psycopg.errors.UndefinedTable:
+            return None
+        row = cur.fetchone()
+    return None if row is None or row[0] is None else str(row[0])
 
 
 _NFL_PLAYER_ACTUALS_COLS = [

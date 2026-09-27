@@ -303,14 +303,24 @@ class _Rec:
         self.ml_sim_rngs: list[dict] = []
         self.ml_dists_calls = 0
         self.load_artifacts_args: list[tuple] = []
+        self.slates: list[tuple[list[dict], list[dict]]] = []   # upsert_nfl_sim_slate calls
 
 
 _ML_SPEC_TAG = "ML"
 
 
-def _install_io(monkeypatch, tmp_path, mode):
-    """Fake every IO dependency of gsn.main(); returns the call recorder."""
+def _install_io(monkeypatch, tmp_path, mode, served="sim-nfl-v1"):
+    """Fake every IO dependency of gsn.main(); returns the call recorder.
+    `served`: what nfl_sim_serving says (None = table missing; an Exception
+    instance = the read raises)."""
     rec = _Rec()
+
+    def fake_served():
+        if isinstance(served, Exception):
+            raise served
+        return served
+
+    monkeypatch.setattr(gsn, "served_nfl_sim_version", fake_served)
     if mode is None:
         monkeypatch.delenv("SIM_ML_MODE", raising=False)
     else:
@@ -366,6 +376,12 @@ def _install_io(monkeypatch, tmp_path, mode):
     monkeypatch.setattr(gsn, "upsert_nfl_sim", lambda rows: rec.upserts.append(("sim", list(rows))))
     monkeypatch.setattr(gsn, "upsert_nfl_player_sim",
                         lambda rows: rec.upserts.append(("player", list(rows))))
+
+    def fake_slate(sim_rows, player_rows):
+        rec.slates.append((list(sim_rows), list(player_rows)))
+        return len(sim_rows), len(player_rows)
+
+    monkeypatch.setattr(gsn, "upsert_nfl_sim_slate", fake_slate)
     return rec
 
 
@@ -424,7 +440,11 @@ def _install_ml(monkeypatch, rec, tmp_path, *, artifacts="ok", dists_raise=None,
 
 
 def _written(rec, kind, version):
-    return [r for k, rows in rec.upserts if k == kind for r in rows if r["model_version"] == version]
+    """Rows of `kind` ("sim" | "player") written under `version`, via the two
+    upserts or the one-transaction slate write."""
+    slate_rows = [r for sim, player in rec.slates for r in (sim if kind == "sim" else player)]
+    return [r for rows in [rows for k, rows in rec.upserts if k == kind] + [slate_rows]
+            for r in rows if r["model_version"] == version]
 
 
 def _ml_summary_lines(out):
@@ -462,13 +482,16 @@ def test_main_shadow_writes_both_versions(monkeypatch, tmp_path, capsys):
     feats, team = _install_ml(monkeypatch, rec, tmp_path)
     gsn.main()
     out = capsys.readouterr().out
-    # current sim first, then the ML version
-    assert [k for k, _ in rec.upserts] == ["sim", "player", "sim", "player"]
+    # current sim first (two upserts), then the ML version in ONE slate write
+    assert [k for k, _ in rec.upserts] == ["sim", "player"]
+    assert len(rec.slates) == 1
     assert {r["game_pk"] for r in _written(rec, "sim", "sim-nfl-v1")} == {11, 12}
     ml_games = _written(rec, "sim", "nfl-sim-ml-v1")
     assert {r["game_pk"] for r in ml_games} == {11, 12}
-    # ML game rows come from the (mapped) ML sims: home 30..33 vs 10
-    assert all(r["sim_margin"] == pytest.approx(21.5) for r in ml_games)
+    # I3: game-level outputs stay on the CURRENT sim (the ML sims -- home
+    # 30..33 vs 10 -- only feed player dists): identical to sim-nfl-v1's rows
+    assert all(r["sim_margin"] == pytest.approx(0.0) for r in ml_games)
+    _assert_game_rows_equal_current(rec)
     ml_players = _written(rec, "player", "nfl-sim-ml-v1")
     assert len(ml_players) == 4 * 5   # 2 games x 2 players x 5 markets: a complete slate
     # feature tables always go to load_artifacts; ml_player_dists once per game
@@ -530,6 +553,16 @@ def test_main_shadow_missing_artifacts_exits_0(monkeypatch, tmp_path, capsys):
     assert _ml_summary_lines(out) == ["ml_mode=shadow ml_games=0 ml_players=0 ml_fallback_games=0 ml_status=failed"]
 
 
+def _assert_game_rows_equal_current(rec):
+    """Every ML-version nfl_sim row equals the current sim's row (I3)."""
+    def strip(rows):
+        return sorted(tuple((k, repr(v)) for k, v in sorted(r.items()) if k != "model_version")
+                      for r in rows)
+    ml = _written(rec, "sim", "nfl-sim-ml-v1")
+    cur = [r for r in _written(rec, "sim", "sim-nfl-v1") if r["game_pk"] in {m["game_pk"] for m in ml}]
+    assert ml and strip(ml) == strip(cur)
+
+
 def _assert_game_copied_from_current(rec, game_pk):
     """The ML version of `game_pk` is the current sim's rows, re-labelled."""
     def strip(rows):
@@ -550,7 +583,7 @@ def test_main_per_game_exception_falls_back_and_run_stays_ok(monkeypatch, tmp_pa
     _install_ml(monkeypatch, rec, tmp_path, dists_raise={"BUF": RuntimeError("boom\nsecond line")})
     gsn.main()   # live, but a per-game failure is not a global failure: no SystemExit
     out = capsys.readouterr().out
-    assert [k for k, _ in rec.upserts] == ["sim", "player", "sim", "player"]
+    assert [k for k, _ in rec.upserts] == ["sim", "player"] and len(rec.slates) == 1
     assert {r["game_pk"] for r in _written(rec, "sim", "nfl-sim-ml-v1")} == {11, 12}
     _assert_game_copied_from_current(rec, 12)
     ml11 = [r for r in _written(rec, "player", "nfl-sim-ml-v1") if r["game_pk"] == 11]
@@ -559,7 +592,8 @@ def test_main_per_game_exception_falls_back_and_run_stays_ok(monkeypatch, tmp_pa
     (warn,) = _fallback_warnings(out)
     assert warn.startswith("::warning::props-ml: 1 game(s) served from the current sim: 12: ")
     assert "boom second line" in warn
-    assert _ml_summary_lines(out) == ["ml_mode=live ml_games=2 ml_players=20 ml_fallback_games=1 ml_status=ok"]
+    # ml_games counts ML-SERVED games only (ml_players = their player rows)
+    assert _ml_summary_lines(out) == ["ml_mode=live ml_games=1 ml_players=10 ml_fallback_games=1 ml_status=ok"]
 
 
 def test_main_postseason_game_falls_back_while_reg_game_gets_ml(monkeypatch, tmp_path, capsys):
@@ -573,28 +607,70 @@ def test_main_postseason_game_falls_back_while_reg_game_gets_ml(monkeypatch, tmp
     _assert_game_copied_from_current(rec, 12)
     ml_sims = {r["game_pk"]: r for r in _written(rec, "sim", "nfl-sim-ml-v1")}
     assert set(ml_sims) == {11, 12}                       # the ML slate covers every game
-    assert ml_sims[11]["sim_margin"] == pytest.approx(21.5)   # ML sims
+    assert ml_sims[11]["sim_margin"] == pytest.approx(0.0)    # I3: current sim's game row
     (warn,) = _fallback_warnings(out)
     assert "12: " in warn and "REG" in warn
-    assert _ml_summary_lines(out)[0].endswith("ml_fallback_games=1 ml_status=ok")
+    assert _ml_summary_lines(out) == [
+        "ml_mode=shadow ml_games=1 ml_players=10 ml_fallback_games=1 ml_status=ok"]
 
 
-def test_main_missing_feature_rows_fall_back(monkeypatch, tmp_path, capsys):
-    rec = _install_io(monkeypatch, tmp_path, "shadow")
+def _missing_rows_tables():
     feats = pd.DataFrame({"player_id": ["KC_p", "BAL_p", "BUF_p"], "season": 2026, "week": 3,
                           "team": ["KC", "BAL", "BUF"]})            # MIA_p has no row
     team = pd.DataFrame({"team": ["KC", "BUF", "MIA"], "season": 2026, "week": 3})  # BAL has none
+    return feats, team
+
+
+def test_main_missing_feature_rows_every_reg_game_falls_back_is_global_failure(
+        monkeypatch, tmp_path, capsys):
+    # I6: every REG game fell back -> a GLOBAL ML failure; served sim-nfl-v1
+    # -> nothing is written under the ML version; shadow exits 0.
+    rec = _install_io(monkeypatch, tmp_path, "shadow")
+    feats, team = _missing_rows_tables()
     _install_ml(monkeypatch, rec, tmp_path, feats=feats, team=team)
     gsn.main()
     out = capsys.readouterr().out
     assert rec.ml_dists_calls == 0
+    assert rec.slates == [] and _written(rec, "sim", "nfl-sim-ml-v1") == []
+    (failed,) = [ln for ln in out.splitlines() if ln.startswith("ML: FAILED")]
+    assert "every REG game fell back" in failed
+    assert "11: missing feature rows (team rows: BAL)" in failed
+    assert "12: missing feature rows (players: MIA_p)" in failed
+    assert _fallback_warnings(out) == []
+    assert _ml_summary_lines(out) == [
+        "ml_mode=shadow ml_games=0 ml_players=0 ml_fallback_games=0 ml_status=failed"]
+
+
+def test_main_every_reg_game_falls_back_served_ml_writes_copy_and_live_exits_1(
+        monkeypatch, tmp_path, capsys):
+    rec = _install_io(monkeypatch, tmp_path, "live", served="nfl-sim-ml-v1")
+    feats, team = _missing_rows_tables()
+    _install_ml(monkeypatch, rec, tmp_path, feats=feats, team=team)
+    with pytest.raises(SystemExit) as exc:
+        gsn.main()
+    assert exc.value.code == 1
+    out = capsys.readouterr().out
+    assert len(rec.slates) == 1
     _assert_game_copied_from_current(rec, 11)
     _assert_game_copied_from_current(rec, 12)
-    (warn,) = _fallback_warnings(out)
-    assert "2 game(s)" in warn
-    assert "11: missing feature rows (team rows: BAL)" in warn
-    assert "12: missing feature rows (players: MIA_p)" in warn
-    assert _ml_summary_lines(out)[0].endswith("ml_fallback_games=2 ml_status=ok")
+    assert "ML: FAILED" in out and "every REG game fell back" in out
+    assert _ml_summary_lines(out) == [
+        "ml_mode=live ml_games=0 ml_players=20 ml_fallback_games=2 ml_status=failed"]
+
+
+def test_main_postseason_only_slate_is_not_a_global_failure(monkeypatch, tmp_path, capsys):
+    rec = _install_io(monkeypatch, tmp_path, "live")
+    sched = pd.DataFrame({"season": [2026, 2026], "week": [19, 19], "game_type": ["WC", "WC"],
+                          "home_team": ["KC", "BUF"], "away_team": ["BAL", "MIA"]})
+    _install_ml(monkeypatch, rec, tmp_path, sched=sched)
+    gsn.main()   # no SystemExit
+    out = capsys.readouterr().out
+    assert rec.ml_dists_calls == 0
+    _assert_game_copied_from_current(rec, 11)
+    _assert_game_copied_from_current(rec, 12)
+    assert "ML: FAILED" not in out
+    assert _ml_summary_lines(out) == [
+        "ml_mode=live ml_games=0 ml_players=0 ml_fallback_games=2 ml_status=ok"]
 
 
 def test_main_share_fallback_routes_game_to_current_sim(monkeypatch, tmp_path, capsys):
@@ -612,12 +688,10 @@ def test_main_shadow_global_db_failure_keeps_current_and_exits_0(monkeypatch, tm
     rec = _install_io(monkeypatch, tmp_path, "shadow")
     _install_ml(monkeypatch, rec, tmp_path)
 
-    def upsert(rows):
-        if rows and rows[0]["model_version"] == "nfl-sim-ml-v1":
-            raise ConnectionError("db gone\nretry later")
-        rec.upserts.append(("sim", list(rows)))
+    def slate(sim_rows, player_rows):
+        raise ConnectionError("db gone\nretry later")
 
-    monkeypatch.setattr(gsn, "upsert_nfl_sim", upsert)
+    monkeypatch.setattr(gsn, "upsert_nfl_sim_slate", slate)
     gsn.main()
     out = capsys.readouterr().out
     assert [k for k, _ in rec.upserts] == ["sim", "player"]
@@ -744,3 +818,170 @@ def test_main_live_no_config_fails_before_feature_build(monkeypatch, tmp_path, c
     assert [k for k, _ in rec.upserts] == ["sim", "player"]
     assert "ML: FAILED RuntimeError: props-ML artifacts missing" in out
     assert rec.load_artifacts_args == []
+
+
+# =============================================================================
+# C1/C2: the SERVED version (nfl_sim_serving) decides what must be written.
+# =============================================================================
+
+_SERVING_MISSING = "nfl_sim_serving missing — run db/migration_nfl_sim_serving.sql"
+_OFF_SERVED_ML_WARNING = (
+    "::warning::props-ml: SIM_ML_MODE=off but the site serves nfl-sim-ml-v1 — served the current "
+    "sim under the ML version; UPDATE nfl_sim_serving back to sim-nfl-v1 to roll back")
+
+
+def _ml_path_must_not_run(monkeypatch):
+    def boom(*a, **k):
+        raise AssertionError("ML path ran")
+
+    monkeypatch.setattr(gsn, "_build_ml_tables", boom)
+    monkeypatch.setattr(gsn, "run_ml", boom)
+
+
+def test_main_served_missing_off_mode_unchanged(monkeypatch, tmp_path, capsys):
+    rec = _install_io(monkeypatch, tmp_path, "off", served=None)
+    _ml_path_must_not_run(monkeypatch)
+    gsn.main()
+    out = capsys.readouterr().out
+    assert [k for k, _ in rec.upserts] == ["sim", "player"] and rec.slates == []
+    assert "ML:" not in out and "::warning::" not in out and _ml_summary_lines(out) == []
+
+
+@pytest.mark.parametrize("mode,code", [("shadow", None), ("live", 1)])
+def test_main_served_missing_ml_modes_are_global_failures_and_write_nothing(
+        monkeypatch, tmp_path, capsys, mode, code):
+    rec = _install_io(monkeypatch, tmp_path, mode, served=None)
+    _ml_path_must_not_run(monkeypatch)
+    if code is None:
+        gsn.main()
+    else:
+        with pytest.raises(SystemExit) as exc:
+            gsn.main()
+        assert exc.value.code == code
+    out = capsys.readouterr().out
+    # nothing under nfl-sim-ml-v1: the unfiltered views would serve it live
+    assert rec.slates == [] and _written(rec, "player", "nfl-sim-ml-v1") == []
+    assert f"ML: FAILED {_SERVING_MISSING}" in out.splitlines()
+    assert f"::warning::props-ml: {_SERVING_MISSING}" in out.splitlines()
+    assert _ml_summary_lines(out) == [
+        f"ml_mode={mode} ml_games=0 ml_players=0 ml_fallback_games=0 ml_status=failed"]
+
+
+def test_main_served_v1_off_writes_only_current(monkeypatch, tmp_path, capsys):
+    rec = _install_io(monkeypatch, tmp_path, "off", served="sim-nfl-v1")
+    _ml_path_must_not_run(monkeypatch)
+    gsn.main()
+    out = capsys.readouterr().out
+    assert rec.slates == [] and "::warning::" not in out
+
+
+def test_main_served_ml_off_writes_copy_slate_with_warning(monkeypatch, tmp_path, capsys):
+    rec = _install_io(monkeypatch, tmp_path, "off", served="nfl-sim-ml-v1")
+    monkeypatch.setitem(sys.modules, "sportsmodel.sim.nfl.ml_serving", None)  # import raises
+    _ml_path_must_not_run(monkeypatch)
+    gsn.main()   # exit 0
+    out = capsys.readouterr().out
+    assert [k for k, _ in rec.upserts] == ["sim", "player"]
+    assert len(rec.slates) == 1                       # ONE transaction for the ML-version slate
+    _assert_game_copied_from_current(rec, 11)
+    _assert_game_copied_from_current(rec, 12)
+    assert _OFF_SERVED_ML_WARNING in out.splitlines()
+    assert "ML: FAILED" not in out
+
+
+@pytest.mark.parametrize("served", ["sim-nfl-v1", "nfl-sim-ml-v1"])
+def test_main_shadow_success_writes_ml_slate_for_either_served_version(
+        monkeypatch, tmp_path, capsys, served):
+    rec = _install_io(monkeypatch, tmp_path, "shadow", served=served)
+    _install_ml(monkeypatch, rec, tmp_path)
+    gsn.main()
+    out = capsys.readouterr().out
+    assert len(rec.slates) == 1
+    ml = {(r["game_pk"], r["player_id"], r["market"]): r for r in _written(rec, "player", "nfl-sim-ml-v1")}
+    assert ml[(11, "KC_p", "rec_yds")]["mean"] == pytest.approx(99.0)
+    assert _ml_summary_lines(out) == [
+        "ml_mode=shadow ml_games=2 ml_players=20 ml_fallback_games=0 ml_status=ok"]
+
+
+@pytest.mark.parametrize("mode,code", [("shadow", None), ("live", 1)])
+def test_main_served_ml_global_failure_writes_copy_slate(monkeypatch, tmp_path, capsys, mode, code):
+    rec = _install_io(monkeypatch, tmp_path, mode, served="nfl-sim-ml-v1")
+    _install_ml(monkeypatch, rec, tmp_path, artifacts=None)   # global failure
+    if code is None:
+        gsn.main()
+    else:
+        with pytest.raises(SystemExit) as exc:
+            gsn.main()
+        assert exc.value.code == code
+    out = capsys.readouterr().out
+    assert len(rec.slates) == 1
+    _assert_game_copied_from_current(rec, 11)
+    _assert_game_copied_from_current(rec, 12)
+    assert len([ln for ln in out.splitlines() if ln.startswith("ML: FAILED")]) == 1
+    assert any(ln.startswith("::warning::props-ml: ") for ln in out.splitlines())
+    assert _ml_summary_lines(out) == [
+        f"ml_mode={mode} ml_games=0 ml_players=20 ml_fallback_games=2 ml_status=failed"]
+
+
+@pytest.mark.parametrize("mode", ["shadow", "live"])
+def test_main_served_v1_global_failure_writes_nothing_under_ml(monkeypatch, tmp_path, capsys, mode):
+    rec = _install_io(monkeypatch, tmp_path, mode, served="sim-nfl-v1")
+    _install_ml(monkeypatch, rec, tmp_path, artifacts=None)
+    if mode == "live":
+        with pytest.raises(SystemExit):
+            gsn.main()
+    else:
+        gsn.main()
+    assert rec.slates == []
+
+
+def test_main_served_ml_ml_write_fails_then_copy_slate_written(monkeypatch, tmp_path, capsys):
+    rec = _install_io(monkeypatch, tmp_path, "shadow", served="nfl-sim-ml-v1")
+    _install_ml(monkeypatch, rec, tmp_path)
+    calls = []
+
+    def slate(sim_rows, player_rows):
+        calls.append(1)
+        if len(calls) == 1:
+            raise ConnectionError("ml write lost")
+        rec.slates.append((list(sim_rows), list(player_rows)))
+        return len(sim_rows), len(player_rows)
+
+    monkeypatch.setattr(gsn, "upsert_nfl_sim_slate", slate)
+    gsn.main()
+    out = capsys.readouterr().out
+    assert len(calls) == 2
+    _assert_game_copied_from_current(rec, 11)
+    _assert_game_copied_from_current(rec, 12)
+    assert "ml write lost" in out
+    assert _ml_summary_lines(out)[0].endswith("ml_status=failed")
+
+
+def test_main_served_ml_invalid_mode_writes_copy_then_exits_1(monkeypatch, tmp_path, capsys):
+    rec = _install_io(monkeypatch, tmp_path, "lvie", served="nfl-sim-ml-v1")
+    monkeypatch.setitem(sys.modules, "sportsmodel.sim.nfl.ml_serving", None)
+    with pytest.raises(SystemExit) as exc:
+        gsn.main()
+    assert exc.value.code == 1
+    assert len(rec.slates) == 1
+    _assert_game_copied_from_current(rec, 11)
+
+
+def test_main_served_read_error_shadow_fails_without_writing(monkeypatch, tmp_path, capsys):
+    rec = _install_io(monkeypatch, tmp_path, "shadow", served=ConnectionError("pg down"))
+    _ml_path_must_not_run(monkeypatch)
+    gsn.main()
+    out = capsys.readouterr().out
+    assert rec.slates == []
+    assert "ML: FAILED could not read nfl_sim_serving (ConnectionError: pg down)" in out
+
+
+def test_main_served_read_error_off_warns_and_exits_1(monkeypatch, tmp_path, capsys):
+    rec = _install_io(monkeypatch, tmp_path, "off", served=ConnectionError("pg down"))
+    _ml_path_must_not_run(monkeypatch)
+    with pytest.raises(SystemExit) as exc:
+        gsn.main()
+    assert exc.value.code == 1
+    out = capsys.readouterr().out
+    assert [k for k, _ in rec.upserts] == ["sim", "player"] and rec.slates == []
+    assert any(ln.startswith("::warning::props-ml: could not read nfl_sim_serving") for ln in out.splitlines())

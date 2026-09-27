@@ -32,8 +32,11 @@ name: train-props-ml
 #    (b_gate / pipeline / calibration json, report, OOF parquet) are uploaded
 #    for review; committing them is a manual decision.
 #
-# Rollback: `gh release download props-ml-prev` and re-upload to
-# props-ml-latest, or set the repo variable SIM_ML_MODE=off.
+# Rollback: UPDATE nfl_sim_serving SET model_version = 'sim-nfl-v1' first; then
+# (optionally) set SIM_ML_MODE=off. (With the site serving nfl-sim-ml-v1,
+# SIM_ML_MODE=off alone keeps serving the ML version -- filled with the
+# current sim's rows.) To roll back only the models: `gh release download
+# props-ml-prev` and re-upload to props-ml-latest.
 on:
   schedule:
     - cron: "0 14 * * 2"   # Tuesdays 14:00 UTC

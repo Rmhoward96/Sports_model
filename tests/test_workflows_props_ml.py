@@ -671,3 +671,10 @@ def test_publish_failure_restores_previous_latest(train_wf, tmp_path, fail_on):
     assert r.returncode != 0
     assert "restoring" in r.stdout
     assert _release(state, "props-ml-latest") == old
+
+
+def test_train_rollback_text_serving_table_first():
+    text = (WF / "train-props-ml.yml").read_text()
+    assert ("Rollback: UPDATE nfl_sim_serving SET model_version = 'sim-nfl-v1' first; then\n"
+            "# (optionally) set SIM_ML_MODE=off") in text
+    assert "or set the repo variable SIM_ML_MODE=off" not in text
