@@ -234,3 +234,40 @@ def test_population_new_market_gate_edges():
     assert (2024, 1, "a", "rush_att") in pop and (2024, 1, "b", "rush_att") not in pop
     assert (2024, 1, "w", "anytime_td") in pop and (2024, 2, "w", "anytime_td") not in pop
     assert (2024, 1, "q", "pass_tds") in pop and (2024, 1, "z", "pass_tds") not in pop
+
+
+# ---- I4: the ONE shared projected-usage gate ------------------------------------------------
+
+from sportsmodel.model.props_eval import gate_population  # noqa: E402
+
+
+def test_gate_population_generic_keys_same_rule_as_population_from_baseline():
+    items = [(("r", "rush_yds"), 60.0), (("r", "rush_att"), 14.0), (("r", "anytime_td"), 0.4),
+             (("x", "rush_att"), 4.99), (("x", "anytime_td"), 0.05), (("a", "rush_att"), 5.0),
+             (("w", "rec_yds"), 25.0), (("w", "anytime_td"), 0.2), (("q", "pass_tds"), 1.0),
+             (("z", "pass_tds"), 0.3), (("p", "pass_yds"), 149.9), (("p", "receptions"), 2.5),
+             (("n", "mystery"), 1e9), (("m", "rec_yds"), None)]
+    pop = gate_population(items)
+    assert pop == {("r", "rush_yds"), ("r", "rush_att"), ("r", "anytime_td"), ("a", "rush_att"),
+                   ("w", "rec_yds"), ("w", "anytime_td"), ("q", "pass_tds"), ("p", "receptions")}
+    recs = [{"season": 2024, "week": 1, "player_id": k[0], "market": k[1], "mean": v}
+            for k, v in items]
+    assert population_from_baseline(recs) == {(2024, 1, pid, m) for pid, m in pop}
+
+
+def test_gate_population_anytime_td_needs_a_parent_in_the_same_player_key():
+    items = [((1, "w", "rec_yds"), 40.0), ((1, "w", "anytime_td"), 0.2),
+             ((2, "w", "anytime_td"), 0.2)]
+    assert gate_population(items) == {(1, "w", "rec_yds"), (1, "w", "anytime_td")}
+
+
+def test_no_duplicated_gate_thresholds_outside_props_eval():
+    """Serving, the shadow report and the eval share props_eval.gate_population;
+    none of them re-implements the thresholds."""
+    import pathlib
+    root = pathlib.Path(__file__).resolve().parents[2]
+    for rel in ("scripts/generate_sim_nfl.py", "src/sportsmodel/sim/nfl/ml_serving.py",
+                "scripts/compare_props_shadow.py"):
+        text = (root / rel).read_text()
+        assert "gate_population" in text, rel
+        assert "is_propable_projected" not in text and "RUSH_ATT_MIN_MEAN" not in text, rel

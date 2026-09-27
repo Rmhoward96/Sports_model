@@ -13,8 +13,8 @@ cps = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(cps)
 
 
-def _sim(game_pk, pid, market, pmf, as_json=False):
-    dist = {"kind": "pmf", "pmf": list(pmf), "mean": 0.0}
+def _sim(game_pk, pid, market, pmf, as_json=False, mean=0.0):
+    dist = {"kind": "pmf", "pmf": list(pmf), "mean": mean}
     return {"game_pk": game_pk, "player_id": pid, "market": market,
             "dist": json.dumps(dist) if as_json else dist}
 
@@ -264,7 +264,7 @@ def test_main_exits_zero_without_ml_rows(monkeypatch, tmp_path, capsys):
 
 def test_main_writes_report(monkeypatch, tmp_path, capsys):
     data = {"since": "2026-09-20T00:00:00+00:00",
-            "v1": [_sim(1, "a", "rush_att", [0.5, 0.5])],
+            "v1": [_sim(1, "a", "rush_att", [0.5, 0.5], mean=12.0)],   # inside the gate
             "ml": [_sim(1, "a", "rush_att", [0.2, 0.8])],
             "actuals": [_act(1, "a", "rush_att", 1.0)],
             "lines": [_line(1, "a", "rush_att", 0.5)],
@@ -286,4 +286,60 @@ def test_main_writes_report(monkeypatch, tmp_path, capsys):
     assert "inconclusive (n < 300 per market)" in printed
     text = out.read_text()
     assert "ML better" in text
+    assert "## Ungated" in text and "Ungated (all paired keys" in printed
     assert "nfl_player_sim rows dropped for NULL commence_time: 2." in text
+
+
+
+# ---------------------------------------------------------------- I7: gated population
+
+def _gated_fixture(n=300):
+    """rush_att: player "s" projected 12 (gated) -- ML better; player "f"
+    projected 2 (ungated) -- ML much worse. anytime_td of "s" rides on his
+    rush_yds (gated parent); "f"'s has none."""
+    v1, ml, act = [], [], []
+    for g in range(n):
+        v1 += [_sim(g, "s", "rush_att", [0.5, 0.5], mean=12.0),
+               _sim(g, "s", "rush_yds", [0.5, 0.5], mean=60.0),
+               _sim(g, "s", "anytime_td", [0.6, 0.4], mean=0.4),
+               _sim(g, "f", "rush_att", [0.5, 0.5], mean=2.0),
+               _sim(g, "f", "anytime_td", [0.6, 0.4], mean=0.05)]
+        ml += [_sim(g, "s", "rush_att", [0.2, 0.8]), _sim(g, "s", "rush_yds", [0.2, 0.8]),
+               _sim(g, "s", "anytime_td", [0.3, 0.7]),
+               _sim(g, "f", "rush_att", [0.9, 0.1]), _sim(g, "f", "anytime_td", [0.9, 0.1])]
+        act += [_act(g, "s", "rush_att", 1.0), _act(g, "s", "rush_yds", 1.0),
+                _act(g, "s", "anytime_td", 1.0), _act(g, "f", "rush_att", 1.0),
+                _act(g, "f", "anytime_td", 1.0)]
+    return v1, ml, act
+
+
+def test_shadow_population_is_the_shared_gate_on_the_v1_means():
+    v1, _, _ = _gated_fixture(n=2)
+    pop = cps.shadow_population(v1)
+    assert pop == {(g, "s", m) for g in range(2) for m in ("rush_att", "rush_yds", "anytime_td")}
+    # the mean comes from the row's mean column when present (DB rows), else dist.mean
+    row = {**_sim(9, "x", "rush_att", [1.0], mean=0.0), "mean": 7.0}
+    assert cps.shadow_population([row]) == {(9, "x", "rush_att")}
+
+
+def test_compare_scores_the_gated_population_for_the_verdict():
+    v1, ml, act = _gated_fixture()
+    res = cps.compare_shadow(v1, ml, act, [])
+    assert res["markets"]["rush_att"]["n"] == 300          # only "s"
+    assert res["markets"]["anytime_td"]["n"] == 300
+    assert res["verdict"] == "ML better"
+    un = res["ungated"]
+    assert un["markets"]["rush_att"]["n"] == 600 and un["markets"]["anytime_td"]["n"] == 600
+    assert un["verdict"] != "ML better"                  # the ungated "f" drags it down
+
+
+def test_render_report_shows_gated_verdict_and_a_separate_ungated_table():
+    v1, ml, act = _gated_fixture()
+    res = cps.compare_shadow(v1, ml, act, [])
+    md = cps.render_report(res, since="2026-09-20", run_date="2026-09-27")
+    assert "**Verdict: ML better.**" in md
+    head, ungated = md.split("## Ungated", 1)
+    assert "| rush_att | 300 |" in head and "| rush_att | 600 |" in ungated
+    assert f"verdict: {res['ungated']['verdict']}" in ungated
+    assert "not used for the verdict" in ungated
+    assert "projected-usage gate" in head

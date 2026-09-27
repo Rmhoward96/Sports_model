@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import zlib
+from typing import Iterable
 
 import numpy as np
 import pandas as pd
@@ -271,23 +272,27 @@ RUSH_ATT_MIN_MEAN = 5.0
 ANYTIME_TD_PARENT_MARKETS: tuple[str, ...] = ("rec_yds", "rush_yds")
 
 
-def population_from_baseline(base_records: list[dict]) -> set[tuple]:
-    """Filter baseline records by projected-usage gate.
+def gate_population(items: Iterable[tuple[tuple, float | None]]) -> set[tuple]:
+    """THE props-ML population gate, shared by the ship-gate eval
+    (``population_from_baseline``), live serving (which player-markets get the
+    ML dist -- ``scripts/generate_sim_nfl.py``) and the shadow report. PURE.
 
-    Returns set of (season, week, player_id, market) tuples for records whose
-    baseline mean passes the market's gate: is_propable_projected(market,
-    mean) for the serving-gated markets (incl. pass_tds); rush_att needs
-    mean >= RUSH_ATT_MIN_MEAN; anytime_td needs the same (season, week,
-    player_id) to be in the rec_yds or rush_yds population.
-    """
-    population = set()
+    ``items``: ``(key, baseline_mean)`` pairs where ``key = (*player_key,
+    market)`` -- e.g. ``(season, week, player_id, market)`` offline,
+    ``(player_id, market)`` for one served game, ``(game_pk, player_id,
+    market)`` in the shadow report -- and ``baseline_mean`` is the CURRENT
+    sim's projected mean for it (None -> not in the population). A key is in
+    the population when: ``is_propable_projected(market, mean)`` for the
+    serving-gated markets (pass/rush/rec yds, receptions, pass_tds);
+    ``mean >= RUSH_ATT_MIN_MEAN`` for rush_att; for anytime_td, the same
+    player key is in the rec_yds or rush_yds population. Unknown markets are
+    never in it."""
+    population: set[tuple] = set()
     td_keys = []
-    for r in base_records:
-        market = r.get("market")
-        mean = r.get("mean")
-        if market is None or mean is None:
+    for key, mean in items:
+        if mean is None:
             continue
-        key = (r["season"], r["week"], r["player_id"], market)
+        market = key[-1]
         if market == "anytime_td":
             td_keys.append(key)
         elif market == "rush_att":
@@ -296,7 +301,20 @@ def population_from_baseline(base_records: list[dict]) -> set[tuple]:
         elif is_propable_projected(market, mean):
             population.add(key)
     for key in td_keys:
-        season, week, player_id, _ = key
-        if any((season, week, player_id, m) in population for m in ANYTIME_TD_PARENT_MARKETS):
+        if any(key[:-1] + (m,) in population for m in ANYTIME_TD_PARENT_MARKETS):
             population.add(key)
     return population
+
+
+def population_from_baseline(base_records: list[dict]) -> set[tuple]:
+    """Filter baseline records by projected-usage gate (``gate_population``).
+
+    Returns set of (season, week, player_id, market) tuples for records whose
+    baseline mean passes the market's gate: is_propable_projected(market,
+    mean) for the serving-gated markets (incl. pass_tds); rush_att needs
+    mean >= RUSH_ATT_MIN_MEAN; anytime_td needs the same (season, week,
+    player_id) to be in the rec_yds or rush_yds population.
+    """
+    return gate_population(
+        ((r["season"], r["week"], r["player_id"], r["market"]), r.get("mean"))
+        for r in base_records if r.get("market") is not None)

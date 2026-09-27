@@ -17,7 +17,10 @@ The gated pipeline (``scripts/fit_props_ml_final.py`` artifacts in
    player draws follow the final pmfs (parlays / team totals read the same
    numbers), and the returned dists are the mapped sims' marginals.
    ``source == "baseline"`` markets are omitted -- the caller serves the
-   current sim for those.
+   current sim for those. With ``gate`` (the caller's
+   ``props_eval.gate_population`` of the CURRENT sim's dist means), only the
+   gated ``(player_id, market)``s get targets / are mapped / are returned:
+   the ML pipeline was gated on that population only.
 
 Leakage: nothing here reads data by itself; only the pre-kickoff feature rows
 the caller passes are used.
@@ -91,10 +94,14 @@ def _b_pmfs(artifacts: Artifacts, rows: pd.DataFrame, a: dict, markets, market_m
 
 def ml_player_dists(spec: NflGameSpec, sims_ml: NflGameSims, feature_rows: pd.DataFrame,
                     team_rows: pd.DataFrame, artifacts: Artifacts,
-                    rng: np.random.Generator) -> dict[str, dict[str, dict]]:
+                    rng: np.random.Generator,
+                    gate: set[tuple[str, str]] | None = None) -> dict[str, dict[str, dict]]:
     """``{player_id: {market: {"kind": "pmf", "pmf": [...], "mean": float}}}``
     for every active player of ``spec`` (in ``sims_ml``) and every
-    ``source == "ml"`` market (see the module docstring).
+    ``source == "ml"`` market (see the module docstring) -- restricted to the
+    ``(player_id, market)`` keys in ``gate`` when given (live serving always
+    passes it; None = no restriction). Ungated player-markets get no target,
+    so their sims draws are left unmapped.
 
     ``sims_ml`` (the simulation of ``build_ml_spec(spec, ...)``) is UPDATED IN
     PLACE: its ``player_stats`` is replaced by the quantile-mapped copy (the
@@ -112,6 +119,8 @@ def ml_player_dists(spec: NflGameSpec, sims_ml: NflGameSims, feature_rows: pd.Da
     active = sorted({p.player_id for p in (*spec.home_players, *spec.away_players)}
                     & set(sims_ml.player_stats))
     a = {pid: d for pid, d in nfl_player_prop_dists(sims_ml, market_max).items() if pid in active}
+    if gate is not None:   # B is only needed for gated players
+        active = [pid for pid in active if any((pid, m) in gate for m in ml)]
     rows = feature_rows[feature_rows["player_id"].isin(active)].drop_duplicates("player_id")
     b = _b_pmfs(artifacts, rows, a, [m for m in b_markets(cfg) if m in ml], market_max)
     calib = calib_for_apply(artifacts.calibration)
@@ -120,11 +129,13 @@ def ml_player_dists(spec: NflGameSpec, sims_ml: NflGameSims, feature_rows: pd.Da
     targets: dict[str, dict[str, np.ndarray]] = {}
     for pid in active:
         for m in ml:
-            if m not in a[pid]:
+            if m not in a[pid] or (gate is not None and (pid, m) not in gate):
                 continue
             _, post = blend_calibrate(a[pid][m]["pmf"], b.get((pid, m)), weights[m], m,
                                       None if calib is None else calib[m])
             targets.setdefault(pid, {})[m] = post
+    if not targets:
+        return {}
     mapped = map_game_sims(sims_ml, targets, rng)
     sims_ml.player_stats = mapped.player_stats
     final = nfl_player_prop_dists(sims_ml, market_max)

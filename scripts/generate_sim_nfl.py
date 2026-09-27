@@ -116,6 +116,7 @@ import numpy as np
 import pandas as pd
 
 from sportsmodel import config
+from sportsmodel.model.props_eval import gate_population
 from sportsmodel.db import (get_postgres, served_nfl_sim_version, upsert_nfl_player_sim, upsert_nfl_sim,
                             upsert_nfl_sim_slate)
 from sportsmodel.nfl.injuries_nflverse import nfl_season
@@ -323,23 +324,27 @@ def assemble_sim_rows(
 
 
 def merge_ml_dists(current: dict[str, dict], ml: dict[str, dict],
-                   sources: dict[str, str]) -> tuple[dict[str, dict], int]:
+                   sources: dict[str, str], gate: set[tuple[str, str]]) -> tuple[dict[str, dict], int]:
     """One game's complete props-ML player slate. PURE.
 
     `current` / `ml`: {player_id -> {market -> dist}} from the current sim
     (`nfl_player_prop_dists`) and from `ml_serving.ml_player_dists`;
-    `sources`: {market -> "ml" | "baseline"} from the artifacts config.
-    A market whose source is "ml" takes the ML dist; every other market
-    (source "baseline", or not in the config) takes the CURRENT sim's dist --
-    never the ML sims' unmapped draws. An "ml" market with no ML dist for a
-    player falls back to the current dist and is counted (second return
-    value); ML dists for player/markets absent from `current` are kept.
+    `sources`: {market -> "ml" | "baseline"} from the artifacts config;
+    `gate`: the gated (player_id, market)s -- `props_eval.gate_population` of
+    the CURRENT sim's dist means (the population the ML pipeline was gated
+    on). A player-market takes the ML dist only when its source is "ml" AND
+    it is gated; everything else (source "baseline", not in the config, or
+    outside the gate) takes the CURRENT sim's dist -- never the ML sims'
+    unmapped draws. A gated "ml" player-market with no ML dist falls back to
+    the current dist and is counted (second return value). The slate is
+    exactly the current sim's (player, market) set: ML dists for
+    player-markets absent from `current` are dropped.
     """
     out: dict[str, dict] = {}
     n_fallback = 0
     for pid, markets in current.items():
         for m, dist in markets.items():
-            if sources.get(m) == "ml":
+            if sources.get(m) == "ml" and (pid, m) in gate:
                 ml_dist = ml.get(pid, {}).get(m)
                 if ml_dist is None:
                     n_fallback += 1
@@ -347,10 +352,14 @@ def merge_ml_dists(current: dict[str, dict], ml: dict[str, dict],
                 out.setdefault(pid, {})[m] = ml_dist
             else:
                 out.setdefault(pid, {})[m] = dist
-    for pid, markets in ml.items():
-        for m, dist in markets.items():
-            out.setdefault(pid, {}).setdefault(m, dist)
     return out, n_fallback
+
+
+def gated_player_markets(current: dict[str, dict]) -> set[tuple[str, str]]:
+    """{(player_id, market)} of one game inside the props-ML population:
+    `props_eval.gate_population` on the CURRENT sim's dist means. PURE."""
+    return gate_population(((pid, m), d.get("mean"))
+                           for pid, markets in current.items() for m, d in markets.items())
 
 
 def _norm_team(code) -> str | None:
@@ -574,9 +583,10 @@ def _ml_game(game_pk, *, game_keys, specs_by_game, sims_by_game, feats, team, sc
         raise _MlGameFallback("share fallback")
     game_rng = np.random.default_rng(game_seed(SIM_SEED, upto_season, week, home, away))
     sims_ml = simulate_game(spec_ml, n_sims, game_rng, home_field=HOME_FIELD, ratings_tilt=rtilt)
-    ml = ml_serving.ml_player_dists(spec_ml, sims_ml, p_rows, t_rows, artifacts, game_rng)
     current = nfl_player_prop_dists(sims_by_game[game_pk], MARKET_MAX)
-    merged, n_fallback = merge_ml_dists(current, ml, sources)
+    gate = gated_player_markets(current)
+    ml = ml_serving.ml_player_dists(spec_ml, sims_ml, p_rows, t_rows, artifacts, game_rng, gate=gate)
+    merged, n_fallback = merge_ml_dists(current, ml, sources, gate)
     if n_fallback:
         print(f"WARN props-ML: game_pk={game_pk}: {n_fallback} ML-sourced player-markets had no "
               f"ML dist; served from the current sim")

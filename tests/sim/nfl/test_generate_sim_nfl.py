@@ -302,6 +302,7 @@ class _Rec:
         self.depth_asof_args: list[tuple] = []
         self.ml_sim_rngs: list[dict] = []
         self.ml_dists_calls = 0
+        self.ml_gates: list = []   # the `gate` each ml_player_dists call received
         self.load_artifacts_args: list[tuple] = []
         self.slates: list[tuple[list[dict], list[dict]]] = []   # upsert_nfl_sim_slate calls
 
@@ -424,8 +425,9 @@ def _install_ml(monkeypatch, rec, tmp_path, *, artifacts="ok", dists_raise=None,
                            home=spec.home, away=spec.away, home_players=spec.home_players,
                            away_players=spec.away_players)
 
-    def fake_ml_dists(spec, sims_ml, feature_rows, team_rows, artifacts, rng):
+    def fake_ml_dists(spec, sims_ml, feature_rows, team_rows, artifacts, rng, gate=None):
         rec.ml_dists_calls += 1
+        rec.ml_gates.append(gate)
         exc = dists_raise.get(spec.home_team[len(_ML_SPEC_TAG):]) if isinstance(dists_raise, dict) else dists_raise
         if exc is not None:
             raise exc
@@ -788,7 +790,8 @@ def test_merge_ml_dists_prefers_ml_for_ml_markets_else_current():
     cur = {"p1": {"pass_yds": {"mean": 200.0}, "rec_yds": {"mean": 50.0}},
            "p2": {"rec_yds": {"mean": 40.0}}}
     ml = {"p1": {"rec_yds": {"mean": 99.0}}}
-    merged, n_fallback = gsn.merge_ml_dists(cur, ml, {"rec_yds": "ml", "pass_yds": "baseline"})
+    gate = {("p1", "pass_yds"), ("p1", "rec_yds"), ("p2", "rec_yds")}
+    merged, n_fallback = gsn.merge_ml_dists(cur, ml, {"rec_yds": "ml", "pass_yds": "baseline"}, gate)
     assert merged == {"p1": {"pass_yds": {"mean": 200.0}, "rec_yds": {"mean": 99.0}},
                       "p2": {"rec_yds": {"mean": 40.0}}}
     assert n_fallback == 1   # p2 rec_yds had no ML dist
@@ -985,3 +988,49 @@ def test_main_served_read_error_off_warns_and_exits_1(monkeypatch, tmp_path, cap
     out = capsys.readouterr().out
     assert [k for k, _ in rec.upserts] == ["sim", "player"] and rec.slates == []
     assert any(ln.startswith("::warning::props-ml: could not read nfl_sim_serving") for ln in out.splitlines())
+
+
+
+# =============================================================================
+# I4: ML dists only inside the gated population (current sim's dist means)
+# =============================================================================
+
+def test_merge_ml_dists_only_gated_player_markets_take_ml():
+    cur = {"star": {"rec_yds": {"mean": 60.0}, "anytime_td": {"mean": 0.4}},
+           "fringe": {"rec_yds": {"mean": 3.0}, "anytime_td": {"mean": 0.02}}}
+    ml = {"star": {"rec_yds": {"mean": 70.0}, "anytime_td": {"mean": 0.5}},
+          "fringe": {"rec_yds": {"mean": 9.0}, "anytime_td": {"mean": 0.1}},
+          "ghost": {"rec_yds": {"mean": 1.0}}}                  # absent from the current sim
+    gate = {("star", "rec_yds"), ("star", "anytime_td")}
+    merged, n_fallback = gsn.merge_ml_dists(cur, ml, {"rec_yds": "ml", "anytime_td": "ml"}, gate)
+    assert merged == {"star": {"rec_yds": {"mean": 70.0}, "anytime_td": {"mean": 0.5}},
+                      "fringe": {"rec_yds": {"mean": 3.0}, "anytime_td": {"mean": 0.02}}}
+    assert n_fallback == 0      # an ungated player-market is not a fallback
+
+
+def test_main_ungated_player_keeps_current_dists_and_gate_reaches_ml_serving(
+        monkeypatch, tmp_path, capsys):
+    rec = _install_io(monkeypatch, tmp_path, "shadow")
+    _install_ml(monkeypatch, rec, tmp_path)
+    real = gsn.simulate_game
+
+    def low_bal(spec, n_sims, rng, **kw):
+        sims = real(spec, n_sims, rng, **kw)
+        if not spec.home_team.startswith(_ML_SPEC_TAG) and "BAL_p" in sims.player_stats:
+            sims.player_stats["BAL_p"]["rec_yds"] = np.array([5] * n_sims)   # below the gate
+        return sims
+
+    monkeypatch.setattr(gsn, "simulate_game", low_bal)
+    gsn.main()
+    ml = {(r["game_pk"], r["player_id"], r["market"]): r for r in _written(rec, "player", "nfl-sim-ml-v1")}
+    cur = {(r["game_pk"], r["player_id"], r["market"]): r for r in _written(rec, "player", "sim-nfl-v1")}
+    # gated: ML dists
+    assert ml[(11, "KC_p", "rec_yds")]["mean"] == pytest.approx(99.0)
+    assert ml[(11, "KC_p", "anytime_td")]["dist"]["pmf"] == [0.3, 0.7]
+    # ungated (rec_yds 5 < 25; anytime_td has no gated parent): the CURRENT sim's dists
+    for m in ("rec_yds", "anytime_td"):
+        assert ml[(11, "BAL_p", m)]["dist"] == cur[(11, "BAL_p", m)]["dist"], m
+    gate11 = rec.ml_gates[0]
+    assert ("KC_p", "rec_yds") in gate11 and ("KC_p", "anytime_td") in gate11
+    assert ("BAL_p", "rec_yds") not in gate11 and ("BAL_p", "anytime_td") not in gate11
+    assert ("KC_p", "pass_yds") in gate11        # 200 >= 150 (the gate is market-agnostic of source)

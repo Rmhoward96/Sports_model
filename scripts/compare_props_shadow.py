@@ -5,8 +5,13 @@ wrote into `nfl_player_sim`.
 After a week or more of SIM_ML_MODE=shadow, this report decides whether to
 switch the site to the ML version (see db/migration_nfl_sim_serving.sql).
 
-Population: (game_pk, player_id, market) keys present in BOTH versions with a
-realized stat in `nfl_player_actuals` (paired). Pairs whose ML and v1 pmfs are
+Population (verdict): the GATED population -- (game_pk, player_id, market)
+keys inside `props_eval.gate_population` of the v1 (current sim) dist means,
+the same projected-usage gate the ship gate scored and serving applies (only
+gated player-markets are ever served from ML) -- present in BOTH versions
+with a realized stat in `nfl_player_actuals` (paired). The same scoring over
+ALL paired keys (ungated) is reported in a separate table and never feeds
+the verdict. Pairs whose ML and v1 pmfs are
 identical (same length and np.array_equal -- per-game ML fallbacks and markets
 the ML pipeline sources from the current sim) are EXCLUDED from n and every
 metric and reported separately as n_identical (per market and total); a market
@@ -53,7 +58,7 @@ import numpy as np
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
-from sportsmodel.model.props_eval import decile_ece, pit_pmf, pit_uniform, rps_pmf
+from sportsmodel.model.props_eval import decile_ece, gate_population, pit_pmf, pit_uniform, rps_pmf
 
 ROOT = Path(__file__).resolve().parents[1]
 REPORT_DIR = ROOT / "docs" / "superpowers" / "reports"
@@ -136,12 +141,44 @@ def overall_verdict(markets: dict) -> str:
     return "mixed"
 
 
+def _mean(r: dict) -> float | None:
+    """A sim row's projected mean: the `mean` column when present (DB rows),
+    else the dist's "mean"."""
+    if r.get("mean") is not None:
+        return float(r["mean"])
+    dist = r.get("dist")
+    if isinstance(dist, str):
+        dist = json.loads(dist)
+    if isinstance(dist, dict) and dist.get("mean") is not None:
+        return float(dist["mean"])
+    return None
+
+
+def shadow_population(v1_rows: list[dict]) -> set[tuple]:
+    """PURE. The gated (game_pk, player_id, market) keys:
+    `props_eval.gate_population` of the v1 (current sim) means."""
+    return gate_population((_key(r), _mean(r)) for r in v1_rows)
+
+
+def compare_shadow(v1_rows: list[dict], ml_rows: list[dict],
+                   actuals: list[dict], lines: list[dict]) -> dict:
+    """PURE. `score_shadow` over the GATED population (its markets / verdict
+    are THE result) plus "ungated": `score_shadow` over every paired key,
+    and "n_gated_keys"."""
+    pop = shadow_population(v1_rows)
+    gated = score_shadow(v1_rows, ml_rows, actuals, lines, population=pop)
+    return {**gated, "n_gated_keys": len(pop),
+            "ungated": score_shadow(v1_rows, ml_rows, actuals, lines)}
+
+
 def score_shadow(v1_rows: list[dict], ml_rows: list[dict],
-                 actuals: list[dict], lines: list[dict]) -> dict:
+                 actuals: list[dict], lines: list[dict],
+                 population: set[tuple] | None = None) -> dict:
     """PURE. Score both versions on the paired (game_pk, player_id, market)
-    keys that have an actual. Rows: sims {game_pk, player_id, market, dist
-    (dict or JSON str)}; actuals {game_pk, player_id, market, actual, season,
-    week}; lines {game_pk, player_id, market, line}.
+    keys that have an actual -- only those in `population` when given.
+    Rows: sims {game_pk, player_id, market, dist (dict or JSON str)};
+    actuals {game_pk, player_id, market, actual, season, week}; lines
+    {game_pk, player_id, market, line}.
 
     Pairs whose pmfs are identical (equal length and np.array_equal) are
     excluded from n and every metric and counted in n_identical.
@@ -158,7 +195,10 @@ def score_shadow(v1_rows: list[dict], ml_rows: list[dict],
     per: dict[str, dict[str, list]] = {}
     identical: dict[str, int] = {}
     skipped = 0
-    for key in sorted(set(v1) & set(ml) & set(act)):
+    keys = set(v1) & set(ml) & set(act)
+    if population is not None:
+        keys &= population
+    for key in sorted(keys):
         pmf_v1, pmf_ml = _pmf(v1[key].get("dist")), _pmf(ml[key].get("dist"))
         if pmf_v1 is None or pmf_ml is None:
             skipped += 1
@@ -252,10 +292,15 @@ def render_report(result: dict, since: str, run_date: str, null_commence: int = 
         "",
         f"- Versions: {V1_VERSION} (current sim) vs {ML_VERSION} (ML), from nfl_player_sim.",
         f"- Since: {since} (games with commence_time on or after this, already kicked off).",
-        "- Population: (game_pk, player_id, market) keys present in both versions with a "
-        "realized stat in nfl_player_actuals (paired). Pairs whose ML and v1 pmfs are "
+        "- Population (verdict): the GATED population -- keys inside the shared props-ML "
+        "projected-usage gate (props_eval.gate_population) on the v1 means, the population "
+        "the ship gate scored and serving applies -- present in both versions with a "
+        "realized stat in nfl_player_actuals (paired)"
+        + (f"; {result['n_gated_keys']} gated v1 keys" if "n_gated_keys" in result else "")
+        + ". Pairs whose ML and v1 pmfs are "
         "identical (per-game ML fallbacks, baseline-sourced markets) are excluded from n "
-        "and every metric and counted as n identical.",
+        "and every metric and counted as n identical. The ungated table (all paired keys) "
+        "follows the gated one and is not used for the verdict.",
         ident_line,
         f"- Paired keys skipped for a missing/empty pmf: {result['skipped']}.",
         f"- nfl_player_sim rows dropped for NULL commence_time: {null_commence}.",
@@ -275,6 +320,17 @@ def render_report(result: dict, since: str, run_date: str, null_commence: int = 
         format_table(result),
         "",
     ]
+    if "ungated" in result:
+        un = result["ungated"]
+        lines += [
+            "## Ungated (all paired keys — not used for the verdict)",
+            "",
+            f"Ungated verdict: {un['verdict']}; identical-pmf pairs excluded: "
+            f"{un['n_identical']}.",
+            "",
+            format_table(un),
+            "",
+        ]
     return "\n".join(lines)
 
 
@@ -309,7 +365,7 @@ def load_shadow_data(since: str | None) -> dict | None:
         null_commence = int(cur.fetchone()[0])
         cur.execute(
             """
-            SELECT game_pk, player_id, model_version, market, dist
+            SELECT game_pk, player_id, model_version, market, mean, dist
             FROM nfl_player_sim
             WHERE model_version IN (%s, %s)
               AND commence_time >= %s::timestamptz AND commence_time <= now()
@@ -339,7 +395,7 @@ def load_shadow_data(since: str | None) -> dict | None:
         )
         lines = cur.fetchall()
 
-    sim_dicts = [dict(zip(("game_pk", "player_id", "model_version", "market", "dist"), r))
+    sim_dicts = [dict(zip(("game_pk", "player_id", "model_version", "market", "mean", "dist"), r))
                  for r in sims]
     return {
         "since": since_val.isoformat() if hasattr(since_val, "isoformat") else str(since_val),
@@ -368,12 +424,14 @@ def main(argv: list[str] | None = None) -> int:
               "(run generate_sim_nfl.py with SIM_ML_MODE=shadow first); no report written.")
         return 0
 
-    result = score_shadow(data["v1"], data["ml"], data["actuals"], data["lines"])
+    result = compare_shadow(data["v1"], data["ml"], data["actuals"], data["lines"])
     run_date = args.run_date or date.today().isoformat()
-    print(f"Props-ML shadow comparison since {data['since']}: {result['verdict']} "
+    print(f"Props-ML shadow comparison since {data['since']} (gated population): {result['verdict']} "
           f"(identical-pmf pairs excluded: {result['n_identical']}; "
           f"NULL commence_time rows dropped: {data.get('null_commence', 0)})")
     print(format_table(result))
+    print(f"Ungated (all paired keys; not used for the verdict): {result['ungated']['verdict']}")
+    print(format_table(result["ungated"]))
 
     out_dir = Path(args.out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)

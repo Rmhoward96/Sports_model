@@ -366,3 +366,34 @@ def test_dataclass_spec_not_mutated(served):
     ml_serving.ml_player_dists(spec, _copy(served["sims"]), served["rows"], served["trows"],
                                served["art"], np.random.default_rng(0))
     assert dataclasses.asdict(spec) == snap
+
+
+
+# ---- I4: gated population only ----------------------------------------------------------------
+
+def test_ml_player_dists_maps_only_the_gated_player_markets(served):
+    orig = served["sims"]
+    sims = _copy(orig)
+    gate = {("HOM2", "rec_yds"), ("HOM2", "receptions"), ("AWY3", "rush_yds")}
+    dists = ml_serving.ml_player_dists(served["spec"], sims, served["rows"], served["trows"],
+                                       served["art"], np.random.default_rng(3), gate=gate)
+    assert {(pid, m) for pid, md in dists.items() for m in md} == gate
+    # every ungated player's stats are the unmapped sims' (same array objects)
+    for pid in orig.player_stats:
+        if pid in ("HOM2", "AWY3"):
+            continue
+        for stat, arr in orig.player_stats[pid].items():
+            assert sims.player_stats[pid][stat] is arr, (pid, stat)
+    # the gated targets are the same pipeline pmfs as without a gate
+    want = _expected_targets(served, orig, served["rows"])
+    for pid, m in gate:
+        assert _tv(dists[pid][m]["pmf"], want[(pid, m)]) < 0.03, (pid, m)
+
+
+def test_ml_player_dists_empty_gate_maps_nothing(served):
+    sims = _copy(served["sims"])
+    assert ml_serving.ml_player_dists(served["spec"], sims, served["rows"], served["trows"],
+                                      served["art"], np.random.default_rng(0), gate=set()) == {}
+    for pid, s in sims.player_stats.items():
+        for m, a in s.items():
+            assert a is served["sims"].player_stats[pid][m]
