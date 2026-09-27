@@ -403,13 +403,17 @@ def _install_ml(monkeypatch, rec, tmp_path, *, artifacts="ok", dists_raise=None,
     monkeypatch.setattr(gsn, "ML_MODEL_DIR", model_dir)
     if feats is None:
         feats = pd.DataFrame({"player_id": _ALL_PLAYERS, "season": 2026, "week": 3,
-                              "team": [p.split("_")[0] for p in _ALL_PLAYERS]})
+                              "team": [p.split("_")[0] for p in _ALL_PLAYERS],
+                              "st_questionable": [0.0, np.nan, 1.0, 0.0],
+                              "st_vacated_tgt": [0.0, 0.1, 0.0, 0.0],
+                              "st_vacated_car": [np.nan] * 4})
     if team is None:
         team = pd.DataFrame({"team": ["KC", "BAL", "BUF", "MIA"], "season": 2026, "week": 3})
     if sched is None:
         sched = pd.DataFrame({"season": [2026, 2026], "week": [3, 3], "game_type": ["REG", "REG"],
                               "home_team": ["KC", "BUF"], "away_team": ["BAL", "MIA"]})
-    monkeypatch.setattr(gsn, "_build_ml_tables", lambda upto_season, now: (feats, team, sched))
+    monkeypatch.setattr(gsn, "_build_ml_tables",
+                        lambda upto_season, now, report=None: (feats, team, sched))
     learned = types.SimpleNamespace(share_fallbacks=0)
     cfg = {"markets": _ML_MARKETS, "market_max": dict(_ML_MARKET_MAX if market_max is None else market_max)}
     arts = None if artifacts is None else types.SimpleNamespace(config=cfg, learned=learned)
@@ -450,7 +454,14 @@ def _written(rec, kind, version):
 
 
 def _ml_summary_lines(out):
-    return [ln for ln in out.splitlines() if ln.startswith("ml_mode=")]
+    """The ml_mode= summary lines WITHOUT the trailing st_nan_* fields (those
+    are asserted separately -- see _st_nan)."""
+    return [ln.split(" st_nan_")[0] for ln in out.splitlines() if ln.startswith("ml_mode=")]
+
+
+def _st_nan(out):
+    (line,) = [ln for ln in out.splitlines() if ln.startswith("ml_mode=")]
+    return dict(kv.split("=", 1) for kv in line.split() if kv.startswith("st_nan_"))
 
 
 def test_main_off_never_touches_ml(monkeypatch, tmp_path, capsys):
@@ -741,7 +752,7 @@ def test_main_live_exception_in_feature_build_exits_1(monkeypatch, tmp_path, cap
     rec = _install_io(monkeypatch, tmp_path, "live")
     _install_ml(monkeypatch, rec, tmp_path)
 
-    def broken(upto_season, now):
+    def broken(upto_season, now, report=None):
         raise OSError("nflverse down")
 
     monkeypatch.setattr(gsn, "_build_ml_tables", broken)
@@ -810,7 +821,7 @@ def test_main_live_no_config_fails_before_feature_build(monkeypatch, tmp_path, c
     rec = _install_io(monkeypatch, tmp_path, "live")
     _install_ml(monkeypatch, rec, tmp_path, config_file=False)
 
-    def must_not_build(upto_season, now):
+    def must_not_build(upto_season, now, report=None):
         raise AssertionError("feature build ran without artifacts")
 
     monkeypatch.setattr(gsn, "_build_ml_tables", must_not_build)
@@ -1034,3 +1045,111 @@ def test_main_ungated_player_keeps_current_dists_and_gate_reaches_ml_serving(
     assert ("KC_p", "rec_yds") in gate11 and ("KC_p", "anytime_td") in gate11
     assert ("BAL_p", "rec_yds") not in gate11 and ("BAL_p", "anytime_td") not in gate11
     assert ("KC_p", "pass_yds") in gate11        # 200 >= 150 (the gate is market-agnostic of source)
+
+
+
+# =============================================================================
+# I5: serve-time injury features
+# =============================================================================
+
+def test_summary_line_carries_target_week_st_nan_shares(monkeypatch, tmp_path, capsys):
+    rec = _install_io(monkeypatch, tmp_path, "shadow")
+    _install_ml(monkeypatch, rec, tmp_path)
+    gsn.main()
+    assert _st_nan(capsys.readouterr().out) == {
+        "st_nan_questionable": "0.25", "st_nan_vacated_tgt": "0.00", "st_nan_vacated_car": "1.00"}
+
+
+def test_summary_line_st_nan_na_when_tables_never_built(monkeypatch, tmp_path, capsys):
+    rec = _install_io(monkeypatch, tmp_path, "shadow")
+    _install_ml(monkeypatch, rec, tmp_path, artifacts=None, config_file=False)
+    gsn.main()
+    assert _st_nan(capsys.readouterr().out) == {
+        "st_nan_questionable": "na", "st_nan_vacated_tgt": "na", "st_nan_vacated_car": "na"}
+
+
+def test_st_nan_shares_only_the_target_weeks():
+    feats = pd.DataFrame({"season": [2026, 2026, 2026, 2025], "week": [3, 3, 2, 3],
+                          "st_questionable": [np.nan, 0.0, np.nan, np.nan],
+                          "st_vacated_tgt": [0.0, 0.0, np.nan, np.nan]})
+    got = gsn._st_nan_shares(feats, 2026, {3})
+    assert got == {"st_questionable": 0.5, "st_vacated_tgt": 0.0, "st_vacated_car": None}
+    assert gsn._st_nan_shares(feats, 2026, set()) == {
+        "st_questionable": None, "st_vacated_tgt": None, "st_vacated_car": None}
+
+
+_DEPTH = pd.DataFrame({"season": [2026, 2026], "week": [3, 3], "club_code": ["KC", "KC"],
+                       "gsis_id": ["00-1", "00-2"], "full_name": ["Travis Kelce", "Xavier Worthy"],
+                       "football_name": ["Travis", "Xavier"]})
+_LIVE = {"by_team": {"KC": [{"player": "Travis Kelce", "status": "Questionable"},
+                            {"player": "Xavier Worthy", "status": "Out"},
+                            {"player": "Mystery Man", "status": "Out"}]},
+         "target_week": 3}
+
+
+def test_inject_live_injuries_when_nflverse_has_no_target_week_rows():
+    nflv = pd.DataFrame({"season": [2026], "week": [2], "team": ["KC"], "gsis_id": ["00-1"],
+                         "report_status": ["Out"]})
+    out, msg = gsn._inject_live_injuries(nflv, _DEPTH, _LIVE, 2026)
+    wk3 = out[(out["season"] == 2026) & (out["week"] == 3)]
+    assert set(zip(wk3["gsis_id"], wk3["report_status"])) == {("00-1", "Questionable"), ("00-2", "Out")}
+    assert len(out[out["week"] == 2]) == 1                  # nflverse rows kept
+    assert "injected 2 live statuses" in msg and "unmapped 1" in msg and "KC Mystery Man" in msg
+
+
+def test_inject_live_injuries_none_frame():
+    out, msg = gsn._inject_live_injuries(None, _DEPTH, _LIVE, 2026)
+    assert len(out) == 2 and "injected 2" in msg
+
+
+def test_inject_live_injuries_leaves_a_posted_nflverse_week_alone():
+    nflv = pd.DataFrame({"season": [2026], "week": [3], "team": ["KC"], "gsis_id": ["00-9"],
+                         "report_status": ["Questionable"]})
+    out, msg = gsn._inject_live_injuries(nflv, _DEPTH, _LIVE, 2026)
+    assert out is nflv and "nflverse report present" in msg
+    out, msg = gsn._inject_live_injuries(nflv, _DEPTH, {**_LIVE, "target_week": None}, 2026)
+    assert out is nflv and "no target week" in msg
+    out, msg = gsn._inject_live_injuries(nflv, _DEPTH, None, 2026)
+    assert out is nflv
+
+
+def test_build_ml_tables_feeds_injected_injuries_to_the_builder(monkeypatch, capsys):
+    seen = {}
+
+    class FakeBpf:
+        SEASONS = [2016]
+
+        @staticmethod
+        def fetch_sources(seasons):
+            seen["seasons"] = list(seasons)
+            return {"injuries": pd.DataFrame({"season": [2026], "week": [2], "team": ["KC"],
+                                              "gsis_id": ["00-1"], "report_status": ["Out"]}),
+                    "depth": _DEPTH, "sched": pd.DataFrame({"x": [1]})}
+
+        @staticmethod
+        def build_tables(src, ctx_fill=None):
+            seen["injuries"] = src["injuries"]
+            return {"feats": pd.DataFrame(), "team": pd.DataFrame()}
+
+    monkeypatch.setattr(gsn, "_load_script", lambda name: FakeBpf)
+    gsn._build_ml_tables(2026, gsn.datetime(2026, 9, 27, tzinfo=gsn.timezone.utc), report=_LIVE)
+    inj = seen["injuries"]
+    assert set(inj.loc[inj["week"] == 3, "gsis_id"]) == {"00-1", "00-2"}
+    out = capsys.readouterr().out
+    assert "props-ML injuries: nflverse has no 2026 week 3 rows: injected 2 live statuses" in out
+
+
+def test_run_ml_passes_the_live_report_to_the_feature_build(monkeypatch, tmp_path):
+    rec = _install_io(monkeypatch, tmp_path, "shadow")
+    feats, team = _install_ml(monkeypatch, rec, tmp_path)
+    sched = pd.DataFrame({"season": [2026, 2026], "week": [3, 3], "game_type": ["REG", "REG"],
+                          "home_team": ["KC", "BUF"], "away_team": ["BAL", "MIA"]})
+    got = {}
+
+    def build(upto_season, now, report=None):
+        got["report"] = report
+        return feats, team, sched
+
+    monkeypatch.setattr(gsn, "_build_ml_tables", build)
+    gsn.main()
+    assert got["report"]["target_week"] == 3 and "KC" in got["report"]["by_team"]

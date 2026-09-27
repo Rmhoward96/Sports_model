@@ -77,8 +77,14 @@ game falling back) prints `ML: FAILED <reason>` and a `::warning::props-ml:`
 Actions annotation; shadow then exits 0, live exits 1 (the current sim is
 already written either way). An unknown SIM_ML_MODE value is treated like a
 live failure. One `ml_mode=... ml_games=<ML-served games>
-ml_players=<their player rows> ml_fallback_games=... ml_status=ok|failed`
-line is printed whenever the mode is not off.
+ml_players=<their player rows> ml_fallback_games=... ml_status=ok|failed
+st_nan_questionable=... st_nan_vacated_tgt=... st_nan_vacated_car=...` line
+is printed whenever the mode is not off; st_nan_* = the slate weeks' NaN
+share of the serve-time injury features (`na` when the tables were not
+built). nflverse's weekly injury report posts Wed-Fri: when it has no rows
+for the live report's target week, the live (`current_report`) statuses are
+injected into the feature build first (names -> gsis via the target week's
+as-of depth chart; unmapped names are counted and printed).
 
 The SERVED version decides what must be written (`nfl_sim_serving`, read
 once after the current sim is written -- `db.served_nfl_sim_version`):
@@ -120,7 +126,7 @@ from sportsmodel.model.props_eval import gate_population
 from sportsmodel.db import (get_postgres, served_nfl_sim_version, upsert_nfl_player_sim, upsert_nfl_sim,
                             upsert_nfl_sim_slate)
 from sportsmodel.nfl.injuries_nflverse import nfl_season
-from sportsmodel.nfl.injury_report import current_report, resolve_target_week
+from sportsmodel.nfl.injury_report import current_report, live_injury_rows, resolve_target_week
 from sportsmodel.nfl.nflverse import load_release
 from sportsmodel.nfl.teams import TEAMS, normalize_team
 from sportsmodel.sim.engine import margin_pmf, pred_scores, stat_pmf, total_pmf
@@ -487,12 +493,51 @@ def _load_script(name: str):
     return mod
 
 
-def _build_ml_tables(upto_season: int, now: datetime) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
+ST_NAN_COLS = ("st_questionable", "st_vacated_tgt", "st_vacated_car")
+
+
+def _inject_live_injuries(injuries: pd.DataFrame | None, depth: pd.DataFrame, report: dict | None,
+                          season: int) -> tuple[pd.DataFrame | None, str]:
+    """The builder's nflverse injury frame, with the live report's statuses
+    added for (season, report["target_week"]) when nflverse has NO rows for
+    that week yet (its weekly report posts Wed-Fri; without this the target
+    week's st_questionable / st_vacated_* would be NaN = "no report"). Names
+    map to gsis ids through the target week's as-of depth chart
+    (`injury_report.live_injury_rows`); unmapped names are counted and named
+    in the returned log line. A posted nflverse week (or no report / target
+    week) returns `injuries` itself unchanged. PURE."""
+    week = None if report is None else report.get("target_week")
+    if week is None:
+        return injuries, "props-ML injuries: no target week in the live report; nflverse frame as is"
+    week = int(week)
+    have = (injuries is not None and len(injuries) > 0
+            and bool(((injuries["season"] == season) & (injuries["week"] == week)).any()))
+    if have:
+        return injuries, f"props-ML injuries: nflverse report present for {season} week {week}"
+    live, unmapped = live_injury_rows(report.get("by_team") or {}, depth, season, week)
+    frame = live if injuries is None or not len(injuries) else pd.concat([injuries, live], ignore_index=True)
+    msg = (f"props-ML injuries: nflverse has no {season} week {week} rows: injected {len(live)} live "
+           f"statuses (unmapped {len(unmapped)}" + (f": {', '.join(unmapped)}" if unmapped else "") + ")")
+    return frame, msg
+
+
+def _st_nan_shares(feats: pd.DataFrame, season: int, weeks: set[int]) -> dict[str, float | None]:
+    """NaN share of each ST_NAN_COLS column over the (season, week in weeks)
+    player rows; None when there are no such rows or the column is absent. PURE."""
+    rows = feats[(feats["season"] == season) & feats["week"].isin(sorted(weeks))] if weeks else feats.iloc[:0]
+    return {c: (float(rows[c].isna().mean()) if c in rows.columns and len(rows) else None)
+            for c in ST_NAN_COLS}
+
+
+def _build_ml_tables(upto_season: int, now: datetime, report: dict | None = None
+                     ) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
     """(player table, team table, nflverse schedule) for serving, built by the
     SAME builder as training (scripts/build_player_features.py): seasons
     SEASONS[0]..upto_season, active-but-no-snap stubs for every scheduled REG
     team-week (incl. the target week), and upcoming games' NaN weather filled
-    from the kickoff-hour forecast. Features are strictly pre-game by
+    from the kickoff-hour forecast. When nflverse has no injury rows for the
+    live report's target week yet, the live statuses are injected first
+    (`_inject_live_injuries`). Features are strictly pre-game by
     construction (rolling features read only earlier weeks). IO (network)."""
     from sportsmodel.nfl.context import fetch_hourly_forecast, fill_forecast_weather
 
@@ -500,6 +545,8 @@ def _build_ml_tables(upto_season: int, now: datetime) -> tuple[pd.DataFrame, pd.
     seasons = list(range(bpf.SEASONS[0], upto_season + 1))
     print(f"props-ML: building feature tables for seasons {seasons[0]}-{seasons[-1]}", flush=True)
     src = bpf.fetch_sources(seasons)
+    src["injuries"], msg = _inject_live_injuries(src.get("injuries"), src.get("depth"), report, upto_season)
+    print(msg, flush=True)
     ts = pd.Timestamp(now)
 
     def ctx_fill(ctx, stadiums, sched):
@@ -595,7 +642,8 @@ def _ml_game(game_pk, *, game_keys, specs_by_game, sims_by_game, feats, team, sc
 
 def run_ml(*, ok_games: list[dict], game_keys: dict[Any, tuple[str, str, float]],
            specs_by_game: dict, sims_by_game: dict, analytic_by_game: dict,
-           upto_season: int, n_sims: int, now: datetime) -> tuple[int, int, int]:
+           upto_season: int, n_sims: int, now: datetime, report: dict | None = None,
+           diag: dict | None = None) -> tuple[int, int, int]:
     """The props-ML slate for the games the current sim produced; writes it
     under ML_MODEL_VERSION in ONE transaction (`upsert_nfl_sim_slate`) and
     returns (ml_games, ml_players, ml_fallback_games): the ML-SERVED games,
@@ -621,6 +669,10 @@ def run_ml(*, ok_games: list[dict], game_keys: dict[Any, tuple[str, str, float]]
     slate from `merge_ml_dists`. Every game's nfl_sim row comes from the
     CURRENT sim (`sims_by_game`): the gate covered props, not game outputs.
     `game_keys`: {game_pk -> (home_abbrev, away_abbrev, ratings_tilt)}.
+    `report`: the live injury report (`current_report`), for the feature
+    build's target-week injury injection. `diag` (filled in place once the
+    tables are built): {"st_nan": `_st_nan_shares` over the slate's REG
+    weeks} for the summary line.
     """
     from sportsmodel.model.props_ml.artifacts import CONFIG_FILE
     from sportsmodel.sim.nfl import ml_serving
@@ -628,7 +680,17 @@ def run_ml(*, ok_games: list[dict], game_keys: dict[Any, tuple[str, str, float]]
     if not (ML_MODEL_DIR / CONFIG_FILE).is_file():   # fail before the (minutes-long) feature build
         raise RuntimeError(f"props-ML artifacts missing: no {CONFIG_FILE} in {ML_MODEL_DIR}")
     bsn = _load_script("backtest_sim_nfl")
-    feats, team, sched = _build_ml_tables(upto_season, now)
+    feats, team, sched = _build_ml_tables(upto_season, now, report=report)
+    if diag is not None:
+        weeks = set()
+        for g in ok_games:
+            home_abbrev, away_abbrev, _ = game_keys[g["game_pk"]]
+            try:
+                weeks.add(_schedule_week(sched, upto_season, _norm_team(home_abbrev) or home_abbrev,
+                                         _norm_team(away_abbrev) or away_abbrev))
+            except ValueError:
+                pass
+        diag["st_nan"] = _st_nan_shares(feats, upto_season, weeks)
     artifacts = ml_serving.load_artifacts(ML_MODEL_DIR, feats, team)
     if artifacts is None:
         raise RuntimeError(f"props-ML artifacts missing or incompatible in {ML_MODEL_DIR}")
@@ -686,9 +748,15 @@ def _ml_failed(reason: str) -> None:
     print(f"::warning::props-ml: {flat}", flush=True)
 
 
-def _ml_summary(mode: str, games: int, players: int, fallback_games: int, status: str) -> None:
+def _ml_summary(mode: str, games: int, players: int, fallback_games: int, status: str,
+                st_nan: dict | None = None) -> None:
+    """The one ml_mode= line; st_nan_* = the target week's NaN share of the
+    serve-time injury features (`na` when the tables were not built)."""
+    st = st_nan or {}
+    nan = " ".join(f"st_nan_{c[3:]}=" + ("na" if st.get(c) is None else f"{st[c]:.2f}")
+                   for c in ST_NAN_COLS)
     print(f"ml_mode={mode} ml_games={games} ml_players={players} "
-          f"ml_fallback_games={fallback_games} ml_status={status}", flush=True)
+          f"ml_fallback_games={fallback_games} ml_status={status} {nan}", flush=True)
 
 
 def main() -> None:
@@ -885,6 +953,7 @@ def main() -> None:
         return
 
     counts = (0, 0, 0)
+    diag: dict = {}
     if ml_mode_error is not None:
         reason = ml_mode_error
     elif served_error is not None:
@@ -896,12 +965,12 @@ def main() -> None:
             counts = run_ml(
                 ok_games=ok_games, game_keys=game_keys, specs_by_game=specs_by_game,
                 sims_by_game=sims_by_game, analytic_by_game=analytic_by_game,
-                upto_season=upto_season, n_sims=n_sims, now=now)
+                upto_season=upto_season, n_sims=n_sims, now=now, report=report, diag=diag)
             reason = None
         except Exception as exc:  # noqa: BLE001 -- any ML failure -> SIM_ML_MODE failure semantics
             reason = f"{type(exc).__name__}: {exc}"
     if reason is None:
-        _ml_summary(ml_mode, *counts, "ok")
+        _ml_summary(ml_mode, *counts, "ok", diag.get("st_nan"))
         return
     _ml_failed(reason)
     if must_write:   # the site serves the ML version: it must get this run's (current-sim) slate
@@ -914,7 +983,7 @@ def main() -> None:
             flat = " ".join(f"{type(exc).__name__}: {exc}".split())
             print(f"::warning::props-ml: copy slate write failed too ({flat}); the served "
                   f"{ML_MODEL_VERSION} slate was not refreshed", flush=True)
-    _ml_summary(ml_mode, *counts, "failed")
+    _ml_summary(ml_mode, *counts, "failed", diag.get("st_nan"))
     if ml_mode != "shadow":   # live (or an invalid mode): red run
         sys.exit(1)
 

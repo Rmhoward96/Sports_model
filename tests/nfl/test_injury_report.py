@@ -263,3 +263,54 @@ def test_week18_report_is_stale_for_wild_card(monkeypatch):
     r = merge_report(NFLV, 18, target, [], N2A)
     assert r["stale"] is True and r["target_week"] == 19
     assert r["by_team"] == {}  # Week-18 designations dropped; ESPN (none here) rules
+
+
+# ---- I5: live report -> nflverse-shaped injury rows (serve-time props-ML features) --------
+
+import pandas as pd  # noqa: E402
+
+from sportsmodel.nfl.injury_report import live_injury_rows  # noqa: E402
+
+
+def _depth():
+    # the builder's as-of depth charts (usage.depth_charts_asof columns)
+    return pd.DataFrame({
+        "season": [2026, 2026, 2026, 2026, 2026, 2026],
+        "week": [3, 3, 3, 3, 2, 3],
+        "club_code": ["ATL", "ATL", "LAR", "LAR", "ATL", "NYG"],
+        "gsis_id": ["00-1", "00-2", "00-3", "00-4", "00-9", "00-5"],
+        "full_name": ["Michael Penix Jr.", "Drake London", "Ja’Marr Chase", "Kyren Williams",
+                      "Old Guy", "Jaxson Dart"],
+        "football_name": ["Michael", "Drake", "Ja'Marr", "Kyren", "Old", "Jaxson"],
+        "position": ["QB", "WR", "WR", "RB", "WR", "QB"],
+    })
+
+
+def test_live_injury_rows_map_names_to_gsis_via_the_target_week_chart():
+    by_team = {
+        "ATL": [{"player": "Michael Penix", "status": "Questionable"},     # Jr. dropped by name_key
+                {"player": "Drake London", "status": "Out"},
+                {"player": "Old Guy", "status": "Out"}],                    # only on week 2's chart
+        "LA": [{"player": "Ja'Marr Chase", "status": "doubtful"},          # LA == LAR normalized
+               {"player": "Nobody Here", "status": "Out"}],
+        "NYG": [{"player": "Jaxson Dart", "status": "Active"}],             # not a designation
+    }
+    rows, unmapped = live_injury_rows(by_team, _depth(), 2026, 3)
+    got = {(r.team, r.gsis_id, r.report_status) for r in rows.itertuples()}
+    assert got == {("ATL", "00-1", "Questionable"), ("ATL", "00-2", "Out"),
+                   ("LA", "00-3", "Doubtful")}
+    assert set(rows["season"]) == {2026} and set(rows["week"]) == {3}
+    assert {"season", "week", "team", "gsis_id", "full_name", "report_status"} <= set(rows.columns)
+    assert sorted(unmapped) == ["ATL Old Guy", "LA Nobody Here"]
+
+
+def test_live_injury_rows_ambiguous_name_is_unmapped():
+    d = pd.concat([_depth(), _depth().iloc[[1]].assign(gsis_id="00-8")], ignore_index=True)
+    rows, unmapped = live_injury_rows({"ATL": [{"player": "Drake London", "status": "Out"}]}, d, 2026, 3)
+    assert rows.empty and unmapped == ["ATL Drake London"]
+
+
+def test_live_injury_rows_empty_report():
+    rows, unmapped = live_injury_rows({}, _depth(), 2026, 3)
+    assert rows.empty and unmapped == []
+    assert {"season", "week", "team", "gsis_id", "report_status"} <= set(rows.columns)
