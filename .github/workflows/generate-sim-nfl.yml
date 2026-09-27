@@ -49,7 +49,7 @@ jobs:
             reason=""
             if [ ! -f data/props_ml/models/MANIFEST.sha256 ]; then
               reason="MANIFEST.sha256 missing"
-            elif ! (cd data/props_ml/models && sha256sum -c --quiet MANIFEST.sha256); then
+            elif ! (cd data/props_ml/models && sha256sum -c --strict --quiet MANIFEST.sha256); then
               reason="checksum mismatch or missing file"
             else
               listed=" $(sed -E 's/^[0-9a-f]{64} [ *]//' data/props_ml/models/MANIFEST.sha256 | tr '\n' ' ')"

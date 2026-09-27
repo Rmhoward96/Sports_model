@@ -448,6 +448,12 @@ CAVEATS = tpm.CAVEATS + (
     "(a market is served from ML only if its own pooled RPS beats the baseline's).",
     "- B models are fit unweighted with max_iter 150 (runtime rulings); A keeps the "
     "per-season tuned values from a_gate.json.",
+    "- The B role thresholds (dist_models.ROLE_SUBSETS) were chosen after a 2025 smoke run: "
+    "that design freedom was exercised on the final-gate season, so the 2025 result is not "
+    "fully independent of it.",
+    "- Serving simulates DEFAULT_N_SIMS (10,000) sims per game (generate_sim_nfl.py) where "
+    "this gate scored 1000 per game; the served pmfs are smoother than the gated ones "
+    "(same pipeline, less Monte Carlo noise).",
 )
 
 

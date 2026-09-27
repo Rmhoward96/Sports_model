@@ -629,3 +629,10 @@ def test_kept_blend_with_a_missing_b_row_chooses_w_final_without_it(tmp_path, mo
     gate = _run(tmp_path, _FakeBsn(), seasons=seasons, player_tbl=ptbl[keep])
     assert gate["b_oof"]["missing"]["rec_yds"] == 1 and "blend" in gate["kept_rungs"]
     assert any(v["w_final"] < 1.0 for v in gate["pipeline"]["markets"].values())
+
+
+
+def test_caveats_disclose_role_threshold_choice_and_serving_sim_count():
+    text = "\n".join(tpb.CAVEATS)
+    assert "role thresholds" in text and "2025 smoke run" in text
+    assert "DEFAULT_N_SIMS" in text and "1000" in text

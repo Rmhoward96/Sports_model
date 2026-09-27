@@ -303,6 +303,7 @@ class _Rec:
         self.ml_sim_rngs: list[dict] = []
         self.ml_dists_calls = 0
         self.ml_gates: list = []   # the `gate` each ml_player_dists call received
+        self.usage_include_depth: list = []
         self.load_artifacts_args: list[tuple] = []
         self.slates: list[tuple[list[dict], list[dict]]] = []   # upsert_nfl_sim_slate calls
 
@@ -339,8 +340,12 @@ def _install_io(monkeypatch, tmp_path, mode, served="sim-nfl-v1"):
     monkeypatch.setattr(gsn, "current_report", lambda now, wk, xw: {
         "by_team": {"KC": [{"player": "D.J. Moore Jr.", "status": "Out"}]},
         "report_week": 3, "target_week": 3, "stale": False, "espn_available": True, "conflicts": []})
-    monkeypatch.setattr(gsn, "fetch_usage_sources", lambda seasons: {
-        "ids": pd.DataFrame(), "snaps": pd.DataFrame(), "depth": pd.DataFrame()})
+    def fake_usage_sources(seasons, include_depth=True):
+        rec.usage_include_depth.append(include_depth)
+        out = {"ids": pd.DataFrame(), "snaps": pd.DataFrame()}
+        return {**out, "depth": pd.DataFrame()} if include_depth else out
+
+    monkeypatch.setattr(gsn, "fetch_usage_sources", fake_usage_sources)
     monkeypatch.setattr(gsn, "build_pfr_to_gsis", lambda ids: {})
 
     def fake_load_release(dataset, seasons, **kw):
@@ -1153,3 +1158,12 @@ def test_run_ml_passes_the_live_report_to_the_feature_build(monkeypatch, tmp_pat
     monkeypatch.setattr(gsn, "_build_ml_tables", build)
     gsn.main()
     assert got["report"]["target_week"] == 3 and "KC" in got["report"]["by_team"]
+
+
+
+def test_main_never_downloads_the_old_depth_charts(monkeypatch, tmp_path):
+    # the sim reads depth only via load_release("depth") + depth_charts_asof;
+    # fetch_usage_sources' old nfl_data_py depth import is skipped
+    rec = _install_io(monkeypatch, tmp_path, "off")
+    gsn.main()
+    assert rec.usage_include_depth == [False]

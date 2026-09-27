@@ -424,6 +424,8 @@ def _check_sim_wiring(job: dict, extra_if: str | None = None) -> None:
     # verify the downloaded set against the Release's MANIFEST.sha256; any
     # failure removes the models dir (-> the sim's "no artifacts" ML path)
     assert "sha256sum -c" in step["run"] and "MANIFEST.sha256" in step["run"]
+    # --strict: an improperly formatted MANIFEST line is a failure, not a warning
+    assert "sha256sum -c --strict" in step["run"]
     assert "rm -rf data/props_ml/models" in step["run"]
     assert VERIFY_WARNING in step["run"]
     assert "continue-on-error" not in step

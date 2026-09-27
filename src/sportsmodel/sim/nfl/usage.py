@@ -11,7 +11,7 @@ Football Reference `pfr_id` and nflverse's own `gsis_id`) via
 `build_pfr_to_gsis` (pure: DataFrame in, dict out) and fetches the raw
 depth-chart / snap-count / id-crosswalk frames the usage model consumes.
 
-`fetch_usage_sources` is the only IO in this module and is not unit-tested.
+`fetch_usage_sources` is the only IO in this module (its include_depth switch is unit-tested with a stubbed nfl_data_py).
 
 `abbrev_alignment` is a small pure diagnostic shared by both callers
 (`scripts/backtest_sim_nfl.py` and `scripts/generate_sim_nfl.py`): it flags
@@ -568,23 +568,27 @@ def normalize_depth_charts(raw: pd.DataFrame, upto_season: int, upto_week: int) 
     }).reset_index(drop=True)
 
 
-def fetch_usage_sources(seasons: list[int]) -> dict:
-    """Thin IO wrapper around nfl_data_py imports. Not unit-tested.
+def fetch_usage_sources(seasons: list[int], include_depth: bool = True) -> dict:
+    """Thin IO wrapper around nfl_data_py imports.
 
     Returns {"depth": DataFrame, "snaps": DataFrame, "ids": DataFrame}. The
     depth frame may be nflverse's OLD or NEW schema depending on the installed
     nfl_data_py -- callers pass it through `normalize_depth_charts(...,
     upto_season, upto_week)` before `active_usage`/`abbrev_alignment`.
+    `include_depth=False` skips that (slow) depth import and omits "depth" --
+    for callers that read depth via `load_release("depth")` +
+    `depth_charts_asof` instead (scripts/generate_sim_nfl.py).
     """
     import nfl_data_py as nfl
 
-    from sportsmodel.nfl.nflverse import import_by_season
+    from sportsmodel.nfl import nflverse
 
-    return {
-        "depth": import_by_season(nfl.import_depth_charts, seasons, "depth"),
-        "snaps": import_by_season(nfl.import_snap_counts, seasons, "snaps"),
-        "ids": nfl.import_ids(),
-    }
+    out = {}
+    if include_depth:
+        out["depth"] = nflverse.import_by_season(nfl.import_depth_charts, seasons, "depth")
+    out["snaps"] = nflverse.import_by_season(nfl.import_snap_counts, seasons, "snaps")
+    out["ids"] = nfl.import_ids()
+    return out
 
 
 _ET = "America/New_York"

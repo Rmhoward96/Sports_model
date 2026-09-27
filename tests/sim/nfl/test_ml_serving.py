@@ -397,3 +397,41 @@ def test_ml_player_dists_empty_gate_maps_nothing(served):
     for pid, s in sims.player_stats.items():
         for m, a in s.items():
             assert a is served["sims"].player_stats[pid][m]
+
+
+
+# ---- serving-vs-offline parity (the gated pipeline, pre-map) ----------------------------------
+
+def test_serving_targets_equal_the_offline_apply_pipeline():
+    """The same A/B pmfs + weights + calibration through ml_serving's target
+    builder (pre quantile-map) and through train_props_ml_b.apply_pipeline
+    (what the ladder / quick gate scored) give identical pmfs."""
+    rng = np.random.default_rng(5)
+    kmax = {"rec_yds": 30, "receptions": 12, "rush_yds": 25, "rush_att": 20, "anytime_td": 1}
+    markets = sorted(kmax)
+    players = ["p1", "p2", "p3"]
+    a = {pid: {m: {"pmf": list(rng.dirichlet(np.ones(kmax[m] + 1)))} for m in markets}
+         for pid in players}
+    b = {(pid, m): rng.dirichlet(np.ones(kmax[m] + 1)) for pid in ("p1", "p2") for m in markets}
+    weights = {"rec_yds": 0.4, "receptions": 0.7, "rush_yds": 1.0, "rush_att": 0.55,
+               "anytime_td": 0.3}
+    calib = fpf.calib_for_apply(_calibration(_pipeline()))   # rec_yds knots, anytime_td Platt
+    assert calib is not None and not isinstance(calib["rec_yds"], tuple)
+
+    targets = ml_serving.serving_targets(a, b, weights, calib, markets, players)
+
+    recs = [{"season": 2025, "week": 9, "home": "HOM", "player_id": pid, "market": m,
+             "pmf": a[pid][m]["pmf"], "actual": 0.0} for pid in players for m in markets]
+    b_off = {(2025, 9, pid, m): v for (pid, m), v in b.items()}
+    off = {(r["player_id"], r["market"]): r["pmf"]
+           for r in fpf.tpb.apply_pipeline(recs, b_off, weights, calib)}
+    assert {(pid, m) for pid, ms in targets.items() for m in ms} == set(off)
+    for (pid, m), pmf in off.items():
+        assert np.array_equal(np.asarray(targets[pid][m]), np.asarray(pmf)), (pid, m)
+
+
+def test_serving_targets_respect_the_gate():
+    a = {"p1": {"rec_yds": {"pmf": [0.5, 0.5]}, "receptions": {"pmf": [0.2, 0.8]}}}
+    got = ml_serving.serving_targets(a, {}, {"rec_yds": 1.0, "receptions": 1.0}, None,
+                                     ["rec_yds", "receptions"], ["p1"], gate={("p1", "receptions")})
+    assert set(got["p1"]) == {"receptions"}

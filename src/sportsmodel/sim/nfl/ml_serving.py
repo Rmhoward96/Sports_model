@@ -92,6 +92,29 @@ def _b_pmfs(artifacts: Artifacts, rows: pd.DataFrame, a: dict, markets, market_m
     return out
 
 
+def serving_targets(a: dict, b: dict, weights: dict, calib: dict | None, markets, players,
+                    gate: set[tuple[str, str]] | None = None) -> dict[str, dict[str, np.ndarray]]:
+    """The final (pre quantile-map) pmfs: ``{player_id: {market: pmf}}``. PURE.
+
+    ``a``: ``{player_id: {market: {"pmf": [...]}}}`` (the ML sims' marginals);
+    ``b``: ``{(player_id, market): effective B pmf}`` (absent -> keep A);
+    ``weights``: market -> ``w_final``; ``calib``: ``calib_for_apply``'s maps
+    or None. Each (player, market) goes through ``pipeline.blend_calibrate``
+    -- exactly what ``train_props_ml_b.apply_pipeline`` applies offline (the
+    ladder / quick gate), so serving matches what was gated (parity-tested).
+    Only ``gate`` keys when a gate is given; built in the given
+    (players, markets) order."""
+    targets: dict[str, dict[str, np.ndarray]] = {}
+    for pid in players:
+        for m in markets:
+            if m not in a.get(pid, {}) or (gate is not None and (pid, m) not in gate):
+                continue
+            _, post = blend_calibrate(a[pid][m]["pmf"], b.get((pid, m)), weights[m], m,
+                                      None if calib is None else calib[m])
+            targets.setdefault(pid, {})[m] = post
+    return targets
+
+
 def ml_player_dists(spec: NflGameSpec, sims_ml: NflGameSims, feature_rows: pd.DataFrame,
                     team_rows: pd.DataFrame, artifacts: Artifacts,
                     rng: np.random.Generator,
@@ -125,15 +148,7 @@ def ml_player_dists(spec: NflGameSpec, sims_ml: NflGameSims, feature_rows: pd.Da
     b = _b_pmfs(artifacts, rows, a, [m for m in b_markets(cfg) if m in ml], market_max)
     calib = calib_for_apply(artifacts.calibration)
     weights = {m: float(cfg["markets"][m]["w_final"]) for m in ml}
-
-    targets: dict[str, dict[str, np.ndarray]] = {}
-    for pid in active:
-        for m in ml:
-            if m not in a[pid] or (gate is not None and (pid, m) not in gate):
-                continue
-            _, post = blend_calibrate(a[pid][m]["pmf"], b.get((pid, m)), weights[m], m,
-                                      None if calib is None else calib[m])
-            targets.setdefault(pid, {})[m] = post
+    targets = serving_targets(a, b, weights, calib, ml, active, gate)
     if not targets:
         return {}
     mapped = map_game_sims(sims_ml, targets, rng)

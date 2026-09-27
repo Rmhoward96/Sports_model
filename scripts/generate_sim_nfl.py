@@ -820,7 +820,9 @@ def main() -> None:
     print(f"injuries: questionable_weight={QUESTIONABLE_WEIGHT}")
 
     print(f"fetching usage sources for seasons {seasons}")
-    usage_src = fetch_usage_sources(seasons)
+    # depth comes from load_release("depth") + depth_charts_asof below; the old
+    # nfl_data_py depth import is not downloaded (include_depth=False).
+    usage_src = fetch_usage_sources(seasons, include_depth=False)
     pfr2gsis = build_pfr_to_gsis(usage_src["ids"])
     # Per-(season, week, team) depth charts, the same code path as the
     # backtest and the props-ML feature build: old weekly schema passed
