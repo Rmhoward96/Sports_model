@@ -31,13 +31,14 @@ IDENT = {"git_head": "deadbeef", "player_features": {"size": 1, "sha256": "a" * 
          "team_features": {"size": 2, "sha256": "b" * 64}}
 
 
-def _pipeline(w=1.0, calibrate=False, baseline=("pass_tds",), data_end=(2025, 4)):
+def _pipeline(w=1.0, calibrate=False, baseline=("pass_tds",), data_end=(2025, 4), final_pass=True):
     return {"kept_a_toggles": list(KEPT),
             "tuned": {"2024": [1.0, 150], "2025": [0.8, 300]},
             "markets": {m: {"source": "baseline" if m in baseline else "ml",
                             "w_final": float(w[m] if isinstance(w, dict) else w),
                             "calibrate": bool(calibrate)} for m in MARKETS},
-            "data_end": list(data_end)}
+            "data_end": list(data_end), "final_pass": final_pass, "unselected_pass": False,
+            "run_tag": "s2021-2025__every4__b7", "git": "feedface"}
 
 
 def _pipeline_b(b_markets, **kw):
@@ -682,7 +683,7 @@ def test_quick_gate_crash_writes_a_failing_record_and_no_stale_pass_survives(tmp
 
 def test_main_exit_codes(monkeypatch, tmp_path):
     seen = []
-    monkeypatch.setattr(fpf, "_load_inputs", lambda args: {"x": 1})
+    monkeypatch.setattr(fpf, "_load_inputs", lambda args: {"pipeline": _pipeline()})
     monkeypatch.setattr(fpf, "run_quick_gate",
                         lambda n, **kw: seen.append(("quick", n, kw["n_sims"])) or {"pass": False,
                                                                                    "reasons": ["r"]})
@@ -692,3 +693,100 @@ def test_main_exit_codes(monkeypatch, tmp_path):
     assert seen == [("quick", 2, 1000), ("final",)]
     with pytest.raises(SystemExit):
         fpf.main(["--oof", "x.parquet"])      # no OOF input any more
+
+
+# ---- I1: a failed B gate is never fit or published -----------------------------------------
+
+@pytest.mark.parametrize("pipe,needle", [
+    ({**_pipeline(), "final_pass": False}, "final_pass"),
+    ({k: v for k, v in _pipeline().items() if k != "final_pass"}, "final_pass"),
+    ({**_pipeline(), "final_pass": "true"}, "final_pass"),          # only a real JSON true
+    (_pipeline(baseline=MARKETS), 'no market with source "ml"'),
+])
+def test_pipeline_refusal_names_the_reason(pipe, needle):
+    reason = fpf.pipeline_refusal(pipe)
+    assert reason is not None and needle in reason
+
+
+def test_pipeline_refusal_none_for_a_passing_pipeline_with_an_ml_market():
+    assert fpf.pipeline_refusal(_pipeline()) is None
+
+
+def test_run_final_fit_refuses_a_failed_b_gate(tmp_path, monkeypatch):
+    calls = _spy_fits(monkeypatch)
+    p, t = _real_tables()
+    pipe = _pipeline(final_pass=False)
+    with pytest.raises(RuntimeError, match="final_pass"):
+        fpf.run_final_fit(bsn=_Bsn(), player_tbl=p, team_tbl=t, pipeline=pipe, a_gate=A_GATE,
+                          calibration=_calib(pipe), identity=IDENT, out_dir=tmp_path / "models",
+                          log=lambda m: None)
+    assert calls["a"] == [] and calls["b"] == []
+    assert not (tmp_path / "models").exists()
+
+
+def test_run_final_fit_refuses_when_no_market_is_ml(tmp_path, monkeypatch):
+    _spy_fits(monkeypatch)
+    p, t = _real_tables()
+    pipe = _pipeline(baseline=MARKETS)
+    with pytest.raises(RuntimeError, match='no market with source "ml"'):
+        fpf.run_final_fit(bsn=_Bsn(), player_tbl=p, team_tbl=t, pipeline=pipe, a_gate=A_GATE,
+                          calibration=_calib(pipe), identity=IDENT, out_dir=tmp_path / "models",
+                          log=lambda m: None)
+
+
+def test_quick_gate_refuses_a_failed_b_gate(tmp_path, monkeypatch):
+    calls = _stub_quick(monkeypatch)
+    bsn = _FakeBsn()
+    gate = _quick(tmp_path, bsn, _pipeline(final_pass=False))
+    assert gate["pass"] is False and "final_pass" in gate["reasons"][0]
+    assert bsn.runs == [] and calls["a"] == []
+    assert json.loads((tmp_path / "quick_gate.json").read_text())["pass"] is False
+
+
+@pytest.mark.parametrize("argv", [["--holdout-weeks", "2"], []])
+def test_main_refuses_a_failed_b_gate_in_both_modes(monkeypatch, tmp_path, capsys, argv):
+    monkeypatch.setattr(fpf, "_load_inputs", lambda args: {"pipeline": _pipeline(final_pass=False)})
+
+    def boom(*a, **k):
+        raise AssertionError("fit / quick gate ran on a failed B gate")
+
+    monkeypatch.setattr(fpf, "run_quick_gate", boom)
+    monkeypatch.setattr(fpf, "run_final_fit", boom)
+    assert fpf.main([*argv, "--out-dir", str(tmp_path)]) == 1
+    assert "REFUSED" in capsys.readouterr().out
+
+
+# ---- I2: --check-new-weeks (the weekly job's freshness guard) ---------------------------
+
+def _labelled_tbl(tmp_path, weeks, stub_weeks=()):
+    rows = [{"season": s, "week": w, "player_id": "p", "y_rec_yds": 10.0, "is_stub": False}
+            for s, w in weeks]
+    rows += [{"season": s, "week": w, "player_id": "p", "y_rec_yds": None, "is_stub": True}
+             for s, w in stub_weeks]
+    path = tmp_path / "player_features.parquet"
+    pd.DataFrame(rows).to_parquet(path, index=False)
+    return path
+
+
+@pytest.mark.parametrize("tt,expected", [([2026, 2], "true"), ([2026, 3], "false"),
+                                         ([2025, 18], "true")])
+def test_main_check_new_weeks(tmp_path, capsys, tt, expected):
+    ptbl = _labelled_tbl(tmp_path, [(2025, 18), (2026, 1), (2026, 2), (2026, 3)],
+                         stub_weeks=[(2026, 4)])        # the upcoming stub week is not labelled
+    cfg = tmp_path / "props_ml_config.json"
+    cfg.write_text(json.dumps({"trained_through": tt}))
+
+    def boom(args):
+        raise AssertionError("the freshness check must not load the fit inputs")
+
+    import unittest.mock as um
+    with um.patch.object(fpf, "_load_inputs", boom):
+        assert fpf.main(["--check-new-weeks", str(cfg), "--player-table", str(ptbl)]) == 0
+    out = capsys.readouterr().out.strip().splitlines()
+    assert out[-1] == f"new_weeks={expected}"
+
+
+def test_new_labelled_weeks_after():
+    tbl = pd.DataFrame({"season": [2026] * 3, "week": [1, 2, 3], "y_rec_yds": [1.0, 2.0, None]})
+    assert fpf.new_labelled_weeks(tbl, (2026, 1)) == [(2026, 2)]
+    assert fpf.new_labelled_weeks(tbl, (2026, 2)) == []

@@ -304,14 +304,21 @@ def per_market_scores(df: pd.DataFrame) -> dict[str, dict]:
 
 
 def pipeline_config(kept_a, tuned: Mapping, sources: Mapping, w_final: Mapping,
-                    calibrate: bool, data_end: tuple[int, int]) -> dict:
+                    calibrate: bool, data_end: tuple[int, int], *, final_pass: bool,
+                    unselected_pass: bool, run_tag: str, git: str | None) -> dict:
     """``pipeline.json``: ``{kept_a_toggles, tuned: {season: [decay, max_iter]},
-    markets: {m: {source, w_final, calibrate}}, data_end: [season, week]}``."""
+    markets: {m: {source, w_final, calibrate}}, data_end: [season, week],
+    final_pass, unselected_pass, run_tag, git}``. ``final_pass`` is the
+    SELECTED final decision (per-market sources) -- ``fit_props_ml_final.py``
+    refuses to fit or publish unless it is true; ``unselected_pass`` is the
+    unselected (A re-check sources) decision, recorded for review only."""
     return {"kept_a_toggles": [r for r in tpm.LADDER if r in kept_a],
             "tuned": {str(s): [float(d), int(i)] for s, (d, i) in sorted(tuned.items())},
             "markets": {m: {"source": str(sources[m]), "w_final": float(w_final[m]),
                             "calibrate": bool(calibrate)} for m in MARKETS},
-            "data_end": [int(data_end[0]), int(data_end[1])]}
+            "data_end": [int(data_end[0]), int(data_end[1])],
+            "final_pass": bool(final_pass), "unselected_pass": bool(unselected_pass),
+            "run_tag": str(run_tag), "git": None if git is None else str(git)}
 
 
 def oof_frame(ml_recs, out_of_role: set) -> pd.DataFrame:
@@ -685,7 +692,9 @@ def run_b_ladder(env: Mapping[str, str], *, bsn, player_tbl: pd.DataFrame,
     w_final = final_weights(with_b(pre_calib), MARKETS, "blend" in kept_rungs)
     data_end = max((int(r["season"]), int(r["week"])) for r in pre_calib)
     pipeline = pipeline_config(kept_a, tuned, sources, w_final, "calibration" in kept_rungs,
-                               data_end)
+                               data_end, final_pass=selected["pass"],
+                               unselected_pass=unselected["pass"], run_tag=tag,
+                               git=identity.get("git_head"))
     log("stage=serving calibration maps at w_final (all OOF rows)")
     serving_cal = {"data_end": list(data_end),
                    "markets": final_calibration(pre_calib, pipeline["markets"])}

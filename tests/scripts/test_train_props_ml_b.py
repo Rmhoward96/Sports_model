@@ -73,8 +73,12 @@ def test_pipeline_config_shape():
     cfg = tpb.pipeline_config(frozenset({"volume", "market", "efficiency", "context"}),
                               {2025: (0.8, 300), 2024: (1.0, 150)},
                               {m: ("baseline" if m == "pass_tds" else "ml") for m in MARKETS},
-                              {m: 0.7 for m in MARKETS}, True, (2025, 18))
-    assert set(cfg) == {"kept_a_toggles", "tuned", "markets", "data_end"}
+                              {m: 0.7 for m in MARKETS}, True, (2025, 18), final_pass=True,
+                              unselected_pass=False, run_tag="s2025__every4__b7", git="cafe")
+    assert set(cfg) == {"kept_a_toggles", "tuned", "markets", "data_end", "final_pass",
+                        "unselected_pass", "run_tag", "git"}
+    assert cfg["final_pass"] is True and cfg["unselected_pass"] is False
+    assert cfg["run_tag"] == "s2025__every4__b7" and cfg["git"] == "cafe"
     assert cfg["data_end"] == [2025, 18]
     assert cfg["kept_a_toggles"] == ["volume", "efficiency", "context", "market"]
     assert cfg["tuned"] == {"2024": [1.0, 150], "2025": [0.8, 300]}
@@ -460,8 +464,14 @@ def test_ladder_failing_blend_keeps_pipeline_at_a(tmp_path, monkeypatch):
     assert gate["blend"]["pass"] is False
     assert "blend" not in gate["kept_rungs"]
     pipe = json.loads((tmp_path / "pipeline__s2021-2022__every4.json").read_text())
-    assert set(pipe) == {"kept_a_toggles", "tuned", "markets", "data_end"}
+    assert set(pipe) == {"kept_a_toggles", "tuned", "markets", "data_end", "final_pass",
+                         "unselected_pass", "run_tag", "git"}
     assert pipe["data_end"] == [2022, WEEKS]
+    # the SELECTED final decision (not the unselected one) decides final_pass
+    assert pipe["final_pass"] is gate["final"]["pass"]
+    assert pipe["unselected_pass"] is gate["final"]["unselected"]["pass"]
+    assert pipe["final_pass"] is False   # no 2025 season in the run -> the final gate cannot pass
+    assert pipe["run_tag"] == gate["run_tag"] and pipe["git"] == "deadbeef"
     cal = json.loads((tmp_path / "calibration__s2021-2022__every4.json").read_text())
     assert cal["data_end"] == [2022, WEEKS] and set(cal["markets"]) == set(MARKETS)
     assert all(v["calibrate"] is False and v["n"] == 0 for v in cal["markets"].values())

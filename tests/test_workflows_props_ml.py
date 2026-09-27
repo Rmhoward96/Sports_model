@@ -278,8 +278,9 @@ def test_train_job_order_gate_before_publish(train_wf):
     assert job.get("permissions", {"contents": "write"}) == {"contents": "write"}
     steps = steps_of(job)
     assert steps[0]["uses"] == "actions/checkout@v5"
-    assert steps[1]["uses"] == "astral-sh/setup-uv@v10.0.1"
-    assert steps[2]["run"].strip() == "uv sync"
+    assert steps[1]["id"] == "guard"             # the pipeline.json guard runs first
+    assert steps[2]["uses"] == "astral-sh/setup-uv@v10.0.1"
+    assert steps[3]["run"].strip() == "uv sync"
     build = step_index(steps, runs("scripts/build_player_features.py"))
     gate = step_index(steps, runs("scripts/fit_props_ml_final.py --holdout-weeks 2"))
     final = step_index(steps, lambda s: (s.get("run") or "").strip()
@@ -299,7 +300,8 @@ def test_train_job_order_gate_before_publish(train_wf):
 def test_train_publish_step(train_wf):
     steps = steps_of(train_wf["jobs"]["train"])
     pub = steps[step_index(steps, runs("gh release upload props-ml-latest"))]
-    assert "if" not in pub
+    # only the two retrain guards gate it (no status function: success() is implied)
+    assert pub["if"] == "steps.guard.outputs.skip != 'true' && steps.fresh.outputs.skip != 'true'"
     assert pub["env"]["GH_TOKEN"] == "${{ github.token }}"
     script = pub["run"]
     assert "set -euo pipefail" in script
@@ -333,8 +335,14 @@ def test_train_only_the_publish_step_touches_releases_and_nothing_commits(train_
     assert "git push" not in text and "git commit" not in text
     for name, job in train_wf["jobs"].items():
         for s in steps_of(job):
-            if "gh release" in (s.get("run") or ""):
-                assert name == "train" and "gh release upload props-ml-latest" in s["run"], s.get("name")
+            run = s.get("run") or ""
+            if "gh release" not in run:
+                continue
+            assert name == "train", s.get("name")
+            if s.get("id") == "fresh":   # the freshness guard only READS the published config
+                assert re.findall(r"gh release \w+", run) == ["gh release download"]
+            else:
+                assert "gh release upload props-ml-latest" in run, s.get("name")
 
 
 def test_recheck_job(train_wf):
@@ -678,3 +686,106 @@ def test_train_rollback_text_serving_table_first():
     assert ("Rollback: UPDATE nfl_sim_serving SET model_version = 'sim-nfl-v1' first; then\n"
             "# (optionally) set SIM_ML_MODE=off") in text
     assert "or set the repo variable SIM_ML_MODE=off" not in text
+
+
+
+# ---- I2: weekly retrain guards -------------------------------------------------------------
+
+GUARD_NOTICE = "::notice::props-ml: no passing pipeline.json — skipping retrain"
+FRESH_NOTICE = "::notice::props-ml: no labelled week after the published trained_through"
+GUARD_IF = "steps.guard.outputs.skip != 'true'"
+FRESH_IF = "steps.fresh.outputs.skip != 'true'"
+
+
+def test_train_guards_structure(train_wf):
+    steps = steps_of(train_wf["jobs"]["train"])
+    guard, fresh = steps[1], steps[step_index(steps, lambda s: s.get("id") == "fresh")]
+    assert "if" not in guard and "assets/nfl/props_ml/pipeline.json" in guard["run"]
+    assert GUARD_NOTICE in guard["run"]
+    build = step_index(steps, runs("scripts/build_player_features.py"))
+    gate = step_index(steps, runs("scripts/fit_props_ml_final.py --holdout-weeks 2"))
+    assert build < steps.index(fresh) < gate
+    assert fresh["if"] == GUARD_IF
+    assert "gh release download props-ml-latest -p props_ml_config.json" in fresh["run"]
+    assert "--check-new-weeks" in fresh["run"] and FRESH_NOTICE in fresh["run"]
+    assert fresh["env"] == {"GH_TOKEN": "${{ github.token }}"}
+    # every step after the guard is skipped by it; the fit / publish also by the freshness guard
+    for s in steps[2:]:
+        assert GUARD_IF in str(s.get("if", "")), s.get("name")
+    for s in steps[gate:]:
+        assert FRESH_IF in str(s.get("if", "")), s.get("name")
+
+
+def _run_step(script: str, tmp_path: Path, env_extra: dict | None = None) -> tuple[dict, str]:
+    out_file = tmp_path / "github_output"
+    out_file.write_text("")
+    env = {"PATH": os.environ["PATH"], "GITHUB_OUTPUT": str(out_file),
+           "RUNNER_TEMP": str(tmp_path / "runner_temp"), **(env_extra or {})}
+    (tmp_path / "runner_temp").mkdir(exist_ok=True)
+    ws = tmp_path / "ws"
+    ws.mkdir(exist_ok=True)
+    r = subprocess.run(["bash", "-e", "-o", "pipefail", "-c", script], cwd=ws, env=env,
+                       capture_output=True, text=True)
+    assert r.returncode == 0, r.stderr
+    return dict(line.split("=", 1) for line in out_file.read_text().splitlines() if line), r.stdout
+
+
+needs_jq = pytest.mark.skipif(shutil.which("jq") is None, reason="jq not installed")
+
+
+@needs_jq
+@pytest.mark.parametrize("content,skip", [
+    (None, "true"),                                        # absent
+    ('{"final_pass": false, "markets": {}}', "true"),
+    ('{"markets": {}}', "true"),                            # predates final_pass
+    ('{"final_pass": "true"}', "true"),                     # only a JSON true counts
+    ("not json", "true"),
+    ('{"final_pass": true, "markets": {}}', "false"),
+])
+def test_train_guard_step_executes(train_wf, tmp_path, content, skip):
+    guard = steps_of(train_wf["jobs"]["train"])[1]
+    if content is not None:
+        f = tmp_path / "ws" / "assets" / "nfl" / "props_ml" / "pipeline.json"
+        f.parent.mkdir(parents=True)
+        f.write_text(content)
+    out, stdout = _run_step(guard["run"], tmp_path)
+    assert out == {"skip": skip}
+    assert (GUARD_NOTICE in stdout) is (skip == "true")
+
+
+def _fresh_bins(tmp_path: Path, *, release: bool, new_weeks: str) -> dict:
+    """Fake `gh` (download -> a props_ml_config.json, or rc 1 when no release) and
+    `uv` (prints the --check-new-weeks verdict and records its argv)."""
+    bindir = tmp_path / "bin"
+    bindir.mkdir(exist_ok=True)
+    gh = bindir / "gh"
+    gh.write_text("#!/bin/bash\n"
+                  f'[ "{int(release)}" = 1 ] || exit 1\n'
+                  'while [ $# -gt 0 ]; do [ "$1" = -D ] && d="$2"; shift; done\n'
+                  'echo \'{"trained_through": [2026, 3]}\' > "$d/props_ml_config.json"\n')
+    uv = bindir / "uv"
+    uv.write_text("#!/bin/bash\n"
+                  f'echo "$@" > "{tmp_path}/uv_argv"\n'
+                  'echo "props-ML: labelled weeks after trained_through ..."\n'
+                  f'echo "new_weeks={new_weeks}"\n')
+    for f in (gh, uv):
+        f.chmod(0o755)
+    return {"PATH": f"{bindir}:{os.environ['PATH']}", "GH_TOKEN": "x"}
+
+
+@pytest.mark.parametrize("release,new_weeks,skip", [
+    (True, "false", "true"), (True, "true", "false"), (False, "false", "false"),
+])
+def test_train_fresh_step_executes(train_wf, tmp_path, release, new_weeks, skip):
+    steps = steps_of(train_wf["jobs"]["train"])
+    fresh = steps[step_index(steps, lambda s: s.get("id") == "fresh")]
+    out, stdout = _run_step(fresh["run"], tmp_path, _fresh_bins(tmp_path, release=release,
+                                                                new_weeks=new_weeks))
+    assert out == {"skip": skip}
+    assert (FRESH_NOTICE in stdout) is (skip == "true")
+    argv = (tmp_path / "uv_argv")
+    if release:
+        assert "scripts/fit_props_ml_final.py --check-new-weeks" in argv.read_text()
+        assert argv.read_text().split()[-1].endswith("props_ml_config.json")
+    else:
+        assert not argv.exists()     # no release -> proceed without checking

@@ -4,6 +4,11 @@ name: train-props-ml
 # 2026-09-25-nfl-props-ml-p2.md, Task 11).
 #
 # train job (every Tuesday, after Monday Night Football):
+#  0. guards (each prints a ::notice:: and skips the rest -- the job still
+#     succeeds): no committed assets/nfl/props_ml/pipeline.json with
+#     final_pass == true (a failed B gate is never fit or published); and,
+#     after the feature build, no labelled week after the published
+#     props_ml_config.json's trained_through (no release -> proceed);
 #  1. rebuild the feature tables from nflverse (data/props_ml/*.parquet);
 #  2. QUICK GATE -- fit_props_ml_final.py --holdout-weeks 2 scores the pipeline
 #     vs the current sim on the last 2 completed weeks after pipeline.json's
@@ -63,29 +68,75 @@ jobs:
     steps:
       - uses: actions/checkout@v5
 
+      # Guard 1 (first): only a committed pipeline.json whose final_pass is a
+      # JSON true may be retrained / published. Otherwise skip (job succeeds).
+      - name: Guard (a passing pipeline.json)
+        id: guard
+        run: |
+          f=assets/nfl/props_ml/pipeline.json
+          if [ -f "$f" ] && [ "$(jq -r '.final_pass == true' "$f" 2>/dev/null || true)" = "true" ]; then
+            echo "skip=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "::notice::props-ml: no passing pipeline.json — skipping retrain"
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+          fi
+
       - name: Install uv
+        if: steps.guard.outputs.skip != 'true'
         uses: astral-sh/setup-uv@v10.0.1
 
       - name: Sync deps
+        if: steps.guard.outputs.skip != 'true'
         run: uv sync
 
       - name: Build props-ML feature tables (nflverse)
+        if: steps.guard.outputs.skip != 'true'
         run: uv run python scripts/build_player_features.py
+
+      # Guard 2: nothing new to learn from -> skip. Compares the rebuilt feature
+      # table's labelled weeks with the PUBLISHED config's trained_through; no
+      # props-ml-latest release (or no config asset) -> proceed.
+      - name: Guard (a labelled week after the published trained_through)
+        id: fresh
+        if: steps.guard.outputs.skip != 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          d="$RUNNER_TEMP/props-ml-published"
+          rm -rf "$d"
+          mkdir -p "$d"
+          if gh release download props-ml-latest -p props_ml_config.json -D "$d" >/dev/null 2>&1 \
+              && [ -f "$d/props_ml_config.json" ]; then
+            res="$(uv run python scripts/fit_props_ml_final.py --check-new-weeks "$d/props_ml_config.json" | tail -n 1)"
+            if [ "$res" = "new_weeks=false" ]; then
+              echo "::notice::props-ml: no labelled week after the published trained_through — skipping retrain"
+              echo "skip=true" >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
+          else
+            echo "no published props_ml_config.json (no props-ml-latest release): retraining"
+          fi
+          echo "skip=false" >> "$GITHUB_OUTPUT"
 
       - name: Quick gate (last 2 completed weeks; exit 1 blocks the fit and publish)
         id: quick_gate
+        if: steps.guard.outputs.skip != 'true' && steps.fresh.outputs.skip != 'true'
         run: uv run python scripts/fit_props_ml_final.py --holdout-weeks 2
 
       - name: Final fit (data/props_ml/models)
+        if: steps.guard.outputs.skip != 'true' && steps.fresh.outputs.skip != 'true'
         run: uv run python scripts/fit_props_ml_final.py
 
-      # No `if:` on purpose: runs only when every step above succeeded.
+      # Only the guards' `if:` (no status function, so success() is implied):
+      # runs only when every step above succeeded and neither guard skipped.
       # Order: rotate prev -> upload models -> drop stale assets -> upload
       # MANIFEST.sha256 LAST. Serving verifies the downloaded set against the
       # manifest, so a half-published (mixed) set is rejected, never loaded.
       # Any failure once the upload phase starts restores the saved previous
       # assets into props-ml-latest (ERR trap) and fails the job.
       - name: Publish models (props-ml-latest; previous assets -> props-ml-prev)
+        if: steps.guard.outputs.skip != 'true' && steps.fresh.outputs.skip != 'true'
         env:
           GH_TOKEN: ${{ github.token }}
         run: |

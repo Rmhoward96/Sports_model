@@ -47,6 +47,13 @@ coverage / share-fallback / B-feature checks pass. ``quick_gate.json`` is
 removed at entry and written on EVERY exit path (an exception writes a failing
 record, then re-raises); exit 1 on failure. No model artifact is written.
 
+Refusal (both modes): ``pipeline_refusal`` -- ``pipeline.json``'s
+``final_pass`` (the B gate's SELECTED final decision) must be a JSON ``true``
+and at least one market must have source ``"ml"``; otherwise ``main`` prints
+``REFUSED: <reason>`` and exits 1 before fitting anything, ``run_final_fit``
+raises, and the quick gate fails with that reason. A failed B gate is never
+fit or published.
+
 Pure parts are unit tested (tests/scripts/test_fit_props_ml_final.py);
 ``main`` / ``_load_inputs`` (file IO) are not.
 """
@@ -132,6 +139,12 @@ def trained_through(player_tbl: pd.DataFrame) -> tuple[int, int]:
     return weeks[-1]
 
 
+def new_labelled_weeks(player_tbl: pd.DataFrame, after: tuple[int, int]) -> list[tuple[int, int]]:
+    """Labelled (season, week)s STRICTLY AFTER ``after`` (e.g. the published
+    config's ``trained_through``). PURE."""
+    return [w for w in labelled_weeks(player_tbl) if w > (int(after[0]), int(after[1]))]
+
+
 def next_week(sw: tuple[int, int]) -> tuple[int, int]:
     """``(season, week + 1)``: the exclusive ``upto`` covering ``sw``."""
     return (int(sw[0]), int(sw[1]) + 1)
@@ -149,6 +162,20 @@ def holdout_weeks(player_tbl: pd.DataFrame, n: int, after: tuple[int, int]
     if out and not any(w < out[0] for w in weeks):
         raise ValueError(f"no completed week before the holdout {out}: nothing to train on")
     return out
+
+
+def pipeline_refusal(pipeline: Mapping) -> str | None:
+    """Why this pipeline.json must not be fit / published, or None. PURE.
+    Refuses unless ``final_pass`` is exactly ``True`` (the selected final B
+    gate decision passed) and at least one market's source is ``"ml"``."""
+    fp = pipeline.get("final_pass")
+    if fp is not True:
+        return (f"pipeline.json final_pass is {fp!r} (the B gate's selected final decision did "
+                f"not pass, or pipeline.json predates final_pass): a failed B gate is never fit "
+                f"or published")
+    if not any(str(v.get("source")) == "ml" for v in pipeline.get("markets", {}).values()):
+        return 'pipeline.json has no market with source "ml": nothing for the ML path to serve'
+    return None
 
 
 def pipeline_data_end(pipeline: Mapping) -> tuple[int, int]:
@@ -282,7 +309,7 @@ def build_config(pipeline: Mapping, *, learned_models, b_models: Mapping, a_fit:
     return {**pipeline, "format_version": FORMAT_VERSION,
             "trained_through": [int(trained_through[0]), int(trained_through[1])],
             "fit_upto": list(next_week(trained_through)),
-            "git": identity.get("git_head"),
+            "git": identity.get("git_head"), "pipeline_git": pipeline.get("git"),
             "features": {"player": identity.get("player_features"),
                          "team": identity.get("team_features")},
             "created_at": created_at, "a_fit": dict(a_fit),
@@ -362,7 +389,11 @@ def run_final_fit(*, bsn, player_tbl: pd.DataFrame, team_tbl: pd.DataFrame, pipe
                   out_dir: Path = MODEL_DIR, log: Callable[[str], None] = print,
                   created_at: str | None = None) -> dict:
     """Fit A and B on every completed week; write the artifacts (with the
-    committed calibration maps); return the config."""
+    committed calibration maps); return the config. RuntimeError (nothing
+    fit or written) when ``pipeline_refusal`` names a reason."""
+    refusal = pipeline_refusal(pipeline)
+    if refusal:
+        raise RuntimeError(refusal)
     kept, a_fit = kept_toggles(pipeline, a_gate), a_fit_params(a_gate)
     check_calibration(pipeline, calibration)
     tt = trained_through(player_tbl)
@@ -388,6 +419,9 @@ def run_final_fit(*, bsn, player_tbl: pd.DataFrame, team_tbl: pd.DataFrame, pipe
 def _quick_gate_body(n_weeks: int, rec: dict, *, bsn, player_tbl, team_tbl, pipeline, a_gate,
                      calibration, n_sims, log) -> dict:
     """The quick gate's evaluation; fills ``rec`` (holdout) as it goes."""
+    refusal = pipeline_refusal(pipeline)
+    if refusal:
+        return {"pass": False, "reasons": [refusal]}
     kept, a_fit = kept_toggles(pipeline, a_gate), a_fit_params(a_gate)
     check_calibration(pipeline, calibration)
     data_end = pipeline_data_end(pipeline)
@@ -520,13 +554,30 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--out-dir", type=Path, default=MODEL_DIR)
     ap.add_argument("--pipeline", type=Path, default=tpb.PIPELINE_PATH)
     ap.add_argument("--calibration", type=Path, default=tpb.CALIBRATION_PATH)
+    ap.add_argument("--check-new-weeks", type=Path, metavar="CONFIG",
+                    help="only report whether the player table has a labelled week after "
+                         "CONFIG's trained_through (last line new_weeks=true|false); fits nothing")
+    ap.add_argument("--player-table", type=Path, default=tpm.PLAYER_PATH,
+                    help="player feature table for --check-new-weeks")
     args = ap.parse_args(argv)
     t0 = time.time()
 
     def log(msg: str) -> None:
         print(f"[+{(time.time() - t0) / 60:7.1f} min] {msg}", flush=True)
 
+    if args.check_new_weeks is not None:
+        tt = json.loads(Path(args.check_new_weeks).read_text())["trained_through"]
+        new = new_labelled_weeks(pd.read_parquet(args.player_table), (tt[0], tt[1]))
+        print(f"props-ML: labelled weeks after the published trained_through {list(tt)}: "
+              f"{[list(w) for w in new]}", flush=True)
+        print(f"new_weeks={'true' if new else 'false'}", flush=True)
+        return 0
+
     inputs = _load_inputs(args)
+    refusal = pipeline_refusal(inputs["pipeline"])
+    if refusal:
+        print(f"REFUSED: {refusal}", flush=True)
+        return 1
     if args.holdout_weeks > 0:
         gate = run_quick_gate(args.holdout_weeks, **inputs, out_dir=args.out_dir,
                               n_sims=args.n_sims, log=log)
