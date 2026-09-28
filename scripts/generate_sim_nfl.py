@@ -164,6 +164,7 @@ from sportsmodel.sim.engine import margin_pmf, pred_scores, stat_pmf, total_pmf
 from sportsmodel.sim.nfl.aggregate import disagreement, nfl_player_prop_dists
 from sportsmodel.sim.nfl.inputs import build_spec_from_usage
 from sportsmodel.sim.nfl.kernel import simulate_game
+from sportsmodel.sim.nfl.qb_market import books_qb_names, promote_books_qb
 from sportsmodel.nfl.elo import EloConfig, run_elo
 from sportsmodel.sim.nfl.rates import (fetch_nflverse, ratings_tilt, team_rates_from_pbp,
                                        team_defense_rates_from_pbp)
@@ -577,6 +578,28 @@ def _load_crosswalk() -> dict[str, str]:
 def _opt_float(x) -> float | None:
     """A nullable numeric column (psycopg may hand back Decimal) as float|None."""
     return None if x is None else float(x)
+
+
+def _load_pass_yds_odds(game_pks: list) -> list[dict]:
+    """Pre-kickoff pass_yds prop captures from the last 48h for `game_pks`
+    (every player the books posted, not just the sim's), for
+    `qb_market.books_qb_names`. Best-effort: any failure -> [] (the depth
+    chart alone decides QB1, as before)."""
+    if not game_pks:
+        return []
+    try:
+        with get_postgres() as conn, conn.cursor() as cur:
+            cur.execute("""
+                SELECT game_pk, player_name, captured_at
+                FROM odds_snapshot
+                WHERE game_pk = ANY(%s) AND market = 'pass_yds'
+                  AND captured_at <= commence_time
+                  AND captured_at > now() - interval '48 hours'
+            """, [list(game_pks)])
+            return [dict(zip(["game_pk", "player_name", "captured_at"], r)) for r in cur.fetchall()]
+    except Exception as exc:  # noqa: BLE001 -- the QB check is an overlay, never fatal
+        print(f"WARN qb-check: pass_yds odds unavailable ({exc!r}); depth chart decides QB1")
+        return []
 
 
 def _load_upcoming_games() -> list[dict]:
@@ -1091,6 +1114,11 @@ def main() -> None:
     else:
         print("abbrev alignment: OK (depth/injuries/schedule codes all known)")
 
+    # Starting-QB check (qb_market): the books post a pass_yds prop only for
+    # the QB they expect to start, so a benching the depth chart hasn't caught
+    # yet promotes the books' QB to QB1 here, before usage is built.
+    posted_qbs = books_qb_names(_load_pass_yds_odds([g["game_pk"] for g in games]))
+
     rng = np.random.default_rng(SIM_SEED)
 
     sims_by_game: dict = {}
@@ -1105,6 +1133,13 @@ def main() -> None:
         try:
             home_abbrev = crosswalk[g["home_team"]]
             away_abbrev = crosswalk[g["away_team"]]
+            for abbrev in (home_abbrev, away_abbrev):
+                depth_df, switch = promote_books_qb(
+                    depth_df, abbrev, upto_season, upto_week,
+                    posted_qbs.get(game_pk, set()), out_names_by_team.get(abbrev, set()))
+                if switch:
+                    print(f"::warning::qb-check: {abbrev} QB1 {switch[0]} -> {switch[1]} "
+                          f"(books post a pass_yds line only for {switch[1]})", flush=True)
             home_players, home_qb = active_usage(
                 home_abbrev,
                 upto_season,

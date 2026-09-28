@@ -193,3 +193,22 @@ def test_load_latest_prop_odds_ignores_book_prices_older_than_48h(monkeypatch):
     assert re.search(r"captured_at\s*>\s*now\(\)\s*-\s*interval\s*'48 hours'", sql)
     assert "captured_at <= commence_time" in sql
     assert params[0] == [5]
+
+
+def test_drop_pulled_lines_keeps_only_the_latest_pull_per_game_market():
+    from datetime import datetime, timedelta, timezone
+
+    from sportsmodel.serving.props_ev import drop_pulled_lines
+
+    t = datetime(2026, 9, 28, 20, 56, tzinfo=timezone.utc)
+    row = lambda name, market, at, book="dk": {
+        "game_pk": 1, "market": market, "side": "over", "player_name": name,
+        "book": book, "line": 200.5, "price": -110, "captured_at": at}
+    rows = [
+        row("Tyson Bagent", "pass_yds", t - timedelta(days=2)),       # pulled by the books
+        row("Case Keenum", "pass_yds", t),
+        row("Jalen Hurts", "pass_yds", t - timedelta(minutes=15), "fd"),  # same pull, a bit earlier
+        row("DJ Moore", "rec_yds", t - timedelta(hours=5)),          # rec_yds' own latest pull
+    ]
+    kept = {(r["player_name"], r["market"]) for r in drop_pulled_lines(rows)}
+    assert kept == {("Case Keenum", "pass_yds"), ("Jalen Hurts", "pass_yds"), ("DJ Moore", "rec_yds")}

@@ -32,6 +32,7 @@ from __future__ import annotations
 
 import json
 import re
+from datetime import timedelta
 
 from ..model.distributions import prob_over_dist
 from .board import EV_CEILING, best_price, decimal_odds, ev, novig
@@ -106,6 +107,25 @@ def latest_capture_only(rows: list[dict]) -> list[dict]:
         r for r in rows
         if r["captured_at"] == latest_at[(r["game_pk"], r["market"], r["player_name"], r["book"])]
     ]
+
+
+# A pull stamps its rows at (nearly) one moment; this covers a pull that
+# straddles a few minutes.
+LATEST_PULL_SLACK_MIN = 60
+
+
+def drop_pulled_lines(rows: list[dict]) -> list[dict]:
+    """Keep only rows from the latest pull of each (game_pk, market). A book
+    that took a player's prop down (e.g. a QB benched after it was posted)
+    simply stops returning it, so without this its last-seen line would stay
+    live for the whole 48h window. Run after `latest_capture_only`."""
+    latest: dict[tuple, object] = {}
+    for r in rows:
+        key = (r["game_pk"], r["market"])
+        if key not in latest or r["captured_at"] > latest[key]:
+            latest[key] = r["captured_at"]
+    slack = timedelta(minutes=LATEST_PULL_SLACK_MIN)
+    return [r for r in rows if r["captured_at"] >= latest[(r["game_pk"], r["market"])] - slack]
 
 
 # =============================================================================

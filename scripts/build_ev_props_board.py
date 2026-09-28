@@ -38,6 +38,7 @@ from sportsmodel.db import (
 from sportsmodel.serving.props_ev import (
     assemble_prop_line_rows,
     assemble_prop_rows,
+    drop_pulled_lines,
     latest_capture_only,
 )
 
@@ -77,8 +78,10 @@ def load_latest_prop_odds(sport: str, game_pks: list[int]) -> list[dict]:
     same window as the site's price views), further filtered to each book's MOST RECENT
     capture per (game_pk, market, player_name, book) via `latest_capture_only`
     -- a book's superseded line (moved since) is dropped, not just its
-    superseded (game_pk, market, side, player_name, book, line) row. Empty
-    list of game_pks -> empty result."""
+    superseded (game_pk, market, side, player_name, book, line) row -- and to
+    the latest pull of each (game_pk, market) via `drop_pulled_lines`, so a
+    prop the books took down (a benched QB's) stops counting. Empty list of
+    game_pks -> empty result."""
     if not game_pks:
         return []
     prop_markets = list(sports.get(sport).prop_market_map.keys())
@@ -101,7 +104,7 @@ def load_latest_prop_odds(sport: str, game_pks: list[int]) -> list[dict]:
             [list(game_pks), prop_markets],
         )
         rows = cur.fetchall()
-    return latest_capture_only([dict(zip(ODDS_COLS, r)) for r in rows])
+    return drop_pulled_lines(latest_capture_only([dict(zip(ODDS_COLS, r)) for r in rows]))
 
 
 def main(argv: list[str] | None = None) -> None:
