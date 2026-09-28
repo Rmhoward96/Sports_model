@@ -1134,9 +1134,14 @@ def main() -> None:
             home_abbrev = crosswalk[g["home_team"]]
             away_abbrev = crosswalk[g["away_team"]]
             for abbrev in (home_abbrev, away_abbrev):
-                depth_df, switch = promote_books_qb(
-                    depth_df, abbrev, upto_season, upto_week,
-                    posted_qbs.get(game_pk, set()), out_names_by_team.get(abbrev, set()))
+                try:
+                    depth_df, switch = promote_books_qb(
+                        depth_df, abbrev, upto_season, upto_week,
+                        posted_qbs.get(game_pk, set()), out_names_by_team.get(abbrev, set()))
+                except Exception as exc:  # noqa: BLE001 -- an overlay: never skips a game
+                    print(f"::warning::qb-check: {abbrev} failed ({exc!r}); depth chart decides QB1",
+                          flush=True)
+                    switch = None
                 if switch:
                     print(f"::warning::qb-check: {abbrev} QB1 {switch[0]} -> {switch[1]} "
                           f"(books post a pass_yds line only for {switch[1]})", flush=True)
