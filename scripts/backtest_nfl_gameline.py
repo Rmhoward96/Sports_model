@@ -91,7 +91,8 @@ def _raw_model_predictions(schedule_df: pd.DataFrame, elo_cfg: EloConfig,
                                            gh, ga, elo_cfg, blend_cfg)
             model_total = (expected_total(pts_cache, lg_cache, h, a)
                            if pts_cache else 2 * lg_cache) if lg_cache else 44.0
-            out.append({"model_margin": model_margin, "model_total": model_total,
+            out.append({"season": int(season), "home_team": h, "away_team": a,
+                        "model_margin": model_margin, "model_total": model_total,
                         "spread_line": _clean_market(g.get("spread_line")),
                         "total_line": _clean_market(g.get("total_line")),
                         "week": int(g["week"]),
@@ -110,12 +111,17 @@ def _apply_gl(raw: list[dict], gl_cfg: GameLineConfig) -> list[dict]:
     """Cheaply re-score cached raw walk-forward rows (see
     `_raw_model_predictions`) under a given GameLineConfig: apply
     market-shrinkage + wrap in the Normal dists via build_gameline. O(n),
-    no Elo/SRS/points recomputation."""
+    no Elo/SRS/points recomputation. Each row also carries the game's
+    identity (season, week, home_team, away_team) and the closing lines it
+    was shrunk toward (None when missing) so callers can pair it."""
     out = []
     for r in raw:
         market = {"spread_line": r["spread_line"], "total_line": r["total_line"]}
         row = build_gameline(r["model_margin"], r["model_total"], market, r["week"], gl_cfg)
-        out.append({"pred_margin": row["pred_margin"], "pred_total": row["pred_total"],
+        out.append({"season": r.get("season"), "week": r["week"],
+                    "home_team": r.get("home_team"), "away_team": r.get("away_team"),
+                    "spread_line": r["spread_line"], "total_line": r["total_line"],
+                    "pred_margin": row["pred_margin"], "pred_total": row["pred_total"],
                     "win_prob": row["home_win_prob"],
                     "actual_margin": r["actual_margin"], "actual_total": r["actual_total"]})
     return out

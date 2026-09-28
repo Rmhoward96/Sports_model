@@ -1,10 +1,11 @@
 name: build-ev-board
 
-# Build the +EV board -> ev_picks / ev_current. Joins desk_current (desk picks)
-# + the latest odds_snapshot (Pinnacle + soft books) and writes one edge/EV row
-# per market side for every upcoming game. DATABASE_URL lives here, not in the
-# session. Run AFTER capture-odds (odds must be fresh) and, for the desk overlay,
-# after a desk run. Line-shopping picks appear even with no desk pick.
+# Build the +EV board -> ev_picks / ev_current. Reads the upcoming slate
+# (predictions_current) + the latest odds_snapshot (Pinnacle + soft books) and
+# writes one edge/EV row per market side for every upcoming game. DATABASE_URL
+# lives here, not in the session. Run AFTER capture-odds (odds must be fresh).
+# The Decision Desk overlay is retired: true prob = Pinnacle no-vig, so the
+# board is pure line shopping.
 #
 # The +EV board is assistive -- not a proven edge until grade-ev's forward CLV
 # record supports it.

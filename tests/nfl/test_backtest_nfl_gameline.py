@@ -42,3 +42,15 @@ def test_no_leak_future_game_does_not_change_past_prediction():
     # (checked via per-game predictions the harness exposes)
     assert bt.per_game_predictions(SCHED.iloc[:5].copy(), EloConfig(), BlendConfig(), GameLineConfig()) \
         == bt.per_game_predictions(extra, EloConfig(), BlendConfig(), GameLineConfig())[:5]
+
+def test_per_game_predictions_carry_game_identity_and_closing_lines():
+    # The ML-vs-Elo game gate pairs Elo rows with ML rows on (season, week, home)
+    # and checks both used the same closing lines, so each row carries them.
+    sched = SCHED.copy()
+    sched.loc[1, "spread_line"] = float("nan")
+    rows = bt.per_game_predictions(sched, EloConfig(), BlendConfig(), GameLineConfig())
+    assert len(rows) == len(sched)
+    got = [(r["season"], r["week"], r["home_team"], r["away_team"]) for r in rows]
+    assert got == list(zip(sched["season"], sched["week"], sched["home_team"], sched["away_team"]))
+    assert rows[0]["spread_line"] == 2.5 and rows[0]["total_line"] == 45.5
+    assert rows[1]["spread_line"] is None  # NaN sanitized -> None, as fed to build_gameline

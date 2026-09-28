@@ -34,7 +34,8 @@ DB/injury IO is thin.
 
 Usage:
     DATABASE_URL=... uv run python scripts/injury_watch.py --sport nfl --check
-    DATABASE_URL=... uv run python scripts/injury_watch.py --sport cfb --record --bundle data/cfb/desk_bundle.json
+    DATABASE_URL=... uv run python scripts/injury_watch.py --sport nfl --record   # injury-watch.yml form
+    DATABASE_URL=... uv run python scripts/injury_watch.py --sport cfb --record --bundle data/cfb/desk_bundle.json  # legacy desk bundle
 """
 from __future__ import annotations
 

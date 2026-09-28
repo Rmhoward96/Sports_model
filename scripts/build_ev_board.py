@@ -1,18 +1,16 @@
-"""Build the +EV desk-driven pilot board: read the desk's upcoming picks +
-latest odds, compute edge/EV via `sportsmodel.serving.ev_pilot`, and land the
-rows in `ev_picks`.
+"""Build the +EV board: read the upcoming slate + latest odds, compute edge/EV
+via `sportsmodel.serving.ev_pilot`, and land the rows in `ev_picks`.
 
-Sub-project 4 (+EV desk-driven pilot), task 1 & 2 -- see
-.superpowers/sdd/2026-09-09-plus-ev-4-desk-driven-pilot/task-1-brief.md and
-task-2-brief.md.
+Originally sub-project 4 (+EV desk-driven pilot) -- see
+.superpowers/sdd/2026-09-09-plus-ev-4-desk-driven-pilot/. ML-only NFL Task 3
+retired the Decision Desk overlay: the board no longer reads `desk_current`,
+so every row's desk_delta is 0 and true_prob is Pinnacle's no-vig probability
+-- the board is pure line shopping (best soft price vs the sharp fair).
 
 Reads:
   - `predictions_current`: the full upcoming slate for `--sport` (game_pk, team
     names -> matchup, commence_time). The board is built over EVERY upcoming
-    game, so LINE-SHOPPING (best soft price vs the sharp Pinnacle fair) is
-    surfaced everywhere, not only on games the desk picked.
-  - `desk_current` (view over desk_picks): LEFT-joined as an OPTIONAL overlay --
-    a game with no desk pick still gets a line-shopping row (desk_delta 0).
+    game.
   - `odds_snapshot`: latest per-book snapshot per (game_pk, market, side, book)
     captured before commence_time, for those games' Pinnacle + soft-book prices.
 
@@ -38,31 +36,23 @@ from sportsmodel.serving.parlay import build_parlay
 
 MODEL_VERSION = "ev-pilot-v1"
 
-# One row per upcoming game: identity/matchup from predictions_current, the
-# desk's pick fields LEFT-joined (NULL when the desk didn't touch that game).
-# assemble_games sets desk=None when ml_pick/spread_side/total_side are all
-# NULL, so a non-desk game yields a pure line-shopping row.
-GAME_COLS = [
-    "sport", "game_pk", "matchup", "commence_time",
-    "ml_pick", "spread_side", "total_side", "conviction_tier", "confidence",
-]
+# One row per upcoming game: identity/matchup from predictions_current. No desk
+# fields -> assemble_games sets desk=None, so every game yields a pure
+# line-shopping row (desk_delta 0, true_prob == Pinnacle no-vig).
+GAME_COLS = ["sport", "game_pk", "matchup", "commence_time"]
 
 
 def load_upcoming_games(sport: str) -> list[dict]:
-    """Every upcoming game for `sport` from `predictions_current`, with the
-    desk's current pick (if any) LEFT-joined from `desk_current`. matchup is
-    built as "<away> @ <home>" to match the desk convention."""
+    """Every upcoming game for `sport` from `predictions_current`. matchup is
+    built as "<away> @ <home>"."""
     with get_postgres() as pg, pg.cursor() as cur:
         cur.execute(
             """
             SELECT p.sport,
                    p.game_pk,
                    p.away_team_name || ' @ ' || p.home_team_name AS matchup,
-                   p.commence_time,
-                   d.ml_pick, d.spread_side, d.total_side, d.conviction_tier, d.confidence
+                   p.commence_time
             FROM predictions_current p
-            LEFT JOIN desk_current d
-              ON d.sport = p.sport AND d.game_pk = p.game_pk
             WHERE p.sport = %s AND p.commence_time > now()
             """,
             [sport],
@@ -138,9 +128,9 @@ def main() -> None:
     passes = [r for r in all_rows if not r["is_pick"]]
 
     upsert_ev_picks(all_rows)
-    # A market's picked side can flip between builds (e.g. the desk's ml_pick
-    # changes); demote the stale opposite side so a two-way market never shows
-    # both sides as picks.
+    # A market's picked side can flip between builds (the market-favored side
+    # moves with the line); demote the stale opposite side so a two-way market
+    # never shows both sides as picks.
     cleared = clear_other_side_picks(all_rows)
 
     # Auto-parlay the juiced-favorite legs into a single +EV ticket. Non-fatal:
