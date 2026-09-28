@@ -1,11 +1,13 @@
 name: generate-sim-nfl
 
 # Runs the NFL sim producer (Monte Carlo game simulations + player-level
-# distributions). Scheduled before desk-auto-nfl so the disagreement signal is
-# fresh when the desk reads it. Wed/Sat/Sun 21:00 UTC (Thor/Sun/Mon slates),
-# ~1 hour before desk-auto-nfl at 22:15 UTC. generate_sim_nfl.py is idempotent
-# (upsert on game keys), so duplicate or slightly-late runs just re-upsert the
-# same rows. Manual runs (workflow_dispatch) proceed the same way.
+# distributions). Wed/Sat/Sun 21:00 UTC (Thu/Sun/Mon slates), plus daily
+# 13:30 UTC while ML_GAME_LINES is on (see below). generate_sim_nfl.py is
+# idempotent (upsert on game keys), so duplicate or slightly-late runs just
+# re-upsert the same rows. Manual runs (workflow_dispatch) proceed the same
+# way. The job shares injury-watch's NFL concurrency group
+# (injury-pipeline-nfl, never cancelled in progress): both write the ML slate
+# and game_predictions, so they run one at a time.
 #
 # Props-ML serving: the repo variable SIM_ML_MODE (off | shadow | live; unset =
 # off) is passed to generate_sim_nfl.py. When it is not off, the latest models
@@ -18,9 +20,17 @@ name: generate-sim-nfl
 # the ML sim the NFL game-line source -- with nfl_sim_serving on nfl-sim-ml-v1,
 # generate_sim_nfl.py then also writes game_predictions (nfl-sim-ml-v1) and
 # takes the slate from ESPN's target week too. Off = exactly today's run.
+# With generate-nfl disabled, the daily 13:30 UTC run is what advances the
+# slate to the new week (ESPN's target week turns once the last game is final;
+# after Tuesday's 12:00 refresh-nfl-snapshots commit, before TNF) and refreshes
+# kickoffs / market lines. It runs only while ML_GAME_LINES is on: off keeps
+# the Wed/Sat/Sun schedule (generate-nfl still writes the lines daily).
+# Game-lines-only rollback: set ML_GAME_LINES=off, `gh workflow enable
+# generate-nfl`, then dispatch generate-nfl (its rows win only once newer).
 on:
   schedule:
     - cron: "0 21 * * 0,3,6"  # Wed/Sat/Sun 21:00 UTC (~4-5pm ET)
+    - cron: "30 13 * * *"     # daily 13:30 UTC, only while ML_GAME_LINES is on (job `if`)
   workflow_dispatch: {}
 
 permissions:
@@ -28,7 +38,13 @@ permissions:
 
 jobs:
   generate:
+    # the daily cron is for ML_GAME_LINES=on only (`==` is case-insensitive in
+    # Actions expressions); the Wed/Sat/Sun cron and dispatches always run
+    if: github.event.schedule != '30 13 * * *' || vars.ML_GAME_LINES == 'on'
     runs-on: ubuntu-latest
+    concurrency:
+      group: injury-pipeline-nfl
+      cancel-in-progress: false
     timeout-minutes: 35    # the ML path (shadow/live) rebuilds the feature tables
     env:
       SIM_ML_MODE: ${{ vars.SIM_ML_MODE || 'off' }}

@@ -92,3 +92,43 @@ def test_injury_watch_generate_nfl_runs_only_when_ml_game_lines_not_on():
     # the sim step (which writes the ML game lines when on) still runs on every change
     sim = steps[step_index(steps, runs("generate_sim_nfl.py"))]
     assert sim["if"] == CHANGED
+
+
+# ---- final fix wave: daily cron, concurrency, case-insensitive conditions ----------------
+
+DAILY_CRON = "30 13 * * *"
+
+
+def test_generate_sim_nfl_keeps_its_triggers_and_adds_the_daily_cron():
+    """Ruling (b): with generate-nfl disabled, a daily run advances the slate
+    to the new week and refreshes kickoffs / lines (13:30 UTC, after Tuesday's
+    12:00 refresh-nfl-snapshots commit)."""
+    on = load("generate-sim-nfl.yml")["on"]
+    assert on["schedule"] == [{"cron": "0 21 * * 0,3,6"}, {"cron": DAILY_CRON}]
+    assert on["workflow_dispatch"] == {}
+
+
+def test_generate_sim_nfl_daily_cron_runs_only_when_ml_game_lines_on():
+    """ML_GAME_LINES off => unchanged: the daily cron skips the job; the
+    Wed/Sat/Sun cron and dispatches (github.event.schedule unset) always run,
+    with the same job env (repo-variable defaults) for every trigger."""
+    job = load("generate-sim-nfl.yml")["jobs"]["generate"]
+    assert job["if"] == f"github.event.schedule != '{DAILY_CRON}' || vars.ML_GAME_LINES == 'on'"
+    assert job["env"] == {"SIM_ML_MODE": "${{ vars.SIM_ML_MODE || 'off' }}",
+                          "ML_GAME_LINES": ML_GAME_LINES_ENV}
+
+
+def test_generate_sim_nfl_shares_injury_watch_nfl_concurrency_group():
+    """M2: both write the ML slate and game_predictions, so they serialize."""
+    sim = load("generate-sim-nfl.yml")["jobs"]["generate"]["concurrency"]
+    watch = load("injury-watch.yml")["jobs"]["nfl"]["concurrency"]
+    assert sim == watch == {"group": "injury-pipeline-nfl", "cancel-in-progress": "false"}
+
+
+def test_no_workflow_uses_to_lower():
+    """Ruling (c): Actions `==`/`!=` string comparisons already ignore case,
+    and the expression language has no toLower() -- a call to it fails the
+    run, so none may appear."""
+    for path in sorted(WF.glob("*.y*ml")):
+        text = path.read_text()
+        assert "tolower(" not in text.lower(), path.name
