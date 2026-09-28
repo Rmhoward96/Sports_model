@@ -111,10 +111,14 @@ sim's). `on` makes the ML sim the NFL game-line source (generate-nfl is
 disabled and injury-watch skips generate_nfl.py):
   * the slate is predictions_current PLUS ESPN's target week
     (`merge_espn_slate`; generate_nfl's source): with generate-nfl disabled
-    nothing else adds a new week's games. ESPN also supplies game_date and
-    market_spread/market_total. A new ESPN game has no analytic prediction,
-    so its nfl_sim rows carry `disagreement` None. An ESPN failure warns and
-    keeps the predictions_current slate (market lines None).
+    nothing else adds a new week's games. ESPN also supplies commence_time /
+    game_date (a listed game that ESPN no longer reports scheduled after now
+    is dropped: no post-kickoff re-sim rows) and market_spread/market_total
+    (carried from predictions_current when ESPN has no line). A new ESPN
+    game has no analytic prediction, so its nfl_sim rows carry `disagreement`
+    None; if its sim fails it is a `::warning::ml-game-lines:` line (it has
+    no row at all). An ESPN failure warns and keeps the predictions_current
+    slate (kickoffs and market lines as served).
   * only while the served version is `nfl-sim-ml-v1`: an ML-served game's
     nfl_sim ML-version game row comes from its ML sims (reverses Props-2 I3
     for the switched state), and every game gets a `game_predictions` row
@@ -469,24 +473,41 @@ def _game_date(commence) -> str:
 def merge_espn_slate(games: list[dict], espn_games: list[dict], now: datetime) -> list[dict]:
     """The ML_GAME_LINES=on slate. PURE.
 
-    `games`: `_load_upcoming_games()` (predictions_current); `espn_games`:
-    `espn.parse_schedule` rows of the target week -- the source generate_nfl
-    uses. Every predictions_current game gets `game_date` and ESPN's
-    `market_spread`/`market_total` (None when ESPN has no row / no line). An
-    ESPN game missing from predictions_current that kicks off after `now` is
-    appended (display names, `home_win_prob` None = no analytic prediction):
-    with generate-nfl disabled nothing else adds a new week's games to
-    predictions_current, so without this the slate would never advance."""
+    `games`: `_load_upcoming_games()` (predictions_current, market lines
+    included); `espn_games`: `espn.parse_schedule` rows of the target week --
+    the source generate_nfl uses. A predictions_current game ESPN lists takes
+    ESPN's `commence_time` (and `game_date` from it), as generate_nfl's daily
+    rewrite did, and is dropped unless ESPN still reports it STATUS_SCHEDULED
+    with a kickoff after `now` (a moved-up / started / postponed game must not
+    get a post-kickoff re-sim row). A game ESPN does not list keeps its
+    predictions_current kickoff. `market_spread`/`market_total` are ESPN's,
+    each carried from predictions_current when ESPN has no row / no line
+    (so an ESPN outage keeps the served lines). An ESPN game missing from
+    predictions_current that is scheduled after `now` is appended (display
+    names, `home_win_prob` None = no analytic prediction): with generate-nfl
+    disabled nothing else adds a new week's games to predictions_current, so
+    without this the slate would never advance."""
+    def upcoming(e):
+        return e.get("status") == "STATUS_SCHEDULED" and _as_utc(e["commence_time"]) > now
+
+    def line(e, g, key):
+        return e.get(key) if e.get(key) is not None else g.get(key)
+
     by_pk = {int(e["game_pk"]): e for e in espn_games}
     out = []
     for g in games:
-        e = by_pk.get(int(g["game_pk"])) or {}
-        out.append({**g, "game_date": _game_date(g["commence_time"]),
-                    "market_spread": e.get("market_spread"), "market_total": e.get("market_total")})
+        e = by_pk.get(int(g["game_pk"]))
+        if e is not None and not upcoming(e):
+            continue
+        commence = e["commence_time"] if e is not None else g["commence_time"]
+        e = e or {}
+        out.append({**g, "commence_time": commence, "game_date": _game_date(commence),
+                    "market_spread": line(e, g, "market_spread"),
+                    "market_total": line(e, g, "market_total")})
     have = {int(g["game_pk"]) for g in games}
     for e in espn_games:
         home, away = e.get("home_name"), e.get("away_name")
-        if int(e["game_pk"]) in have or not home or not away or _as_utc(e["commence_time"]) <= now:
+        if int(e["game_pk"]) in have or not home or not away or not upcoming(e):
             continue
         out.append({"game_pk": int(e["game_pk"]), "matchup": f"{away} @ {home}",
                     "commence_time": e["commence_time"], "home_team": home, "away_team": away,
@@ -553,6 +574,11 @@ def _load_crosswalk() -> dict[str, str]:
     return {full_name: abbrev for abbrev, full_name in raw.items()}
 
 
+def _opt_float(x) -> float | None:
+    """A nullable numeric column (psycopg may hand back Decimal) as float|None."""
+    return None if x is None else float(x)
+
+
 def _load_upcoming_games() -> list[dict]:
     """Upcoming NFL games from predictions_current. `home_team`/`away_team`
     here are ESPN display names (as stored in predictions_current), NOT
@@ -560,11 +586,13 @@ def _load_upcoming_games() -> list[dict]:
     before touching rates/players/injuries."""
     with get_postgres() as conn, conn.cursor() as cur:
         cur.execute("""
-            SELECT game_pk, home_team_name, away_team_name, home_win_prob, commence_time
+            SELECT game_pk, home_team_name, away_team_name, home_win_prob, commence_time,
+                   market_spread, market_total
             FROM predictions_current
             WHERE sport = 'nfl' AND commence_time > now()
         """)
-        cols = ["game_pk", "home_team_name", "away_team_name", "home_win_prob", "commence_time"]
+        cols = ["game_pk", "home_team_name", "away_team_name", "home_win_prob", "commence_time",
+                "market_spread", "market_total"]
         rows = [dict(zip(cols, r)) for r in cur.fetchall()]
     return [
         {
@@ -574,6 +602,9 @@ def _load_upcoming_games() -> list[dict]:
             "home_team": r["home_team_name"],
             "away_team": r["away_team_name"],
             "home_win_prob": r["home_win_prob"],
+            # carried forward by merge_espn_slate when ESPN has no line (ML_GAME_LINES=on)
+            "market_spread": _opt_float(r["market_spread"]),
+            "market_total": _opt_float(r["market_total"]),
         }
         for r in rows
     ]
@@ -942,9 +973,14 @@ def _ml_summary(mode: str, games: int, players: int, fallback_games: int, status
           f"ml_fallback_games={fallback_games} ml_status={status} {nan}", flush=True)
 
 
+def _utcnow() -> datetime:
+    """The run's clock (a seam: the main() tests pin it)."""
+    return datetime.now(timezone.utc)
+
+
 def main() -> None:
     n_sims = int(os.environ.get("DESK_SIM_N", str(DEFAULT_N_SIMS)))
-    now = datetime.now(timezone.utc)
+    now = _utcnow()
     try:
         ml_mode, ml_mode_error = _ml_mode(), None
     except ValueError as exc:   # still write the current sim, then fail loudly
@@ -953,6 +989,7 @@ def main() -> None:
 
     games = _load_upcoming_games()
     print(f"{len(games)} upcoming NFL games in predictions_current")
+    espn_only: set = set()   # game_pks only ESPN's target week supplied (lines on)
     if lines_on:   # the ML sim is the game-line source: ESPN's target week too (merge_espn_slate)
         try:
             espn_games = _load_espn_slate()
@@ -960,10 +997,12 @@ def main() -> None:
             espn_games = []
             flat = " ".join(f"{type(exc).__name__}: {exc}".split())
             print(f"{_LINES_WARN}ESPN target-week schedule unavailable ({flat}); "
-                  f"slate = predictions_current only, no market lines", flush=True)
-        n_db = len(games)
+                  f"slate = predictions_current only, market lines carried from it", flush=True)
+        db_pks = {g["game_pk"] for g in games}
         games = merge_espn_slate(games, espn_games, now)
-        print(f"game_lines: slate {len(games)} games ({len(games) - n_db} added from ESPN's target week)")
+        espn_only = {g["game_pk"] for g in games} - db_pks
+        print(f"game_lines: slate {len(games)} games ({len(espn_only)} added from ESPN's target week, "
+              f"{len(db_pks) - (len(games) - len(espn_only))} dropped as started/moved/not scheduled)")
     if not games:
         print("games=0 players=0 mean_disagreement=nan")
         if ml_mode_error is not None:
@@ -1104,7 +1143,12 @@ def main() -> None:
                                  elo.get(away_abbrev, _ELO_BASE), RATINGS_WEIGHT)
             sims = simulate_game(spec, n_sims, rng, home_field=HOME_FIELD, ratings_tilt=rtilt)
         except Exception as exc:  # noqa: BLE001 -- one bad game must not abort the slate
-            print(f"skipping game_pk={game_pk} ({g['matchup']}): {exc}")
+            if game_pk in espn_only:   # no Elo row either: the game is missing from the site
+                flat = " ".join(f"{type(exc).__name__}: {exc}".split())
+                print(f"{_LINES_WARN}skipping game_pk={game_pk} ({g['matchup']}), added from ESPN's "
+                      f"target week: sim failed ({flat}); it has no game_predictions row", flush=True)
+            else:
+                print(f"skipping game_pk={game_pk} ({g['matchup']}): {exc}")
             continue
         specs_by_game[game_pk] = spec
         sims_by_game[game_pk] = sims

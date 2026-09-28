@@ -284,6 +284,7 @@ _ESPN = [
      "home_name": "Buffalo Bills", "away_name": "Miami Dolphins", "status": "STATUS_SCHEDULED",
      "market_spread": None, "market_total": None},
 ]
+_NOW = gsn.datetime(2026, 9, 27, 12, tzinfo=gsn.timezone.utc)   # main()'s pinned clock (_install_io)
 _XWALK = {"Kansas City Chiefs": "KC", "Baltimore Ravens": "BAL",
           "Buffalo Bills": "BUF", "Miami Dolphins": "MIA"}
 # nfl_player_prop_dists markets from _sims_with: pass_yds, rush_yds, rec_yds,
@@ -331,6 +332,8 @@ def _install_io(monkeypatch, tmp_path, mode, served="sim-nfl-v1", lines=None, es
     `espn`: the ESPN target-week schedule `_load_espn_slate` returns (default
     `_ESPN`; an Exception instance = the fetch raises)."""
     rec = _Rec()
+    # the fixture slate's Sunday morning: _GAMES/_ESPN kick off later today
+    monkeypatch.setattr(gsn, "_utcnow", lambda: _NOW)
     if lines is None:
         monkeypatch.delenv("ML_GAME_LINES", raising=False)
     else:
@@ -1295,8 +1298,8 @@ def test_merge_espn_slate_enriches_db_games_and_adds_upcoming_espn_games():
     out = gsn.merge_espn_slate(db_games, espn, now)
     by_pk = {g["game_pk"]: g for g in out}
     assert [g["game_pk"] for g in out] == [11, 12, 13]   # 14 already kicked off: dropped
-    assert by_pk[11] == {**_GAMES[0], "game_date": "2026-09-27", "market_spread": -3.5,
-                         "market_total": 47.5}
+    assert by_pk[11] == {**_GAMES[0], "commence_time": "2026-09-27T17:00Z",   # ESPN's kickoff
+                         "game_date": "2026-09-27", "market_spread": -3.5, "market_total": 47.5}
     # SNF 00:20 UTC is the previous US day (generate_nfl's 8h shift); not on ESPN -> no lines
     assert by_pk[12]["game_date"] == "2026-09-27"
     assert by_pk[12]["market_spread"] is None and by_pk[12]["market_total"] is None
@@ -1304,6 +1307,56 @@ def test_merge_espn_slate_enriches_db_games_and_adds_upcoming_espn_games():
                          "commence_time": "2026-10-04T17:00Z", "home_team": "Kansas City Chiefs",
                          "away_team": "Buffalo Bills", "home_win_prob": None,
                          "game_date": "2026-10-04", "market_spread": 1.5, "market_total": 50.0}
+
+
+def test_merge_espn_slate_carries_market_lines_from_predictions_current():
+    """Ruling (a): ESPN's line wins when present; otherwise (no ESPN row, or
+    a null line) each field is carried from predictions_current independently."""
+    now = gsn.datetime(2026, 9, 27, 12, tzinfo=gsn.timezone.utc)
+    db_games = [{**_GAMES[0], "market_spread": -3.0, "market_total": 46.5},
+                {**_GAMES[1], "market_spread": 2.5, "market_total": 44.0},
+                {**_GAMES[1], "game_pk": 15, "market_spread": 1.0, "market_total": 40.0}]
+    espn = [{**_ESPN[0], "market_spread": -3.5, "market_total": None},    # spread only
+            {**_ESPN[1], "market_spread": None, "market_total": None}]    # no line at all
+    by_pk = {g["game_pk"]: g for g in gsn.merge_espn_slate(db_games, espn, now)}
+    assert (by_pk[11]["market_spread"], by_pk[11]["market_total"]) == (-3.5, 46.5)
+    assert (by_pk[12]["market_spread"], by_pk[12]["market_total"]) == (2.5, 44.0)
+    assert (by_pk[15]["market_spread"], by_pk[15]["market_total"]) == (1.0, 40.0)   # not on ESPN
+    # ESPN down: every served line is kept
+    down = {g["game_pk"]: g for g in gsn.merge_espn_slate(db_games, [], now)}
+    assert [(g["market_spread"], g["market_total"]) for g in down.values()] == [
+        (-3.0, 46.5), (2.5, 44.0), (1.0, 40.0)]
+
+
+def test_merge_espn_slate_refreshes_kickoff_and_drops_started_or_unscheduled_games():
+    """I1: a listed predictions_current game takes ESPN's kickoff (and
+    game_date from it); one ESPN no longer reports STATUS_SCHEDULED after
+    `now` is dropped, so no post-kickoff re-sim row is written. Games ESPN
+    does not list keep their predictions_current kickoff."""
+    now = gsn.datetime(2026, 9, 27, 12, tzinfo=gsn.timezone.utc)
+    db = [{**_GAMES[0], "game_pk": pk, "commence_time": gsn.datetime(
+              2026, 9, 27, 17, tzinfo=gsn.timezone.utc)} for pk in (21, 22, 23, 24, 25, 26)]
+    espn_row = {**_ESPN[0], "status": "STATUS_SCHEDULED"}
+    espn = [{**espn_row, "game_pk": 21, "commence_time": "2026-09-28T00:20Z"},   # flexed to SNF
+            {**espn_row, "game_pk": 22, "commence_time": "2026-09-27T11:00Z"},   # moved up: kicked off
+            {**espn_row, "game_pk": 23, "status": "STATUS_IN_PROGRESS"},
+            {**espn_row, "game_pk": 24, "status": "STATUS_POSTPONED",
+             "commence_time": "2026-09-29T17:00Z"},
+            {**espn_row, "game_pk": 25, "status": "STATUS_FINAL"},
+            # a new ESPN game that is not scheduled is not added either
+            {**espn_row, "game_pk": 31, "status": "STATUS_POSTPONED",
+             "commence_time": "2026-10-04T17:00Z"}]
+    out = gsn.merge_espn_slate(db, espn, now)
+    assert [g["game_pk"] for g in out] == [21, 26]
+    moved, unlisted = out
+    assert moved["commence_time"] == "2026-09-28T00:20Z"
+    assert moved["game_date"] == "2026-09-27"   # SNF: the UTC-8h rule, from ESPN's kickoff
+    assert unlisted["commence_time"] == db[5]["commence_time"]
+    assert unlisted["game_date"] == "2026-09-27"
+    # a moved kickoff also moves game_date (generate_nfl's rule)
+    tnf = gsn.merge_espn_slate([db[0]], [{**espn_row, "game_pk": 21,
+                                          "commence_time": "2026-10-02T00:15Z"}], now)
+    assert tnf[0]["game_date"] == "2026-10-01"
 
 
 @pytest.mark.parametrize("raw,expected,warns", [
@@ -1380,7 +1433,7 @@ def test_main_lines_on_served_ml_writes_ml_sim_game_predictions(monkeypatch, tmp
     assert gp[11]["market_spread"] == -3.5 and gp[11]["market_total"] == 47.5
     assert gp[12]["market_spread"] is None and gp[12]["market_total"] is None
     assert (gp[11]["home_team_name"], gp[11]["away_team_name"]) == ("Kansas City Chiefs", "Baltimore Ravens")
-    assert gp[11]["commence_time"] == "2026-09-27T17:00:00+00:00"
+    assert gp[11]["commence_time"] == "2026-09-27T17:00Z"   # ESPN's kickoff (I1)
     # (a) the ML-version nfl_sim game rows now come from the ML sims ...
     ml_rows = {r["game_pk"]: r for r in _written(rec, "sim", "nfl-sim-ml-v1")}
     assert set(ml_rows) == {11, 12}
@@ -1502,15 +1555,66 @@ def test_main_lines_on_espn_failure_warns_and_keeps_the_db_slate(monkeypatch, tm
     rec = _install_io(monkeypatch, tmp_path, "shadow", served="nfl-sim-ml-v1", lines="on",
                       espn=ConnectionError("espn down"))
     _install_ml(monkeypatch, rec, tmp_path)
+    db = [{**_GAMES[0], "market_spread": -3.0, "market_total": 46.5},
+          {**_GAMES[1], "market_spread": None, "market_total": None}]
+    monkeypatch.setattr(gsn, "_load_upcoming_games", lambda: [dict(g) for g in db])
     gsn.main()
     out = capsys.readouterr().out
     assert _lines_warnings(out) == [
         "::warning::ml-game-lines: ESPN target-week schedule unavailable (ConnectionError: espn down); "
-        "slate = predictions_current only, no market lines"]
+        "slate = predictions_current only, market lines carried from it"]
     gp = _game_preds(rec)
     assert set(gp) == {11, 12}
-    assert all(r["market_spread"] is None and r["market_total"] is None for r in gp.values())
+    # ruling (a): the served lines survive an ESPN outage (they used to be nulled)
+    assert (gp[11]["market_spread"], gp[11]["market_total"]) == (-3.0, 46.5)
+    assert gp[12]["market_spread"] is None and gp[12]["market_total"] is None
     assert gp[11]["game_date"] == "2026-09-27"
+    assert gp[11]["commence_time"] == _GAMES[0]["commence_time"]   # no ESPN row: DB kickoff kept
+
+
+def test_main_lines_on_drops_a_db_game_espn_reports_started(monkeypatch, tmp_path, capsys):
+    """I1 end to end: a predictions_current game ESPN reports in progress is
+    not re-simulated, so it gets no post-kickoff game_predictions row."""
+    espn = [{**_ESPN[0], "status": "STATUS_IN_PROGRESS"}, dict(_ESPN[1])]
+    rec = _install_io(monkeypatch, tmp_path, "shadow", served="nfl-sim-ml-v1", lines="on", espn=espn)
+    _install_ml(monkeypatch, rec, tmp_path)
+    gsn.main()
+    out = capsys.readouterr().out
+    assert set(_game_preds(rec)) == {12}
+    assert {r["game_pk"] for r in _written(rec, "sim", "sim-nfl-v1")} == {12}
+    assert "game_lines: slate 1 games (0 added from ESPN's target week, 1 dropped" in out
+
+
+def test_main_lines_on_espn_only_game_sim_failure_warns(monkeypatch, tmp_path, capsys):
+    """M4: a game only ESPN supplied has no Elo row to fall back on, so its
+    failed sim is a `::warning::ml-game-lines:` line (it is off the site)."""
+    espn = [*_ESPN, {"game_pk": 13, "commence_time": "2099-10-04T17:00Z", "home_team": "LV",
+                     "away_team": "BUF", "home_name": "Las Vegas Raiders",   # not in _XWALK
+                     "away_name": "Buffalo Bills", "status": "STATUS_SCHEDULED",
+                     "market_spread": 1.5, "market_total": 50.0}]
+    rec = _install_io(monkeypatch, tmp_path, "shadow", served="nfl-sim-ml-v1", lines="on", espn=espn)
+    _install_ml(monkeypatch, rec, tmp_path)
+    gsn.main()
+    out = capsys.readouterr().out
+    assert set(_game_preds(rec)) == {11, 12}
+    assert _lines_warnings(out) == [
+        "::warning::ml-game-lines: skipping game_pk=13 (Buffalo Bills @ Las Vegas Raiders), added "
+        "from ESPN's target week: sim failed (KeyError: 'Las Vegas Raiders'); it has no "
+        "game_predictions row"]
+    assert "\nskipping game_pk=13" not in out
+
+
+def test_main_lines_on_db_game_sim_failure_keeps_the_plain_skip_line(monkeypatch, tmp_path, capsys):
+    """M4 is only for ESPN-only games: a predictions_current game that fails
+    still has its served row, so it keeps the plain `skipping` line."""
+    rec = _install_io(monkeypatch, tmp_path, "shadow", served="nfl-sim-ml-v1", lines="on")
+    _install_ml(monkeypatch, rec, tmp_path)
+    monkeypatch.setattr(gsn, "_load_crosswalk",
+                        lambda: {k: v for k, v in _XWALK.items() if k != "Miami Dolphins"})
+    gsn.main()
+    out = capsys.readouterr().out
+    assert "skipping game_pk=12 (Miami Dolphins @ Buffalo Bills): 'Miami Dolphins'" in out
+    assert _lines_warnings(out) == []
 
 
 def test_main_lines_on_game_predictions_write_failure_exits_1(monkeypatch, tmp_path, capsys):
