@@ -1271,8 +1271,9 @@ def test_game_prediction_row_values_come_from_the_sims():
     assert pmf[o + 0] == pytest.approx(0.25) and pmf[o + 3] == pytest.approx(0.25)
     assert pmf[o + 4] == pytest.approx(0.25) and pmf[o - 7] == pytest.approx(0.25)
     assert row["total_dist"]["pmf"][37] == pytest.approx(0.25)
-    # home win = P(margin > 0) + 0.5 P(margin == 0) (the game gate's definition)
-    assert row["home_win_prob"] == pytest.approx(0.5 + 0.5 * 0.25)
+    # home win among sims with a winner: margins +3, +4 win, -7 loses, the
+    # 0 (tie) is left out -> 2/3 (not 0.625, which would split the tie)
+    assert row["home_win_prob"] == pytest.approx(2 / 3)
     assert row["pred_margin"] == pytest.approx(0.0)
     assert row["pred_total"] == pytest.approx(40.5)
     assert row["pred_home_score"] == pytest.approx(20.25)

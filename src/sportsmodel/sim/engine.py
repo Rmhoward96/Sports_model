@@ -19,7 +19,15 @@ class GameSims:
 
 
 def home_win_prob(sims: GameSims) -> float:
-    return float(np.mean(sims.home_score > sims.away_score))
+    """P(home wins | the game has a winner): tied sims are left out entirely.
+
+    The NFL kernel plays no overtime, so ~5% of sims end level; those would
+    otherwise drag the favorite toward 50% (split as half) or understate both
+    sides (counted as losses). MLB's kernel breaks ties, so it is unaffected.
+    """
+    wins = int(np.sum(sims.home_score > sims.away_score))
+    losses = int(np.sum(sims.home_score < sims.away_score))
+    return wins / (wins + losses) if wins + losses else 0.5
 
 
 def stat_pmf(arr: np.ndarray, max_k: int) -> list[float]:

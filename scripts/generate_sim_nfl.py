@@ -152,7 +152,6 @@ import numpy as np
 import pandas as pd
 
 from sportsmodel import config
-from sportsmodel.model.game_gate import win_prob_pmf
 from sportsmodel.model.props_eval import gate_population
 from sportsmodel.db import (get_postgres, served_nfl_sim_version, upsert_game_predictions,
                             upsert_nfl_player_sim, upsert_nfl_sim, upsert_nfl_sim_slate)
@@ -427,8 +426,9 @@ def game_prediction_row(game: dict, sims, gl_cfg) -> dict:
     end bins, where the Normal version truncates). `total_dist` =
     {"kind": "pmf", "pmf": [...]} on totals 0..gl_cfg.total_max (NOT the
     engine's default max_total=30, which would pile every NFL total onto the
-    last bin). `home_win_prob` = P(margin > 0) + 0.5 P(margin == 0) (the sim
-    has no overtime, so ties are split -- the game gate's definition);
+    last bin). `home_win_prob` = engine.home_win_prob: P(home wins) among
+    sims with a winner (the sim has no overtime; tied sims are left out so
+    they can't sway the win prob -- same number as nfl_sim.sim_home_win_prob);
     pred_* are the sims' means. The dists are plain dicts: `main()` JSON-encodes
     them at the DB boundary, as generate_nfl does. `game` carries
     game_pk/commence_time/home_team/away_team (display names) and, from
@@ -439,7 +439,7 @@ def game_prediction_row(game: dict, sims, gl_cfg) -> dict:
     return {
         "margin_dist": margin_dist,
         "total_dist": total_dist,
-        "home_win_prob": win_prob_pmf(margin_dist["pmf"], -margin_dist["offset"]),
+        "home_win_prob": scores["home_win_prob"],
         "pred_margin": scores["pred_margin"],
         "pred_total": scores["pred_total"],
         "pred_home_score": scores["pred_home_score"],
