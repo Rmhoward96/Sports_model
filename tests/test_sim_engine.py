@@ -12,10 +12,16 @@ def _toy():
     )
 
 
-def test_home_win_prob_counts_wins_only():
-    # ties (5-5) do not count as home wins; sim resolves ties via extra innings,
-    # but the aggregator must not credit an equal-score row as a win.
-    assert home_win_prob(_toy()) == 0.5  # wins: 3>2, 4>1 ; losses: 2<4 ; tie: 5=5 -> excluded
+def test_home_win_prob_leaves_ties_out():
+    # a tied sim (5-5) is neither a win nor a loss: it drops out of the
+    # denominator, so it can't pull the win prob toward (or away from) 50%.
+    assert home_win_prob(_toy()) == 2 / 3  # wins: 3>2, 4>1 ; loss: 2<4 ; tie: 5=5 -> excluded
+
+
+def test_home_win_prob_all_ties_is_even():
+    sims = GameSims(home_score=np.array([7, 10]), away_score=np.array([7, 10]),
+                    batter_stats={}, pitcher_stats={})
+    assert home_win_prob(sims) == 0.5
 
 
 def test_total_pmf_sums_to_one():
