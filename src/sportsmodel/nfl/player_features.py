@@ -360,15 +360,22 @@ def _qb_changed(out: pd.DataFrame, pg: pd.DataFrame, depth: pd.DataFrame | None)
 def _status(out: pd.DataFrame, pg: pd.DataFrame, injuries: pd.DataFrame | None,
             depth: pd.DataFrame | None) -> pd.DataFrame:
     """st_ features from the week-w injury report and as-of depth chart
-    (pre-game) plus strictly-prior usage. No injury data -> NaN."""
+    (pre-game) plus strictly-prior usage. A (season, week) with no injury
+    rows at all -> NaN (unknown, as live serving sees a missing report); 0
+    only when that week has a report and the player/teammates are not on it."""
     inj = _injuries(injuries)
+    inj_cols = ["st_questionable", "st_vacated_tgt", "st_vacated_car"]
     if inj is None:
-        out = out.assign(st_questionable=np.nan, st_vacated_tgt=np.nan, st_vacated_car=np.nan)
+        out = out.assign(**{c: np.nan for c in inj_cols})
     else:
         q = inj.loc[inj["report_status"] == "Questionable", KEYS].assign(st_questionable=1.0)
         out = out.merge(q, on=KEYS, how="left")
         out["st_questionable"] = out["st_questionable"].fillna(0.0)
         out = _vacated(out, inj)
+        wk = injuries[["season", "week"]].dropna().astype("int64").drop_duplicates()
+        reported = pd.MultiIndex.from_frame(out[["season", "week"]].astype("int64")).isin(
+            pd.MultiIndex.from_frame(wk))
+        out.loc[~reported, inj_cols] = np.nan
     return _qb_changed(out, pg, depth)
 
 

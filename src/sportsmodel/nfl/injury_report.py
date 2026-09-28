@@ -168,3 +168,59 @@ def resolve_target_week(now: datetime, schedules_df=None) -> int | None:
     if week is None:
         print("WARN target week unresolved; injury staleness unchecked")
     return week
+
+
+_LIVE_ROW_COLS = ["season", "week", "team", "gsis_id", "full_name", "position", "report_status"]
+
+
+def live_injury_rows(by_team: dict, depth, season: int, week: int):
+    """The live report (`current_report(...)["by_team"]`) as nflverse
+    injury-frame rows for (season, week), for the props-ML feature build when
+    nflverse has not posted that week's report yet. PURE.
+
+    Report names are mapped to gsis ids through the target week's as-of
+    depth chart (`usage.depth_charts_asof` columns: season, week, club_code,
+    gsis_id, full_name, football_name): the player's `name_key` must equal
+    `name_key` of exactly one gsis id's `full_name` or `football_name` on his
+    team's chart. Team codes are `normalize_team`-normalized on both sides.
+    Statuses go through `normalize_status` (Out / Doubtful / Questionable;
+    anything else is dropped). Returns (rows with columns season, week, team,
+    gsis_id, full_name, position, report_status; ["TEAM name", ...] of
+    designated players that could not be mapped)."""
+    import pandas as pd
+
+    from sportsmodel.nfl.teams import normalize_team
+
+    def norm(code):
+        try:
+            return normalize_team(str(code))
+        except ValueError:
+            return None
+
+    keys: dict[tuple[str, str], set[str]] = {}
+    if depth is not None and len(depth):
+        d = depth[(depth["season"] == season) & (depth["week"] == week)].dropna(subset=["gsis_id"])
+        for team, gsis, full, football in zip(d["club_code"].map(norm), d["gsis_id"],
+                                              d.get("full_name", pd.Series(index=d.index, dtype=object)),
+                                              d.get("football_name", pd.Series(index=d.index, dtype=object))):
+            if team is None:
+                continue
+            for nm in (full, football):
+                if isinstance(nm, str) and nm.strip():
+                    keys.setdefault((team, _key(nm)), set()).add(str(gsis))
+    rows, unmapped = [], []
+    for abbr, entries in (by_team or {}).items():
+        team = norm(abbr)
+        for e in entries or []:
+            status = normalize_status(e.get("status"))
+            if status is None:
+                continue
+            ids = keys.get((team, _key(e.get("player")))) if team else None
+            if not ids or len(ids) != 1:
+                unmapped.append(f"{team or abbr} {e.get('player')}")
+                continue
+            rows.append({"season": int(season), "week": int(week), "team": team, "gsis_id": next(iter(ids)),
+                         "full_name": e.get("player"), "position": e.get("position"),
+                         "report_status": status})
+    out = pd.DataFrame(rows, columns=_LIVE_ROW_COLS)
+    return out.drop_duplicates(["season", "week", "gsis_id"]).reset_index(drop=True), unmapped

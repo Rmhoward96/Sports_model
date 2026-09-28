@@ -527,3 +527,25 @@ def test_questionable_by_gsis_gets_volume_downweight():
     assert set(q) == {"gA", "gB"}                      # Q player NOT dropped
     assert q["gA"].target_share == pytest.approx(8 / 12)
     assert q["gB"].target_share == pytest.approx(4 / 12)
+
+
+def test_match_name_keys_drops_suffix_and_punctuation_variants():
+    # depth "D.J. Moore Jr." vs report "DJ Moore": the raw lowercase compare
+    # misses him (today's default); normalized name keys catch him.
+    depth = _two_wr_depth(name_b="D.J. Moore Jr.")
+    default = {p.player_id for p in active_usage(
+        "KC", 2023, 5, depth, _two_wr_weekly(), _EMPTY_SNAPS, {}, {"DJ Moore"})[0]}
+    assert default == {"gA", "gB"}
+    keyed = {p.player_id for p in active_usage(
+        "KC", 2023, 5, depth, _two_wr_weekly(), _EMPTY_SNAPS, {}, {"DJ Moore"},
+        match_name_keys=True)[0]}
+    assert keyed == {"gA"}
+
+
+def test_match_name_keys_applies_to_questionable_names():
+    depth = _two_wr_depth(name_b="D.J. Moore Jr.")
+    q = {p.player_id: p for p in active_usage(
+        "KC", 2023, 5, depth, _two_wr_weekly(), _EMPTY_SNAPS, {}, set(),
+        questionable_names={"DJ Moore"}, questionable_weight=0.5, match_name_keys=True)[0]}
+    assert set(q) == {"gA", "gB"}
+    assert q["gB"].target_share == pytest.approx(4 / 12)

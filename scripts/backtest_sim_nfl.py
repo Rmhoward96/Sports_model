@@ -125,12 +125,21 @@ _ELO_BASE = EloConfig().base  # neutral Elo for a team with no rating yet
 
 MARKET_MAX = {"pass_yds": 400, "rush_yds": 200, "rec_yds": 200, "receptions": 15, "pass_tds": 6, "rush_att": 40}
 PLAYER_MARKETS: tuple[str, ...] = ("pass_yds", "rush_yds", "rec_yds", "receptions")
+# Markets `run_backtest(record=...)` emits records for (props-ML Props-2 gates
+# all seven). PLAYER_MARKETS above stays the report()/pairs set.
+RECORD_MARKETS: tuple[str, ...] = (
+    "pass_yds", "rush_yds", "rec_yds", "receptions", "rush_att", "pass_tds", "anytime_td",
+)
 _ACTUAL_COL = {
     "pass_yds": "passing_yards",
     "rush_yds": "rushing_yards",
     "rec_yds": "receiving_yards",
     "receptions": "receptions",
+    "rush_att": "carries",
+    "pass_tds": "passing_tds",
 }
+# anytime_td actual = 1.0 if any of these (nflverse weekly) is > 0, else 0.0.
+_TD_COLS: tuple[str, ...] = ("receiving_tds", "rushing_tds")
 
 # ACTUAL-usage columns pulled alongside the stat columns above, purely to gate
 # per-market relevance (see `is_propable`) -- nflverse weekly column names.
@@ -397,13 +406,16 @@ def actual_qb_pass_yds(
 # =============================================================================
 
 def _actual_player_stats(weekly_df, season: int, week: int) -> dict[str, dict[str, float]]:
-    """player_id -> {"pass_yds","rush_yds","rec_yds","receptions", plus the
+    """player_id -> {"pass_yds","rush_yds","rec_yds","receptions","rush_att"
+    (= carries),"pass_tds" (= passing_tds),"anytime_td", plus the
     ACTUAL-usage columns in `_USAGE_COLS` ("attempts","carries","targets")}
     for one (season, week) slice of nflverse `weekly` data. A usage column
     absent from this pull (or NaN for a given row) is treated as 0, which
-    only ever makes `is_propable` gate that player-week out -- never in. See
-    module docstring's "actual-stat join" concern for this keying's edge
-    cases."""
+    only ever makes `is_propable` gate that player-week out -- never in.
+    anytime_td is 1.0 if receiving_tds + rushing_tds > 0 else 0.0, ignoring
+    a NaN/absent component; NaN when both are NaN/absent (no TD information,
+    so the record path skips it). See module docstring's "actual-stat join"
+    concern for this keying's edge cases."""
     rows = weekly_df[(weekly_df["season"] == season) & (weekly_df["week"] == week)]
     out: dict[str, dict[str, float]] = {}
     for row in rows.itertuples(index=False):
@@ -415,7 +427,59 @@ def _actual_player_stats(weekly_df, season: int, week: int) -> dict[str, dict[st
         stats.update(
             {col: float(getattr(row, col, 0.0) or 0.0) for col in _USAGE_COLS}
         )
+        tds = [getattr(row, col, float("nan")) for col in _TD_COLS]
+        tds = [float(t) for t in tds if not pd.isna(t)]
+        stats["anytime_td"] = (1.0 if sum(tds) > 0 else 0.0) if tds else float("nan")
         out[pid] = stats
+    return out
+
+
+def _player_records(
+    season: int,
+    week: int,
+    home: str,
+    dists: dict[str, dict[str, dict]],
+    actual_stats: dict[str, dict[str, float]],
+    record_pmf: bool = False,
+) -> list[dict]:
+    """One record per (player in `dists` with an actual, market in
+    RECORD_MARKETS present in that player's dists, non-NaN actual):
+    season, week, home, player_id, market, mean, p50, p90, rps, pit, actual
+    (+ "pmf" as an np.float32 array when `record_pmf`). Ungated -- the caller
+    applies the population gate. anytime_td's pmf is [P(0), P(>=1)], its
+    actual is clipped to {0, 1} and its mean is P(>=1) (not the TD-count mean
+    the aggregator reports). PURE."""
+    out: list[dict] = []
+    for player_id, markets in dists.items():
+        actual = actual_stats.get(player_id)
+        if actual is None:
+            continue
+        for market in RECORD_MARKETS:
+            if market not in markets:
+                continue
+            dist = markets[market]
+            a = actual.get(market, float("nan"))
+            # A NaN actual (float(nan or 0.0) keeps NaN) would make
+            # rps_pmf/pit_pmf raise outside run_backtest's per-game try.
+            if pd.isna(a):
+                continue
+            a = float(a)
+            if market == "anytime_td":
+                a = 1.0 if a >= 1.0 else 0.0
+                mean = float(dist["pmf"][1])
+            else:
+                mean = float(dist["mean"])
+            rec = {
+                "season": season, "week": week, "home": home, "player_id": player_id,
+                "market": market, "mean": mean,
+                "p50": quantile_from_pmf(dist, 0.50), "p90": quantile_from_pmf(dist, 0.90),
+                "rps": rps_pmf(dist["pmf"], a),
+                "pit": pit_pmf(dist["pmf"], a, pit_uniform(season, week, player_id, market)),
+                "actual": a,
+            }
+            if record_pmf:
+                rec["pmf"] = np.asarray(dist["pmf"], dtype=np.float32)
+            out.append(rec)
     return out
 
 
@@ -469,6 +533,7 @@ def run_backtest(
     spec_hook: Callable[[int, int, str, str, NflGameSpec], NflGameSpec] | None = None,
     record: list | None = None,
     sources: dict | None = None,
+    record_pmf: bool = False,
 ) -> dict:
     """Walk forward over every completed REG-season game in `seasons`.
 
@@ -493,10 +558,14 @@ def run_backtest(
         applied after `build_spec_from_usage` and before `simulate_game` -- the
         props-ML harness uses it to swap in learned team volume / player shares.
     record: optional list; when given, one dict per (player, market in
-        PLAYER_MARKETS) with a paired actual is appended: season, week, home,
-        player_id, market, mean, p50, p90, rps, pit, actual. Ungated (the
-        caller applies the population gate). Small records, not pmfs, so five
-        full walk-forwards fit in memory.
+        RECORD_MARKETS) with a paired actual is appended (see
+        `_player_records`): season, week, home, player_id, market, mean, p50,
+        p90, rps, pit, actual. Ungated (the caller applies the population
+        gate). Small records, not pmfs, so five full walk-forwards fit in
+        memory -- unless `record_pmf`.
+    record_pmf: when True (and `record` is given) each record also carries
+        "pmf", the sim's pmf as an np.float32 array (length MARKET_MAX[m] + 1;
+        anytime_td 2) for offline blending/calibration.
 
     Returns a dict of raw sample lists for `report()` to summarize:
       game_probs/game_outcomes, margin_preds/margin_actuals,
@@ -664,6 +733,8 @@ def run_backtest(
         total_actuals.append(home_score + away_score)
 
         dists = nfl_player_prop_dists(sims, MARKET_MAX)
+        if record is not None:
+            record.extend(_player_records(season, week, home, dists, actual_stats, record_pmf))
         for player_id, markets in dists.items():
             actual = actual_stats.get(player_id)
             if actual is None:
@@ -673,17 +744,6 @@ def run_backtest(
                     continue
                 dist = markets[market]
                 a = actual[market]
-                # a == a skips a NaN actual (float(nan or 0.0) keeps NaN), which
-                # would make rps_pmf/pit_pmf raise outside the per-game try.
-                if record is not None and a == a:
-                    record.append({
-                        "season": season, "week": week, "home": home, "player_id": player_id,
-                        "market": market, "mean": float(dist["mean"]),
-                        "p50": quantile_from_pmf(dist, 0.50), "p90": quantile_from_pmf(dist, 0.90),
-                        "rps": rps_pmf(dist["pmf"], a),
-                        "pit": pit_pmf(dist["pmf"], a, pit_uniform(season, week, player_id, market)),
-                        "actual": a,
-                    })
                 if is_propable(market, actual):
                     player_mean_pairs[market].append((dist["mean"], a))
                     player_p50_pairs[market].append((quantile_from_pmf(dist, 0.50), a))

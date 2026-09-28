@@ -11,7 +11,7 @@ Football Reference `pfr_id` and nflverse's own `gsis_id`) via
 `build_pfr_to_gsis` (pure: DataFrame in, dict out) and fetches the raw
 depth-chart / snap-count / id-crosswalk frames the usage model consumes.
 
-`fetch_usage_sources` is the only IO in this module and is not unit-tested.
+`fetch_usage_sources` is the only IO in this module (its include_depth switch is unit-tested with a stubbed nfl_data_py).
 
 `abbrev_alignment` is a small pure diagnostic shared by both callers
 (`scripts/backtest_sim_nfl.py` and `scripts/generate_sim_nfl.py`): it flags
@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import pandas as pd
 
+from sportsmodel.nfl.injury_report import name_key
 from sportsmodel.nfl.teams import normalize_team
 from sportsmodel.sim.nfl.spec import PlayerInput
 
@@ -167,6 +168,7 @@ def active_usage(
     *,
     out_ids: set[str] | None = None,
     questionable_ids: set[str] | None = None,
+    match_name_keys: bool = False,
 ) -> tuple[list[PlayerInput], str | None]:
     """Per-week active-roster usage: the dilution fix over season averages.
 
@@ -185,7 +187,12 @@ def active_usage(
        ``gsis_id`` is in the optional ``out_ids`` (union with the name match --
        ids catch nickname/suffix spellings like "Hollywood Brown" vs "Marquise
        Brown"; ``questionable_ids`` likewise unions with ``questionable_names``;
-       both default None = name-only). The target-week depth chart and
+       both default None = name-only). With ``match_name_keys=True`` every
+       name compare (out and questionable, report and depth side) goes through
+       ``sportsmodel.nfl.injury_report.name_key`` instead of a plain
+       lowercase, so "D.J. Moore Jr." matches "DJ Moore" (punctuation and
+       Jr/Sr/II.. suffixes dropped); the default False keeps the plain
+       lowercase compare. The target-week depth chart and
        the injury list are pre-game info and ARE allowed to define who's active;
        everything else is strictly leakage-free.
 
@@ -243,19 +250,16 @@ def active_usage(
     """
     del snaps_df, pfr2gsis  # reserved for future snap weighting (see docstring)
 
-    injuries = {
-        str(n).strip().lower()
-        for n in (injuries_out_names or set())
-    }
+    def _norm_name(n: object) -> str:
+        return name_key(n) if match_name_keys else str(n).strip().lower()
+
+    injuries = {_norm_name(n) for n in (injuries_out_names or set())}
     # Questionable players stay ACTIVE but get their volume (targets/carries/TDs)
     # scaled by questionable_weight (<1 => reduced expected usage; freed share
     # redistributes to healthy teammates via the step-5 renorm). weight 1.0 or an
     # empty set is a no-op. Efficiency (ypt/ypc/...) is untouched -- a hobbled
     # player isn't worse per touch, just gets fewer.
-    questionable = {
-        str(n).strip().lower()
-        for n in (questionable_names or set())
-    }
+    questionable = {_norm_name(n) for n in (questionable_names or set())}
     out_gsis = {str(g).strip() for g in (out_ids or set()) if not _is_missing_id(g)}
     q_ids = {str(g).strip() for g in (questionable_ids or set()) if not _is_missing_id(g)}
     questionable_gsis: set[str] = set()
@@ -293,10 +297,10 @@ def active_usage(
         full_name = getattr(row, "full_name", None)
         football_name = getattr(row, "football_name", None)
         names_lower = {
-            str(n).strip().lower()
+            _norm_name(n)
             for n in (full_name, football_name)
             if not _is_missing_id(n)
-        }
+        } - {""}   # a name that keys to "" (e.g. ".") must never match
         if names_lower & injuries or gsis in out_gsis:
             continue
 
@@ -564,23 +568,27 @@ def normalize_depth_charts(raw: pd.DataFrame, upto_season: int, upto_week: int) 
     }).reset_index(drop=True)
 
 
-def fetch_usage_sources(seasons: list[int]) -> dict:
-    """Thin IO wrapper around nfl_data_py imports. Not unit-tested.
+def fetch_usage_sources(seasons: list[int], include_depth: bool = True) -> dict:
+    """Thin IO wrapper around nfl_data_py imports.
 
     Returns {"depth": DataFrame, "snaps": DataFrame, "ids": DataFrame}. The
     depth frame may be nflverse's OLD or NEW schema depending on the installed
     nfl_data_py -- callers pass it through `normalize_depth_charts(...,
     upto_season, upto_week)` before `active_usage`/`abbrev_alignment`.
+    `include_depth=False` skips that (slow) depth import and omits "depth" --
+    for callers that read depth via `load_release("depth")` +
+    `depth_charts_asof` instead (scripts/generate_sim_nfl.py).
     """
     import nfl_data_py as nfl
 
-    from sportsmodel.nfl.nflverse import import_by_season
+    from sportsmodel.nfl import nflverse
 
-    return {
-        "depth": import_by_season(nfl.import_depth_charts, seasons, "depth"),
-        "snaps": import_by_season(nfl.import_snap_counts, seasons, "snaps"),
-        "ids": nfl.import_ids(),
-    }
+    out = {}
+    if include_depth:
+        out["depth"] = nflverse.import_by_season(nfl.import_depth_charts, seasons, "depth")
+    out["snaps"] = nflverse.import_by_season(nfl.import_snap_counts, seasons, "snaps")
+    out["ids"] = nfl.import_ids()
+    return out
 
 
 _ET = "America/New_York"
@@ -595,9 +603,11 @@ def _safe_team(code: object) -> str | None:
 
 
 def _kickoffs_utc(schedules: pd.DataFrame) -> pd.DataFrame:
-    """One row per (season, week, team) with that team's kickoff in UTC.
-    nflverse `gameday`/`gametime` are US-Eastern local."""
-    s = schedules[schedules["game_type"] == "REG"]
+    """One row per (season, week, team) with that team's kickoff in UTC, for
+    EVERY game type (REG and postseason: WC/DIV/CON/SB), so a postseason week
+    gets its own as-of chart. nflverse `gameday`/`gametime` are US-Eastern
+    local."""
+    s = schedules
     local = pd.to_datetime(s["gameday"].astype(str) + " " + s["gametime"].fillna("13:00").astype(str),
                            errors="coerce")
     ko = local.dt.tz_localize(_ET, ambiguous="NaT", nonexistent="NaT").dt.tz_convert("UTC")
@@ -655,7 +665,7 @@ def depth_charts_asof(raw: pd.DataFrame, schedules: pd.DataFrame) -> pd.DataFram
       Its `formation` (Offense / Defense / Special Teams) is passed through --
       KR/PR slots are listed under the player's own position there.
     - Snapshot schema (2025+: `dt`, `team`, `pos_abb`, `pos_rank`): for each
-      team's REG-season game, take that team's latest snapshot with
+      team's game (REG and postseason), take that team's latest snapshot with
       `dt <= kickoff` (UTC) — never a later one — stamped with that game's
       (season, week). A team with no snapshot before kickoff gets no rows
       (active_usage's _latest_depth_week fallback then applies). Snapshot

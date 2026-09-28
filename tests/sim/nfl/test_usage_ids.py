@@ -39,3 +39,26 @@ def test_build_pfr_to_gsis_maps_and_skips_missing_ids():
     assert "SomeP00" not in mapping
     assert "OtheP00" not in mapping
     assert len(mapping) == 2
+
+
+def test_fetch_usage_sources_can_skip_the_old_depth_import(monkeypatch):
+    import sys
+    import types
+
+    import pandas as pd
+
+    from sportsmodel.nfl import nflverse
+    from sportsmodel.sim.nfl import usage
+
+    calls = []
+
+    def boom(seasons):
+        raise AssertionError("old depth import ran")
+
+    fake = types.SimpleNamespace(import_depth_charts=boom,
+                                 import_snap_counts=lambda seasons: calls.append("snaps") or pd.DataFrame(),
+                                 import_ids=lambda: calls.append("ids") or pd.DataFrame())
+    monkeypatch.setitem(sys.modules, "nfl_data_py", fake)
+    monkeypatch.setattr(nflverse, "import_by_season", lambda fn, seasons, name, **kw: fn(seasons))
+    out = usage.fetch_usage_sources([2026], include_depth=False)
+    assert set(out) == {"snaps", "ids"} and calls == ["snaps", "ids"]

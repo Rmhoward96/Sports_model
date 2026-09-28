@@ -535,3 +535,94 @@ def test_run_backtest_passes_id_sets_to_active_usage():
     src = inspect.getsource(bsn.run_backtest)
     assert "out_ids=" in src and "questionable_ids=" in src
     assert "out_ids_by_team_week(" in src and "questionable_ids_by_team_week(" in src
+
+
+# =============================================================================
+# Props-2: seven-market records (+ optional pmfs)
+# =============================================================================
+
+def test_actual_stats_include_new_markets():
+    w = pd.DataFrame({"player_id": ["a"], "season": [2024], "week": [3], "passing_yards": [0], "rushing_yards": [40],
+                      "receiving_yards": [12], "receptions": [2], "attempts": [0], "carries": [9], "targets": [3],
+                      "passing_tds": [0], "receiving_tds": [0], "rushing_tds": [1]})
+    s = bsn._actual_player_stats(w, 2024, 3)["a"]
+    assert s["rush_att"] == 9 and s["pass_tds"] == 0 and s["anytime_td"] == 1.0
+
+
+def test_actual_stats_anytime_td_zero_and_nan_components():
+    w = pd.DataFrame({"player_id": ["a", "b", "c"], "season": [2024] * 3, "week": [3] * 3,
+                      "receiving_tds": [0, float("nan"), float("nan")],
+                      "rushing_tds": [0, 2, float("nan")]})
+    s = bsn._actual_player_stats(w, 2024, 3)
+    assert s["a"]["anytime_td"] == 0.0
+    assert s["b"]["anytime_td"] == 1.0          # NaN component ignored, other scores
+    assert math.isnan(s["c"]["anytime_td"])     # no TD info at all -> NaN (record skipped)
+
+
+def test_record_markets_constant():
+    assert bsn.RECORD_MARKETS == ("pass_yds", "rush_yds", "rec_yds", "receptions",
+                                  "rush_att", "pass_tds", "anytime_td")
+    assert bsn.PLAYER_MARKETS == ("pass_yds", "rush_yds", "rec_yds", "receptions")
+
+
+def _dists_all_markets() -> dict:
+    import numpy as np
+
+    out = {}
+    for m, k in bsn.MARKET_MAX.items():
+        p = np.zeros(k + 1)
+        p[min(3, k)] = 1.0
+        out[m] = {"kind": "pmf", "pmf": p.tolist(), "mean": float(min(3, k))}
+    out["anytime_td"] = {"kind": "pmf", "pmf": [0.7, 0.3], "mean": 0.34}
+    return {"p1": out}
+
+
+def _actuals_all_markets() -> dict:
+    return {"p1": {"pass_yds": 3.0, "rush_yds": 3.0, "rec_yds": 3.0, "receptions": 3.0,
+                   "rush_att": 3.0, "pass_tds": 3.0, "anytime_td": 2.0,
+                   "attempts": 0.0, "carries": 3.0, "targets": 0.0}}
+
+
+def test_player_records_seven_markets_without_pmf_keep_old_shape():
+    recs = bsn._player_records(2024, 3, "KC", _dists_all_markets(), _actuals_all_markets(), record_pmf=False)
+    assert [r["market"] for r in recs] == list(bsn.RECORD_MARKETS)
+    keys = {"season", "week", "home", "player_id", "market", "mean", "p50", "p90", "rps", "pit", "actual"}
+    assert all(set(r) == keys for r in recs)
+    rec = {r["market"]: r for r in recs}
+    assert rec["rec_yds"]["rps"] == 0.0 and rec["rec_yds"]["p50"] == 3.0 and rec["rec_yds"]["mean"] == 3.0
+    td = rec["anytime_td"]
+    assert td["actual"] == 1.0                      # clipped to {0,1}
+    assert math.isclose(td["mean"], 0.3)            # P(>=1), not the TD-count mean
+    assert math.isclose(td["rps"], 0.7 ** 2)        # cdf [0.7,1] vs step [0,1]
+
+
+def test_player_records_record_pmf_attaches_float32_pmf():
+    import numpy as np
+
+    recs = bsn._player_records(2024, 3, "KC", _dists_all_markets(), _actuals_all_markets(), record_pmf=True)
+    assert len(recs) == len(bsn.RECORD_MARKETS)
+    for r in recs:
+        pmf = r["pmf"]
+        assert isinstance(pmf, np.ndarray) and pmf.dtype == np.float32
+        want = 2 if r["market"] == "anytime_td" else bsn.MARKET_MAX[r["market"]] + 1
+        assert len(pmf) == want
+
+
+def test_player_records_skips_nan_actual_missing_player_and_missing_market():
+    dists = _dists_all_markets()
+    dists["ghost"] = dists["p1"]
+    del dists["p1"]["pass_tds"]
+    actuals = _actuals_all_markets()
+    actuals["p1"]["rush_att"] = float("nan")
+    recs = bsn._player_records(2024, 3, "KC", dists, actuals, record_pmf=False)
+    markets = [r["market"] for r in recs]
+    assert "rush_att" not in markets and "pass_tds" not in markets
+    assert {r["player_id"] for r in recs} == {"p1"}
+
+
+def test_run_backtest_accepts_record_pmf_and_uses_player_records():
+    import inspect
+
+    params = inspect.signature(bsn.run_backtest).parameters
+    assert "record_pmf" in params and params["record_pmf"].default is False
+    assert "_player_records(" in inspect.getsource(bsn.run_backtest)

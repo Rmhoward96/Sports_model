@@ -18,6 +18,9 @@ name: injury-watch
 #
 # Requires repo secrets: DATABASE_URL, SPORTSDATA_API_KEY, ANTHROPIC_API_KEY.
 # Optional repo variable DESK_SYNTH_MODEL overrides the synthesis model.
+# Optional repo variable SIM_ML_MODE (off | shadow | live; unset = off) turns on
+# props-ML serving in the NFL sim step; the models are downloaded from the
+# props-ml-latest Release (train-props-ml.yml) only when it is not off.
 on:
   schedule:
     - cron: "0 15,22 * * *"  # 3 PM and 10 PM UTC daily
@@ -29,9 +32,10 @@ permissions:
 jobs:
   nfl:
     runs-on: ubuntu-latest
-    timeout-minutes: 40
+    timeout-minutes: 60    # the props-ML path (shadow/live) rebuilds the feature tables
     env:
       SPORT: nfl
+      SIM_ML_MODE: ${{ vars.SIM_ML_MODE || 'off' }}
     concurrency:
       group: injury-pipeline-nfl
       cancel-in-progress: false
@@ -57,6 +61,40 @@ jobs:
           DATABASE_URL: ${{ secrets.DATABASE_URL }}
           SM_DATA_DIR: ${{ github.workspace }}/data
         run: uv run python scripts/generate_nfl.py
+
+      - name: Download props-ML models (Release props-ml-latest)
+        if: steps.check.outputs.changed == 'true' && env.SIM_ML_MODE != 'off'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release download props-ml-latest -D data/props_ml/models --clobber || echo "no props-ml release"
+          # Verify the set against MANIFEST.sha256 (uploaded last by train-props-ml.yml);
+          # on any failure remove the models so the sim takes its "no artifacts"
+          # ML failure path (current sim still written). Never fails the step.
+          if [ -d data/props_ml/models ]; then
+            reason=""
+            if [ ! -f data/props_ml/models/MANIFEST.sha256 ]; then
+              reason="MANIFEST.sha256 missing"
+            elif ! (cd data/props_ml/models && sha256sum -c --strict --quiet MANIFEST.sha256); then
+              reason="checksum mismatch or missing file"
+            else
+              listed=" $(sed -E 's/^[0-9a-f]{64} [ *]//' data/props_ml/models/MANIFEST.sha256 | tr '\n' ' ')"
+              for f in data/props_ml/models/*; do
+                n="$(basename "$f")"
+                [ "$n" = MANIFEST.sha256 ] && continue
+                case "$listed" in
+                  *" $n "*) ;;
+                  *) reason="$n not in MANIFEST.sha256"; break ;;
+                esac
+              done
+            fi
+            if [ -n "$reason" ]; then
+              rm -rf data/props_ml/models
+              echo "::warning::props-ml: release verification failed ($reason); models removed"
+            else
+              echo "props-ml release verified"
+            fi
+          fi
 
       - name: Generate NFL sim predictions (Monte Carlo + player distributions)
         if: steps.check.outputs.changed == 'true'

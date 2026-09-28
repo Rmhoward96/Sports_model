@@ -281,3 +281,127 @@ def test_nfl_player_sim_multiple_records_all_converted_and_commit_called(monkeyp
     del_params = {p for (_sql, p) in sink.get("execs", [])}
     assert del_params == {(1, "sim-nfl-v1"), (2, "sim-nfl-v1")}
     assert conn_holder["conn"].committed is True
+
+
+# ---------------------------------------------------------------------------
+# upsert_nfl_sim_slate -- game rows + player rows in ONE transaction
+# served_nfl_sim_version -- nfl_sim_serving read (None when the table is absent)
+# ---------------------------------------------------------------------------
+
+class _LogCursor:
+    def __init__(self, log, fetch=None, raise_on_execute=None):
+        self.log = log
+        self.fetch = fetch
+        self.raise_on_execute = raise_on_execute
+
+    def execute(self, sql, params=None):
+        if self.raise_on_execute is not None:
+            raise self.raise_on_execute
+        self.log.append(("execute", sql, params))
+
+    def executemany(self, sql, rows):
+        self.log.append(("executemany", sql, list(rows)))
+
+    def fetchone(self):
+        return self.fetch
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *a):
+        return False
+
+
+class _LogConn:
+    def __init__(self, log, **cursor_kw):
+        self.log = log
+        self.cursor_kw = cursor_kw
+
+    def cursor(self):
+        return _LogCursor(self.log, **self.cursor_kw)
+
+    def commit(self):
+        self.log.append(("commit",))
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *a):
+        return False
+
+
+def _conns(monkeypatch, **cursor_kw):
+    log, opened = [], []
+
+    def fake():
+        opened.append(1)
+        return _LogConn(log, **cursor_kw)
+
+    monkeypatch.setattr(db_module, "get_postgres", fake)
+    return log, opened
+
+
+def test_nfl_sim_slate_one_connection_one_commit(monkeypatch):
+    log, opened = _conns(monkeypatch)
+    sim = [{"game_pk": 1, "model_version": "nfl-sim-ml-v1", "margin_dist": {"pmf": [1.0]}},
+           {"game_pk": 2, "model_version": "nfl-sim-ml-v1"}]
+    players = [{"game_pk": 1, "player_id": "a", "market": "rec_yds", "model_version": "nfl-sim-ml-v1",
+                "dist": {"pmf": [1.0]}},
+               {"game_pk": 2, "player_id": "b", "market": "rec_yds", "model_version": "nfl-sim-ml-v1"}]
+    assert db.upsert_nfl_sim_slate(sim, players) == (2, 2)
+    assert len(opened) == 1                               # one connection
+    assert [e[0] for e in log].count("commit") == 1 and log[-1] == ("commit",)   # one transaction
+    kinds = [(e[0], e[1].split()[0] + " " + e[1].split()[2]) for e in log if e[0] != "commit"]
+    # game rows upserted, then each game's player rows replaced, then inserted
+    assert kinds[0] == ("executemany", "INSERT nfl_sim")
+    assert sorted(e[2] for e in log if e[0] == "execute") == [(1, "nfl-sim-ml-v1"), (2, "nfl-sim-ml-v1")]
+    assert kinds[-1] == ("executemany", "INSERT nfl_player_sim")
+    sim_sql = log[0][1]
+    assert "ON CONFLICT (game_pk, model_version) DO UPDATE" in sim_sql
+    assert json.loads(log[0][2][0][db._NFL_SIM_COLS.index("margin_dist")]) == {"pmf": [1.0]}
+    ins = log[-2]
+    assert ins[0] == "executemany" and "INSERT INTO nfl_player_sim" in ins[1]
+    assert json.loads(ins[2][0][db._NFL_PLAYER_SIM_COLS.index("dist")]) == {"pmf": [1.0]}
+
+
+def test_nfl_sim_slate_matches_the_two_upserts_statements(monkeypatch):
+    """Same SQL + row tuples as upsert_nfl_sim followed by upsert_nfl_player_sim."""
+    sim = [{"game_pk": 1, "model_version": "nfl-sim-ml-v1", "matchup": "A @ B"}]
+    players = [{"game_pk": 1, "player_id": "a", "market": "rec_yds", "model_version": "nfl-sim-ml-v1",
+                "mean": 3.0}]
+    log, _ = _conns(monkeypatch)
+    db.upsert_nfl_sim_slate(sim, players)
+    slate = [e for e in log if e[0] != "commit"]
+    log2, _ = _conns(monkeypatch)
+    db.upsert_nfl_sim(sim)
+    db.upsert_nfl_player_sim(players)
+    assert slate == [e for e in log2 if e[0] != "commit"]
+
+
+def test_nfl_sim_slate_empty_touches_nothing(monkeypatch):
+    def boom():
+        raise AssertionError("no DB for an empty slate")
+    monkeypatch.setattr(db_module, "get_postgres", boom)
+    assert db.upsert_nfl_sim_slate([], []) == (0, 0)
+
+
+def test_served_nfl_sim_version_reads_the_row(monkeypatch):
+    log, _ = _conns(monkeypatch, fetch=("nfl-sim-ml-v1",))
+    assert db.served_nfl_sim_version() == "nfl-sim-ml-v1"
+    ((op, sql, _),) = log
+    assert op == "execute" and "SELECT model_version FROM nfl_sim_serving WHERE id = 1" in sql
+
+
+def test_served_nfl_sim_version_none_when_table_missing_or_row_missing(monkeypatch):
+    import psycopg
+    _conns(monkeypatch, raise_on_execute=psycopg.errors.UndefinedTable("relation does not exist"))
+    assert db.served_nfl_sim_version() is None
+    _conns(monkeypatch, fetch=None)
+    assert db.served_nfl_sim_version() is None
+
+
+def test_served_nfl_sim_version_other_errors_propagate(monkeypatch):
+    import psycopg
+    _conns(monkeypatch, raise_on_execute=psycopg.OperationalError("connection lost"))
+    with pytest.raises(psycopg.OperationalError):
+        db.served_nfl_sim_version()

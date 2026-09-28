@@ -143,3 +143,74 @@ def test_depth_rank_distribution_shares_by_season():
     assert got.loc[2024, "rows"] == 4 and got.loc[2025, "rows"] == 1
     assert got.loc[2024, ["1", "2", "5+", "nan"]].tolist() == [0.25, 0.25, 0.25, 0.25]
     assert got.loc[2024, "mean"] == 3.0 and got.loc[2025, "1"] == 1.0
+
+
+def test_build_tables_applies_ctx_fill_before_both_builders(monkeypatch):
+    """build_tables (shared by the parquet build and live serving) passes
+    ctx_fill's output -- called as ctx_fill(ctx, stadiums, sched) -- to both
+    table builders; without ctx_fill the raw context goes through."""
+    import sportsmodel.nfl.context as ctx_mod
+    import sportsmodel.nfl.efficiency as eff_mod
+    import sportsmodel.nfl.player_features as pf_mod
+
+    raw_ctx, filled = pd.DataFrame({"c": [1]}), pd.DataFrame({"c": [2]})
+    seen: dict = {}
+    monkeypatch.setattr(ctx_mod, "load_stadiums", lambda: {"S": {}})
+    monkeypatch.setattr(ctx_mod, "team_game_context", lambda sched, st: raw_ctx)
+    monkeypatch.setattr(eff_mod, "team_game_epa", lambda pbp: {})
+    for name in ("player_games", "team_games", "player_redzone"):
+        monkeypatch.setattr(pf_mod, name, lambda *a: pd.DataFrame())
+    monkeypatch.setattr(bpf, "active_stubs", lambda *a: pd.DataFrame())
+    monkeypatch.setattr(pf_mod, "build_feature_table",
+                        lambda pg, tg, rz, ctx, *a, **k: seen.setdefault("feats_ctx", ctx))
+    monkeypatch.setattr(pf_mod, "build_team_table", lambda tg, ctx, epa: seen.setdefault("team_ctx", ctx))
+    src = {"sched": pd.DataFrame({"s": [1]}), "pbp": None, "injuries": None, "depth": None,
+           "weekly": None, "snaps": None, "pfr2gsis": {}, "ngs": {}}
+
+    def fill(ctx, stadiums, sched):
+        seen["fill_args"] = (ctx, stadiums, sched)
+        return filled
+
+    built = bpf.build_tables(src, ctx_fill=fill)
+    assert seen["fill_args"][0] is raw_ctx and seen["fill_args"][1] == {"S": {}}
+    assert seen["fill_args"][2] is src["sched"]
+    assert seen["feats_ctx"] is filled and seen["team_ctx"] is filled
+    assert built["feats"] is filled and built["team"] is filled
+
+    seen.clear()
+    bpf.build_tables(src)
+    assert seen["feats_ctx"] is raw_ctx and seen["team_ctx"] is raw_ctx
+
+
+def test_fetch_sources_passes_seasons_to_every_loader(monkeypatch):
+    import nfl_data_py
+
+    import sportsmodel.nfl.nflverse as nv
+    import sportsmodel.sim.nfl.usage as usage
+
+    calls: list[tuple[str, list[int]]] = []
+
+    def fake_load_release(dataset, seasons, **kw):
+        calls.append((dataset, list(seasons)))
+        return pd.DataFrame({"season": list(seasons)})
+
+    def fake_import_by_season(fn, seasons, name, **kw):
+        calls.append((name, list(seasons)))
+        return pd.DataFrame()
+
+    monkeypatch.setattr(nv, "load_release", fake_load_release)
+    monkeypatch.setattr(nv, "import_by_season", fake_import_by_season)
+    monkeypatch.setattr(usage, "depth_charts_asof", lambda raw, sched: raw)
+    monkeypatch.setattr(usage, "build_pfr_to_gsis", lambda ids: {})
+    monkeypatch.setattr(nfl_data_py, "import_ids", lambda: pd.DataFrame())
+
+    bpf.fetch_sources([2020, 2021])
+    datasets = {d for d, _ in calls}
+    assert {"schedules", "weekly", "snaps", "depth", "injuries", "ngs_receiving"} <= datasets
+    # pbp is read season by season
+    assert ("pbp", [2020]) in calls and ("pbp", [2021]) in calls
+    assert all(s == [2020, 2021] for d, s in calls if d != "pbp")
+
+    calls.clear()
+    bpf.fetch_sources()
+    assert all(s == bpf.SEASONS for d, s in calls if d != "pbp")

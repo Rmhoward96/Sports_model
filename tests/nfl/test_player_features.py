@@ -135,7 +135,8 @@ def test_feature_table_scripted_events():
     wr = pg[(pg["player_id"] == "KC_WR") & (pg["season"] * 100 + pg["week"] < 202403)]
     exp = wr["target_share"].ewm(halflife=4.0).mean().iloc[-1]
     assert np.isclose(t.loc[("KC_QB", *k), "st_vacated_tgt"], exp)
-    assert np.isclose(t.loc[("KC_WR", 2024, 2), "st_vacated_tgt"], 0.0)
+    assert np.isclose(t.loc[("MIA_WR", *k), "st_vacated_tgt"], 0.0)       # report week, nobody Out
+    assert np.isnan(t.loc[("KC_WR", 2024, 2), "st_vacated_tgt"])           # no report that week
     assert t.loc[("BAL_WR", *k), "st_vacated_car"] > 0
     assert t.loc[("BAL_QB2", *k), "st_qb_changed"] == 1 and t.loc[("KC_QB", *k), "st_qb_changed"] == 0
     assert t.loc[("BAL_QB2", *k), "p_depth_rank"] == 1
@@ -300,3 +301,18 @@ def test_depth_rank_ignores_snapshot_return_slots():
     depth["formation"] = ["Offense", "Offense", "Special Teams"]
     r = _depth_rank(depth, _snap_pg([])).set_index("player_id")["p_depth_rank"]
     assert r.to_dict() == {"w1": 1, "w2": 2}
+
+
+def test_status_features_nan_for_weeks_without_any_injury_rows():
+    """0 means 'the week has a report and he is not on it'; a (season, week)
+    with no injury rows at all is unknown (NaN), matching live serving when
+    the report is missing."""
+    from tests.nfl.fixtures_props import feature_inputs
+    inp = feature_inputs()
+    t = _build(inp)
+    wk = t["season"] * 100 + t["week"]
+    st = ["st_questionable", "st_vacated_tgt", "st_vacated_car"]
+    reported = wk.isin([202302, 202403])                          # the fixture's report weeks
+    assert reported.any() and (~reported).any()
+    assert t.loc[~reported, st].isna().all().all()
+    assert t.loc[reported, st].notna().all().all()

@@ -209,3 +209,23 @@ def test_active_usage_drops_out_player_whose_legal_first_name_differs():
     ids = {p.player_id for p in players}
     assert "gJJ" not in ids                           # Out filter now matches the common name
     assert "gZW" in ids
+
+
+def test_postseason_week_gets_its_own_asof_chart():
+    # Controller ruling: charts are stamped for every game type (REG + POST),
+    # so a postseason upto_week reads the chart as of ITS kickoff, not the
+    # last REG week's.
+    sched = pd.DataFrame({
+        "season": [2025, 2025], "week": [18, 19], "game_type": ["REG", "WC"],
+        "gameday": ["2026-01-04", "2026-01-11"], "gametime": ["13:00", "16:30"],
+        "home_team": ["KC", "KC"], "away_team": ["LAC", "BUF"],
+    })
+    raw = pd.DataFrame([
+        _snap("2026-01-02T10:00:00Z", "KC", "q18", "QB", 1, "Week18 Starter"),
+        _snap("2026-01-09T10:00:00Z", "KC", "q19", "QB", 1, "Playoff Starter"),
+    ])
+    out = depth_charts_asof(raw, sched)
+    kc = out[out["club_code"] == "KC"].set_index("week")["gsis_id"]
+    assert kc.loc[18] == "q18" and kc.loc[19] == "q19"
+    # REG-only stamping would have left week 19 without a chart
+    assert (out["week"] == 19).sum() == 1
