@@ -13,6 +13,11 @@ name: generate-sim-nfl
 # missing Release only prints a note and the script applies its shadow/live
 # failure semantics. With SIM_ML_MODE off nothing is downloaded and the run is
 # exactly the current sim.
+#
+# ML-only NFL: the repo variable ML_GAME_LINES (on | off; unset = off) makes
+# the ML sim the NFL game-line source -- with nfl_sim_serving on nfl-sim-ml-v1,
+# generate_sim_nfl.py then also writes game_predictions (nfl-sim-ml-v1) and
+# takes the slate from ESPN's target week too. Off = exactly today's run.
 on:
   schedule:
     - cron: "0 21 * * 0,3,6"  # Wed/Sat/Sun 21:00 UTC (~4-5pm ET)
@@ -27,6 +32,7 @@ jobs:
     timeout-minutes: 35    # the ML path (shadow/live) rebuilds the feature tables
     env:
       SIM_ML_MODE: ${{ vars.SIM_ML_MODE || 'off' }}
+      ML_GAME_LINES: ${{ vars.ML_GAME_LINES || 'off' }}
     steps:
       - uses: actions/checkout@v5
 

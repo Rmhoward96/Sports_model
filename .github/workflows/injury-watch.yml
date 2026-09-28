@@ -20,6 +20,9 @@ name: injury-watch
 # Optional repo variable SIM_ML_MODE (off | shadow | live; unset = off) turns on
 # props-ML serving in the NFL sim step; the models are downloaded from the
 # props-ml-latest Release (train-props-ml.yml) only when it is not off.
+# Optional repo variable ML_GAME_LINES (on | off; unset = off): when on, the ML
+# sim (generate_sim_nfl.py) is the NFL game-line source, so the Elo
+# generate_nfl.py step is skipped (its newer rows would win predictions_current).
 on:
   schedule:
     - cron: "0 15,22 * * *"  # 3 PM and 10 PM UTC daily
@@ -35,6 +38,7 @@ jobs:
     env:
       SPORT: nfl
       SIM_ML_MODE: ${{ vars.SIM_ML_MODE || 'off' }}
+      ML_GAME_LINES: ${{ vars.ML_GAME_LINES || 'off' }}
     concurrency:
       group: injury-pipeline-nfl
       cancel-in-progress: false
@@ -55,7 +59,7 @@ jobs:
         run: uv run python scripts/injury_watch.py --sport "$SPORT" --check
 
       - name: Generate NFL predictions (model-only game lines)
-        if: steps.check.outputs.changed == 'true'
+        if: steps.check.outputs.changed == 'true' && env.ML_GAME_LINES != 'on'
         env:
           DATABASE_URL: ${{ secrets.DATABASE_URL }}
           SM_DATA_DIR: ${{ github.workspace }}/data

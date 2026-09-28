@@ -69,3 +69,26 @@ def test_desk_workflow_files_are_kept():
     for name in ("desk-auto-nfl.yml", "desk-auto-cfb.yml", "desk-inputs.yml",
                  "write-desk-picks.yml", "grade-desk-picks.yml"):
         assert (WF / name).exists(), name
+
+
+# ---- ML_GAME_LINES switch (ML-only NFL Task 4) ------------------------------------------
+
+ML_GAME_LINES_ENV = "${{ vars.ML_GAME_LINES || 'off' }}"
+
+
+@pytest.mark.parametrize("wf,job", [("generate-sim-nfl.yml", "generate"), ("injury-watch.yml", "nfl")])
+def test_ml_game_lines_passed_from_repo_variable_default_off(wf, job):
+    assert load(wf)["jobs"][job]["env"]["ML_GAME_LINES"] == ML_GAME_LINES_ENV
+
+
+def test_cfb_injury_watch_job_has_no_ml_game_lines():
+    assert "ML_GAME_LINES" not in (load("injury-watch.yml")["jobs"]["cfb"].get("env") or {})
+
+
+def test_injury_watch_generate_nfl_runs_only_when_ml_game_lines_not_on():
+    steps = steps_of(load("injury-watch.yml")["jobs"]["nfl"])
+    step = steps[step_index(steps, runs("generate_nfl.py"))]
+    assert step["if"] == f"{CHANGED} && env.ML_GAME_LINES != 'on'"
+    # the sim step (which writes the ML game lines when on) still runs on every change
+    sim = steps[step_index(steps, runs("generate_sim_nfl.py"))]
+    assert sim["if"] == CHANGED

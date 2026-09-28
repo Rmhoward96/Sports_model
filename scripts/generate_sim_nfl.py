@@ -64,7 +64,8 @@ the backtest's per-game seed -> `ml_player_dists` once -> writes nfl_sim +
 nfl_player_sim under `nfl-sim-ml-v1` in ONE transaction
 (`db.upsert_nfl_sim_slate`). The ML version is a complete slate: its GAME
 rows are the CURRENT sim's (props were gated, game predictions were not --
-the ML sims feed player dists only), its player rows are the ML dists for
+the ML sims feed player dists only; ML_GAME_LINES=on changes this, see
+below), its player rows are the ML dists for
 `source == "ml"` markets of the player-markets inside the gated population
 (`props_eval.gate_population` on the current sim's dist means) and the
 current sim's dists for everything else. A game the ML path can't serve
@@ -101,6 +102,30 @@ once after the current sim is written -- `db.served_nfl_sim_version`):
   * the read itself fails: shadow/live are a global failure writing nothing;
     off prints a `::warning::` and exits 1 (the served slate may be stale).
 
+ML game lines (ML_GAME_LINES)
+-----------------------------
+`ML_GAME_LINES` = off (default) | on; anything else is off plus a
+`::warning::ml-game-lines:` line. `off` is exactly the behavior above (no
+game_predictions writes; the ML version's nfl_sim game rows are the current
+sim's). `on` makes the ML sim the NFL game-line source (generate-nfl is
+disabled and injury-watch skips generate_nfl.py):
+  * the slate is predictions_current PLUS ESPN's target week
+    (`merge_espn_slate`; generate_nfl's source): with generate-nfl disabled
+    nothing else adds a new week's games. ESPN also supplies game_date and
+    market_spread/market_total. A new ESPN game has no analytic prediction,
+    so its nfl_sim rows carry `disagreement` None. An ESPN failure warns and
+    keeps the predictions_current slate (market lines None).
+  * only while the served version is `nfl-sim-ml-v1`: an ML-served game's
+    nfl_sim ML-version game row comes from its ML sims (reverses Props-2 I3
+    for the switched state), and every game gets a `game_predictions` row
+    under `nfl-sim-ml-v1` in `generate_nfl.build_game_row`'s exact shape
+    (`game_prediction_row`) -- from the ML sims when the game was ML-served,
+    else from the current sim (per-game fallback, global ML failure, or
+    SIM_ML_MODE=off), so the slate stays complete. A failed game_predictions
+    write is a `::warning::ml-game-lines:` line and a red run (exit 1).
+  * on while the served version is anything else: a `::warning::ml-game-lines:`
+    line and no game_predictions writes.
+
 Usage:
     PYTHONPATH=src uv run python scripts/generate_sim_nfl.py
     SIM_ML_MODE=shadow PYTHONPATH=src uv run python scripts/generate_sim_nfl.py
@@ -110,9 +135,10 @@ Requires DATABASE_URL (Supabase) and nflverse network access; not run here.
 from __future__ import annotations
 
 import importlib.util
+import json
 import os
 import sys
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
@@ -122,9 +148,11 @@ import numpy as np
 import pandas as pd
 
 from sportsmodel import config
+from sportsmodel.model.game_gate import win_prob_pmf
 from sportsmodel.model.props_eval import gate_population
-from sportsmodel.db import (get_postgres, served_nfl_sim_version, upsert_nfl_player_sim, upsert_nfl_sim,
-                            upsert_nfl_sim_slate)
+from sportsmodel.db import (get_postgres, served_nfl_sim_version, upsert_game_predictions,
+                            upsert_nfl_player_sim, upsert_nfl_sim, upsert_nfl_sim_slate)
+from sportsmodel.nfl import config as nfl_config
 from sportsmodel.nfl.injuries_nflverse import nfl_season
 from sportsmodel.nfl.injury_report import current_report, live_injury_rows, resolve_target_week
 from sportsmodel.nfl.nflverse import load_release
@@ -209,6 +237,12 @@ ML_MODEL_VERSION = "nfl-sim-ml-v1"
 ML_MODEL_DIR = config.PROJECT_ROOT / "data" / "props_ml" / "models"
 _SCRIPTS_DIR = Path(__file__).resolve().parent
 
+# ML_GAME_LINES (ML-only NFL): "off" (default) = today's behavior; "on" = the
+# ML sim is the NFL game-line source (module docstring). Anything else is
+# treated as off with a `::warning::ml-game-lines:` line.
+ML_GAME_LINES_VALUES = ("on", "off")
+_LINES_WARN = "::warning::ml-game-lines: "
+
 
 # =============================================================================
 # PURE seam
@@ -222,6 +256,7 @@ def assemble_sim_rows(
     model_version: str = MODEL_VERSION,
     market_max: dict[str, int] | None = None,
     dists_by_game: dict[Any, dict] | None = None,
+    allow_missing_analytic: bool = False,
 ) -> tuple[list[dict], list[dict]]:
     """Turn raw per-game sim outputs into (nfl_sim rows, nfl_player_sim rows). PURE.
 
@@ -248,6 +283,11 @@ def assemble_sim_rows(
             `nfl_player_prop_dists(sims)` (the props-ML slate: ML markets +
             the current sim's baseline markets -- see `merge_ml_dists`). Game
             rows still come from `sims_by_game`.
+        allow_missing_analytic: ML_GAME_LINES=on only -- a game whose
+            analytic home_win_prob is None (a new ESPN game with no
+            predictions_current row) is written with `disagreement` None
+            instead of being skipped. A game absent from `analytic_by_game`
+            is still skipped.
 
     Returns:
         (nfl_sim_rows, nfl_player_sim_rows) matching `db.upsert_nfl_sim` /
@@ -255,7 +295,8 @@ def assemble_sim_rows(
         plain dict -- upsert_nfl_player_sim does the json.dumps).
 
     A game missing from `sims_by_game`, `specs_by_game`, or
-    `analytic_by_game` is silently skipped (documents the contract: `main()`
+    `analytic_by_game` (or None there, unless `allow_missing_analytic`) is
+    silently skipped (documents the contract: `main()`
     only adds a game to those three dicts once its sim has actually
     succeeded, so a game dropped upstream on a per-game try/except never
     reaches here as a partial/crashing entry). A player_id present in a
@@ -273,7 +314,9 @@ def assemble_sim_rows(
         sims = sims_by_game.get(game_pk)
         spec = specs_by_game.get(game_pk)
         analytic_home_win_prob = analytic_by_game.get(game_pk)
-        if sims is None or spec is None or analytic_home_win_prob is None:
+        if sims is None or spec is None:
+            continue
+        if analytic_home_win_prob is None and not (allow_missing_analytic and game_pk in analytic_by_game):
             continue
 
         scores = pred_scores(sims)
@@ -286,7 +329,8 @@ def assemble_sim_rows(
             "sim_home_win_prob": sim_home_win_prob,
             "sim_margin": scores["pred_margin"],
             "sim_total": scores["pred_total"],
-            "disagreement": disagreement(analytic_home_win_prob, sim_home_win_prob),
+            "disagreement": (None if analytic_home_win_prob is None
+                             else disagreement(analytic_home_win_prob, sim_home_win_prob)),
             # Full simulated distributions for the game-page histograms
             # (Spread / Total / each team's total). NflGameSims duck-types
             # GameSims (home_score/away_score arrays) for these helpers.
@@ -368,6 +412,99 @@ def gated_player_markets(current: dict[str, dict]) -> set[tuple[str, str]]:
                            for pid, markets in current.items() for m, d in markets.items())
 
 
+def game_prediction_row(game: dict, sims, gl_cfg) -> dict:
+    """One game's sims -> a `game_predictions` row in EXACTLY the shape
+    `generate_nfl.build_game_row` / `gameline.build_gameline` emit. PURE.
+
+    `margin_dist` = {"kind": "margin", "offset": gl_cfg.offset, "pmf": [...]}
+    with pmf[i] = P(margin == i - offset), length 2*offset+1 -- `engine.margin_pmf`
+    already uses gameline's offset convention, so half_range=gl_cfg.offset is
+    the whole conversion (the sims' tails beyond +-offset are clipped onto the
+    end bins, where the Normal version truncates). `total_dist` =
+    {"kind": "pmf", "pmf": [...]} on totals 0..gl_cfg.total_max (NOT the
+    engine's default max_total=30, which would pile every NFL total onto the
+    last bin). `home_win_prob` = P(margin > 0) + 0.5 P(margin == 0) (the sim
+    has no overtime, so ties are split -- the game gate's definition);
+    pred_* are the sims' means. The dists are plain dicts: `main()` JSON-encodes
+    them at the DB boundary, as generate_nfl does. `game` carries
+    game_pk/commence_time/home_team/away_team (display names) and, from
+    `merge_espn_slate`, game_date/market_spread/market_total."""
+    margin_dist = margin_pmf(sims, half_range=gl_cfg.offset)
+    total_dist = {"kind": "pmf", "pmf": total_pmf(sims, max_total=gl_cfg.total_max)}
+    scores = pred_scores(sims)
+    return {
+        "margin_dist": margin_dist,
+        "total_dist": total_dist,
+        "home_win_prob": win_prob_pmf(margin_dist["pmf"], -margin_dist["offset"]),
+        "pred_margin": scores["pred_margin"],
+        "pred_total": scores["pred_total"],
+        "pred_home_score": scores["pred_home_score"],
+        "pred_away_score": scores["pred_away_score"],
+        "sport": "nfl",
+        "model_version": ML_MODEL_VERSION,
+        "game_pk": game["game_pk"],
+        "game_date": game.get("game_date"),
+        "commence_time": game["commence_time"],
+        "market_spread": game.get("market_spread"),
+        "market_total": game.get("market_total"),
+        "home_team_name": game["home_team"],
+        "away_team_name": game["away_team"],
+    }
+
+
+def _as_utc(commence) -> datetime:
+    """A kickoff (ESPN ISO string or DB datetime) as an aware datetime."""
+    if isinstance(commence, datetime):
+        return commence if commence.tzinfo else commence.replace(tzinfo=timezone.utc)
+    dt = datetime.fromisoformat(str(commence).replace("Z", "+00:00"))
+    return dt if dt.tzinfo else dt.replace(tzinfo=timezone.utc)
+
+
+def _game_date(commence) -> str:
+    """US game date of a kickoff: generate_nfl's `_game_date_from_commence`
+    rule (UTC - 8h), for strings and DB datetimes alike. PURE."""
+    return (_as_utc(commence) - timedelta(hours=8)).date().isoformat()
+
+
+def merge_espn_slate(games: list[dict], espn_games: list[dict], now: datetime) -> list[dict]:
+    """The ML_GAME_LINES=on slate. PURE.
+
+    `games`: `_load_upcoming_games()` (predictions_current); `espn_games`:
+    `espn.parse_schedule` rows of the target week -- the source generate_nfl
+    uses. Every predictions_current game gets `game_date` and ESPN's
+    `market_spread`/`market_total` (None when ESPN has no row / no line). An
+    ESPN game missing from predictions_current that kicks off after `now` is
+    appended (display names, `home_win_prob` None = no analytic prediction):
+    with generate-nfl disabled nothing else adds a new week's games to
+    predictions_current, so without this the slate would never advance."""
+    by_pk = {int(e["game_pk"]): e for e in espn_games}
+    out = []
+    for g in games:
+        e = by_pk.get(int(g["game_pk"])) or {}
+        out.append({**g, "game_date": _game_date(g["commence_time"]),
+                    "market_spread": e.get("market_spread"), "market_total": e.get("market_total")})
+    have = {int(g["game_pk"]) for g in games}
+    for e in espn_games:
+        home, away = e.get("home_name"), e.get("away_name")
+        if int(e["game_pk"]) in have or not home or not away or _as_utc(e["commence_time"]) <= now:
+            continue
+        out.append({"game_pk": int(e["game_pk"]), "matchup": f"{away} @ {home}",
+                    "commence_time": e["commence_time"], "home_team": home, "away_team": away,
+                    "home_win_prob": None, "game_date": _game_date(e["commence_time"]),
+                    "market_spread": e.get("market_spread"), "market_total": e.get("market_total")})
+    return out
+
+
+def _ml_game_lines() -> str:
+    """ML_GAME_LINES, normalized to on|off; anything else is off + a warning."""
+    raw = os.environ.get("ML_GAME_LINES", "off")
+    value = raw.strip().lower() or "off"
+    if value in ML_GAME_LINES_VALUES:
+        return value
+    print(f"{_LINES_WARN}unknown ML_GAME_LINES={raw!r} (expected on|off); treated as off", flush=True)
+    return "off"
+
+
 def _norm_team(code) -> str | None:
     try:
         return normalize_team(str(code))
@@ -440,6 +577,35 @@ def _load_upcoming_games() -> list[dict]:
         }
         for r in rows
     ]
+
+
+def _load_espn_slate() -> list[dict]:
+    """ESPN's target-week NFL schedule (`espn.parse_schedule` rows, market
+    lines included) -- what generate_nfl.py prices. IO (network)."""
+    from sportsmodel.nfl import espn
+
+    tw = espn.resolve_target_week()
+    return espn.fetch_schedule(int(tw["season"]), int(tw["week"]), season_type=int(tw["season_type"]))
+
+
+def _write_game_lines(games: list[dict], sims_for_game: dict, ml_served: set) -> None:
+    """ML_GAME_LINES=on: one `game_predictions` row per game in `games` with
+    sims (`game_prediction_row`, dists JSON-encoded at this boundary like
+    generate_nfl's main), under ML_MODEL_VERSION, in one upsert. `ml_served`:
+    the game_pks whose sims are the ML sims (the rest are the current sim's)."""
+    gl_cfg = nfl_config.load_gameline()
+    rows = []
+    for g in games:
+        sims = sims_for_game.get(g["game_pk"])
+        if sims is None:
+            continue
+        row = game_prediction_row(g, sims, gl_cfg)
+        rows.append({**row, "margin_dist": json.dumps(row["margin_dist"]),
+                     "total_dist": json.dumps(row["total_dist"])})
+    upsert_game_predictions(rows)
+    n_ml = sum(1 for r in rows if r["game_pk"] in ml_served)
+    print(f"game_lines: wrote {len(rows)} game_predictions rows under {ML_MODEL_VERSION} "
+          f"(ml_sim={n_ml} current_sim={len(rows) - n_ml})", flush=True)
 
 
 def _determine_upto_week(pbp_df, upto_season: int) -> int:
@@ -605,9 +771,10 @@ def _missing_feature_rows(spec, home: str, away: str, p_rows: pd.DataFrame,
 
 def _ml_game(game_pk, *, game_keys, specs_by_game, sims_by_game, feats, team, sched, artifacts,
              sources, upto_season, n_sims, ml_serving, game_seed):
-    """One game's merged player dists (the ML sims are used for player dists
-    only; the game row stays on the current sim). Raises `_MlGameFallback`
-    (or anything else) when the game can't be ML-served."""
+    """(one game's merged player dists, the ML sims). The caller decides
+    whether the ML sims also feed the game row (ML_GAME_LINES=on with the ML
+    version served) or only the player dists. Raises `_MlGameFallback` (or
+    anything else) when the game can't be ML-served."""
     home_abbrev, away_abbrev, rtilt = game_keys[game_pk]
     # normalized codes, as the feature tables / schedule / backtest seeds use
     home, away = _norm_team(home_abbrev) or home_abbrev, _norm_team(away_abbrev) or away_abbrev
@@ -637,13 +804,14 @@ def _ml_game(game_pk, *, game_keys, specs_by_game, sims_by_game, feats, team, sc
     if n_fallback:
         print(f"WARN props-ML: game_pk={game_pk}: {n_fallback} ML-sourced player-markets had no "
               f"ML dist; served from the current sim")
-    return merged
+    return merged, sims_ml
 
 
 def run_ml(*, ok_games: list[dict], game_keys: dict[Any, tuple[str, str, float]],
            specs_by_game: dict, sims_by_game: dict, analytic_by_game: dict,
            upto_season: int, n_sims: int, now: datetime, report: dict | None = None,
-           diag: dict | None = None) -> tuple[int, int, int]:
+           diag: dict | None = None, game_lines: bool = False, game_sims: dict | None = None,
+           ml_served: set | None = None, allow_missing_analytic: bool = False) -> tuple[int, int, int]:
     """The props-ML slate for the games the current sim produced; writes it
     under ML_MODEL_VERSION in ONE transaction (`upsert_nfl_sim_slate`) and
     returns (ml_games, ml_players, ml_fallback_games): the ML-SERVED games,
@@ -667,7 +835,13 @@ def run_ml(*, ok_games: list[dict], game_keys: dict[Any, tuple[str, str, float]]
     with a per-game rng (`backtest_sim_nfl.game_seed`, as the backtest /
     training runs) -> `ml_player_dists` exactly once -> the complete player
     slate from `merge_ml_dists`. Every game's nfl_sim row comes from the
-    CURRENT sim (`sims_by_game`): the gate covered props, not game outputs.
+    CURRENT sim (`sims_by_game`): the gate covered props, not game outputs --
+    unless `game_lines` (ML_GAME_LINES=on with the ML version served), where an
+    ML-served game's nfl_sim row comes from its ML sims (a fallback game's from
+    the current sim). `game_sims` / `ml_served` (filled in place only after
+    the slate is written, for the game_predictions write): {game_pk -> the
+    sims its nfl_sim game row came from} / the game_pks whose game row came
+    from ML sims. `allow_missing_analytic`: passed to `assemble_sim_rows`.
     `game_keys`: {game_pk -> (home_abbrev, away_abbrev, ratings_tilt)}.
     `report`: the live injury report (`current_report`), for the feature
     build's target-week injury injection. `diag` (filled in place once the
@@ -700,12 +874,13 @@ def run_ml(*, ok_games: list[dict], game_keys: dict[Any, tuple[str, str, float]]
     sources = {m: str(v["source"]) for m, v in artifacts.config["markets"].items()}
 
     dists_by_game: dict = {}
+    ml_sims_by_game: dict = {}
     fallbacks: list[tuple[Any, str]] = []
     n_postseason = 0
     for g in ok_games:
         game_pk = g["game_pk"]
         try:
-            dists_by_game[game_pk] = _ml_game(
+            dists_by_game[game_pk], ml_sims_by_game[game_pk] = _ml_game(
                 game_pk, game_keys=game_keys, specs_by_game=specs_by_game, sims_by_game=sims_by_game,
                 feats=feats, team=team, sched=sched, artifacts=artifacts, sources=sources,
                 upto_season=upto_season, n_sims=n_sims, ml_serving=ml_serving, game_seed=bsn.game_seed)
@@ -714,6 +889,7 @@ def run_ml(*, ok_games: list[dict], game_keys: dict[Any, tuple[str, str, float]]
             n_postseason += isinstance(exc, _MlPostseason)
             fallbacks.append((game_pk, " ".join(reason.split())))
             dists_by_game.pop(game_pk, None)   # no dists override -> current sim's dists
+            ml_sims_by_game.pop(game_pk, None)
     listed = "; ".join(f"{pk}: {why}" for pk, why in fallbacks)
     if not dists_by_game and len(ok_games) > n_postseason:
         raise RuntimeError(f"every REG game fell back to the current sim "
@@ -722,20 +898,27 @@ def run_ml(*, ok_games: list[dict], game_keys: dict[Any, tuple[str, str, float]]
         print(f"::warning::props-ml: {len(fallbacks)} game(s) served from the current sim: {listed}",
               flush=True)
 
-    sim_rows, player_rows = assemble_sim_rows(ok_games, sims_by_game, specs_by_game, analytic_by_game,
-                                              model_version=ML_MODEL_VERSION, dists_by_game=dists_by_game)
+    row_sims = {**sims_by_game, **ml_sims_by_game} if game_lines else sims_by_game
+    sim_rows, player_rows = assemble_sim_rows(ok_games, row_sims, specs_by_game, analytic_by_game,
+                                              model_version=ML_MODEL_VERSION, dists_by_game=dists_by_game,
+                                              allow_missing_analytic=allow_missing_analytic)
     upsert_nfl_sim_slate(sim_rows, player_rows)
+    if game_sims is not None:
+        game_sims.update(row_sims)
+    if ml_served is not None and game_lines:
+        ml_served.update(ml_sims_by_game)
     ml_players = sum(1 for r in player_rows if r["game_pk"] in dists_by_game)
     return len(dists_by_game), ml_players, len(fallbacks)
 
 
 def _write_copy_slate(ok_games: list[dict], sims_by_game: dict, specs_by_game: dict,
-                      analytic_by_game: dict) -> tuple[int, int]:
+                      analytic_by_game: dict, allow_missing_analytic: bool = False) -> tuple[int, int]:
     """The current sim's rows re-labelled ML_MODEL_VERSION, in one
     transaction: (game rows, player rows). For when the site serves the ML
     version but the ML path produced nothing (off mode / global failure)."""
     sim_rows, player_rows = assemble_sim_rows(ok_games, sims_by_game, specs_by_game, analytic_by_game,
-                                              model_version=ML_MODEL_VERSION)
+                                              model_version=ML_MODEL_VERSION,
+                                              allow_missing_analytic=allow_missing_analytic)
     upsert_nfl_sim_slate(sim_rows, player_rows)
     return len(sim_rows), len(player_rows)
 
@@ -766,9 +949,21 @@ def main() -> None:
         ml_mode, ml_mode_error = _ml_mode(), None
     except ValueError as exc:   # still write the current sim, then fail loudly
         ml_mode, ml_mode_error = "invalid", str(exc)
+    lines_on = _ml_game_lines() == "on"
 
     games = _load_upcoming_games()
     print(f"{len(games)} upcoming NFL games in predictions_current")
+    if lines_on:   # the ML sim is the game-line source: ESPN's target week too (merge_espn_slate)
+        try:
+            espn_games = _load_espn_slate()
+        except Exception as exc:  # noqa: BLE001 -- degrade to the predictions_current slate
+            espn_games = []
+            flat = " ".join(f"{type(exc).__name__}: {exc}".split())
+            print(f"{_LINES_WARN}ESPN target-week schedule unavailable ({flat}); "
+                  f"slate = predictions_current only, no market lines", flush=True)
+        n_db = len(games)
+        games = merge_espn_slate(games, espn_games, now)
+        print(f"game_lines: slate {len(games)} games ({len(games) - n_db} added from ESPN's target week)")
     if not games:
         print("games=0 players=0 mean_disagreement=nan")
         if ml_mode_error is not None:
@@ -917,16 +1112,16 @@ def main() -> None:
         game_keys[game_pk] = (home_abbrev, away_abbrev, rtilt)
         ok_games.append(g)
 
-    sim_rows, player_rows = assemble_sim_rows(ok_games, sims_by_game, specs_by_game, analytic_by_game)
+    sim_rows, player_rows = assemble_sim_rows(ok_games, sims_by_game, specs_by_game, analytic_by_game,
+                                              allow_missing_analytic=lines_on)
 
     if sim_rows:
         upsert_nfl_sim(sim_rows)
     if player_rows:
         upsert_nfl_player_sim(player_rows)
 
-    mean_disagreement = (
-        float(np.mean([r["disagreement"] for r in sim_rows])) if sim_rows else float("nan")
-    )
+    disagreements = [r["disagreement"] for r in sim_rows if r["disagreement"] is not None]
+    mean_disagreement = float(np.mean(disagreements)) if disagreements else float("nan")
     print(
         f"games={len(sim_rows)} players={len(player_rows)} "
         f"mean_disagreement={mean_disagreement:.4f} n_empty_active={n_empty_active}"
@@ -940,7 +1135,27 @@ def main() -> None:
         served, served_error = None, f"could not read nfl_sim_serving ({type(exc).__name__}: {exc})"
     must_write = served_error is None and served == ML_MODEL_VERSION
     slate = dict(ok_games=ok_games, sims_by_game=sims_by_game, specs_by_game=specs_by_game,
-                 analytic_by_game=analytic_by_game)
+                 analytic_by_game=analytic_by_game, allow_missing_analytic=lines_on)
+    # ML_GAME_LINES=on writes game_predictions only while the site serves the
+    # ML version (on + served sim-nfl-v1 = a misconfiguration: warn, no writes).
+    write_lines = lines_on and must_write
+    if lines_on and not must_write:
+        shown = "unknown (read failed)" if served_error is not None else served
+        print(f"{_LINES_WARN}ML_GAME_LINES=on but the site serves {shown} (not {ML_MODEL_VERSION}); "
+              f"no game_predictions written", flush=True)
+
+    def game_lines_ok(sims_for_game: dict, ml_served: set) -> bool:
+        """Write this run's game_predictions (write_lines only); False when the write fails."""
+        if not write_lines:
+            return True
+        try:
+            _write_game_lines(ok_games, sims_for_game, ml_served)
+            return True
+        except Exception as exc:  # noqa: BLE001 -- loud: the served game lines are now stale
+            flat = " ".join(f"{type(exc).__name__}: {exc}".split())
+            print(f"{_LINES_WARN}game_predictions write failed ({flat}); the served NFL game lines "
+                  f"were not refreshed", flush=True)
+            return False
 
     if ml_mode == "off":
         if served_error is not None:
@@ -952,10 +1167,14 @@ def main() -> None:
             print(f"props-ML: SIM_ML_MODE=off, served={served}: wrote the current sim under "
                   f"{ML_MODEL_VERSION} (games={n_g} players={n_p})", flush=True)
             print(OFF_SERVED_ML_WARNING, flush=True)
+            if not game_lines_ok(sims_by_game, set()):
+                sys.exit(1)
         return
 
     counts = (0, 0, 0)
     diag: dict = {}
+    game_sims: dict = {}
+    ml_served: set = set()
     if ml_mode_error is not None:
         reason = ml_mode_error
     elif served_error is not None:
@@ -967,14 +1186,20 @@ def main() -> None:
             counts = run_ml(
                 ok_games=ok_games, game_keys=game_keys, specs_by_game=specs_by_game,
                 sims_by_game=sims_by_game, analytic_by_game=analytic_by_game,
-                upto_season=upto_season, n_sims=n_sims, now=now, report=report, diag=diag)
+                upto_season=upto_season, n_sims=n_sims, now=now, report=report, diag=diag,
+                game_lines=write_lines, game_sims=game_sims, ml_served=ml_served,
+                allow_missing_analytic=lines_on)
             reason = None
         except Exception as exc:  # noqa: BLE001 -- any ML failure -> SIM_ML_MODE failure semantics
             reason = f"{type(exc).__name__}: {exc}"
     if reason is None:
+        lines_ok = game_lines_ok(game_sims, ml_served)
         _ml_summary(ml_mode, *counts, "ok", diag.get("st_nan"))
+        if not lines_ok:
+            sys.exit(1)
         return
     _ml_failed(reason)
+    lines_ok = True
     if must_write:   # the site serves the ML version: it must get this run's (current-sim) slate
         try:
             n_g, n_p = _write_copy_slate(**slate)
@@ -985,8 +1210,10 @@ def main() -> None:
             flat = " ".join(f"{type(exc).__name__}: {exc}".split())
             print(f"::warning::props-ml: copy slate write failed too ({flat}); the served "
                   f"{ML_MODEL_VERSION} slate was not refreshed", flush=True)
+        # game lines follow what nfl_sim now holds for the ML version: the current sim
+        lines_ok = game_lines_ok(sims_by_game, set())
     _ml_summary(ml_mode, *counts, "failed", diag.get("st_nan"))
-    if ml_mode != "shadow":   # live (or an invalid mode): red run
+    if ml_mode != "shadow" or not lines_ok:   # live (or an invalid mode) or stale game lines: red run
         sys.exit(1)
 
 

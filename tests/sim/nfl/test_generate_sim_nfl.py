@@ -273,6 +273,17 @@ _GAMES = [
      "commence_time": "2026-09-27T20:25:00+00:00", "home_team": "Buffalo Bills",
      "away_team": "Miami Dolphins", "home_win_prob": 0.6},
 ]
+# The ESPN target-week schedule (espn.parse_schedule rows) for the same games:
+# the market lines ML_GAME_LINES=on copies onto game_predictions (generate_nfl's
+# source for them).
+_ESPN = [
+    {"game_pk": 11, "commence_time": "2026-09-27T17:00Z", "home_team": "KC", "away_team": "BAL",
+     "home_name": "Kansas City Chiefs", "away_name": "Baltimore Ravens", "status": "STATUS_SCHEDULED",
+     "market_spread": -3.5, "market_total": 47.5},
+    {"game_pk": 12, "commence_time": "2026-09-27T20:25Z", "home_team": "BUF", "away_team": "MIA",
+     "home_name": "Buffalo Bills", "away_name": "Miami Dolphins", "status": "STATUS_SCHEDULED",
+     "market_spread": None, "market_total": None},
+]
 _XWALK = {"Kansas City Chiefs": "KC", "Baltimore Ravens": "BAL",
           "Buffalo Bills": "BUF", "Miami Dolphins": "MIA"}
 # nfl_player_prop_dists markets from _sims_with: pass_yds, rush_yds, rec_yds,
@@ -306,16 +317,35 @@ class _Rec:
         self.usage_include_depth: list = []
         self.load_artifacts_args: list[tuple] = []
         self.slates: list[tuple[list[dict], list[dict]]] = []   # upsert_nfl_sim_slate calls
+        self.game_preds: list[list[dict]] = []   # upsert_game_predictions calls
+        self.espn_calls = 0
 
 
 _ML_SPEC_TAG = "ML"
 
 
-def _install_io(monkeypatch, tmp_path, mode, served="sim-nfl-v1"):
+def _install_io(monkeypatch, tmp_path, mode, served="sim-nfl-v1", lines=None, espn=None):
     """Fake every IO dependency of gsn.main(); returns the call recorder.
     `served`: what nfl_sim_serving says (None = table missing; an Exception
-    instance = the read raises)."""
+    instance = the read raises). `lines`: ML_GAME_LINES (None = unset).
+    `espn`: the ESPN target-week schedule `_load_espn_slate` returns (default
+    `_ESPN`; an Exception instance = the fetch raises)."""
     rec = _Rec()
+    if lines is None:
+        monkeypatch.delenv("ML_GAME_LINES", raising=False)
+    else:
+        monkeypatch.setenv("ML_GAME_LINES", lines)
+
+    def fake_espn():
+        rec.espn_calls += 1
+        src = _ESPN if espn is None else espn
+        if isinstance(src, Exception):
+            raise src
+        return [dict(e) for e in src]
+
+    monkeypatch.setattr(gsn, "_load_espn_slate", fake_espn)
+    monkeypatch.setattr(gsn, "upsert_game_predictions",
+                        lambda rows: rec.game_preds.append(list(rows)) or len(rows))
 
     def fake_served():
         if isinstance(served, Exception):
@@ -1167,3 +1197,336 @@ def test_main_never_downloads_the_old_depth_charts(monkeypatch, tmp_path):
     rec = _install_io(monkeypatch, tmp_path, "off")
     gsn.main()
     assert rec.usage_include_depth == [False]
+
+
+# =============================================================================
+# ML_GAME_LINES (ML-only NFL Task 4): the ML sim writes NFL game_predictions.
+# =============================================================================
+
+import json  # noqa: E402
+
+from sportsmodel.nfl import config as nfl_config  # noqa: E402
+
+_gn_p = pathlib.Path(__file__).resolve().parents[3] / "scripts" / "generate_nfl.py"
+_gn_spec = importlib.util.spec_from_file_location("generate_nfl_for_parity", _gn_p)
+gnfl = importlib.util.module_from_spec(_gn_spec)
+_gn_spec.loader.exec_module(gnfl)
+
+_LINES_GAME = {"game_pk": 11, "commence_time": "2026-09-27T17:00:00+00:00",
+               "home_team": "Kansas City Chiefs", "away_team": "Baltimore Ravens",
+               "game_date": "2026-09-27", "market_spread": -3.5, "market_total": 47.5}
+_GP_LINES_WARN = "::warning::ml-game-lines: "
+
+
+def _game_preds(rec):
+    """{game_pk: row} over every upsert_game_predictions call, dists decoded."""
+    out = {}
+    for rows in rec.game_preds:
+        for r in rows:
+            out[r["game_pk"]] = {**r, "margin_dist": json.loads(r["margin_dist"]),
+                                 "total_dist": json.loads(r["total_dist"])}
+    return out
+
+
+def _lines_warnings(out):
+    return [ln for ln in out.splitlines() if ln.startswith(_GP_LINES_WARN)]
+
+
+def test_game_prediction_row_shape_matches_generate_nfl_build_game_row():
+    """Ruling M2: same keys, same dist keys/offset/support/length as a REAL
+    generate_nfl.build_game_row output (gameline.build_gameline), pmfs sum to 1."""
+    gl_cfg = nfl_config.load_gameline()
+    ref = gnfl.build_game_row(
+        {"game_pk": 11, "game_date": "2026-09-27", "commence_time": "2026-09-27T17:00Z",
+         "home_name": "Kansas City Chiefs", "away_name": "Baltimore Ravens",
+         "market_spread": -3.5, "market_total": 47.5},
+        {"model_margin": 3.0, "model_total": 45.0, "week": 3}, gl_cfg)
+    sims = _sims_with([30, 31, 32, 33], [10, 10, 10, 10], ["KC_p"], pass_yds=300)
+    row = gsn.game_prediction_row(_LINES_GAME, sims, gl_cfg)
+    assert set(row) == set(ref)
+    for key in ("margin_dist", "total_dist"):
+        assert set(row[key]) == set(ref[key])
+        assert row[key]["kind"] == ref[key]["kind"]
+        assert len(row[key]["pmf"]) == len(ref[key]["pmf"])
+        assert sum(row[key]["pmf"]) == pytest.approx(1.0)
+        assert sum(ref[key]["pmf"]) == pytest.approx(1.0)
+        assert all(isinstance(p, float) for p in row[key]["pmf"])
+    assert row["margin_dist"]["offset"] == ref["margin_dist"]["offset"] == gl_cfg.offset
+    assert len(row["total_dist"]["pmf"]) == gl_cfg.total_max + 1
+    assert row["sport"] == "nfl" and row["model_version"] == "nfl-sim-ml-v1"
+    json.dumps(row)   # plain JSON-able values (main encodes the dists at the DB boundary)
+
+
+def test_game_prediction_row_values_come_from_the_sims():
+    gl_cfg = nfl_config.load_gameline()
+    # margins 0, 3, 4, -7 (one tie); totals 40, 37, 44, 41
+    sims = _sims_with([20, 20, 24, 17], [20, 17, 20, 24], ["KC_p"], pass_yds=300)
+    row = gsn.game_prediction_row(_LINES_GAME, sims, gl_cfg)
+    o = row["margin_dist"]["offset"]
+    pmf = row["margin_dist"]["pmf"]
+    # the gameline convention: pmf[i] = P(margin == i - offset)
+    assert pmf[o + 0] == pytest.approx(0.25) and pmf[o + 3] == pytest.approx(0.25)
+    assert pmf[o + 4] == pytest.approx(0.25) and pmf[o - 7] == pytest.approx(0.25)
+    assert row["total_dist"]["pmf"][37] == pytest.approx(0.25)
+    # home win = P(margin > 0) + 0.5 P(margin == 0) (the game gate's definition)
+    assert row["home_win_prob"] == pytest.approx(0.5 + 0.5 * 0.25)
+    assert row["pred_margin"] == pytest.approx(0.0)
+    assert row["pred_total"] == pytest.approx(40.5)
+    assert row["pred_home_score"] == pytest.approx(20.25)
+    assert row["pred_away_score"] == pytest.approx(20.25)
+    assert {k: row[k] for k in ("game_pk", "game_date", "commence_time", "market_spread",
+                                "market_total", "home_team_name", "away_team_name")} == {
+        "game_pk": 11, "game_date": "2026-09-27", "commence_time": "2026-09-27T17:00:00+00:00",
+        "market_spread": -3.5, "market_total": 47.5,
+        "home_team_name": "Kansas City Chiefs", "away_team_name": "Baltimore Ravens"}
+
+
+def test_merge_espn_slate_enriches_db_games_and_adds_upcoming_espn_games():
+    now = gsn.datetime(2026, 9, 27, 12, tzinfo=gsn.timezone.utc)
+    db_games = [dict(_GAMES[0]), {**_GAMES[1], "commence_time": gsn.datetime(
+        2026, 9, 28, 0, 20, tzinfo=gsn.timezone.utc)}]   # the DB hands back datetimes
+    espn = [dict(_ESPN[0]),
+            {"game_pk": 13, "commence_time": "2026-10-04T17:00Z", "home_team": "KC",
+             "away_team": "BUF", "home_name": "Kansas City Chiefs", "away_name": "Buffalo Bills",
+             "status": "STATUS_SCHEDULED", "market_spread": 1.5, "market_total": 50.0},
+            {"game_pk": 14, "commence_time": "2026-09-27T11:00Z", "home_team": "MIA",
+             "away_team": "BAL", "home_name": "Miami Dolphins", "away_name": "Baltimore Ravens",
+             "status": "STATUS_IN_PROGRESS", "market_spread": None, "market_total": None}]
+    out = gsn.merge_espn_slate(db_games, espn, now)
+    by_pk = {g["game_pk"]: g for g in out}
+    assert [g["game_pk"] for g in out] == [11, 12, 13]   # 14 already kicked off: dropped
+    assert by_pk[11] == {**_GAMES[0], "game_date": "2026-09-27", "market_spread": -3.5,
+                         "market_total": 47.5}
+    # SNF 00:20 UTC is the previous US day (generate_nfl's 8h shift); not on ESPN -> no lines
+    assert by_pk[12]["game_date"] == "2026-09-27"
+    assert by_pk[12]["market_spread"] is None and by_pk[12]["market_total"] is None
+    assert by_pk[13] == {"game_pk": 13, "matchup": "Buffalo Bills @ Kansas City Chiefs",
+                         "commence_time": "2026-10-04T17:00Z", "home_team": "Kansas City Chiefs",
+                         "away_team": "Buffalo Bills", "home_win_prob": None,
+                         "game_date": "2026-10-04", "market_spread": 1.5, "market_total": 50.0}
+
+
+@pytest.mark.parametrize("raw,expected,warns", [
+    (None, "off", False), ("off", "off", False), ("on", "on", False), (" ON ", "on", False),
+    ("", "off", False), ("yes", "off", True), ("true", "off", True)])
+def test_ml_game_lines_parsing(monkeypatch, capsys, raw, expected, warns):
+    if raw is None:
+        monkeypatch.delenv("ML_GAME_LINES", raising=False)
+    else:
+        monkeypatch.setenv("ML_GAME_LINES", raw)
+    assert gsn._ml_game_lines() == expected
+    out = capsys.readouterr().out
+    if warns:
+        assert _lines_warnings(out) == [
+            f"::warning::ml-game-lines: unknown ML_GAME_LINES={raw!r} (expected on|off); treated as off"]
+    else:
+        assert out == ""
+
+
+def _run(monkeypatch, tmp_path, capsys, mode, served, lines, *, exit_code=None, **ml):
+    rec = _install_io(monkeypatch, tmp_path, mode, served=served, lines=lines)
+    if mode != "off":
+        _install_ml(monkeypatch, rec, tmp_path, **ml)
+    if exit_code is None:
+        gsn.main()
+    else:
+        with pytest.raises(SystemExit) as exc:
+            gsn.main()
+        assert exc.value.code == exit_code
+    return rec, capsys.readouterr().out
+
+
+@pytest.mark.parametrize("mode,served", [("shadow", "nfl-sim-ml-v1"), ("off", "nfl-sim-ml-v1"),
+                                         ("shadow", "sim-nfl-v1"), ("off", "sim-nfl-v1")])
+def test_main_lines_off_is_todays_behavior(monkeypatch, tmp_path, capsys, mode, served):
+    """ML_GAME_LINES=off writes exactly what unset writes (today): no
+    game_predictions, no ESPN call, ML-version game rows from the CURRENT sim."""
+    runs_ = {}
+    for lines in (None, "off"):
+        (tmp_path / str(lines)).mkdir()
+        rec, out = _run(monkeypatch, tmp_path / str(lines), capsys, mode, served, lines)
+        assert rec.game_preds == [] and rec.espn_calls == 0
+        assert "ml-game-lines" not in out
+        runs_[lines] = (repr(rec.upserts), repr(rec.slates), out)
+    assert runs_[None] == runs_["off"]
+    if served == "nfl-sim-ml-v1":
+        _assert_game_rows_equal_current(rec)
+
+
+def test_main_lines_invalid_value_warns_and_runs_as_off(monkeypatch, tmp_path, capsys):
+    rec, out = _run(monkeypatch, tmp_path, capsys, "shadow", "nfl-sim-ml-v1", "yes")
+    assert _lines_warnings(out) == [
+        "::warning::ml-game-lines: unknown ML_GAME_LINES='yes' (expected on|off); treated as off"]
+    assert rec.game_preds == [] and rec.espn_calls == 0
+    _assert_game_rows_equal_current(rec)
+
+
+def test_main_lines_on_served_ml_writes_ml_sim_game_predictions(monkeypatch, tmp_path, capsys):
+    rec, out = _run(monkeypatch, tmp_path, capsys, "shadow", "nfl-sim-ml-v1", "on")
+    assert rec.espn_calls == 1
+    assert len(rec.game_preds) == 1   # one upsert for the whole slate
+    gp = _game_preds(rec)
+    assert set(gp) == {11, 12}
+    gl_cfg = nfl_config.load_gameline()
+    for r in gp.values():
+        assert r["model_version"] == "nfl-sim-ml-v1" and r["sport"] == "nfl"
+        # ML sims: home 30..33 vs 10
+        assert r["pred_margin"] == pytest.approx(21.5) and r["pred_total"] == pytest.approx(41.5)
+        assert r["home_win_prob"] == pytest.approx(1.0)
+        assert r["margin_dist"]["kind"] == "margin" and r["margin_dist"]["offset"] == gl_cfg.offset
+        assert len(r["margin_dist"]["pmf"]) == 2 * gl_cfg.offset + 1
+        assert len(r["total_dist"]["pmf"]) == gl_cfg.total_max + 1
+        assert r["game_date"] == "2026-09-27"
+    assert gp[11]["market_spread"] == -3.5 and gp[11]["market_total"] == 47.5
+    assert gp[12]["market_spread"] is None and gp[12]["market_total"] is None
+    assert (gp[11]["home_team_name"], gp[11]["away_team_name"]) == ("Kansas City Chiefs", "Baltimore Ravens")
+    assert gp[11]["commence_time"] == "2026-09-27T17:00:00+00:00"
+    # (a) the ML-version nfl_sim game rows now come from the ML sims ...
+    ml_rows = {r["game_pk"]: r for r in _written(rec, "sim", "nfl-sim-ml-v1")}
+    assert set(ml_rows) == {11, 12}
+    assert all(r["sim_margin"] == pytest.approx(21.5) for r in ml_rows.values())
+    # ... while the current sim's own rows are untouched
+    assert all(r["sim_margin"] == pytest.approx(0.0) for r in _written(rec, "sim", "sim-nfl-v1"))
+    # player rows are the same merged slate as before
+    assert len(_written(rec, "player", "nfl-sim-ml-v1")) == 4 * 5
+    assert "game_lines: wrote 2 game_predictions rows under nfl-sim-ml-v1 (ml_sim=2 current_sim=0)" in out
+    assert _lines_warnings(out) == []
+    assert _ml_summary_lines(out) == ["ml_mode=shadow ml_games=2 ml_players=20 ml_fallback_games=0 ml_status=ok"]
+
+
+@pytest.mark.parametrize("mode", ["shadow", "off"])
+@pytest.mark.parametrize("served", ["sim-nfl-v1", None])
+def test_main_lines_on_but_served_not_ml_writes_no_game_predictions(
+        monkeypatch, tmp_path, capsys, mode, served):
+    rec, out = _run(monkeypatch, tmp_path, capsys, mode, served, "on",
+                    exit_code=None)
+    assert rec.game_preds == []
+    (warn,) = _lines_warnings(out)
+    assert warn == (f"::warning::ml-game-lines: ML_GAME_LINES=on but the site serves {served} "
+                    "(not nfl-sim-ml-v1); no game_predictions written")
+    # the ML-version nfl_sim rows (shadow, served v1) keep the current sim's game outputs
+    if rec.slates:
+        _assert_game_rows_equal_current(rec)
+
+
+def test_main_lines_on_fallback_game_gets_current_sim_game_prediction(monkeypatch, tmp_path, capsys):
+    rec, out = _run(monkeypatch, tmp_path, capsys, "live", "nfl-sim-ml-v1", "on",
+                    dists_raise={"BUF": RuntimeError("boom")})
+    gp = _game_preds(rec)
+    assert set(gp) == {11, 12}   # the slate stays complete
+    assert gp[11]["pred_margin"] == pytest.approx(21.5)      # ML sims
+    assert gp[12]["pred_margin"] == pytest.approx(0.0)       # current sim (fallback)
+    assert gp[12]["pred_total"] == pytest.approx(44.0)
+    assert gp[12]["home_win_prob"] == pytest.approx(0.5)
+    assert gp[12]["model_version"] == "nfl-sim-ml-v1"
+    _assert_game_copied_from_current(rec, 12)     # nfl_sim + player rows of the fallback game
+    ml11 = [r for r in _written(rec, "sim", "nfl-sim-ml-v1") if r["game_pk"] == 11]
+    assert ml11[0]["sim_margin"] == pytest.approx(21.5)
+    assert "game_lines: wrote 2 game_predictions rows under nfl-sim-ml-v1 (ml_sim=1 current_sim=1)" in out
+    assert _ml_summary_lines(out) == ["ml_mode=live ml_games=1 ml_players=10 ml_fallback_games=1 ml_status=ok"]
+
+
+def test_main_lines_on_sim_ml_mode_off_served_ml_writes_current_sim_game_predictions(
+        monkeypatch, tmp_path, capsys):
+    rec, out = _run(monkeypatch, tmp_path, capsys, "off", "nfl-sim-ml-v1", "on")
+    assert len(rec.slates) == 1
+    _assert_game_copied_from_current(rec, 11)
+    gp = _game_preds(rec)
+    assert set(gp) == {11, 12}
+    assert all(r["pred_margin"] == pytest.approx(0.0) for r in gp.values())
+    assert _OFF_SERVED_ML_WARNING in out.splitlines()
+    assert "game_lines: wrote 2 game_predictions rows under nfl-sim-ml-v1 (ml_sim=0 current_sim=2)" in out
+
+
+@pytest.mark.parametrize("mode,code", [("shadow", None), ("live", 1)])
+def test_main_lines_on_global_failure_served_ml_writes_current_sim_game_predictions(
+        monkeypatch, tmp_path, capsys, mode, code):
+    rec, out = _run(monkeypatch, tmp_path, capsys, mode, "nfl-sim-ml-v1", "on",
+                    exit_code=code, artifacts=None)
+    _assert_game_copied_from_current(rec, 11)
+    _assert_game_copied_from_current(rec, 12)
+    gp = _game_preds(rec)
+    assert set(gp) == {11, 12}
+    assert all(r["pred_margin"] == pytest.approx(0.0) for r in gp.values())
+    assert "ML: FAILED" in out
+    assert "game_lines: wrote 2 game_predictions rows under nfl-sim-ml-v1 (ml_sim=0 current_sim=2)" in out
+
+
+def test_main_lines_on_ml_slate_write_fails_game_predictions_follow_the_copy(
+        monkeypatch, tmp_path, capsys):
+    """The ML slate write fails after the ML games ran: the copy slate is
+    written, and game_predictions come from the current sim (what nfl_sim now
+    holds), never from the unwritten ML sims."""
+    rec = _install_io(monkeypatch, tmp_path, "shadow", served="nfl-sim-ml-v1", lines="on")
+    _install_ml(monkeypatch, rec, tmp_path)
+    calls = []
+
+    def slate(sim_rows, player_rows):
+        calls.append(1)
+        if len(calls) == 1:
+            raise ConnectionError("ml write lost")
+        rec.slates.append((list(sim_rows), list(player_rows)))
+        return len(sim_rows), len(player_rows)
+
+    monkeypatch.setattr(gsn, "upsert_nfl_sim_slate", slate)
+    gsn.main()
+    gp = _game_preds(rec)
+    assert set(gp) == {11, 12} and all(r["pred_margin"] == pytest.approx(0.0) for r in gp.values())
+    _assert_game_copied_from_current(rec, 11)
+
+
+def test_main_lines_on_adds_espn_games_missing_from_predictions_current(monkeypatch, tmp_path, capsys):
+    """With generate-nfl disabled nothing else adds a new week's games to
+    predictions_current, so ML_GAME_LINES=on also takes the slate from ESPN's
+    target week (generate_nfl's source)."""
+    espn = [*_ESPN, {"game_pk": 13, "commence_time": "2099-10-04T17:00Z", "home_team": "KC",
+                     "away_team": "BUF", "home_name": "Kansas City Chiefs",
+                     "away_name": "Buffalo Bills", "status": "STATUS_SCHEDULED",
+                     "market_spread": 1.5, "market_total": 50.0}]
+    rec = _install_io(monkeypatch, tmp_path, "shadow", served="nfl-sim-ml-v1", lines="on", espn=espn)
+    _install_ml(monkeypatch, rec, tmp_path)
+    gsn.main()
+    out = capsys.readouterr().out
+    cur = {r["game_pk"]: r for r in _written(rec, "sim", "sim-nfl-v1")}
+    assert set(cur) == {11, 12, 13}
+    assert cur[13]["disagreement"] is None   # no analytic prediction on file for a new game
+    assert cur[13]["matchup"] == "Buffalo Bills @ Kansas City Chiefs"
+    gp = _game_preds(rec)
+    assert set(gp) == {11, 12, 13}
+    assert gp[13]["market_spread"] == 1.5 and gp[13]["game_date"] == "2099-10-04"
+    assert gp[13]["pred_margin"] == pytest.approx(0.0)   # no REG schedule row -> current sim
+    assert "games=3 players=" in out and "mean_disagreement=nan" not in out
+
+
+def test_main_lines_on_espn_failure_warns_and_keeps_the_db_slate(monkeypatch, tmp_path, capsys):
+    rec = _install_io(monkeypatch, tmp_path, "shadow", served="nfl-sim-ml-v1", lines="on",
+                      espn=ConnectionError("espn down"))
+    _install_ml(monkeypatch, rec, tmp_path)
+    gsn.main()
+    out = capsys.readouterr().out
+    assert _lines_warnings(out) == [
+        "::warning::ml-game-lines: ESPN target-week schedule unavailable (ConnectionError: espn down); "
+        "slate = predictions_current only, no market lines"]
+    gp = _game_preds(rec)
+    assert set(gp) == {11, 12}
+    assert all(r["market_spread"] is None and r["market_total"] is None for r in gp.values())
+    assert gp[11]["game_date"] == "2026-09-27"
+
+
+def test_main_lines_on_game_predictions_write_failure_exits_1(monkeypatch, tmp_path, capsys):
+    rec = _install_io(monkeypatch, tmp_path, "shadow", served="nfl-sim-ml-v1", lines="on")
+    _install_ml(monkeypatch, rec, tmp_path)
+
+    def boom(rows):
+        raise ConnectionError("gp write lost")
+
+    monkeypatch.setattr(gsn, "upsert_game_predictions", boom)
+    with pytest.raises(SystemExit) as exc:
+        gsn.main()
+    assert exc.value.code == 1
+    out = capsys.readouterr().out
+    assert len(rec.slates) == 1   # the nfl_sim ML slate is written first
+    assert _lines_warnings(out) == [
+        "::warning::ml-game-lines: game_predictions write failed (ConnectionError: gp write lost); "
+        "the served NFL game lines were not refreshed"]
+    assert _ml_summary_lines(out) == ["ml_mode=shadow ml_games=2 ml_players=20 ml_fallback_games=0 ml_status=ok"]
