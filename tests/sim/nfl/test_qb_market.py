@@ -87,3 +87,14 @@ def test_duplicate_index_labels_only_touch_the_promoted_row():
     fixed, switch = promote_books_qb(depth, "CHI", 2026, 4, {"case keenum"})
     assert switch == ("Tyson Bagent", "Case Keenum")
     assert fixed["depth_team"].tolist() == ["1", "0", "1", "2", "1"]
+
+
+def test_numeric_depth_slots_stay_numeric():
+    # the live nflverse chart stores depth_team as int32 -- a "0" string raised
+    depth = _chart(BEARS)
+    depth["depth_team"] = depth["depth_team"].astype("int32")
+    fixed, switch = promote_books_qb(depth, "CHI", 2026, 4, {"case keenum"})
+    assert switch == ("Tyson Bagent", "Case Keenum")
+    assert fixed["depth_team"].tolist() == [1, 0, 1] and fixed["depth_team"].dtype == "int32"
+    empty = pd.DataFrame(columns=["season", "week", "player_id", "targets", "carries"])
+    assert active_usage("CHI", 2026, 4, fixed, empty, None, None, set())[1] == "00-K"

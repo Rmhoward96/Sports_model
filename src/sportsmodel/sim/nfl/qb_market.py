@@ -94,6 +94,9 @@ def promote_books_qb(
     top = min(others, key=dt)
     fixed = depth_df.copy()
     # boolean mask, not index labels: depth_df's index needn't be unique
-    fixed.loc[(mask & (depth_df["gsis_id"].astype(str) == pick_id)).to_numpy(), "depth_team"] = "0"
+    # the slot keeps the column's own type (the live chart's is int32; older
+    # schemas carry strings)
+    slot = 0 if pd.api.types.is_numeric_dtype(fixed["depth_team"]) else "0"
+    fixed.loc[(mask & (depth_df["gsis_id"].astype(str) == pick_id)).to_numpy(), "depth_team"] = slot
     name = lambda row: str(row.get("full_name") or row.get("football_name") or row.get("gsis_id"))
     return fixed, (name(top), name(pick))
