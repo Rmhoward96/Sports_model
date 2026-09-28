@@ -362,6 +362,7 @@ def _install_io(monkeypatch, tmp_path, mode, served="sim-nfl-v1", lines=None, es
         monkeypatch.setenv("SIM_ML_MODE", mode)
     monkeypatch.setenv("DESK_SIM_N", "4")
     monkeypatch.setattr(gsn, "_load_upcoming_games", lambda: [dict(g) for g in _GAMES])
+    monkeypatch.setattr(gsn, "_load_pass_yds_odds", lambda game_pks: [])
     monkeypatch.setattr(gsn, "_load_crosswalk", lambda: dict(_XWALK))
     monkeypatch.setattr(gsn, "TEAMS_CROSSWALK_PATH", tmp_path / "missing" / "nfl_teams.json")
     monkeypatch.setattr(gsn, "nfl_season", lambda now: 2026)

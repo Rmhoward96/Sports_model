@@ -16,7 +16,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 from sportsmodel.db import get_postgres, locked_leg_keys, replace_unlocked_best_parlays
 from sportsmodel.serving.best_parlays import (
     assemble_game_legs, assemble_prop_legs, build_best_parlays)
-from sportsmodel.serving.props_ev import SIM_TO_ODDS_MARKET, latest_capture_only
+from sportsmodel.serving.props_ev import SIM_TO_ODDS_MARKET, drop_pulled_lines, latest_capture_only
 
 MODEL_VERSION = "ev-parlays-v1"
 
@@ -66,7 +66,7 @@ def load_prop_odds(game_pks: list[int]) -> list[dict]:
         WHERE game_pk = ANY(%s) AND market = ANY(%s) AND captured_at <= commence_time
           AND captured_at > now() - interval '48 hours'
     """, [game_pks, sorted(set(SIM_TO_ODDS_MARKET.values()))])
-    return latest_capture_only(rows)
+    return drop_pulled_lines(latest_capture_only(rows))
 
 
 def ticket_summary(t: dict) -> str:
