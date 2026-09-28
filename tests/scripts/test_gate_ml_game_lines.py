@@ -146,8 +146,8 @@ def test_served_gl_cfg_turns_off_market_shrink_only():
 
 
 def _rec(week, home, sl=3.0, tl=44.0, am=7.0, at=41.0):
-    return {"season": 2025, "week": week, "home": home, "spread_line": sl, "total_line": tl,
-            "actual_margin": am, "actual_total": at}
+    return {"season": 2025, "week": week, "home": home, "away": "NYJ", "spread_line": sl,
+            "total_line": tl, "actual_margin": am, "actual_total": at}
 
 
 def test_check_lines_accepts_equal_and_nan_lines():
@@ -157,7 +157,7 @@ def test_check_lines_accepts_equal_and_nan_lines():
 
 
 @pytest.mark.parametrize("field,value", [("spread_line", 3.5), ("total_line", NAN),
-                                         ("actual_margin", 6.0)])
+                                         ("actual_margin", 6.0), ("away", "MIA")])
 def test_check_lines_aborts_on_mismatch(field, value):
     ml = [_rec(1, "BUF")]
     elo = [{**_rec(1, "BUF"), field: value}]
@@ -195,14 +195,20 @@ def test_gate_json_writes_nan_as_null():
 _TEAMS = ["BUF", "KC", "SF", "LA", "DAL", "PHI", "DET", "GB"]
 
 
-def _fetched_schedule():
+def _fetched_schedule(lines_at_actual=False):
+    """12 completed 2025 REG games. ``lines_at_actual``: closing lines sit 0.5
+    below the actual margin/total (so a comparator shrunk onto the line is
+    nearly exact and never pushes)."""
     rows = [_row(2024, 1, "KC", "BUF", 20, 17)]
     for w in range(1, 7):
         for g in range(2):
             home, away = _TEAMS[(w + 2 * g) % 8], _TEAMS[(w + 2 * g + 1) % 8]
             hs, as_ = (24, 17) if (w + g) % 2 else (13, 20)
             sl = NAN if (w, g) == (2, 0) else (3.5 if (w + g) % 2 else -2.5)
-            rows.append(_row(2025, w, home, away, hs, as_, sl=sl, tl=41.5))
+            tl = 41.5
+            if lines_at_actual:
+                sl, tl = hs - as_ - 0.5, hs + as_ - 0.5
+            rows.append(_row(2025, w, home, away, hs, as_, sl=sl, tl=tl))
     rows.append(_row(2025, 19, "KC", "BUF", 30, 27, gt="WC"))
     return pd.DataFrame(rows)
 
@@ -214,10 +220,10 @@ _ELO_SKIP = (2025, 4, "DAL")  # the stub Elo walk drops this one
 class _FakeBsn:
     SIM_SEED = 42
 
-    def __init__(self, perfect=True):
-        self.perfect = perfect
+    def __init__(self, perfect=True, margin_shift=0, lines_at_actual=False):
+        self.perfect, self.margin_shift = perfect, margin_shift
         self.fetches, self.runs = [], []
-        self.src = {"schedules": _fetched_schedule(),
+        self.src = {"schedules": _fetched_schedule(lines_at_actual),
                     "pbp": pd.DataFrame({"season": [2025], "week": [1], "epa": [0.1]})}
 
     def backtest_fetch_seasons(self, seasons):
@@ -243,6 +249,8 @@ class _FakeBsn:
                 print(f"skipping {key}: {exc}")
                 continue
             hs, as_ = (int(r.home_score), int(r.away_score)) if self.perfect else (10, 30)
+            # margin_shift: sim margin off by that many points, total unchanged
+            hs, as_ = hs + self.margin_shift // 2, as_ - self.margin_shift // 2
             on_game(key[0], key[1], r.home_team, r.away_team, _sims([hs] * 5, [as_] * 5))
 
 
@@ -250,15 +258,19 @@ class _Models:
     share_fallbacks = 0
 
 
-def _elo_walk_stub(calls):
+def _elo_walk_stub(calls, served_bad=False):
+    """Stub of _raw_model_predictions. ``served_bad``: the model-only margin is
+    the negated actual and the model-only total 30 points high."""
     def walk(sched):
         calls.append(sched.copy())
         out = []
         for r in sched.itertuples(index=False):
             if pd.isna(r.home_score) or (int(r.season), int(r.week), r.home_team) == _ELO_SKIP:
                 continue
+            am, at = float(r.home_score - r.away_score), float(r.home_score + r.away_score)
+            mm, mt = (-am, at + 30.0) if served_bad else (1.0, 44.0)
             out.append({"season": int(r.season), "week": int(r.week), "home_team": r.home_team,
-                        "away_team": r.away_team, "model_margin": 1.0, "model_total": 44.0,
+                        "away_team": r.away_team, "model_margin": mm, "model_total": mt,
                         "spread_line": None if pd.isna(r.spread_line) else float(r.spread_line),
                         "total_line": None if pd.isna(r.total_line) else float(r.total_line),
                         "actual_margin": float(r.home_score - r.away_score),
@@ -320,7 +332,14 @@ def test_run_gate_end_to_end(tmp_path, monkeypatch):
     # a perfect ML sim beats the Elo stub on every metric
     assert gate["pass"] is True and gate["decision"]["pass"] is True
     assert m["margin_mae"]["ml"] == 0.0 and m["margin_mae"]["elo"] > 0
-    assert "elo_served" in gate and gate["elo_served"]["metrics"]["win_brier"]["n"] == 10
+    # verdict comparator = Elo as served (model-only): pred margin is the stub's
+    # unshrunk 1.0 vs actual +-7 -> |error| 6 or 8, five of each among paired games
+    assert m["margin_mae"]["elo"] == pytest.approx(7.0)
+    assert "elo_served" not in gate
+    assert gate["elo_closing_shrink"]["metrics"]["win_brier"]["n"] == 10
+    assert gate["elo_closing_shrink"]["metrics"]["margin_mae"]["elo"] != pytest.approx(7.0)
+    # standalone Elo metrics are the served ones too (11 Elo games: six +7, five -7)
+    assert gate["elo_metrics"]["margin_mae"] == pytest.approx((6 * 6 + 5 * 8) / 11)
     assert gate["toggles"] == sorted(_A_GATE["kept"]) and gate["tuned"] == {"2025": [0.8, 300]}
     assert gate["identity"]["git_head"] == "deadbeef" and "schedules" in gate["identity"]["backtest_sources"]
     assert gate["identity"]["a_gate_features_match"] is True
@@ -337,6 +356,41 @@ def test_run_gate_end_to_end(tmp_path, monkeypatch):
     # observable progress lines: stage, season, block
     assert any("stage=fit" in l and "season=2025" in l and "block=5" in l for l in logs)
     assert any("stage=backtest" in l and "block=5" in l for l in logs)
+
+
+def test_verdict_follows_the_served_comparator_when_the_two_disagree(tmp_path, monkeypatch):
+    # Closing lines sit 0.5 below the actuals and the shrink curve is w = 1, so the
+    # closing-line-shrink Elo is nearly exact (margin MAE 0.5) and beats the ML
+    # sim's margin (always 2 points off). The served (model-only) Elo is awful.
+    monkeypatch.setattr(gml.learned, "fit_models", lambda *a, **k: _Models())
+    monkeypatch.setattr(gml.learned, "apply_to_spec", lambda spec, *a: spec)
+    full = ShrinkParams(1.0, 1.0, 0.0)
+    gate = gml.run_gate({"PROPS_ML_SEASONS": "2025"},
+                        bsn=_FakeBsn(margin_shift=2, lines_at_actual=True),
+                        **_kw(tmp_path, [], elo_walk=_elo_walk_stub([], served_bad=True),
+                              gl_cfg=GameLineConfig(w_margin=full, w_total=full)))
+    shrink = gate["elo_closing_shrink"]
+    assert shrink["pass"] is False and any(r.startswith("margin_mae") for r in shrink["reasons"])
+    assert shrink["metrics"]["margin_mae"]["elo"] == pytest.approx(0.5)
+    assert gate["decision"]["pass"] is True and gate["pass"] is True
+    assert gate["decision"]["metrics"]["margin_mae"]["elo"] == pytest.approx(14.0)  # -actual vs +-7
+    assert gate["decision"]["metrics"]["margin_mae"]["ml"] == pytest.approx(2.0)
+    report = (tmp_path / "reports" / "2026-09-28-ml-game-gate__s2025__every4.md").read_text()
+    assert report.split("\n\n")[1].startswith("**Verdict: PASS.**")
+    info = report.split("## Informational: Elo with closing-line shrink")[1]
+    assert "| margin_mae |" in info and "FAIL" in info.split("## Coverage")[0]
+
+
+def test_verdict_flags_feature_files_that_differ_from_a_gate(tmp_path, monkeypatch):
+    monkeypatch.setattr(gml.learned, "fit_models", lambda *a, **k: _Models())
+    monkeypatch.setattr(gml.learned, "apply_to_spec", lambda spec, *a: spec)
+    other = {**_A_GATE, "identity": {"player_features": {"size": 1, "sha256": "c" * 64},
+                                     "team_features": {"size": 5, "sha256": "b" * 64}}}
+    gate = gml.run_gate({"PROPS_ML_SEASONS": "2025"}, bsn=_FakeBsn(),
+                        **_kw(tmp_path, [], a_gate=other))
+    assert gate["identity"]["a_gate_features_match"] is False
+    report = (tmp_path / "reports" / "2026-09-28-ml-game-gate__s2025__every4.md").read_text()
+    assert "a_gate_features_match=False" in report.split("\n\n")[1]
 
 
 def test_run_gate_fail_verdict_names_failing_metrics(tmp_path, monkeypatch):

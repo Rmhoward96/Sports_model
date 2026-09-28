@@ -22,11 +22,14 @@ backtest skips for another reason is reported as ML-missing coverage.
 
 Elo side
 --------
-``backtest_nfl_gameline.per_game_predictions`` with the committed configs
+The ``backtest_nfl_gameline`` walk-forward with the committed configs
 (``assets/nfl/{rating,gameline}.json``, as ``generate_nfl.py`` loads them),
-computed as its two halves (``_raw_model_predictions`` then ``_apply_gl``)
-so the one walk also yields the informational "as served" variant (no
-closing-line shrink, ``served_gl_cfg``). Its input schedule is the committed
+run once (``_raw_model_predictions``) and scored twice with ``_apply_gl``:
+the VERDICT comparator is Elo as served -- model-only, no closing-line
+shrink (``served_gl_cfg``), which is what ``generate_nfl.py`` serves; the
+``per_game_predictions`` variant (committed shrink toward each game's
+closing line) is reported as informational only (controller ruling,
+Task 2 review). Its input schedule is the committed
 history before the fetch window plus the SAME nflverse schedules the ML
 backtest used (``elo_history``), so both models see identical closing lines.
 Cover/over probabilities are Normal around the per-game pred margin/total
@@ -35,10 +38,11 @@ with the committed ``GameLineConfig`` sigmas; win prob is the per-game one.
 Pairing / decision
 ------------------
 Both sides' records take spread_line / total_line and actuals from the same
-schedule rows; ``check_lines`` aborts if a paired game's lines or actuals
-differ (NaN == NaN). Games missing on either side are reported
+schedule rows; ``check_lines`` aborts if a paired game's away team, lines
+or actuals differ (NaN == NaN), for both Elo variants. Games missing on either side are reported
 (``coverage``) and excluded. ``game_gate.gate_decision`` on the paired
-frame gives the verdict (Brier ML <= Elo, MAE ML <= 1.01 x Elo; 95%
+frame against Elo as served gives the verdict (Brier ML <= Elo, MAE
+ML <= 1.01 x Elo; 95%
 season-week cluster bootstrap CIs).
 
 Env
@@ -209,7 +213,7 @@ def elo_history(history: pd.DataFrame, fetched: pd.DataFrame, fetch_seasons: Ite
 
 def served_gl_cfg(gl_cfg: GameLineConfig) -> GameLineConfig:
     """``gl_cfg`` without closing-line shrink (what ``generate_nfl.py`` serves:
-    model-only, since it passes no market line). Informational comparator."""
+    model-only, since it passes no market line). The verdict comparator."""
     return dataclasses.replace(gl_cfg, w_margin=_ZERO_SHRINK, w_total=_ZERO_SHRINK)
 
 
@@ -240,8 +244,8 @@ _CHECKED = ("spread_line", "total_line", "actual_margin", "actual_total")
 
 
 def check_lines(ml_recs: Iterable[Mapping], elo_recs: Iterable[Mapping]) -> int:
-    """Number of paired games; RuntimeError if any paired game's closing lines
-    or actuals differ between the two models (NaN == NaN)."""
+    """Number of paired games; RuntimeError if any paired game's away team,
+    closing lines or actuals differ between the two models (NaN == NaN)."""
     ml = {_key(r): r for r in ml_recs}
     bad = []
     n = 0
@@ -250,12 +254,14 @@ def check_lines(ml_recs: Iterable[Mapping], elo_recs: Iterable[Mapping]) -> int:
         if k not in ml:
             continue
         n += 1
+        if str(ml[k].get("away")) != str(r.get("away")):
+            bad.append(f"{_fmt_key(k)} away: ML {ml[k].get('away')} vs Elo {r.get('away')}")
         for f in _CHECKED:
             a, b = _line(ml[k].get(f)), _line(r.get(f))
             if not ((math.isnan(a) and math.isnan(b)) or a == b):
                 bad.append(f"{_fmt_key(k)} {f}: ML {a} vs Elo {b}")
     if bad:
-        raise RuntimeError(f"{len(bad)} paired line/actual mismatch(es) between the ML and Elo "
+        raise RuntimeError(f"{len(bad)} paired team/line/actual mismatch(es) between the ML and Elo "
                            "records (they must come from the same schedule rows):\n  "
                            + "\n  ".join(bad[:20]))
     return n
@@ -308,20 +314,15 @@ def _f(x, spec: str) -> str:
     return "n/a" if _is_missing(x) else format(x, spec)
 
 
-def _metric_ok(metric: str, v: dict) -> bool:
-    if metric in ("margin_mae", "total_mae"):
-        return v["ml"] <= game_gate.MAE_TOLERANCE * v["elo"]
-    return v["ml"] <= v["elo"]
-
-
 def _decision_table(decision: dict) -> list[str]:
     lines = ["| metric | paired n | ML | Elo | ML − Elo | 95% CI (cluster bootstrap) | rule | result |",
              "|---|---:|---:|---:|---:|---|---|---|"]
+    failing = {r.split(":", 1)[0] for r in decision["reasons"]}  # gate_decision names each metric
     for metric in game_gate.METRICS:
         v = decision["metrics"].get(metric)
         if v is None:
             continue
-        ok = v["n"] > 0 and _metric_ok(metric, v)
+        ok = metric not in failing
         lines.append(f"| {metric} | {v['n']} | {_f(v['ml'], '.4f')} | {_f(v['elo'], '.4f')} | "
                      f"{_f(v['diff'], '+.4f')} | [{_f(v['lo'], '+.4f')}, {_f(v['hi'], '+.4f')}] | "
                      f"{_RULE[metric]} | {'pass' if ok else 'FAIL'} |")
@@ -332,14 +333,20 @@ def _verdict(gate: dict) -> str:
     seasons = ", ".join(str(s) for s in gate["seasons"])
     n = gate["coverage"]["paired_games"]
     if gate["pass"]:
-        return (f"**Verdict: PASS.** The ML sim meets the game-level gate against the Elo game "
-                f"model on seasons {seasons} ({n} paired games): win, cover and over Brier are no "
-                f"worse than Elo's and margin/total MAE are within {game_gate.MAE_TOLERANCE}× of "
-                "Elo's. The ML sim may replace the Elo model for NFL moneyline, spread and total.")
-    reasons = "; ".join(gate["decision"]["reasons"])
-    return (f"**Verdict: FAIL.** The ML sim does not meet the game-level gate against the Elo "
-            f"game model on seasons {seasons} ({n} paired games). Failing: {reasons}. The Elo "
-            "model stays the NFL game-line source.")
+        text = (f"**Verdict: PASS.** The ML sim meets the game-level gate against the Elo game "
+                f"model as served (model-only) on seasons {seasons} ({n} paired games): win, "
+                "cover and over Brier are no worse than Elo's and margin/total MAE are within "
+                f"{game_gate.MAE_TOLERANCE}× of Elo's. The ML sim may replace the Elo model for "
+                "NFL moneyline, spread and total.")
+    else:
+        reasons = "; ".join(gate["decision"]["reasons"])
+        text = (f"**Verdict: FAIL.** The ML sim does not meet the game-level gate against the "
+                f"Elo game model as served (model-only) on seasons {seasons} ({n} paired games). "
+                f"Failing: {reasons}. The Elo model stays the NFL game-line source.")
+    if not gate["identity"].get("a_gate_features_match", True):
+        text += (" Note: a_gate_features_match=False -- the feature files differ from the ones "
+                 "a_gate.json's A configuration was tuned on.")
+    return text
 
 
 def _shrink_txt(sp) -> str:
@@ -358,8 +365,9 @@ def render_report(gate: dict) -> str:
     lines = [f"# ML sim vs Elo — NFL game-level gate — {gate['run_date']}", "",
              _verdict(gate), "",
              "## Paired comparison", "",
-             "ML sim (walk-forward Props-1 A configuration) vs the Elo comparator "
-             "(`backtest_nfl_gameline.per_game_predictions`, committed configs) on the same "
+             "ML sim (walk-forward Props-1 A configuration) vs the Elo game model as served: "
+             "the `backtest_nfl_gameline` walk-forward with the committed configs and no "
+             "closing-line shrink (model-only, as `generate_nfl.py` serves it), on the same "
              "games; ML − Elo < 0 favours the ML sim. Gate: Brier point estimates ML ≤ Elo; "
              f"MAE ML ≤ {game_gate.MAE_TOLERANCE} × Elo.", ""]
     lines += _decision_table(gate["decision"])
@@ -371,18 +379,19 @@ def render_report(gate: dict) -> str:
               "against 2020+ as its validation span, so these gate seasons informed Elo's "
               "configuration. Treat Elo's numbers here as in-sample; this biases the gate toward "
               "NOT switching.",
-              "- **The Elo comparator uses the closing line.** `per_game_predictions` shrinks "
-              f"Elo's margin/total toward each game's closing spread/total by week{shrink}; "
-              "production `generate_nfl.py` serves Elo model-only (no market line). The gated "
-              "comparator is therefore stronger than what is served; the as-served (no-shrink) "
-              "comparison is below for information only.",
+              "- **Closing-line shrink is informational only.** `per_game_predictions` with the "
+              "committed `gameline.json` shrinks Elo's margin/total toward each game's closing "
+              f"spread/total by week{shrink}, which makes it largely the closing market. "
+              "Production serves Elo model-only, so the verdict uses the as-served comparator; "
+              "the closing-line-shrink comparison is below for information only.",
               "- The ML A configuration (kept toggles, per-season tuned decay/max_iter) was "
               "selected in the props-ML A gate on these same seasons (player props, not game "
               "lines).",
               f"- ML probabilities are Monte Carlo estimates from {gate['n_sims']} sims per game.",
-              "", "## Informational: Elo as served (no closing-line shrink)", ""]
-    lines += _decision_table(gate["elo_served"])
-    lines += ["", f"(pass under the gate rules: {gate['elo_served']['pass']}; not the verdict)",
+              "", "## Informational: Elo with closing-line shrink (`per_game_predictions`)", ""]
+    lines += _decision_table(gate["elo_closing_shrink"])
+    lines += ["", f"(pass under the gate rules: {gate['elo_closing_shrink']['pass']}; "
+              "informational, not the verdict)",
               "", "## Coverage", "",
               f"- Scheduled completed REG games: {cov['schedule_games']}; ML sim: "
               f"{cov['ml_games']}; Elo: {cov['elo_games']}; paired: {cov['paired_games']}.",
@@ -526,17 +535,19 @@ def run_gate(env: Mapping[str, str], *, bsn, player_tbl: pd.DataFrame, team_tbl:
 
     log("stage=elo walk-forward (per_game_predictions, committed configs)")
     raw = elo_walk(elo_history(history_sched, sources["schedules"], fetch_seasons))
-    elo_recs = elo_records(GL._apply_gl(raw, gl_cfg), gl_cfg, seasons)
+    # verdict comparator: Elo as served (model-only); closing-line shrink is informational
     served_recs = elo_records(GL._apply_gl(raw, served_gl_cfg(gl_cfg)), gl_cfg, seasons)
-    log(f"stage=elo done: {len(elo_recs)} Elo game records")
+    shrink_recs = elo_records(GL._apply_gl(raw, gl_cfg), gl_cfg, seasons)
+    log(f"stage=elo done: {len(served_recs)} Elo game records")
 
-    log("stage=gate pairing + cluster bootstrap")
-    check_lines(ml_recs, elo_recs)
-    cov = coverage(games.keys(), ml_recs, elo_recs)
-    decision = game_gate.gate_decision(game_gate.paired_diffs(ml_recs, elo_recs),
+    log("stage=gate pairing + cluster bootstrap (verdict: Elo as served)")
+    check_lines(ml_recs, served_recs)
+    check_lines(ml_recs, shrink_recs)
+    cov = coverage(games.keys(), ml_recs, served_recs)
+    decision = game_gate.gate_decision(game_gate.paired_diffs(ml_recs, served_recs),
                                        n_boot=N_BOOT, seed=BOOT_SEED)
-    served = game_gate.gate_decision(game_gate.paired_diffs(ml_recs, served_recs),
-                                     n_boot=N_BOOT, seed=BOOT_SEED)
+    closing_shrink = game_gate.gate_decision(game_gate.paired_diffs(ml_recs, shrink_recs),
+                                             n_boot=N_BOOT, seed=BOOT_SEED)
     for metric, v in decision["metrics"].items():
         log(f"GATE {metric}: n={v['n']} ML {v['ml']:.4f} Elo {v['elo']:.4f} diff {v['diff']:+.4f} "
             f"CI [{v['lo']:+.4f}, {v['hi']:+.4f}]")
@@ -551,8 +562,8 @@ def run_gate(env: Mapping[str, str], *, bsn, player_tbl: pd.DataFrame, team_tbl:
             "elo_config": elo_config,
             "elo_sigmas": {"margin": gl_cfg.sigma_margin, "total": gl_cfg.sigma_total},
             "coverage": cov, "decision": decision, "pass": bool(decision["pass"]),
-            "elo_served": served, "ml_metrics": game_gate.game_metrics(ml_recs),
-            "elo_metrics": game_gate.game_metrics(elo_recs), "ml_stats": ml_stats,
+            "elo_closing_shrink": closing_shrink, "ml_metrics": game_gate.game_metrics(ml_recs),
+            "elo_metrics": game_gate.game_metrics(served_recs), "ml_stats": ml_stats,
             "resumed": got is not None, "elapsed_s": time.time() - t0}
     out_gate, out_report = output_paths(tag, run_date, gate_path=gate_path, report_dir=report_dir)
     out_gate.parent.mkdir(parents=True, exist_ok=True)
