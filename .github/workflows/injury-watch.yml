@@ -1,6 +1,6 @@
 name: injury-watch
 
-# Twice-daily injury watch -- re-runs the model/sim/desk pipeline when a game
+# Twice-daily injury watch -- re-runs the model/sim pipeline when a game
 # kicking off within 30h has an Out/Doubtful designation change (Questionable
 # churn never triggers). Scheduled at 3 PM and 10 PM UTC to catch injury
 # announcements across US time zones.
@@ -10,14 +10,13 @@ name: injury-watch
 #
 # For each sport (NFL, CFB):
 #  1. `injury_watch.py --check` compares against `injury_snapshots`.
-#  2. If changed, the full re-run chain: model -> sim (NFL only) -> desk bundle
-#     -> synthesize + write picks -> +EV board -> +EV parlays -> record the
-#     snapshot from the desk bundle (`--record --bundle`).
-# Each job shares a concurrency group (injury-pipeline-<sport>) with
-# desk-auto-<sport>.yml so the two never overlap.
+#  2. If changed, the full re-run chain: model -> sim (NFL only) -> +EV board
+#     -> +EV parlays -> record the snapshot (`--record`, which re-fetches from
+#     the same injury source `--check` reads).
+# The LLM Decision Desk is retired (ML-only NFL): no desk bundle / synthesis /
+# write steps. Each job keeps its concurrency group (injury-pipeline-<sport>).
 #
-# Requires repo secrets: DATABASE_URL, SPORTSDATA_API_KEY, ANTHROPIC_API_KEY.
-# Optional repo variable DESK_SYNTH_MODEL overrides the synthesis model.
+# Requires repo secrets: DATABASE_URL, SPORTSDATA_API_KEY.
 # Optional repo variable SIM_ML_MODE (off | shadow | live; unset = off) turns on
 # props-ML serving in the NFL sim step; the models are downloaded from the
 # props-ml-latest Release (train-props-ml.yml) only when it is not off.
@@ -103,26 +102,6 @@ jobs:
           SM_DATA_DIR: ${{ github.workspace }}/data
         run: uv run python scripts/generate_sim_nfl.py
 
-      - name: Build desk bundle
-        if: steps.check.outputs.changed == 'true'
-        env:
-          SPORTSDATA_API_KEY: ${{ secrets.SPORTSDATA_API_KEY }}
-          DATABASE_URL: ${{ secrets.DATABASE_URL }}
-        run: uv run python scripts/desk_inputs.py --sport "$SPORT" --out desk_bundle.json --days-ahead 7
-
-      - name: Synthesize picks (Anthropic API)
-        if: steps.check.outputs.changed == 'true'
-        env:
-          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
-          DESK_SYNTH_MODEL: ${{ vars.DESK_SYNTH_MODEL }}
-        run: uv run python scripts/synthesize_desk_picks.py --sport "$SPORT" --bundle desk_bundle.json --out picks.json
-
-      - name: Write picks
-        if: steps.check.outputs.changed == 'true'
-        env:
-          DATABASE_URL: ${{ secrets.DATABASE_URL }}
-        run: uv run python scripts/write_desk_picks.py --in picks.json
-
       - name: Rebuild +EV board
         if: steps.check.outputs.changed == 'true'
         env:
@@ -140,7 +119,7 @@ jobs:
         env:
           DATABASE_URL: ${{ secrets.DATABASE_URL }}
           SPORTSDATA_API_KEY: ${{ secrets.SPORTSDATA_API_KEY }}
-        run: uv run python scripts/injury_watch.py --sport "$SPORT" --record --bundle desk_bundle.json
+        run: uv run python scripts/injury_watch.py --sport "$SPORT" --record
 
   cfb:
     runs-on: ubuntu-latest
@@ -173,26 +152,6 @@ jobs:
           SM_DATA_DIR: ${{ github.workspace }}/data
         run: uv run python scripts/generate_cfb.py
 
-      - name: Build desk bundle
-        if: steps.check.outputs.changed == 'true'
-        env:
-          SPORTSDATA_API_KEY: ${{ secrets.SPORTSDATA_API_KEY }}
-          DATABASE_URL: ${{ secrets.DATABASE_URL }}
-        run: uv run python scripts/desk_inputs.py --sport "$SPORT" --out desk_bundle.json --days-ahead 7
-
-      - name: Synthesize picks (Anthropic API)
-        if: steps.check.outputs.changed == 'true'
-        env:
-          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
-          DESK_SYNTH_MODEL: ${{ vars.DESK_SYNTH_MODEL }}
-        run: uv run python scripts/synthesize_desk_picks.py --sport "$SPORT" --bundle desk_bundle.json --out picks.json
-
-      - name: Write picks
-        if: steps.check.outputs.changed == 'true'
-        env:
-          DATABASE_URL: ${{ secrets.DATABASE_URL }}
-        run: uv run python scripts/write_desk_picks.py --in picks.json
-
       - name: Rebuild +EV board
         if: steps.check.outputs.changed == 'true'
         env:
@@ -210,4 +169,4 @@ jobs:
         env:
           DATABASE_URL: ${{ secrets.DATABASE_URL }}
           SPORTSDATA_API_KEY: ${{ secrets.SPORTSDATA_API_KEY }}
-        run: uv run python scripts/injury_watch.py --sport "$SPORT" --record --bundle desk_bundle.json
+        run: uv run python scripts/injury_watch.py --sport "$SPORT" --record

@@ -197,3 +197,35 @@ def test_check_flags_change_end_to_end(tmp_path, monkeypatch, capsys):
     assert seen["pks"] == [1]  # only the 30h game is checked
     assert out.read_text() == "changed=true\n"
     assert "no stored snapshot" in capsys.readouterr().out
+
+
+def test_record_without_bundle_fingerprints_the_check_source(tmp_path, monkeypatch, capsys):
+    """ML-only NFL (desk retired): `--record` with no `--bundle` snapshots from
+    the SAME injury source `--check` reads, so a record-then-check round trip
+    over unchanged injuries reports changed=false."""
+    from sportsmodel import db
+    soon = datetime.now(timezone.utc) + timedelta(hours=5)
+    later = datetime.now(timezone.utc) + timedelta(days=3)
+    games = [{"game_pk": 1, "home_team": ATL, "away_team": CAR, "commence_time": soon},
+             {"game_pk": 2, "home_team": DAL, "away_team": NYG, "commence_time": later}]
+    inj = {ATL: [{"player": "P", "status": "Out"}, {"player": "Q", "status": "Questionable"}],
+           NYG: [{"player": "R", "status": "Doubtful"}]}
+    monkeypatch.setattr(iw, "fetch_games", lambda sport, now, horizon: games)
+    monkeypatch.setattr(iw, "fetch_injuries", lambda sport, now, api_key: (inj, {"espn_available": True}))
+    monkeypatch.setattr(iw, "_rekey", lambda by_name, names: by_name)
+    store = {}
+    monkeypatch.setattr(db, "upsert_injury_snapshots",
+                        lambda rows: store.update({r["game_pk"]: r for r in rows}) or len(rows))
+    monkeypatch.setattr(db, "load_injury_snapshots",
+                        lambda sport, pks: {pk: store[pk] for pk in pks if pk in store})
+
+    assert iw.main(["--sport", "nfl", "--record"]) == 0
+    assert "Recorded 2 nfl injury snapshot(s)." in capsys.readouterr().out
+    assert store[1]["statuses"] == [{"team": ATL, "player": "P", "status": "Out"}]
+    assert store[2]["statuses"] == [{"team": NYG, "player": "R", "status": "Doubtful"}]
+
+    out = tmp_path / "gh"
+    monkeypatch.setenv("GITHUB_OUTPUT", str(out))
+    assert iw.main(["--sport", "nfl", "--check"]) == 0
+    assert out.read_text() == "changed=false\n"
+    assert "0 of 1 game(s) within 30h have injury changes" in capsys.readouterr().out
