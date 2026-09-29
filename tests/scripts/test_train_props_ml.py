@@ -4,6 +4,7 @@ are not unit tested. Synthetic frames and stubs only -- no network."""
 import importlib.util
 import pathlib
 
+import numpy as np
 import pandas as pd
 import pytest
 
@@ -18,7 +19,8 @@ _spec.loader.exec_module(tpm)
 def test_ladder_constants():
     assert tpm.TEST_SEASONS == [2021, 2022, 2023, 2024, 2025]
     assert tpm.REFIT_WEEKS == (1, 5, 9, 13, 17)
-    assert tpm.LADDER == ("volume", "efficiency", "context", "market")
+    assert tpm.LADDER == ("volume", "efficiency", "context", "market",
+                          "matchup", "def_injuries", "qb_profile")
     assert tpm.PROD == dict(season_decay=0.4, questionable_weight=0.75,
                             home_field=0.07, ratings_weight=0.5)
     # learned count models train on stubs as 0 and see st_questionable as a
@@ -439,6 +441,15 @@ def test_toggles_from_env():
     assert tpm.toggles_label(frozenset({"market", "volume", "efficiency"})) == "volume-efficiency-market"
 
 
+def test_toggles_from_env_accepts_new_rungs():
+    assert tpm.toggles_from_env({"PROPS_ML_TOGGLES": "qb_profile"}) == \
+        frozenset({"volume", "qb_profile"})
+    assert tpm.toggles_from_env({"PROPS_ML_TOGGLES": "matchup,def_injuries,qb_profile"}) == \
+        frozenset({"volume", "matchup", "def_injuries", "qb_profile"})
+    assert tpm.toggles_label(frozenset({"qb_profile", "volume", "matchup"})) == \
+        "volume-matchup-qb_profile"
+
+
 def test_output_paths_default_other_tag_and_fixed(tmp_path):
     gate, rdir = tmp_path / "a_gate.json", tmp_path / "reports"
     kw = dict(gate_path=gate, report_dir=rdir)
@@ -635,3 +646,138 @@ def test_gate_filters_records_to_the_four_props1_markets(tmp_path, monkeypatch):
     assert gate["decision"]["skill"] > 0
     for p in (tmp_path / "data").glob("*.parquet"):
         assert set(pd.read_parquet(p)["market"]) == {"rec_yds"}
+
+
+# ---- matchup-qb Task 6: decide seasons / gate name ------------------------------------
+
+def test_decide_seasons_from_env():
+    assert tpm.decide_seasons_from_env({}, [2021, 2022, 2023]) == [2021, 2022, 2023]
+    assert tpm.decide_seasons_from_env({"PROPS_ML_DECIDE_SEASONS": " "}, [2021, 2022]) == [2021, 2022]
+    assert tpm.decide_seasons_from_env({"PROPS_ML_DECIDE_SEASONS": "2023,2021"},
+                                       [2021, 2022, 2023, 2024]) == [2021, 2023]
+    with pytest.raises(ValueError, match="2020"):
+        tpm.decide_seasons_from_env({"PROPS_ML_DECIDE_SEASONS": "2020,2021"}, [2021, 2022])
+
+
+def test_gate_name_from_env():
+    assert tpm.gate_name_from_env({}) == ""
+    assert tpm.gate_name_from_env({"PROPS_ML_GATE_NAME": "_v2"}) == "_v2"
+    with pytest.raises(ValueError):
+        tpm.gate_name_from_env({"PROPS_ML_GATE_NAME": "../x"})
+
+
+def test_gate_name_suffixes_paths(tmp_path):
+    assert tpm.checkpoint_path(tmp_path, "volume", "s2021-2025__every4", "_v2") == \
+        tmp_path / "records_volume__s2021-2025__every4_v2.parquet"
+    gate, rdir = tmp_path / "a_gate.json", tmp_path / "reports"
+    kw = dict(gate_path=gate, report_dir=rdir)
+    assert tpm.output_paths(tpm.DEFAULT_TAG, "2026-09-28", gate_name="_v2", **kw) == \
+        (tmp_path / "a_gate_v2.json", rdir / "2026-09-28-props-ml-a-gate_v2.md")
+    assert tpm.output_paths("s2025__weekly", "2026-09-28", gate_name="_v2", **kw) == \
+        (tmp_path / "a_gate__s2025__weekly_v2.json",
+         rdir / "2026-09-28-props-ml-a-gate__s2025__weekly_v2.md")
+
+
+class _FakeBsnSeasons(_FakeBsn):
+    """Records for every requested season; a hooked (learned) run's RPS is
+    scaled by ``factor[season]`` (< 1 helps, > 1 hurts)."""
+
+    def __init__(self, factor):
+        super().__init__()
+        self.factor = factor
+
+    def run_backtest(self, seasons, n_sims, *, seed, on_game, spec_hook, record, sources, **prod):
+        self.runs.append({"hook": spec_hook is not None, "sources": sources, "prod": prod})
+        rng = np.random.default_rng(0)
+        for s in seasons:
+            for w in range(1, 11):
+                for g in range(4):
+                    home = f"H{g}"
+                    on_game(s, w, home, f"A{g}", None)
+                    for k in range(3):
+                        rps = float(rng.uniform(2, 4))
+                        f = self.factor.get(s, 1.0) if spec_hook is not None else 1.0
+                        record.append({"season": s, "week": w, "home": home,
+                                       "player_id": f"{home}p{k}", "market": "rec_yds",
+                                       "mean": 50.0, "p50": 48.0, "p90": 90.0, "rps": rps * f,
+                                       "pit": float(rng.uniform()), "actual": 40.0})
+
+
+def _ladder_kw(tmp_path, monkeypatch):
+    monkeypatch.setattr(tpm.learned, "tune", lambda p, s, t: (0.8, 150))
+    monkeypatch.setattr(tpm.learned, "fit_models", lambda *a, **k: _Models())
+    return dict(player_tbl=_player_tbl(), team_tbl=_team_tbl(),
+                identity={"git_head": "deadbeef",
+                          "player_features": {"size": 10, "sha256": "a" * 64},
+                          "team_features": {"size": 5, "sha256": "b" * 64}},
+                data_dir=tmp_path / "data", gate_path=tmp_path / "a_gate.json",
+                report_dir=tmp_path / "reports", log=lambda m: None, run_date="2026-09-28")
+
+
+def test_decide_seasons_restrict_rung_decisions(tmp_path, monkeypatch):
+    kw = _ladder_kw(tmp_path, monkeypatch)
+    env = {"PROPS_ML_SEASONS": "2021,2022", "PROPS_ML_N_SIMS": "10"}
+    factor = {2021: 0.9, 2022: 1.2}                   # learned helps 2021, hurts 2022
+
+    pooled = tpm.run_harness(env, bsn=_FakeBsnSeasons(factor), **kw)
+    assert pooled["kept"] == []                        # pooled over both seasons: fails
+    assert pooled["decide_seasons"] == [2021, 2022]
+    assert set(pooled["final"]) == {"pass", "all", "season_2025"}   # v1 shape unchanged
+
+    gate = tpm.run_harness({**env, "PROPS_ML_DECIDE_SEASONS": "2021", "PROPS_ML_GATE_NAME": "_d"},
+                           bsn=_FakeBsnSeasons(factor), **kw)
+    assert gate["decide_seasons"] == [2021]
+    assert gate["kept"] == ["volume"]                  # decided on 2021 alone: kept
+    vol = gate["ladder"][0]
+    assert vol["pass"] is True and vol["decision"]["per_market"]["rec_yds"]["n"] == 120
+    assert set(vol["baseline_ece"]["per_market"]) == {"rec_yds"}
+    assert vol["baseline_ece"]["per_market"]["rec_yds"]["n"] == 120
+    fin = gate["final"]
+    assert fin["all"]["pass"] is False                 # all seasons: 2022 drags it down
+    assert fin["decide"]["pass"] is True and fin["decide"]["per_market"]["rec_yds"]["n"] == 120
+    assert set(fin["other_seasons"]) == {"2022"}
+    assert fin["other_seasons"]["2022"]["pass"] is False
+    assert fin["pass"] is False                        # 2025 absent: final rule unchanged
+    md = (tmp_path / "reports" / "2026-09-28-props-ml-a-gate__s2021-2022__every4_d.md").read_text()
+    assert "Decide seasons 2021" in md and "### Season 2022" in md
+    assert "rung decisions" in md.lower() and "2021" in md
+    assert (tmp_path / "a_gate__s2021-2022__every4_d.json").exists()
+
+
+def test_decide_seasons_must_be_run_seasons(tmp_path, monkeypatch):
+    kw = _ladder_kw(tmp_path, monkeypatch)
+    with pytest.raises(ValueError, match="2019"):
+        tpm.run_harness({"PROPS_ML_SEASONS": "2021,2022", "PROPS_ML_N_SIMS": "10",
+                         "PROPS_ML_DECIDE_SEASONS": "2019"},
+                        bsn=_FakeBsnSeasons({}), **kw)
+    with pytest.raises(ValueError, match="ladder only"):
+        tpm.run_harness({"PROPS_ML_SEASONS": "2021,2022", "PROPS_ML_N_SIMS": "10",
+                         "PROPS_ML_DECIDE_SEASONS": "2021", "PROPS_ML_TOGGLES": "volume"},
+                        bsn=_FakeBsnSeasons({}), **kw)
+
+
+def test_gate_name_v2_never_overwrites_v1_outputs(tmp_path, monkeypatch):
+    kw = _ladder_kw(tmp_path, monkeypatch)
+    v1 = tmp_path / "a_gate.json"
+    v1.write_text('{"kept": ["volume"], "sentinel": true}\n')
+    rdir = tmp_path / "reports"
+    rdir.mkdir()
+    v1_report = rdir / "2026-09-28-props-ml-a-gate.md"
+    v1_report.write_text("v1 report\n")
+    env = {"PROPS_ML_N_SIMS": "10", "PROPS_ML_GATE_NAME": "_v2",
+           "PROPS_ML_DECIDE_SEASONS": "2021,2022,2023"}
+    bsn = _FakeBsnSeasons({s: 0.9 for s in tpm.TEST_SEASONS})
+    gate = tpm.run_harness(env, bsn=bsn, **kw)
+    assert gate["run_tag"] == tpm.DEFAULT_TAG and gate["decide_seasons"] == [2021, 2022, 2023]
+    assert set(gate["final"]["other_seasons"]) == {"2024", "2025"}
+    assert v1.read_text() == '{"kept": ["volume"], "sentinel": true}\n'
+    assert v1_report.read_text() == "v1 report\n"
+    out = tmp_path / "a_gate_v2.json"
+    assert out.exists()
+    import json
+    back = json.loads(out.read_text())
+    assert back["decide_seasons"] == [2021, 2022, 2023] and back["kept"] == gate["kept"]
+    assert back["tuned"] == {str(s): [0.8, 150] for s in tpm.TEST_SEASONS}
+    assert (rdir / "2026-09-28-props-ml-a-gate_v2.md").exists()
+    assert {p.name for p in (tmp_path / "data").glob("*.parquet")} == {
+        f"records_{n}__{tpm.DEFAULT_TAG}_v2.parquet" for n in ("baseline", *tpm.LADDER)}

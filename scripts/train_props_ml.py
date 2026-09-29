@@ -1,7 +1,8 @@
 """Walk-forward ablation-ladder harness for the props-ML A gate (spec §4).
 
 Runs the current NFL sim (production config) as the baseline, then climbs the
-ladder ``volume -> efficiency -> context -> market``: each rung's candidate
+ladder ``volume -> efficiency -> context -> market -> matchup -> def_injuries
+-> qb_profile``: each rung's candidate
 (``next_candidate(kept, rung)``) swaps learned inputs into every game's spec
 via ``backtest_sim_nfl.run_backtest``'s ``spec_hook``. On the baseline's fixed
 projected-usage population a rung passes iff (a) ``rung_decision`` against the
@@ -11,6 +12,13 @@ AND (b) no market's PIT decile ECE exceeds the BASELINE's by more than 0.005
 rung is skipped and the ladder continues. The final gate compares kept vs
 baseline on all seasons and on 2025 alone; ``final_pass`` needs both and a
 non-empty kept set.
+
+Decide seasons (``PROPS_ML_DECIDE_SEASONS``): both rung checks (a) and (b)
+use only the records / population keys of those seasons (default: every run
+season, i.e. the v1 behaviour). When they are a strict subset, the final
+section additionally reports kept vs baseline on the decide seasons pooled
+(``final["decide"]``) and on each other run season alone
+(``final["other_seasons"]``); ``final_pass`` keeps its rule above.
 
 Walk-forward / leakage
 ----------------------
@@ -48,8 +56,14 @@ PROPS_ML_WEEKLY_REFIT 1 -> refit before every week 1..18
 PROPS_ML_TOGGLES      comma list of rungs (e.g. ``volume,efficiency``): skip
                       the ladder and evaluate that ONE configuration
                       (``volume`` implied) against the baseline
+PROPS_ML_DECIDE_SEASONS comma list (subset of the run seasons; default all):
+                      the seasons every ladder rung decision uses
+PROPS_ML_GATE_NAME    output suffix (default ""), e.g. ``_v2``: a_gate{name}.json,
+                      <date>-props-ml-a-gate{name}.md and checkpoints
+                      records_<name>__<tag>{name}.parquet, so a v2 run never
+                      overwrites (or resumes from) the v1 files
 PROPS_ML_RESUME       1 -> load a run's records checkpoint
-                      (data/props_ml/records_<name>__<tag>.parquet) instead
+                      (data/props_ml/records_<name>__<tag>{gate name}.parquet) instead
                       of re-running it, when its sidecar meta (config, tuned
                       values, feature-file sha256s, sources fingerprint, git
                       HEAD, PROD, seed) matches exactly
@@ -59,7 +73,8 @@ it scopes checkpoints and outputs so a validation run never overwrites the
 main run. Outputs (``output_paths``): the default main run (ladder, 2021-2025,
 every 4 weeks) writes ``assets/nfl/props_ml/a_gate.json`` and
 ``docs/superpowers/reports/<run date>-props-ml-a-gate.md``; other tags add
-``__<tag>`` and a fixed configuration ``__<tag>__<toggles>``.
+``__<tag>`` and a fixed configuration ``__<tag>__<toggles>``; the gate name
+(``PROPS_ML_GATE_NAME``) is appended last.
 
 PURE / IO split: everything except ``main()`` / ``_load_backtest`` is unit
 tested (tests/scripts/test_train_props_ml.py; ``run_harness`` with a stubbed
@@ -95,7 +110,7 @@ from sportsmodel.sim.nfl import learned  # noqa: E402
 TEST_SEASONS = [2021, 2022, 2023, 2024, 2025]
 REFIT_WEEKS = (1, 5, 9, 13, 17)
 WEEKLY_REFIT_WEEKS = tuple(range(1, 19))
-LADDER = ("volume", "efficiency", "context", "market")
+LADDER = ("volume", "efficiency", "context", "market", "matchup", "def_injuries", "qb_profile")
 PROD = dict(season_decay=0.4, questionable_weight=0.75, home_field=0.07, ratings_weight=0.5)
 # Questionable multiplier on LEARNED shares: 1.0 (none). The count models train
 # on the sim's population (stubs as 0) with st_questionable as a feature, so a
@@ -161,6 +176,33 @@ def toggles_from_env(env: Mapping[str, str]) -> frozenset[str] | None:
     if bad:
         raise ValueError(f"PROPS_ML_TOGGLES: unknown rung(s) {bad}; expected a subset of {list(LADDER)}")
     return frozenset(raw) | {"volume"}
+
+
+def decide_seasons_from_env(env: Mapping[str, str], seasons: list[int]) -> list[int]:
+    """``PROPS_ML_DECIDE_SEASONS`` (comma list) -> the sorted seasons rung
+    decisions use; all run ``seasons`` when unset/blank. ValueError unless it
+    is a subset of ``seasons``."""
+    raw = [x.strip() for x in (env.get("PROPS_ML_DECIDE_SEASONS") or "").split(",") if x.strip()]
+    if not raw:
+        return sorted(int(x) for x in seasons)
+    got = sorted({int(x) for x in raw})
+    bad = sorted(set(got) - {int(x) for x in seasons})
+    if bad:
+        raise ValueError(f"PROPS_ML_DECIDE_SEASONS: season(s) {bad} are not run seasons "
+                         f"{sorted(seasons)}")
+    return got
+
+
+_GATE_NAME_OK = set("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_-")
+
+
+def gate_name_from_env(env: Mapping[str, str]) -> str:
+    """``PROPS_ML_GATE_NAME`` (default ``""``): the output-name suffix, e.g.
+    ``_v2``. ValueError unless it is letters / digits / ``_`` / ``-``."""
+    name = (env.get("PROPS_ML_GATE_NAME") or "").strip()
+    if not set(name) <= _GATE_NAME_OK:
+        raise ValueError(f"PROPS_ML_GATE_NAME {name!r}: only letters, digits, '_' and '-'")
+    return name
 
 
 def toggles_label(toggles: frozenset[str]) -> str:
@@ -363,19 +405,22 @@ def git_head() -> str:
         return "unknown"
 
 
-def checkpoint_path(data_dir: Path, name: str, tag: str) -> Path:
-    """A run's records checkpoint, scoped by run tag."""
-    return Path(data_dir) / f"records_{name}__{tag}.parquet"
+def checkpoint_path(data_dir: Path, name: str, tag: str, gate_name: str = "") -> Path:
+    """A run's records checkpoint, scoped by run tag (+ gate name suffix)."""
+    return Path(data_dir) / f"records_{name}__{tag}{gate_name}.parquet"
 
 
 def output_paths(tag: str, run_date: str, toggles: frozenset[str] | None = None, *,
-                 gate_path: Path = GATE_PATH, report_dir: Path = REPORT_DIR) -> tuple[Path, Path]:
+                 gate_path: Path = GATE_PATH, report_dir: Path = REPORT_DIR,
+                 gate_name: str = "") -> tuple[Path, Path]:
     """``(gate json, report md)``: the main run (ladder, DEFAULT_TAG) keeps
     ``a_gate.json`` / ``<date>-props-ml-a-gate.md``; any other tag, or a fixed
-    ``toggles`` configuration, is suffixed so it never overwrites them."""
+    ``toggles`` configuration, is suffixed so it never overwrites them. A
+    non-empty ``gate_name`` (e.g. ``_v2``) is appended last."""
     suffix = "" if (toggles is None and tag == DEFAULT_TAG) else f"__{tag}"
     if toggles is not None:
         suffix += f"__{toggles_label(toggles)}"
+    suffix += gate_name
     gate_path, report_dir = Path(gate_path), Path(report_dir)
     return (gate_path.with_name(f"{gate_path.stem}{suffix}{gate_path.suffix}"),
             report_dir / f"{run_date}-props-ml-a-gate{suffix}.md")
@@ -505,14 +550,30 @@ def _run_lines(gate: dict) -> list[str]:
     """Run tag, learned-share questionable multiplier and caveats (report bullets)."""
     lines = []
     if gate.get("run_tag"):
+        gname = gate.get("gate_name", "")
         lines.append(f"- Run tag: {gate['run_tag']} (checkpoints records_<name>__{gate['run_tag']}"
-                     ".parquet).")
+                     f"{gname}.parquet)." + (f" Gate name: {gname}." if gname else ""))
     if gate.get("learned_q_weight") is not None:
         lines.append(f"- questionable multiplier on learned shares: {gate['learned_q_weight']} "
                      "(count models train on active-but-no-snap rows as 0 and see "
                      "st_questionable; baseline shares keep production's "
                      f"{PROD['questionable_weight']}).")
     return lines + list(CAVEATS)
+
+
+def _restricted(gate: dict) -> bool:
+    ds = gate.get("decide_seasons")
+    return ds is not None and sorted(ds) != sorted(gate["seasons"])
+
+
+def _decide_lines(gate: dict) -> list[str]:
+    """Report bullet naming the decide seasons (only when they are a strict subset)."""
+    if not _restricted(gate):
+        return []
+    ds = ", ".join(str(s) for s in gate["decide_seasons"])
+    other = ", ".join(str(s) for s in gate["seasons"] if s not in gate["decide_seasons"])
+    return [f"- Rung decisions (both checks above) use seasons {ds} only; seasons {other} "
+            "are reported in the final section but never decide a rung."]
 
 
 def render_report(gate: dict) -> str:
@@ -534,6 +595,7 @@ def render_report(gate: dict) -> str:
              "- A rung passes iff it beats the currently kept configuration "
              "(rung_decision) AND no market's ECE exceeds the baseline's by more than "
              f"{ECE_TOL}.",
+             *_decide_lines(gate),
              f"- Code: git {ident['git_head']}; features: player sha256 "
              f"{ident['player_features']['sha256'][:12]} ({ident['player_features']['size']} B), "
              f"team sha256 {ident['team_features']['sha256'][:12]} "
@@ -572,6 +634,13 @@ def render_report(gate: dict) -> str:
         lines.append("Single-season run: identical to the comparison above.")
     else:
         lines += _decision_block(final["season_2025"])
+    if final.get("decide") is not None:
+        ds = ", ".join(str(s) for s in gate["decide_seasons"])
+        lines += ["", f"### Decide seasons {ds} (the seasons rung decisions used)", ""]
+        lines += _decision_block(final["decide"])
+    for s, d in sorted((final.get("other_seasons") or {}).items()):
+        lines += ["", f"### Season {s} alone (not used for rung decisions)", ""]
+        lines += _decision_block(d)
     lines += ["", f"final_pass = {final['pass']}", ""]
     return "\n".join(lines)
 
@@ -624,6 +693,12 @@ def run_harness(env: Mapping[str, str], *, bsn, player_tbl: pd.DataFrame, team_t
     schedule = "weekly" if refit_weeks == WEEKLY_REFIT_WEEKS else "every 4 weeks"
     resume = env.get("PROPS_ML_RESUME") == "1"
     fixed = toggles_from_env(env)
+    decide = decide_seasons_from_env(env, seasons)
+    restricted = decide != sorted(seasons)
+    if fixed is not None and restricted:
+        raise ValueError("PROPS_ML_DECIDE_SEASONS applies to the ladder only, not to "
+                         "PROPS_ML_TOGGLES")
+    gate_name = gate_name_from_env(env)
     tag = run_tag(seasons, refit_weeks)
     run_date = run_date or date.today().isoformat()
 
@@ -635,6 +710,7 @@ def run_harness(env: Mapping[str, str], *, bsn, player_tbl: pd.DataFrame, team_t
                 "backtest_sources": sources_fingerprint(sources)}
     log(f"tag={tag} seasons={seasons} n_sims={n_sims} refit={schedule} {list(refit_weeks)} "
         f"resume={resume} toggles={sorted(fixed) if fixed else 'ladder'} "
+        f"decide_seasons={decide} gate_name={gate_name!r} "
         f"player_rows={len(player_tbl)} team_rows={len(team_tbl)} seed={seed}")
     injuries_q = questionable_index(player_tbl)
 
@@ -642,7 +718,7 @@ def run_harness(env: Mapping[str, str], *, bsn, player_tbl: pd.DataFrame, team_t
         """Run (or, with resume, load) one backtest; ``make()`` -> (hook,
         models) is only called when the run actually executes. Returns
         (records, stats); aborts on hook errors."""
-        path = checkpoint_path(data_dir, name, tag)
+        path = checkpoint_path(data_dir, name, tag, gate_name)
         if resume:
             got = load_records(path, meta)
             if got is not None:
@@ -711,20 +787,30 @@ def run_harness(env: Mapping[str, str], *, bsn, player_tbl: pd.DataFrame, team_t
         check_share_fallbacks(int(stats.get("share_fallbacks", 0)), len(base_games), name)
         return recs, stats
 
+    def subset_decision(a_recs, b_recs, keep: set[int], name):
+        """``rung_decision`` of b vs a on the records / population of ``keep`` seasons."""
+        a = [r for r in a_recs if r["season"] in keep]
+        b = [r for r in b_recs if r["season"] in keep]
+        base_k = [r for r in base_recs if r["season"] in keep]
+        pop_k = {k for k in population if k[0] in keep}
+        return rung_decision(checked_paired_frame(a, b, pop_k, base_k, name))
+
     def season_decision(a_recs, b_recs, name):
         if FINAL_SEASON not in seasons:
             return None
-        a = [r for r in a_recs if r["season"] == FINAL_SEASON]
-        b = [r for r in b_recs if r["season"] == FINAL_SEASON]
-        base25 = [r for r in base_recs if r["season"] == FINAL_SEASON]
-        pop25 = {k for k in population if k[0] == FINAL_SEASON}
-        return rung_decision(checked_paired_frame(a, b, pop25, base25, name))
+        return subset_decision(a_recs, b_recs, {FINAL_SEASON}, name)
+
+    decide_set = set(decide)
+    base_decide = [r for r in base_recs if r["season"] in decide_set]
+    pop_decide = {k for k in population if k[0] in decide_set}
 
     common = {"run_date": run_date, "seasons": seasons, "n_sims": n_sims,
               "refit_schedule": schedule, "refit_weeks": list(refit_weeks), "run_tag": tag,
               "learned_q_weight": Q_WEIGHT, "alignment": ALIGNMENT, "identity": identity,
               "tuned": {str(k): list(v) for k, v in tuned.items()},
               "n_games_baseline": len(base_games)}
+    if gate_name:
+        common["gate_name"] = gate_name
 
     if fixed is not None:
         name = f"fixed_{toggles_label(fixed)}"
@@ -753,8 +839,11 @@ def run_harness(env: Mapping[str, str], *, bsn, player_tbl: pd.DataFrame, team_t
                 note = (f"volume was not kept; {rung} evaluated as "
                         f"{{{', '.join(sorted(toggles))}}} anyway")
             cand_recs, stats = candidate(rung, toggles)
-            d = rung_decision(checked_paired_frame(kept_recs, cand_recs, population, base_recs, rung))
-            bchk = baseline_ece_check(base_recs, cand_recs, population)
+            cand_decide = [r for r in cand_recs if r["season"] in decide_set]
+            kept_decide = [r for r in kept_recs if r["season"] in decide_set]
+            d = rung_decision(checked_paired_frame(kept_decide, cand_decide, pop_decide,
+                                                   base_decide, rung))
+            bchk = baseline_ece_check(base_decide, cand_decide, pop_decide)
             passed = rung_passes(d, bchk)
             against = sorted(kept)
             if passed:
@@ -781,14 +870,22 @@ def run_harness(env: Mapping[str, str], *, bsn, player_tbl: pd.DataFrame, team_t
         log(f"FINAL all seasons: {_fmt_decision_line(final_all)}")
         if final_25 is not None:
             log(f"FINAL {FINAL_SEASON}: {_fmt_decision_line(final_25)}")
+        final = {"pass": final_pass, "all": final_all, "season_2025": final_25}
+        if restricted:
+            final["decide"] = subset_decision(base_recs, kept_recs, decide_set, "final:decide")
+            log(f"FINAL decide seasons {decide}: {_fmt_decision_line(final['decide'])}")
+            final["other_seasons"] = {}
+            for x in sorted(set(seasons) - decide_set):
+                final["other_seasons"][str(x)] = subset_decision(base_recs, kept_recs, {x},
+                                                                 f"final:{x}")
+                log(f"FINAL {x}: {_fmt_decision_line(final['other_seasons'][str(x)])}")
         log(f"FINAL kept={sorted(kept) or 'none'} final_pass={final_pass}")
-        gate = {**common, "mode": "ladder", "ladder": ladder_out, "kept": sorted(kept),
-                "final": {"pass": final_pass, "all": final_all, "season_2025": final_25},
-                "elapsed_s": time.time() - t0}
+        gate = {**common, "mode": "ladder", "decide_seasons": decide, "ladder": ladder_out,
+                "kept": sorted(kept), "final": final, "elapsed_s": time.time() - t0}
         report = render_report(gate)
 
     out_gate, out_report = output_paths(tag, run_date, fixed, gate_path=gate_path,
-                                        report_dir=report_dir)
+                                        report_dir=report_dir, gate_name=gate_name)
     out_gate.parent.mkdir(parents=True, exist_ok=True)
     out_gate.write_text(gate_json(gate))
     out_report.parent.mkdir(parents=True, exist_ok=True)
