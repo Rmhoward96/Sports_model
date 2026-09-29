@@ -441,6 +441,66 @@ def render_report(gate: dict) -> str:
     return "\n".join(lines)
 
 
+# ---- ML side ---------------------------------------------------------------------------
+
+def run_ml_side(*, bsn, seasons: list[int], n_sims: int, player_tbl: pd.DataFrame,
+                team_tbl: pd.DataFrame, toggles: frozenset[str], tuned: Mapping[int, tuple],
+                games: Mapping[tuple[int, int, str], dict], sources: Mapping, seed: int,
+                refit_weeks: tuple[int, ...], ckpt: Path, meta: dict, resume: bool,
+                log: Callable[[str], None], label: str = "ml-game"
+                ) -> tuple[list[dict], dict, bool]:
+    """One ML-sim game-level backtest of the A configuration (``toggles`` +
+    per-season ``tuned`` (decay, max_iter); walk-forward refits per block) ->
+    ``(ml_record per game, stats, resumed)``. With ``resume`` a checkpoint whose
+    sidecar meta equals ``meta`` is loaded instead; a fresh run is saved to
+    ``ckpt``. Aborts on hook errors, on a simulated game outside ``games`` and
+    on too many share fallbacks."""
+    got = tpm.load_records(ckpt, meta) if resume else None
+    if got is not None:
+        log(f"stage=backtest: loaded {len(got[0])} ML game records from checkpoint {ckpt.name}")
+        return got[0], got[1], True
+    if resume:
+        log(f"stage=backtest: no matching checkpoint {ckpt.name}, running")
+    models: dict = {}
+    for s in seasons:
+        decay, max_iter = tuned[s]
+        for r in refit_weeks:
+            log(f"stage=fit season={s} block={r} toggles={sorted(toggles)} "
+                f"decay={decay} max_iter={max_iter}")
+            models[(s, r)] = learned.fit_models(player_tbl, team_tbl, toggles, upto=(s, r),
+                                                test_season=s, decay=decay, max_iter=max_iter)
+    hook = tpm.make_hook(models, player_tbl, team_tbl, tpm.questionable_index(player_tbl),
+                         refit_weeks=refit_weeks, q_weight=tpm.Q_WEIGHT)
+    hook, errors = tpm.guard_hook(hook)
+    ml_recs: list[dict] = []
+    start = time.time()
+    state = {"block": None}
+
+    def on_game(season, week, home, away, sims):
+        key = (int(season), int(week), str(home))
+        if key not in games:
+            raise RuntimeError(f"backtest simulated {_fmt_key(key)}, which is not a scheduled "
+                               "completed REG game")
+        blk = (key[0], tpm.refit_block(key[1], refit_weeks))
+        if blk != state["block"]:
+            state["block"] = blk
+            log(f"stage=backtest season={blk[0]} block={blk[1]} week={key[1]} "
+                f"games_so_far={len(ml_recs)} run_min={(time.time() - start) / 60:.1f}")
+        ml_recs.append(ml_record(key[0], key[1], key[2], sims, games[key]))
+
+    log(f"stage=backtest start n_sims={n_sims}")
+    bsn.run_backtest(seasons, n_sims, seed=seed, on_game=on_game, spec_hook=hook,
+                     sources=sources, **tpm.PROD)
+    tpm.raise_hook_errors(errors, label)
+    stats = {"seconds": time.time() - start, "games": len(ml_recs),
+             "share_fallbacks": sum(int(m.share_fallbacks) for m in models.values())}
+    tpm.check_share_fallbacks(stats["share_fallbacks"], len(ml_recs), label)
+    tpm.save_records(ckpt, ml_recs, meta, stats)
+    log(f"stage=backtest done: {len(ml_recs)} games in {stats['seconds'] / 60:.1f} min "
+        f"-> {ckpt.name}")
+    return ml_recs, stats, False
+
+
 # ---- runner -----------------------------------------------------------------------------
 
 def run_gate(env: Mapping[str, str], *, bsn, player_tbl: pd.DataFrame, team_tbl: pd.DataFrame,
@@ -488,50 +548,10 @@ def run_gate(env: Mapping[str, str], *, bsn, player_tbl: pd.DataFrame, team_tbl:
             "tuned": {str(k): list(v) for k, v in tuned.items()},
             "margin_half_range": MARGIN_HALF_RANGE, "total_max": TOTAL_MAX, "identity": identity}
     ckpt = Path(data_dir) / f"game_records__{tag}.parquet"
-    got = tpm.load_records(ckpt, meta) if resume else None
-    if got is not None:
-        ml_recs, ml_stats = got
-        log(f"stage=backtest: loaded {len(ml_recs)} ML game records from checkpoint {ckpt.name}")
-    else:
-        if resume:
-            log(f"stage=backtest: no matching checkpoint {ckpt.name}, running")
-        models: dict = {}
-        for s in seasons:
-            decay, max_iter = tuned[s]
-            for r in refit_weeks:
-                log(f"stage=fit season={s} block={r} toggles={sorted(toggles)} "
-                    f"decay={decay} max_iter={max_iter}")
-                models[(s, r)] = learned.fit_models(player_tbl, team_tbl, toggles, upto=(s, r),
-                                                    test_season=s, decay=decay, max_iter=max_iter)
-        hook = tpm.make_hook(models, player_tbl, team_tbl, tpm.questionable_index(player_tbl),
-                             refit_weeks=refit_weeks, q_weight=tpm.Q_WEIGHT)
-        hook, errors = tpm.guard_hook(hook)
-        ml_recs = []
-        start = time.time()
-        state = {"block": None}
-
-        def on_game(season, week, home, away, sims):
-            key = (int(season), int(week), str(home))
-            if key not in games:
-                raise RuntimeError(f"backtest simulated {_fmt_key(key)}, which is not a scheduled "
-                                   "completed REG game")
-            blk = (key[0], tpm.refit_block(key[1], refit_weeks))
-            if blk != state["block"]:
-                state["block"] = blk
-                log(f"stage=backtest season={blk[0]} block={blk[1]} week={key[1]} "
-                    f"games_so_far={len(ml_recs)} run_min={(time.time() - start) / 60:.1f}")
-            ml_recs.append(ml_record(key[0], key[1], key[2], sims, games[key]))
-
-        log(f"stage=backtest start n_sims={n_sims}")
-        bsn.run_backtest(seasons, n_sims, seed=seed, on_game=on_game, spec_hook=hook,
-                         sources=sources, **tpm.PROD)
-        tpm.raise_hook_errors(errors, "ml-game")
-        ml_stats = {"seconds": time.time() - start, "games": len(ml_recs),
-                    "share_fallbacks": sum(int(m.share_fallbacks) for m in models.values())}
-        tpm.check_share_fallbacks(ml_stats["share_fallbacks"], len(ml_recs), "ml-game")
-        tpm.save_records(ckpt, ml_recs, meta, ml_stats)
-        log(f"stage=backtest done: {len(ml_recs)} games in {ml_stats['seconds'] / 60:.1f} min "
-            f"-> {ckpt.name}")
+    ml_recs, ml_stats, resumed = run_ml_side(
+        bsn=bsn, seasons=seasons, n_sims=n_sims, player_tbl=player_tbl, team_tbl=team_tbl,
+        toggles=toggles, tuned=tuned, games=games, sources=sources, seed=seed,
+        refit_weeks=refit_weeks, ckpt=ckpt, meta=meta, resume=resume, log=log)
 
     log("stage=elo walk-forward (per_game_predictions, committed configs)")
     raw = elo_walk(elo_history(history_sched, sources["schedules"], fetch_seasons))
@@ -564,7 +584,7 @@ def run_gate(env: Mapping[str, str], *, bsn, player_tbl: pd.DataFrame, team_tbl:
             "coverage": cov, "decision": decision, "pass": bool(decision["pass"]),
             "elo_closing_shrink": closing_shrink, "ml_metrics": game_gate.game_metrics(ml_recs),
             "elo_metrics": game_gate.game_metrics(served_recs), "ml_stats": ml_stats,
-            "resumed": got is not None, "elapsed_s": time.time() - t0}
+            "resumed": resumed, "elapsed_s": time.time() - t0}
     out_gate, out_report = output_paths(tag, run_date, gate_path=gate_path, report_dir=report_dir)
     out_gate.parent.mkdir(parents=True, exist_ok=True)
     out_gate.write_text(gate_json(gate))

@@ -21,7 +21,8 @@ gated OFFLINE on stored pmfs from ONE baseline run and ONE kept-A run (both
    A rung passes as in Props-1: ``rung_decision`` vs the kept composite AND
    ``baseline_ece_check``; a failed rung is skipped.
    B trains and predicts only on each market's pre-game role subset
-   (``dist_models.ROLE_SUBSETS``); an out-of-role record gets B := A.
+   (``dist_models.ROLE_SUBSETS``; ``ROLE_SUBSETS_V2`` for gate name ``_v2``,
+   ``role_subsets``); an out-of-role record gets B := A.
 7. Final: per market ``source = "ml"`` iff the kept ML pipeline's RPS <= the
    baseline's AND its ECE <= the baseline's + 0.005 on all seasons; the
    served composite (those sources) must beat the baseline pooled AND on 2025
@@ -40,14 +41,23 @@ gated OFFLINE on stored pmfs from ONE baseline run and ONE kept-A run (both
 Outputs: ``b_gate.json``, ``pipeline.json`` + ``calibration.json`` (consumed by
 fit_props_ml_final),
 ``docs/superpowers/reports/<date>-props-ml-b-gate.md`` (other run tags are
-suffixed) and ``data/props_ml/oof_b7__<tag>.parquet`` -- the final pipeline's
-PRE-calibration OOF records (Task 6 fits its calibration maps on them).
+suffixed), ``data/props_ml/oof_b7__<tag>.parquet`` -- the final pipeline's
+PRE-calibration OOF records (Task 6 fits its calibration maps on them) -- and
+``data/props_ml/served__<tag>.parquet``: the SELECTED served composite's
+post-calibration records (``SERVED_COLS``; one row per population key; ``mean``
+is the expectation of the served pmf), which ``scripts/gate_props_ml_v2.py``
+compares across model versions.
 
 Checkpoints ``records_{baseline,kept_a}__<tag>__b7.parquet`` and
 ``b_oof__<tag>__b7.parquet`` (``PROPS_ML_RESUME=1``) carry the identity:
 git HEAD, feature fingerprints, sources fingerprint, PROD, seed, record_pmf.
 Env: PROPS_ML_SEASONS, PROPS_ML_N_SIMS, PROPS_ML_WEEKLY_REFIT, PROPS_ML_RESUME
-(as in scripts/train_props_ml.py, whose helpers this script reuses).
+(as in scripts/train_props_ml.py, whose helpers this script reuses) and
+PROPS_ML_GATE_NAME (default ""; e.g. ``_v2``): main() reads ``a_gate{name}.json``
+(whose own ``gate_name`` must match); every output, checkpoint, OOF and served
+file gets the suffix appended last; ``_v2`` also switches B's role table to
+``ROLE_SUBSETS_V2`` everywhere B trains, predicts and records roles (any other
+name keeps the v1 ``ROLE_SUBSETS``, byte-identical to the unnamed run).
 """
 from __future__ import annotations
 
@@ -78,9 +88,11 @@ from sportsmodel.model.props_eval import (  # noqa: E402
 from sportsmodel.model.props_ml.blend import BINARY_MARKET, choose_weight  # noqa: E402
 from sportsmodel.model.props_ml.dist_models import (  # noqa: E402
     ROLE_SUBSETS,
+    ROLE_SUBSETS_V2,
     fit_market,
     in_role,
     predict_pmfs,
+    role_conditions,
 )
 from sportsmodel.model.props_ml.pit_calibration import (  # noqa: E402
     IDENTITY_KNOTS,
@@ -120,12 +132,50 @@ ECE_TOL = tpm.ECE_TOL
 # B: the A pmf for an out-of-role record (``in_role`` False; B := A).
 OOF_COLS = ("season", "week", "home", "player_id", "market", "w", "pit_pre", "p_pre", "actual",
             "pmf_a", "pmf_b", "in_role")
+# The selected served composite's post-calibration records (``served_frame``).
+SERVED_COLS = ("season", "week", "home", "player_id", "market", "mean", "rps", "pit", "actual")
+V2_GATE_NAME = "_v2"
 
 
 # ---- pure helpers ---------------------------------------------------------------------
 
 def rec_key(r: Mapping) -> tuple:
     return (r["season"], r["week"], r["player_id"], r["market"])
+
+
+def role_subsets(gate_name: str) -> dict:
+    """B's role table: ``ROLE_SUBSETS_V2`` for gate name ``_v2``, else the v1
+    ``ROLE_SUBSETS`` (Ruling P1)."""
+    return ROLE_SUBSETS_V2 if gate_name == V2_GATE_NAME else ROLE_SUBSETS
+
+
+def a_gate_path(gate_name: str) -> Path:
+    """The A gate json this ladder builds on: ``a_gate{gate_name}.json``."""
+    return A_GATE_PATH.with_name(f"{A_GATE_PATH.stem}{gate_name}{A_GATE_PATH.suffix}")
+
+
+def served_path(data_dir: Path, base_tag: str, gate_name: str = "") -> Path:
+    """The served composite's records: ``served__<tag>{gate_name}.parquet``."""
+    return Path(data_dir) / f"served__{base_tag}{gate_name}.parquet"
+
+
+def pmf_mean(pmf) -> float:
+    """Expectation of a pmf over 0..K (anytime_td's ``[1-p, p]`` -> p)."""
+    p = np.asarray(pmf, dtype=float)
+    return float((np.arange(len(p)) * p).sum() / p.sum())
+
+
+def served_frame(recs, population: set) -> pd.DataFrame:
+    """``SERVED_COLS`` rows of served records (``pmf`` = the served, post-
+    calibration pmf; ``mean`` = its expectation). RuntimeError unless there is
+    exactly one row per population key."""
+    df = pd.DataFrame([{**{c: r[c] for c in SERVED_COLS if c != "mean"},
+                        "mean": pmf_mean(r["pmf"])} for r in recs], columns=list(SERVED_COLS))
+    keys = [rec_key(r) for r in recs]
+    if len(set(keys)) != len(keys) or set(keys) != set(population):
+        raise RuntimeError(f"served composite has {len(keys)} records ({len(set(keys))} unique) "
+                           f"for {len(population)} population keys: it must be one per key")
+    return df
 
 
 def a_config(a_gate: Mapping, seasons: list[int]) -> tuple[frozenset[str], dict[int, tuple]]:
@@ -331,11 +381,12 @@ def oof_frame(ml_recs, out_of_role: set) -> pd.DataFrame:
 
 
 def output_paths(tag: str, run_date: str, *, gate_path: Path = GATE_PATH,
-                 pipeline_path: Path = PIPELINE_PATH,
-                 report_dir: Path = tpm.REPORT_DIR) -> tuple[Path, Path, Path, Path]:
+                 pipeline_path: Path = PIPELINE_PATH, report_dir: Path = tpm.REPORT_DIR,
+                 gate_name: str = "") -> tuple[Path, Path, Path, Path]:
     """(b_gate json, pipeline json, calibration json -- next to pipeline.json --,
-    report md); non-default tags are suffixed."""
-    sfx = "" if tag == tpm.DEFAULT_TAG else f"__{tag}"
+    report md); non-default tags are suffixed; a non-empty ``gate_name`` (e.g.
+    ``_v2``) is appended last."""
+    sfx = ("" if tag == tpm.DEFAULT_TAG else f"__{tag}") + gate_name
     gate_path, pipeline_path = Path(gate_path), Path(pipeline_path)
     return (gate_path.with_name(f"{gate_path.stem}{sfx}{gate_path.suffix}"),
             pipeline_path.with_name(f"{pipeline_path.stem}{sfx}{pipeline_path.suffix}"),
@@ -362,18 +413,22 @@ def season_decision(base_recs, cand, population, season: int, name: str) -> dict
 
 
 def b_oof(player_tbl: pd.DataFrame, pop_recs, seasons, refit_weeks, cols: list[str],
-          market_max: Mapping[str, int], log: Callable[[str], None]) -> tuple[dict, set]:
+          market_max: Mapping[str, int], log: Callable[[str], None],
+          subsets: dict = ROLE_SUBSETS) -> tuple[dict, set]:
     """``(rec_key -> B pmf, out-of-role keys)`` for population records: for
     each (S, r) block with records, ``fit_market`` on rows before (S, r) and
     predict that block's IN-ROLE records (``in_role``) from their (season,
     week, player_id) feature rows. A record whose feature row is out of role
     is returned in the set (B := A downstream); one without a feature row is
-    in neither (missing)."""
+    in neither (missing). ``subsets``: the role table (``role_subsets``)."""
     blocks = defaultdict(list)
     for r in pop_recs:
         blocks[(r["season"], tpm.refit_block(r["week"], refit_weeks))].append(r)
-    role_cols = [c for c in ("position", "p_pos", "p_y_pass_att_ewm", "p_y_carries_ewm",
-                             "p_y_targets_ewm") if c in player_tbl.columns and c not in cols]
+    cond_cols = [c for spec in subsets.values() if spec is not None
+                 for c, _, _ in role_conditions(spec)]
+    role_cols = list(dict.fromkeys(
+        c for c in ("position", "p_pos", "p_y_pass_att_ewm", "p_y_carries_ewm",
+                    "p_y_targets_ewm", *cond_cols) if c in player_tbl.columns and c not in cols))
     feats = player_tbl[["season", "week", "player_id"] + cols + role_cols]
     out: dict = {}
     out_of_role: set = set()
@@ -389,7 +444,7 @@ def b_oof(player_tbl: pd.DataFrame, pop_recs, seasons, refit_weeks, cols: list[s
                 keys = pd.DataFrame([{"season": r["season"], "week": r["week"],
                                       "player_id": r["player_id"]} for r in recs[m]])
                 rows = keys.merge(feats, on=["season", "week", "player_id"], how="inner")
-                role = in_role(rows, m).to_numpy()
+                role = in_role(rows, m, subsets).to_numpy()
                 out_of_role |= {(int(a), int(b), str(c), m) for a, b, c in
                                 zip(rows["season"][~role], rows["week"][~role],
                                     rows["player_id"][~role])}
@@ -397,7 +452,7 @@ def b_oof(player_tbl: pd.DataFrame, pop_recs, seasons, refit_weeks, cols: list[s
                 if rows.empty:
                     continue
                 model = fit_market(player_tbl, m, cols, upto=(s, rw), test_season=s,
-                                   decay=B_DECAY, max_iter=B_MAX_ITER)
+                                   decay=B_DECAY, max_iter=B_MAX_ITER, subsets=subsets)
                 for (rs, rwk, pid), pmf in zip(
                         zip(rows["season"], rows["week"], rows["player_id"]),
                         predict_pmfs(model, rows, int(market_max.get(m, 1)))):
@@ -465,8 +520,11 @@ def render_report(gate: dict) -> str:
              f"{gate['n_sims']}; base seed {ident['seed']} with {tpm.ALIGNMENT}.",
              f"- Refit weeks {', '.join(map(str, gate['refit_weeks']))} (A and B models for "
              "(S, r) train only on rows strictly before (S, r)). Run tag: "
-             f"{gate['run_tag']}.",
-             f"- Kept A toggles (a_gate.json): {', '.join(gate['pipeline']['kept_a_toggles'])}.",
+             f"{gate['run_tag']}"
+             + (f"; gate name {gate['gate_name']} (a_gate{gate['gate_name']}.json)"
+                if gate.get("gate_name") else "") + ".",
+             f"- Kept A toggles (a_gate{gate.get('gate_name', '')}.json): "
+             f"{', '.join(gate['pipeline']['kept_a_toggles'])}.",
              f"- Baseline: current sim ({', '.join(f'{k} {v}' for k, v in ident['prod'].items())}); "
              f"{gate['n_games_baseline']} games; the kept-A run covered exactly these.",
              "- Population: baseline projected-usage gate, 7 markets: "
@@ -487,7 +545,10 @@ def render_report(gate: dict) -> str:
               f"{b['seconds'] / 60:.1f} min; records without a B feature row (kept A): "
               + ", ".join(f"{m} {n}" for m, n in b["missing"].items()) + ".",
               "- B trains and predicts only on each market's pre-game role subset "
-              "(pass: QB with pass-att EWM >= 10; rush: carries EWM >= 3; receiving: WR/TE/RB "
+              "(pass: QB with pass-att EWM >= 10"
+              + ("; ROLE_SUBSETS_V2: also a pass attempt in the last 10 games"
+                 if "conds" in (b.get("role_subsets") or {}).get("pass_yds", {}) else "")
+              + "; rush: carries EWM >= 3; receiving: WR/TE/RB "
               "with targets EWM >= 2; anytime_td: all). Out-of-role records get B := A: "
               + ", ".join(f"{m} {n}" for m, n in b["out_of_role"].items()) + ".", "",
               "## +B blend", ""]
@@ -534,8 +595,16 @@ def run_b_ladder(env: Mapping[str, str], *, bsn, player_tbl: pd.DataFrame,
                  pipeline_path: Path = PIPELINE_PATH, report_dir: Path = tpm.REPORT_DIR,
                  log: Callable[[str], None] = print, run_date: str | None = None) -> dict:
     """Baseline + kept-A runs, B OOF, blend and calibration rungs, final gate;
-    writes b_gate / pipeline / report / OOF parquet; returns the gate dict."""
+    writes b_gate / pipeline / calibration / report / OOF and served parquets;
+    returns the gate dict. ``PROPS_ML_GATE_NAME`` suffixes every file and picks
+    the role table (``role_subsets``); ``a_gate`` must carry the same
+    ``gate_name`` (none = "")."""
     t0 = time.time()
+    gate_name = tpm.gate_name_from_env(env)
+    if str(a_gate.get("gate_name", "")) != gate_name:
+        raise ValueError(f"PROPS_ML_GATE_NAME {gate_name!r} does not match the A gate's "
+                         f"gate_name {a_gate.get('gate_name', '')!r}: pass a_gate{gate_name}.json")
+    subsets = role_subsets(gate_name)
     raw = env.get("PROPS_ML_SEASONS")
     seasons = [int(x) for x in raw.split(",") if x.strip()] if raw else list(tpm.TEST_SEASONS)
     n_sims = int(env.get("PROPS_ML_N_SIMS") or tpm.DEFAULT_N_SIMS)
@@ -552,14 +621,14 @@ def run_b_ladder(env: Mapping[str, str], *, bsn, player_tbl: pd.DataFrame,
     identity = {**identity, "prod": dict(tpm.PROD), "seed": seed,
                 "backtest_sources": tpm.sources_fingerprint(sources)}
     log(f"tag={tag} seasons={seasons} n_sims={n_sims} refit={list(refit_weeks)} resume={resume} "
-        f"kept_a={sorted(kept_a)}")
+        f"kept_a={sorted(kept_a)} gate_name={gate_name!r}")
     injuries_q = tpm.questionable_index(player_tbl)
 
     def run(name: str, toggles: frozenset[str]) -> tuple[list[dict], dict]:
         meta = {"n_sims": n_sims, "seasons": seasons, "toggles": sorted(toggles),
                 "refit_weeks": list(refit_weeks), "q_weight": tpm.Q_WEIGHT,
                 "tuned": tuned_json if toggles else {}, "record_pmf": True, "identity": identity}
-        path = tpm.checkpoint_path(data_dir, name, tag)
+        path = tpm.checkpoint_path(data_dir, name, tag, gate_name)
         got = tpm.load_records(path, meta) if resume else None
         if got is not None:
             log(f"stage=run-{name}: loaded {len(got[0])} records from {path.name}")
@@ -616,8 +685,8 @@ def run_b_ladder(env: Mapping[str, str], *, bsn, player_tbl: pd.DataFrame,
     cols = learned.feature_columns(player_tbl, kept_a)
     b_meta = {"n_sims": n_sims, "seasons": seasons, "refit_weeks": list(refit_weeks),
               "kept_a": sorted(kept_a), "b_decay": B_DECAY, "b_max_iter": B_MAX_ITER,
-              "role_subsets": ROLE_SUBSETS, "identity": identity}
-    b_path = Path(data_dir) / f"b_oof__{tag}.parquet"
+              "role_subsets": subsets, "identity": identity}
+    b_path = Path(data_dir) / f"b_oof__{tag}{gate_name}.parquet"
     got = tpm.load_records(b_path, b_meta) if resume else None
     if got is not None:
         b_pmfs = {rec_key(r): r["pmf_b"] for r in got[0] if r["in_role"]}
@@ -626,7 +695,7 @@ def run_b_ladder(env: Mapping[str, str], *, bsn, player_tbl: pd.DataFrame,
     else:
         start = time.time()
         b_pmfs, out_of_role = b_oof(player_tbl, pop_a, seasons, refit_weeks, cols,
-                                    bsn.MARKET_MAX, log)
+                                    bsn.MARKET_MAX, log, subsets)
         b_stats = {"seconds": time.time() - start,
                    "fits": len({(k[0], tpm.refit_block(k[1], refit_weeks), k[3])
                                 for k in b_pmfs})}
@@ -711,25 +780,30 @@ def run_b_ladder(env: Mapping[str, str], *, bsn, player_tbl: pd.DataFrame,
     log(f"FINAL kept_rungs={kept_rungs} final_pass={selected['pass']} "
         f"(unselected {unselected['pass']})")
 
-    oof_path = Path(data_dir) / f"oof_b7__{base_tag}.parquet"
+    oof_path = Path(data_dir) / f"oof_b7__{base_tag}{gate_name}.parquet"
     oof_frame(pre_calib, out_of_role).to_parquet(oof_path, index=False)
+    served_out = served_path(data_dir, base_tag, gate_name)
+    served_frame(composite(base_recs, kept_ml, sources), population).to_parquet(served_out,
+                                                                                 index=False)
     gate = {"run_date": run_date, "seasons": seasons, "n_sims": n_sims,
-            "refit_weeks": list(refit_weeks), "run_tag": tag, "identity": identity,
+            "refit_weeks": list(refit_weeks), "run_tag": tag, "gate_name": gate_name,
+            "identity": identity,
             "tuned": tuned_json, "n_games_baseline": len(base_games), "n_population": n_pop,
             "a_recheck": {**a_step, "sources": a_sources},
             "b_oof": {**b_stats, "fits": int(b_stats.get("fits", 0)), "missing": missing,
-                      "out_of_role": oor, "role_subsets": ROLE_SUBSETS},
+                      "out_of_role": oor, "role_subsets": subsets},
             "blend": blend, "calibration": calib, "kept_rungs": kept_rungs,
             "final": {**selected, "ml_per_market": ml_pm, "unselected": unselected},
-            "pipeline": pipeline, "oof_path": str(oof_path), "elapsed_s": time.time() - t0}
+            "pipeline": pipeline, "oof_path": str(oof_path), "served_path": str(served_out),
+            "elapsed_s": time.time() - t0}
     out_gate, out_pipe, out_cal, out_report = output_paths(
         base_tag, run_date, gate_path=gate_path, pipeline_path=pipeline_path,
-        report_dir=report_dir)
+        report_dir=report_dir, gate_name=gate_name)
     for path, text in ((out_gate, tpm.gate_json(gate)), (out_pipe, tpm.gate_json(pipeline)),
                        (out_cal, tpm.gate_json(serving_cal)), (out_report, render_report(gate))):
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(text)
-    log(f"wrote {out_gate}, {out_pipe}, {out_cal}, {out_report}, {oof_path}")
+    log(f"wrote {out_gate}, {out_pipe}, {out_cal}, {out_report}, {oof_path}, {served_out}")
     return gate
 
 
@@ -739,7 +813,8 @@ def main() -> None:
     def log(msg: str) -> None:
         print(f"[+{(time.time() - t0) / 60:7.1f} min] {msg}", flush=True)
 
-    for p in (tpm.PLAYER_PATH, tpm.TEAM_PATH, A_GATE_PATH):
+    a_path = a_gate_path(tpm.gate_name_from_env(os.environ))
+    for p in (tpm.PLAYER_PATH, tpm.TEAM_PATH, a_path):
         if not p.exists():
             raise SystemExit(f"missing {p}: build the features / run the A gate first")
     identity = {"player_features": tpm.file_fingerprint(tpm.PLAYER_PATH),
@@ -747,7 +822,7 @@ def main() -> None:
     log(f"git={identity['git_head'][:12]}")
     run_b_ladder(os.environ, bsn=tpm._load_backtest(), player_tbl=pd.read_parquet(tpm.PLAYER_PATH),
                  team_tbl=pd.read_parquet(tpm.TEAM_PATH), identity=identity,
-                 a_gate=json.loads(A_GATE_PATH.read_text()), log=log)
+                 a_gate=json.loads(a_path.read_text()), log=log)
 
 
 if __name__ == "__main__":

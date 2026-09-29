@@ -395,17 +395,17 @@ def _stub_b(monkeypatch, mode):
     fits = []
     monkeypatch.setattr(tpb.learned, "fit_models", lambda *a, **k: _Models())
 
-    def fake_fit(df, market, cols, *, upto, test_season, decay, max_iter):
+    def fake_fit(df, market, cols, *, upto, test_season, decay, max_iter, subsets=None):
         fits.append({"market": market, "cols": list(cols), "upto": upto, "test_season": test_season,
-                     "decay": decay, "max_iter": max_iter})
-        return {"market": market, "upto": upto}
+                     "decay": decay, "max_iter": max_iter, "subsets": subsets})
+        return {"market": market, "upto": upto, "subsets": subsets}
 
     def fake_predict(model, rows, kmax):
         m = model["market"]
         s0, r0 = model["upto"]  # predicted rows lie in the fitted block: season S, r <= week < next r
         nxt = min([r for r in tpb.tpm.REFIT_WEEKS if r > r0], default=99)
         assert all(int(s) == s0 and r0 <= int(w) < nxt for s, w in zip(rows["season"], rows["week"]))
-        assert tpb.in_role(rows, m).all()  # B predicts only in-role rows
+        assert tpb.in_role(rows, m, model["subsets"]).all()  # B predicts only in-role rows
         out = []
         for s, w, pid in zip(rows["season"], rows["week"], rows["player_id"]):
             n = 2 if m == "anytime_td" else kmax + 1
@@ -636,3 +636,123 @@ def test_caveats_disclose_role_threshold_choice_and_serving_sim_count():
     text = "\n".join(tpb.CAVEATS)
     assert "role thresholds" in text and "2025 smoke run" in text
     assert "DEFAULT_N_SIMS" in text and "1000" in text
+
+
+# ---- gate name (v2) and the served composite -------------------------------------------------
+
+def test_output_paths_gate_name_suffixes_every_output(tmp_path):
+    kw = dict(gate_path=tmp_path / "b_gate.json", pipeline_path=tmp_path / "pipeline.json",
+              report_dir=tmp_path / "r")
+    assert tpb.output_paths("s2021-2025__every4", "2026-09-28", gate_name="_v2", **kw) == (
+        tmp_path / "b_gate_v2.json", tmp_path / "pipeline_v2.json",
+        tmp_path / "calibration_v2.json", tmp_path / "r" / "2026-09-28-props-ml-b-gate_v2.md")
+    assert tpb.output_paths("s2025__every4", "2026-09-28", gate_name="_v2", **kw) == (
+        tmp_path / "b_gate__s2025__every4_v2.json", tmp_path / "pipeline__s2025__every4_v2.json",
+        tmp_path / "calibration__s2025__every4_v2.json",
+        tmp_path / "r" / "2026-09-28-props-ml-b-gate__s2025__every4_v2.md")
+    assert tpb.a_gate_path("") == tpb.A_GATE_PATH
+    assert tpb.a_gate_path("_v2") == tpb.A_GATE_PATH.with_name("a_gate_v2.json")
+    assert tpb.served_path(tmp_path, "s2021-2025__every4", "_v2") == (
+        tmp_path / "served__s2021-2025__every4_v2.parquet")
+    assert tpb.role_subsets("") is tpb.ROLE_SUBSETS
+    assert tpb.role_subsets("_v2") is tpb.ROLE_SUBSETS_V2
+
+
+def _v2_ptbl(seasons):
+    """v2 table: p_y_pass_att_r10 present; p0 has no pass attempt in the last 10
+    games during 2022 -> out of the v2 QB role there (still in v1's)."""
+    t = _ptbl(seasons)
+    t["p_y_pass_att_r10"] = np.where(t["player_id"].str.endswith("p0"), 30.0, 0.0)
+    t.loc[t["player_id"].str.endswith("p0") & (t["season"] == 2022), "p_y_pass_att_r10"] = 0.0
+    return t
+
+
+def test_gate_name_v2_routes_every_output_and_uses_v2_role_subsets(tmp_path, monkeypatch):
+    fits = _stub_b(monkeypatch, "bad")
+    a_gate_v2 = {**A_GATE, "gate_name": "_v2"}
+    env = {"PROPS_ML_SEASONS": "2021,2022", "PROPS_ML_N_SIMS": "10", "PROPS_ML_GATE_NAME": "_v2"}
+    gate = tpb.run_b_ladder(env, bsn=_FakeBsn(), player_tbl=_v2_ptbl((2021, 2022)),
+                            team_tbl=_ttbl(),
+                            identity={"git_head": "deadbeef",
+                                      "player_features": {"size": 1, "sha256": "a" * 64},
+                                      "team_features": {"size": 1, "sha256": "b" * 64}},
+                            a_gate=a_gate_v2, data_dir=tmp_path / "data",
+                            gate_path=tmp_path / "b_gate.json",
+                            pipeline_path=tmp_path / "pipeline.json",
+                            report_dir=tmp_path / "reports", log=lambda m: None,
+                            run_date="2026-09-28")
+    assert gate["gate_name"] == "_v2"
+    data = {p.name for p in (tmp_path / "data").iterdir()}
+    assert data == {"records_baseline__s2021-2022__every4__b7_v2.parquet",
+                    "records_baseline__s2021-2022__every4__b7_v2.meta.json",
+                    "records_kept_a__s2021-2022__every4__b7_v2.parquet",
+                    "records_kept_a__s2021-2022__every4__b7_v2.meta.json",
+                    "b_oof__s2021-2022__every4__b7_v2.parquet",
+                    "b_oof__s2021-2022__every4__b7_v2.meta.json",
+                    "oof_b7__s2021-2022__every4_v2.parquet",
+                    "served__s2021-2022__every4_v2.parquet"}
+    top = {p.name for p in tmp_path.iterdir() if p.is_file()}
+    assert top == {"b_gate__s2021-2022__every4_v2.json", "pipeline__s2021-2022__every4_v2.json",
+                   "calibration__s2021-2022__every4_v2.json"}
+    assert [p.name for p in (tmp_path / "reports").iterdir()] == [
+        "2026-09-28-props-ml-b-gate__s2021-2022__every4_v2.md"]
+    # v2 role table everywhere B trains / predicts / records roles
+    assert fits and all(f["subsets"] is tpb.ROLE_SUBSETS_V2 for f in fits)
+    assert gate["b_oof"]["role_subsets"]["pass_yds"]["conds"][1][0] == "p_y_pass_att_r10"
+    b_meta = json.loads((tmp_path / "data" /
+                         "b_oof__s2021-2022__every4__b7_v2.meta.json").read_text())["meta"]
+    assert b_meta["role_subsets"]["pass_yds"]["conds"][1][0] == "p_y_pass_att_r10"
+    # p0's 2022 pass records leave the v2 role (B := A); every p1 row as in v1
+    assert gate["b_oof"]["out_of_role"]["pass_yds"] == 2 * WEEKS * GAMES + WEEKS * GAMES
+    assert gate["b_oof"]["out_of_role"]["rush_yds"] == 2 * WEEKS * GAMES
+    md = (tmp_path / "reports" / "2026-09-28-props-ml-b-gate__s2021-2022__every4_v2.md").read_text()
+    assert "a_gate_v2.json" in md and "ROLE_SUBSETS_V2" in md
+
+
+def test_gate_name_v1_default_keeps_v1_role_subsets(tmp_path, monkeypatch):
+    fits = _stub_b(monkeypatch, "bad")
+    gate = _run(tmp_path, _FakeBsn())
+    assert fits and all(f["subsets"] is tpb.ROLE_SUBSETS for f in fits)
+    assert gate["gate_name"] == "" and gate["b_oof"]["role_subsets"] is tpb.ROLE_SUBSETS
+    assert not any("_v2" in p.name for p in tmp_path.rglob("*"))
+
+
+def test_gate_name_must_match_the_a_gate(tmp_path, monkeypatch):
+    _stub_b(monkeypatch, "bad")
+    with pytest.raises(ValueError, match="gate_name"):
+        _run(tmp_path, _FakeBsn(), env_extra={"PROPS_ML_GATE_NAME": "_v2"})  # v1 A_GATE
+    with pytest.raises(ValueError, match="gate_name"):
+        tpb.run_b_ladder({"PROPS_ML_SEASONS": "2021"}, bsn=_FakeBsn(), player_tbl=_ptbl((2021,)),
+                         team_tbl=_ttbl(), identity={}, a_gate={**A_GATE, "gate_name": "_v2"},
+                         data_dir=tmp_path / "d2", gate_path=tmp_path / "b.json",
+                         pipeline_path=tmp_path / "p.json", report_dir=tmp_path / "r",
+                         log=lambda m: None)
+
+
+def test_served_composite_written_post_calibration_one_row_per_population_key(tmp_path,
+                                                                               monkeypatch):
+    _stub_b(monkeypatch, "bad")
+    gate = _run(tmp_path, _FakeBsn())
+    served = pd.read_parquet(tmp_path / "data" / "served__s2021-2022__every4.parquet")
+    assert tuple(served.columns) == ("season", "week", "home", "player_id", "market", "mean",
+                                     "rps", "pit", "actual")
+    assert tuple(served.columns) == tpb.SERVED_COLS
+    keys = list(zip(served.season, served.week, served.player_id, served.market))
+    assert len(keys) == len(set(keys)) == sum(gate["n_population"].values())
+    # the selected per-market sources: ML records for "ml" markets, baseline otherwise
+    src = gate["pipeline"]["markets"]
+    base = {(r["season"], r["week"], r["player_id"], r["market"]): r for r in pd.read_parquet(
+        tmp_path / "data" / "records_baseline__s2021-2022__every4__b7.parquet").to_dict("records")}
+    kept_a = {(r["season"], r["week"], r["player_id"], r["market"]): r for r in pd.read_parquet(
+        tmp_path / "data" / "records_kept_a__s2021-2022__every4__b7.parquet").to_dict("records")}
+    assert gate["kept_rungs"] == []   # bad B, no calibration: served ML = pure A
+    for r in served.to_dict("records"):
+        k = (r["season"], r["week"], r["player_id"], r["market"])
+        want = kept_a[k] if src[r["market"]]["source"] == "ml" else base[k]
+        pmf = np.asarray(want["pmf"], dtype=float)
+        assert r["mean"] == pytest.approx(float((np.arange(len(pmf)) * pmf).sum() / pmf.sum()),
+                                          abs=1e-6)
+        assert r["rps"] == pytest.approx(want["rps"], abs=1e-5)
+        assert r["pit"] == pytest.approx(want["pit"], abs=1e-5)
+        assert r["actual"] == want["actual"] and r["home"] == want["home"]
+    assert {src[m]["source"] for m in served.market.unique()} == {"ml", "baseline"}
