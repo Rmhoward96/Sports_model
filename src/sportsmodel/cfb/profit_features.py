@@ -16,6 +16,18 @@ Leakage: every f_* value uses only information before the game -- the
 walk-forward's pre-game ratings, the priced line itself (and its opener),
 static schedule context, preseason priors, and rest days computed from the
 team's EARLIER games this season.
+
+Priors audit (scripts/build_cfb_priors.py; Ruling L1): CFBD `/ratings/sp?year=S`
+is the END-OF-SEASON SP+ for S, so same-season `sp_rating` is never a feature --
+`f_sp_prev_*` uses the team's PREVIOUS season's final SP+ ((S-1, team) row).
+`coach_first_year` for S is built from CFBD coach tenures that include in-season
+interim coaches (a mid-season firing flags the school True for S), so it too
+is taken from the previous season (`f_coach_new_prev_*`, known before S).
+returning_pct / qb_returning (`/player/returning`, last season's production
+returning), recruiting_points (the class signed before S) and portal_net
+(transfers for season S) are preseason and used same-season. prior_sos is
+preseason; forward_sos_shift uses same-season (end-of-season) SP+ and is NOT a
+feature.
 """
 from __future__ import annotations
 
@@ -43,23 +55,29 @@ G5_CONF_IDS = frozenset({
     "17",   # Mountain West
     "37",   # Sun Belt
     "151",  # American (AAC)
-    "18",   # FBS Independents (G5 tier except P4_INDEPENDENT_TEAMS)
+    "18",   # FBS Independents (G5 tier except P4_INDEPENDENT_TEAMS) -- incl. BYU
+            # 2015-2022 (G5 then; Big 12 = P4 from 2023), Army, UConn, UMass,
+            # Liberty 2018-22, NMSU
 })
-P4_INDEPENDENT_TEAMS = frozenset({"87"})   # Notre Dame (ESPN id 87)
+# Notre Dame (ESPN id 87) is an independent (conference 18; ACC in 2020) but
+# is priced and scheduled as a power program, so it counts as P4 every season.
+P4_INDEPENDENT_TEAMS = frozenset({"87"})
 FBS_CONF_IDS = P4_CONF_IDS | G5_CONF_IDS | {PAC12_CONF_ID}
 
 MARKETS = ("spread", "total", "moneyline")
 
-# (feature stem, priors column) -- each yields f_<stem>_home/_away/_diff
+# (feature stem, priors column, season offset) -- each yields
+# f_<stem>_home/_away/_diff from the priors row for (season + offset, team).
+# offset -1 = the previous season's value (see the priors audit above).
 PRIOR_FEATURES = (
-    ("sp", "sp_rating"),
-    ("ret", "returning_pct"),
-    ("rec", "recruiting_points"),
-    ("portal", "portal_net"),
-    ("coach_new", "coach_first_year"),
-    ("qb_ret", "qb_returning"),
+    ("sp_prev", "sp_rating", -1),
+    ("ret", "returning_pct", 0),
+    ("rec", "recruiting_points", 0),
+    ("portal", "portal_net", 0),
+    ("coach_new_prev", "coach_first_year", -1),
+    ("qb_ret", "qb_returning", 0),
 )
-PRIOR_COLS = [f"f_{stem}_{side}" for stem, _ in PRIOR_FEATURES
+PRIOR_COLS = [f"f_{stem}_{side}" for stem, _, _ in PRIOR_FEATURES
               for side in ("home", "away", "diff")]
 
 _COMMON = ["f_model_margin", "f_model_total", "f_elo_diff", "f_srs_diff", "f_edge_pts",
@@ -68,7 +86,8 @@ _COMMON = ["f_model_margin", "f_model_total", "f_elo_diff", "f_srs_diff", "f_edg
 FEATURE_COLS: dict[str, list[str]] = {
     "spread": ["line", "f_move", *_COMMON],
     "total": ["line", "f_move", *_COMMON],
-    "moneyline": list(_COMMON),
+    # f_edge_pts == f_model_margin for moneyline -> dropped as a duplicate
+    "moneyline": [c for c in _COMMON if c != "f_edge_pts"],
 }
 
 KEY_COLS = ["season", "week", "game_pk", "home_team", "away_team", "market", "price_point"]
@@ -175,9 +194,10 @@ def _priors_lookup(priors: pd.DataFrame) -> dict[tuple[int, str], dict]:
 
 
 def _prior_feats(lookup: dict, season: int, home: str, away: str) -> dict:
-    ph, pa = lookup.get((season, home), {}), lookup.get((season, away), {})
     out = {}
-    for stem, col in PRIOR_FEATURES:
+    for stem, col, offset in PRIOR_FEATURES:
+        ph = lookup.get((season + offset, home), {})
+        pa = lookup.get((season + offset, away), {})
         h, a = _num(ph.get(col)), _num(pa.get(col))
         out[f"f_{stem}_home"] = h
         out[f"f_{stem}_away"] = a
@@ -203,6 +223,11 @@ def build_rows(raw: list[dict], priors: pd.DataFrame, fbs: set[str]) -> pd.DataF
     """Walk-forward rows -> the (game, market, price_point) feature table.
 
     Rows whose result pushes the priced line (or a tied moneyline) are dropped.
+    Unscored games (raw from `raw_model_predictions(..., include_unscored=True)`,
+    actual_* None) are KEPT with y = NaN -- no label, no push drop -- so the
+    live step prices them with the same code. Training consumers must drop
+    y-NaN rows. Rest days count every raw game with a start_date (played or
+    not), so pass include_unscored=True to count unplayed scheduled games too.
     Extra non-feature columns: start_date (slate day), actual_margin/total.
     """
     lookup = _priors_lookup(priors)

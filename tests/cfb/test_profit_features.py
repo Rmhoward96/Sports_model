@@ -155,37 +155,95 @@ def test_class_in_feature_table():
     assert df.iloc[0]["f_class"] == 1
 
 
+def _prior(season, team, **kw):
+    row = {"season": season, "team_espn_id": team, "team_name": team, "sp_rating": np.nan,
+           "returning_pct": np.nan, "returning_starters": np.nan, "qb_returning": None,
+           "recruiting_points": np.nan, "portal_net": np.nan, "coach_first_year": False,
+           "prior_sos": np.nan, "forward_sos_shift": np.nan}
+    row.update(kw)
+    return row
+
+
 def test_priors_join_by_season_and_team_with_nan_when_missing():
     priors = pd.DataFrame([
-        {"season": 2022, "team_espn_id": "333", "team_name": "Alabama", "sp_rating": 25.0,
-         "returning_pct": 0.6, "returning_starters": 0.5, "qb_returning": True,
-         "recruiting_points": 300.0, "portal_net": 2.0, "coach_first_year": False,
-         "prior_sos": 5.0, "forward_sos_shift": 0.0},
-        # the away team has a row only for a DIFFERENT season -> must not be used
-        {"season": 2021, "team_espn_id": "2", "team_name": "Auburn", "sp_rating": 10.0,
-         "returning_pct": 0.7, "returning_starters": 0.6, "qb_returning": None,
-         "recruiting_points": 250.0, "portal_net": 1.0, "coach_first_year": True,
-         "prior_sos": 5.0, "forward_sos_shift": 0.0},
-        {"season": 2022, "team_espn_id": "2006", "team_name": "Akron", "sp_rating": -20.0,
-         "returning_pct": 0.4, "returning_starters": 0.3, "qb_returning": None,
-         "recruiting_points": 90.0, "portal_net": np.nan, "coach_first_year": True,
-         "prior_sos": 1.0, "forward_sos_shift": 0.0},
+        _prior(2022, "333", returning_pct=0.6, qb_returning=True, recruiting_points=300.0,
+               portal_net=2.0),
+        _prior(2021, "333", sp_rating=25.0, coach_first_year=False),
+        # the away team has only a 2021 row: its SAME-season fields are missing
+        # for 2022, its previous-season SP+/coach flag are used
+        _prior(2021, "2", sp_rating=10.0, returning_pct=0.9, coach_first_year=True),
+        _prior(2022, "2006", returning_pct=0.4, recruiting_points=90.0),
+        # Akron has no 2021 row -> previous-season fields NaN
     ])
     g1 = raw_game(market_spread=7.5)
     g2 = raw_game(game_pk=2, away_team="2006", away_conf="15", market_spread=30.5)
     df = pf.build_rows([g1, g2], priors, FBS)
     r1 = _row(df, "spread", "close", 1)
-    assert r1["f_sp_home"] == 25.0 and math.isnan(r1["f_sp_away"]) and math.isnan(r1["f_sp_diff"])
-    assert r1["f_qb_ret_home"] == 1.0 and r1["f_coach_new_home"] == 0.0
-    assert math.isnan(r1["f_coach_new_away"])
+    assert r1["f_sp_prev_home"] == 25.0 and r1["f_sp_prev_away"] == 10.0
+    assert r1["f_sp_prev_diff"] == 15.0
+    assert r1["f_coach_new_prev_home"] == 0.0 and r1["f_coach_new_prev_away"] == 1.0
+    assert r1["f_ret_home"] == 0.6 and math.isnan(r1["f_ret_away"])   # 2021 row not used
+    assert math.isnan(r1["f_ret_diff"])
+    assert r1["f_qb_ret_home"] == 1.0 and math.isnan(r1["f_qb_ret_away"])
     r2 = _row(df, "spread", "close", 2)
-    assert r2["f_sp_diff"] == 45.0
-    assert r2["f_ret_home"] == 0.6 and r2["f_ret_away"] == 0.4
-    assert r2["f_ret_diff"] == pytest.approx(0.2)
+    assert math.isnan(r2["f_sp_prev_away"]) and math.isnan(r2["f_sp_prev_diff"])
+    assert math.isnan(r2["f_coach_new_prev_away"])
+    assert r2["f_ret_away"] == 0.4 and r2["f_ret_diff"] == pytest.approx(0.2)
     assert r2["f_rec_diff"] == 210.0
     assert r2["f_portal_home"] == 2.0 and math.isnan(r2["f_portal_away"])
-    assert r2["f_coach_new_away"] == 1.0 and r2["f_coach_new_diff"] == -1.0
-    assert math.isnan(r2["f_qb_ret_away"]) and math.isnan(r2["f_qb_ret_diff"])
+
+
+def test_same_season_sp_and_coach_flag_never_reach_a_feature():
+    planted = 12345.0
+    priors = pd.DataFrame([
+        _prior(2022, "333", sp_rating=planted, coach_first_year=True, forward_sos_shift=planted),
+        _prior(2022, "2", sp_rating=-planted, coach_first_year=True, forward_sos_shift=planted),
+        _prior(2021, "333", sp_rating=20.0, coach_first_year=False),
+        _prior(2021, "2", sp_rating=5.0, coach_first_year=False),
+    ])
+    g = raw_game(spread_open=6.5, market_spread=7.5, total_open=58.5, market_total=61.5,
+                 ml_home=-250, ml_away=200)
+    df = pf.build_rows([g], priors, FBS)
+    feats = sorted({c for cols in pf.FEATURE_COLS.values() for c in cols})
+    vals = df[feats].to_numpy(dtype=float)
+    assert not np.isin(np.abs(vals), [planted, 2 * planted]).any()
+    assert (df["f_sp_prev_diff"] == 15.0).all()
+    assert (df["f_coach_new_prev_home"] == 0.0).all()
+    assert not any(c.startswith("f_sp_") and "prev" not in c for c in df.columns)
+    assert not any("coach" in c and "prev" not in c for c in df.columns)
+    # no priors column other than the audited ones is used at all
+    assert not any("sos" in c for c in df.columns)
+
+
+def test_unscored_rows_kept_with_nan_label():
+    # an upcoming game whose closing line equals what would be a push: kept, y NaN
+    g = raw_game(actual_margin=None, actual_total=None, spread_open=7.0, market_spread=7.0,
+                 total_open=60.0, market_total=60.0, ml_home=-250, ml_away=200)
+    df = pf.build_rows([g], EMPTY_PRIORS, FBS)
+    assert len(df) == 5
+    assert df["y"].isna().all()
+    assert set(zip(df.market, df.price_point)) == {
+        ("spread", "open"), ("spread", "close"), ("total", "open"), ("total", "close"),
+        ("moneyline", "close")}
+
+
+def test_rest_days_count_unplayed_scheduled_games():
+    games = [
+        raw_game(game_pk=1, week=1, start_date="2022-09-01T23:00Z", market_spread=3.0),
+        # unplayed (e.g. upcoming / no score yet) but scheduled -> still counts
+        raw_game(game_pk=2, week=2, start_date="2022-09-08T23:00Z", market_spread=3.0,
+                 actual_margin=None, actual_total=None),
+        raw_game(game_pk=3, week=3, start_date="2022-09-17T19:00Z", market_spread=3.0,
+                 actual_margin=None, actual_total=None),
+    ]
+    df = pf.build_rows(games, EMPTY_PRIORS, FBS)
+    r = lambda pk: _row(df, "spread", "close", pk)
+    assert math.isnan(r(1)["f_rest_home"])
+    assert r(2)["f_rest_home"] == 7.0
+    assert r(3)["f_rest_home"] == 9.0          # from game 2 (unplayed), not game 1
+    # strictly-before only: the later unplayed game never changes earlier rows
+    base = pf.build_rows(games[:2], EMPTY_PRIORS, FBS)
+    pd.testing.assert_frame_equal(df[df.game_pk != 3].reset_index(drop=True), base)
 
 
 def test_feature_cols_per_market():
@@ -194,7 +252,10 @@ def test_feature_cols_per_market():
         assert "line" in pf.FEATURE_COLS[m] and "f_move" in pf.FEATURE_COLS[m]
     ml = pf.FEATURE_COLS["moneyline"]
     assert "line" not in ml and "f_move" not in ml
-    for c in ("f_edge_pts", "f_class", "f_rest_home", "f_sp_diff", "f_qb_ret_away"):
+    assert "f_edge_pts" not in ml and "f_model_margin" in ml   # duplicate dropped
+    assert "f_edge_pts" in pf.FEATURE_COLS["spread"]
+    for c in ("f_class", "f_rest_home", "f_sp_prev_diff", "f_qb_ret_away",
+              "f_coach_new_prev_home"):
         assert c in ml
     g = raw_game(spread_open=6.5, market_spread=7.5, total_open=58.5, market_total=61.5,
                  ml_home=-250, ml_away=200)

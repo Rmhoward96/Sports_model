@@ -190,3 +190,62 @@ def test_appending_later_game_never_changes_earlier_rows():
                                                  ELO_CFG, BLEND_CFG)
         assert len(more) == len(base) + len(extra)
         assert more[:len(base)] == base
+
+
+# --- include_unscored (Ruling L3) ---------------------------------------------
+_ACTUALS = ("actual_margin", "actual_total")
+
+
+def _blank(sched, mask):
+    out = sched.copy()
+    out["home_score"] = out["home_score"].astype("Float64")
+    out["away_score"] = out["away_score"].astype("Float64")
+    out.loc[mask, ["home_score", "away_score"]] = pd.NA
+    return out
+
+
+def test_include_unscored_false_is_todays_output():
+    sched = _blank(make_schedule(), make_schedule().game_pk == 1010)
+    default = walkforward.raw_model_predictions(sched, ELO_CFG, BLEND_CFG)
+    flag_false = walkforward.raw_model_predictions(sched, ELO_CFG, BLEND_CFG,
+                                                   include_unscored=False)
+    assert flag_false == default
+    old = _old_raw_model_predictions(sched, ELO_CFG, BLEND_CFG)
+    assert [{k: n[k] for k in o} for o, n in zip(old, flag_false)] == old
+    assert len(old) == len(flag_false)
+    assert 1010 not in {r["game_pk"] for r in flag_false}
+
+
+def test_unscored_rows_equal_pregame_state_of_played_game():
+    sched = make_schedule()
+    played = {r["game_pk"]: r for r in walkforward.raw_model_predictions(sched, ELO_CFG, BLEND_CFG)}
+    # the whole final week is "upcoming" (the live case)
+    last = (sched.season == 2022) & (sched.week == 5)
+    upcoming = walkforward.raw_model_predictions(_blank(sched, last), ELO_CFG, BLEND_CFG,
+                                                 include_unscored=True)
+    rows = {r["game_pk"]: r for r in upcoming}
+    assert set(rows) == set(played)
+    for pk in sched.loc[last, "game_pk"]:
+        r = rows[pk]
+        assert r["actual_margin"] is None and r["actual_total"] is None
+        want = {k: v for k, v in played[pk].items() if k not in _ACTUALS}
+        assert {k: v for k, v in r.items() if k not in _ACTUALS} == want
+        assert r["srs_home"] is not None           # pre-game caches of that week
+
+
+def test_unscored_game_never_joins_history():
+    sched = make_schedule()
+    mid = sched.game_pk == int(sched[(sched.season == 2022) & (sched.week == 3)].game_pk.iloc[0])
+    blanked = _blank(sched, mid)
+    with_unscored = walkforward.raw_model_predictions(blanked, ELO_CFG, BLEND_CFG,
+                                                      include_unscored=True)
+    scored_only = walkforward.raw_model_predictions(blanked, ELO_CFG, BLEND_CFG)
+    assert len(with_unscored) == len(scored_only) + 1
+    assert [r for r in with_unscored if r["actual_margin"] is not None] == scored_only
+    # a week with ONLY unscored games still emits them and leaves history alone
+    wk = (sched.season == 2022) & (sched.week == 4)
+    blanked2 = _blank(sched, wk)
+    a = walkforward.raw_model_predictions(blanked2, ELO_CFG, BLEND_CFG, include_unscored=True)
+    b = walkforward.raw_model_predictions(blanked2, ELO_CFG, BLEND_CFG)
+    assert sum(r["actual_margin"] is None for r in a) == int(wk.sum())
+    assert [r for r in a if r["actual_margin"] is not None] == b

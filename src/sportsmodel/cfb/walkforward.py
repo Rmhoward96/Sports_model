@@ -69,10 +69,18 @@ def _clean_passthrough(value):
 
 
 def raw_model_predictions(schedule_df: pd.DataFrame, elo_cfg: EloConfig,
-                          blend_cfg: BlendConfig) -> list[dict]:
+                          blend_cfg: BlendConfig, *,
+                          include_unscored: bool = False) -> list[dict]:
     """Leak-free walk-forward core, WITHOUT any shrink/sigma applied (see the
     module docstring). Intended to be called ONCE over a full continuous span;
-    callers re-score the cached rows cheaply."""
+    callers re-score the cached rows cheaply.
+
+    include_unscored=False (default) emits only scored games -- exactly the
+    original behavior. include_unscored=True also emits each week's games with
+    missing scores (live/upcoming games), computed from that week's pre-game
+    caches (Elo from run_elo, SRS/points from strictly-earlier weeks) with
+    actual_margin/actual_total None; they never join the rating history.
+    """
     df = schedule_df.sort_values(["season", "week"]).reset_index(drop=True)
     res = run_elo(df, elo_cfg)                    # pre-game elo per game, continuous across seasons
     games = res.games
@@ -83,11 +91,12 @@ def raw_model_predictions(schedule_df: pd.DataFrame, elo_cfg: EloConfig,
         counts, srs_cache, pts_cache, lg_cache = {}, {}, {}, 0.0
         srs_hist = sdf.iloc[0:0]
         pts_hist = sdf.iloc[0:0]
-        for week, wdf in sdf.groupby("week"):
-            wdf = wdf.dropna(subset=["home_score", "away_score"])
-            if wdf.empty:
+        for week, wdf_all in sdf.groupby("week"):
+            wdf = wdf_all.dropna(subset=["home_score", "away_score"])
+            emit = wdf_all if include_unscored else wdf
+            if emit.empty:
                 continue
-            for _, g in wdf.iterrows():
+            for _, g in emit.iterrows():
                 h, a = g["home_team"], g["away_team"]
                 gh, ga = counts.get(h, 0), counts.get(a, 0)
                 srs_h, srs_a = srs_cache.get(h), srs_cache.get(a)
@@ -102,8 +111,8 @@ def raw_model_predictions(schedule_df: pd.DataFrame, elo_cfg: EloConfig,
                     "model_margin": model_margin, "model_total": model_total,
                     "market_spread": _clean_market(g.get("market_spread")),
                     "market_total": _clean_market(g.get("market_total")),
-                    "actual_margin": float(g["home_score"] - g["away_score"]),
-                    "actual_total": float(g["home_score"] + g["away_score"]),
+                    "actual_margin": _clean_market(g["home_score"] - g["away_score"]),
+                    "actual_total": _clean_market(g["home_score"] + g["away_score"]),
                 }
                 for c in passthrough:
                     row[c] = _clean_passthrough(g.get(c))
@@ -112,6 +121,8 @@ def raw_model_predictions(schedule_df: pd.DataFrame, elo_cfg: EloConfig,
                 row["srs_home"] = _clean_market(srs_h)
                 row["srs_away"] = _clean_market(srs_a)
                 out.append(row)
+            if wdf.empty:                 # only unscored games: nothing joins history
+                continue
             # after grading the whole week, it joins the history -> refresh
             # counts + SRS + points ONCE for next week (season-to-date, never
             # informed by same-or-future-week results)
