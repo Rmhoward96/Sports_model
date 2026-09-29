@@ -1,0 +1,78 @@
+{
+  "kept_a_toggles": [
+    "volume",
+    "efficiency",
+    "context",
+    "market",
+    "matchup",
+    "def_injuries",
+    "qb_profile"
+  ],
+  "tuned": {
+    "2021": [
+      1.0,
+      300
+    ],
+    "2022": [
+      1.0,
+      150
+    ],
+    "2023": [
+      0.8,
+      150
+    ],
+    "2024": [
+      1.0,
+      150
+    ],
+    "2025": [
+      0.8,
+      300
+    ]
+  },
+  "markets": {
+    "pass_yds": {
+      "source": "ml",
+      "w_final": 0.2,
+      "calibrate": false
+    },
+    "rush_yds": {
+      "source": "ml",
+      "w_final": 0.4,
+      "calibrate": false
+    },
+    "rec_yds": {
+      "source": "ml",
+      "w_final": 0.4,
+      "calibrate": false
+    },
+    "receptions": {
+      "source": "ml",
+      "w_final": 0.3,
+      "calibrate": false
+    },
+    "rush_att": {
+      "source": "ml",
+      "w_final": 0.4,
+      "calibrate": false
+    },
+    "pass_tds": {
+      "source": "ml",
+      "w_final": 0.5,
+      "calibrate": false
+    },
+    "anytime_td": {
+      "source": "ml",
+      "w_final": 0.2,
+      "calibrate": false
+    }
+  },
+  "data_end": [
+    2025,
+    18
+  ],
+  "final_pass": true,
+  "unselected_pass": true,
+  "run_tag": "s2021-2025__every4__b7",
+  "git": "a3d9c9f622ece184558ee59105ee0f9cd7091515"
+}

@@ -1,0 +1,107 @@
+{
+  "data_end": [
+    2025,
+    18
+  ],
+  "markets": {
+    "pass_yds": {
+      "calibrate": false,
+      "kind": "pit",
+      "map": [
+        [
+          0.0,
+          1.0
+        ],
+        [
+          0.0,
+          1.0
+        ]
+      ],
+      "n": 0
+    },
+    "rush_yds": {
+      "calibrate": false,
+      "kind": "pit",
+      "map": [
+        [
+          0.0,
+          1.0
+        ],
+        [
+          0.0,
+          1.0
+        ]
+      ],
+      "n": 0
+    },
+    "rec_yds": {
+      "calibrate": false,
+      "kind": "pit",
+      "map": [
+        [
+          0.0,
+          1.0
+        ],
+        [
+          0.0,
+          1.0
+        ]
+      ],
+      "n": 0
+    },
+    "receptions": {
+      "calibrate": false,
+      "kind": "pit",
+      "map": [
+        [
+          0.0,
+          1.0
+        ],
+        [
+          0.0,
+          1.0
+        ]
+      ],
+      "n": 0
+    },
+    "rush_att": {
+      "calibrate": false,
+      "kind": "pit",
+      "map": [
+        [
+          0.0,
+          1.0
+        ],
+        [
+          0.0,
+          1.0
+        ]
+      ],
+      "n": 0
+    },
+    "pass_tds": {
+      "calibrate": false,
+      "kind": "pit",
+      "map": [
+        [
+          0.0,
+          1.0
+        ],
+        [
+          0.0,
+          1.0
+        ]
+      ],
+      "n": 0
+    },
+    "anytime_td": {
+      "calibrate": false,
+      "kind": "platt",
+      "map": [
+        1.0,
+        0.0
+      ],
+      "n": 0
+    }
+  }
+}
