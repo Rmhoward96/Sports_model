@@ -17,7 +17,9 @@ name: train-props-ml
 #     skipped until its pipeline is committed); and, after the feature build,
 #     no labelled week after the published (in $RELEASE) props_ml_config.json's
 #     trained_through (no release -> proceed);
-#  1. rebuild the feature tables from nflverse (data/props_ml/*.parquet);
+#  1. rebuild the feature tables from nflverse (data/props_ml/*.parquet) with
+#     --qb-params $QB_PARAMS (v1 gate, v2 serving: v2 trains on the QB params
+#     it is served with; its fit refuses tables built otherwise);
 #  2. QUICK GATE -- fit_props_ml_final.py --holdout-weeks 2 scores the pipeline
 #     vs the current sim on the last 2 completed weeks after pipeline.json's
 #     data_end and EXITS 1 ON FAILURE. The step's exit code is the gate (never
@@ -85,15 +87,18 @@ jobs:
         include:
           - version: nfl-sim-ml-v1
             gate_name: ""
+            qb_params: gate
             release: props-ml-latest
             prev_release: props-ml-prev
           - version: nfl-sim-ml-v2
             gate_name: _v2
+            qb_params: serving
             release: props-ml-v2
             prev_release: props-ml-v2-prev
     env:
       MODEL_VERSION: ${{ matrix.version }}
       GATE_NAME: ${{ matrix.gate_name }}
+      QB_PARAMS: ${{ matrix.qb_params }}
       RELEASE: ${{ matrix.release }}
       PREV_RELEASE: ${{ matrix.prev_release }}
       MODELS_DIR: data/props_ml/models/${{ matrix.version }}
@@ -122,9 +127,12 @@ jobs:
         if: steps.guard.outputs.skip != 'true'
         run: uv sync
 
+      # v1: gate QB params (as always); v2: the serving QB params it is served
+      # with (Ruling S1) -- fit_props_ml_final.py --gate-name _v2 refuses tables
+      # whose recorded (H, k) differ from the serving block.
       - name: Build props-ML feature tables (nflverse)
         if: steps.guard.outputs.skip != 'true'
-        run: uv run python scripts/build_player_features.py
+        run: uv run python scripts/build_player_features.py --qb-params "$QB_PARAMS"
 
       # Guard 2: nothing new to learn from -> skip. Compares the rebuilt feature
       # table's labelled weeks with the PUBLISHED config's trained_through; no

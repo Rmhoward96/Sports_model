@@ -811,7 +811,30 @@ def _build_ml_tables(upto_season: int, now: datetime, report: dict | None = None
         return fill_forecast_weather(ctx, stadiums, sched, fetch_hourly_forecast, now=ts)
 
     built = bpf.build_tables(src, ctx_fill=ctx_fill, qb1_override=qb1_override or None)
-    return built["feats"], built["team"], src["sched"]
+    team = built["team"]
+    qb1 = _feature_qb1(src, team, upto_season, qb1_override)
+    if qb1 is not None:   # for the matchup log only (not a feature prefix: no model reads it)
+        team = team.assign(qb1_id=qb1)
+    return built["feats"], team, src["sched"]
+
+
+def _feature_qb1(src: dict, team: pd.DataFrame, season: int, qb1_override: dict | None
+                 ) -> pd.Series | None:
+    """Per team-table row of `season`: the QB1 gsis the builder's qb_ features
+    used -- `qb_profile.qb1_by_team_week` on the SAME inputs build_tables
+    passed it (src depth, src injuries incl. the live injection, the books
+    override); other seasons NaN. None when the table has no team-week keys."""
+    from sportsmodel.nfl import qb_profile
+
+    if not len(team) or not {"season", "week", "team"} <= set(team.columns):
+        return None
+    cur = (team["season"] == season).to_numpy()
+    tw = team.loc[cur, ["season", "week", "team"]]
+    got = qb_profile.qb1_by_team_week(src.get("depth"), src.get("injuries"), tw,
+                                      override=qb1_override or None)
+    out = pd.Series(np.nan, index=team.index, dtype=object)
+    out[cur] = got["qb1_id"].to_numpy()
+    return out
 
 
 def serving_qb_params(version: str, cfg: dict, path: Path | None = None
@@ -846,18 +869,31 @@ MATCHUP_COLS = ("qb_ypa", "qb_ratio_ypa", "mx_pass_minus_rush",
 
 
 def matchup_line(team: str, season: int, week: int, players, t_rows: pd.DataFrame) -> str:
-    """One `matchup:` log line for a team's live week: its QB1 (the spec's QB:
-    the books-checked chart QB) and the team row's QB / matchup / defensive
-    injury features (`na` = missing / NaN). PURE."""
-    qb = next((pl for pl in players if str(pl.pos).upper() == "QB"), None)
+    """One `matchup:` log line for a team's live week: QB1 = the QB whose
+    profile the qb_ features used (the team row's `qb1_id`, set by
+    `_build_ml_tables` from the builder's own QB1 rule; named from the spec's
+    players when there), then the team row's QB / matchup / defensive injury
+    features (`na` = missing / NaN). When the sim's QB (the spec's one
+    pos=="QB" player) is a different player it is appended as `sim_QB=`. PURE."""
     row = t_rows[t_rows["team"].astype(str) == team] if "team" in t_rows.columns else t_rows.iloc[:0]
+    names = {str(pl.player_id): pl.name for pl in players}
+
+    def who(pid) -> str:
+        return f"{names[pid]} ({pid})" if pid in names else pid
+
+    qb1 = row["qb1_id"].iloc[0] if len(row) and "qb1_id" in row.columns else np.nan
+    qb1 = None if pd.isna(qb1) else str(qb1)
+    sim_qb = next((str(pl.player_id) for pl in players if str(pl.pos).upper() == "QB"), None)
     parts = []
     for c in MATCHUP_COLS:
         v = row[c].iloc[0] if len(row) and c in row.columns else np.nan
         fmt = "{:+.3f}" if c == "mx_pass_minus_rush" else "{:.3f}"
         parts.append(f"{c}=" + ("na" if pd.isna(v) else fmt.format(float(v))))
-    qb_s = "na" if qb is None else f"{qb.name} ({qb.player_id})"
-    return f"matchup: {team} {season} wk{week} QB1={qb_s} " + " ".join(parts)
+    qb1_s = "na" if qb1 is None else who(qb1)
+    line = f"matchup: {team} {season} wk{week} QB1={qb1_s} " + " ".join(parts)
+    if sim_qb is not None and sim_qb != qb1:
+        line += f" sim_QB={who(sim_qb)}"
+    return line
 
 
 def _promoted_qb_gsis(before: pd.DataFrame, after: pd.DataFrame, team: str) -> str | None:
@@ -1286,8 +1322,12 @@ def main() -> None:
                 if switch:
                     print(f"::warning::qb-check: {abbrev} QB1 {switch[0]} -> {switch[1]} "
                           f"(books post a pass_yds line only for {switch[1]})", flush=True)
-                    _note_qb_override(qb1_override, before, depth_df, abbrev, schedules, upto_season,
-                                      home_abbrev, away_abbrev)
+                    try:   # an overlay for the ML features: never skips a current-sim game
+                        _note_qb_override(qb1_override, before, depth_df, abbrev, schedules,
+                                          upto_season, home_abbrev, away_abbrev)
+                    except Exception as exc:  # noqa: BLE001
+                        print(f"::warning::qb-check: {abbrev} props-ML QB1 override failed ({exc!r}); "
+                              f"the ML features use the chart's QB1", flush=True)
             home_players, home_qb = active_usage(
                 home_abbrev,
                 upto_season,

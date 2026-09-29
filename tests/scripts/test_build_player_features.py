@@ -324,3 +324,81 @@ def test_qb_params_gate_by_default_serving_on_request_and_missing_serving_is_cle
     # an explicit src["qb_params"] (live serving: the served artifacts' own block) wins
     bpf.build_tables({**_stub_src(), "qb_params_mode": "serving", "qb_params": (1.5, 200.0)})
     assert seen["Hk"] == (1.5, 200.0)
+
+
+# ---- Fix round 1 (Ruling S1): --qb-params flag + the tables' build record ----------------
+
+def _params_file(tmp_path, serving=True):
+    import json
+    p = tmp_path / "qb_profile_params.json"
+    doc = {"gate": {"H": 1.0, "k": 100.0}}
+    if serving:
+        doc["serving"] = {"H": 1.5, "k": 200.0}
+    p.write_text(json.dumps(doc))
+    return p
+
+
+def test_qb_params_flag_defaults_to_gate_and_accepts_serving():
+    import pytest
+
+    assert bpf.parse_args([]).qb_params == "gate"
+    assert bpf.parse_args(["--qb-params", "serving"]).qb_params == "serving"
+    with pytest.raises(SystemExit):
+        bpf.parse_args(["--qb-params", "bogus"])
+
+
+def test_main_sets_the_mode_and_refuses_a_missing_block_before_fetching(tmp_path, monkeypatch):
+    import pytest
+
+    seen = {}
+    monkeypatch.setattr(bpf, "QB_PARAMS_PATH", _params_file(tmp_path))
+    monkeypatch.setattr(bpf, "fetch_sources", lambda: {"qb_params_mode": "gate", "x": 1})
+    monkeypatch.setattr(bpf, "build_and_write", lambda src, t0, tf: seen.setdefault("modes", []).append(
+        src["qb_params_mode"]))
+    bpf.main(["--qb-params", "serving"])
+    bpf.main([])
+    assert seen["modes"] == ["serving", "gate"]
+    monkeypatch.setattr(bpf, "QB_PARAMS_PATH", _params_file(tmp_path, serving=False))
+    monkeypatch.setattr(bpf, "fetch_sources", lambda: (_ for _ in ()).throw(AssertionError("fetched")))
+    with pytest.raises(RuntimeError, match="serving"):
+        bpf.main(["--qb-params", "serving"])
+
+
+def test_resolved_qb_params_and_build_record_round_trip(tmp_path, monkeypatch):
+    monkeypatch.setattr(bpf, "QB_PARAMS_PATH", _params_file(tmp_path))
+    assert bpf.resolved_qb_params({}) == {"mode": "gate", "H": 1.0, "k": 100.0}
+    assert bpf.resolved_qb_params({"qb_params_mode": "serving"}) == {"mode": "serving", "H": 1.5, "k": 200.0}
+    assert bpf.resolved_qb_params({"qb_params_mode": "serving", "qb_params": (2, 50)}) == {
+        "mode": "explicit", "H": 2.0, "k": 50.0}
+    assert bpf.read_build_info(tmp_path) is None
+    bpf.write_build_info({"mode": "serving", "H": 1.5, "k": 200.0}, tmp_path)
+    got = bpf.read_build_info(tmp_path)
+    assert got["qb_params"] == {"mode": "serving", "H": 1.5, "k": 200.0} and "created_at" in got
+    assert bpf.build_info_path(tmp_path) == tmp_path / "feature_build.json"
+
+
+def test_build_and_write_records_the_qb_params_next_to_the_parquets(tmp_path, monkeypatch):
+    import pytest
+
+    monkeypatch.setattr(bpf, "QB_PARAMS_PATH", _params_file(tmp_path))
+    feats = pd.DataFrame({"season": [2024], "week": [1], "player_id": ["a"], "y_targets": [1.0],
+                          "position": ["WR"], "p_depth_rank": [1.0]})
+    team = pd.DataFrame({"season": [2024], "week": [1], "team": ["KC"], "y_team_pass_att": [30.0],
+                         "mx_x": [0.1], "di_x": [0.0], "qb_x": [7.0]})
+    monkeypatch.setattr(bpf, "build_tables", lambda src: {"feats": feats, "team": team, "pg": feats,
+                                                          "tg": team, "stubs": feats.iloc[:0]})
+    monkeypatch.setattr(bpf, "dropped_snap_mappings", lambda snaps, m: {})
+    monkeypatch.setattr(bpf, "chart_coverage", lambda d, s: {"exact": 0, "fallback": 0, "none": 0})
+    monkeypatch.setattr(bpf, "depth_rank_distribution", lambda f, pos: pd.DataFrame())
+    src = {"sched": None, "depth": None, "snaps": None, "pfr2gsis": {}, "qb_params_mode": "serving"}
+    out = tmp_path / "tables"
+    bpf.build_and_write(src, 0.0, 0.0, out_dir=out)
+    assert (out / "player_week_features.parquet").is_file()
+    assert bpf.read_build_info(out)["qb_params"] == {"mode": "serving", "H": 1.5, "k": 200.0}
+    # a build that fails after the old record existed leaves NO record behind
+    monkeypatch.setattr(bpf, "build_tables", lambda src: {"feats": feats, "team": team, "pg": feats,
+                                                          "tg": team, "stubs": feats.iloc[:0]})
+    monkeypatch.setattr(pd.DataFrame, "to_parquet", lambda *a, **k: (_ for _ in ()).throw(OSError("disk")))
+    with pytest.raises(OSError):
+        bpf.build_and_write({**src, "qb_params_mode": "gate"}, 0.0, 0.0, out_dir=out)
+    assert bpf.read_build_info(out) is None

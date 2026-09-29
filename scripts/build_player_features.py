@@ -22,11 +22,20 @@ serving (generate_sim_nfl). It adds the mx_/di_/qb_ features
 fetch_sources()/build_and_write()/main() are IO (network + parquet writes)
 and not unit tested.
 
+Build record: next to the parquets, feature_build.json records the
+QB-profile params the tables were built with ({"qb_params": {"mode", "H",
+"k"}}; `read_build_info`). It is removed before the parquets are written and
+rewritten after, so it never describes other tables. The v2 final fit
+(fit_props_ml_final.py --gate-name _v2) refuses tables whose (H, k) differ
+from the serving block it publishes.
+
 Usage:
-    uv run python scripts/build_player_features.py
+    uv run python scripts/build_player_features.py                      # gate QB params
+    uv run python scripts/build_player_features.py --qb-params serving  # v2 weekly retrain
 """
 from __future__ import annotations
 
+import argparse
 import json
 import sys
 import time
@@ -42,6 +51,7 @@ from sportsmodel.nfl.teams import normalize_team  # noqa: E402
 SEASONS = list(range(2016, 2027))
 OUT_DIR = Path(__file__).resolve().parents[1] / "data" / "props_ml"
 QB_PARAMS_PATH = Path(__file__).resolve().parents[1] / "assets" / "nfl" / "props_ml" / "qb_profile_params.json"
+BUILD_INFO_FILE = "feature_build.json"   # the tables' build record (QB params)
 QB_FIRST_SEASON = 1999     # QB profiles use every QB game from 1999 on
 SKILL = ("QB", "RB", "WR", "TE")
 FEATURE_GROUPS = ("p_", "ngs_", "tm_", "op_", "st_", "cx_", "mk_", "mx_", "di_", "qb_")
@@ -176,6 +186,40 @@ def qb_params(mode: str = "gate", path: Path | None = None) -> tuple[float, floa
     return float(block["H"]), float(block["k"])
 
 
+def resolved_qb_params(src: dict) -> dict:
+    """{"mode", "H", "k"} build_tables uses for `src`: an explicit
+    `src["qb_params"]` (mode "explicit"), else the `qb_params_mode` block."""
+    if src.get("qb_params") is not None:
+        H, k = src["qb_params"]
+        return {"mode": "explicit", "H": float(H), "k": float(k)}
+    mode = src.get("qb_params_mode", "gate")
+    H, k = qb_params(mode, QB_PARAMS_PATH)
+    return {"mode": mode, "H": H, "k": k}
+
+
+def build_info_path(out_dir: Path | None = None) -> Path:
+    return Path(OUT_DIR if out_dir is None else out_dir) / BUILD_INFO_FILE
+
+
+def write_build_info(qb: dict, out_dir: Path | None = None) -> Path:
+    """Write the tables' build record ({"qb_params": qb, "created_at"})."""
+    from datetime import datetime, timezone
+
+    path = build_info_path(out_dir)
+    path.write_text(json.dumps({"qb_params": {"mode": qb["mode"], "H": float(qb["H"]),
+                                              "k": float(qb["k"])},
+                                "created_at": datetime.now(timezone.utc).isoformat(timespec="seconds")},
+                               indent=2, sort_keys=True) + "\n")
+    return path
+
+
+def read_build_info(out_dir: Path | None = None) -> dict | None:
+    """The tables' build record, or None when there is none (tables built
+    before the record existed, or a build that did not finish)."""
+    path = build_info_path(out_dir)
+    return json.loads(path.read_text()) if path.is_file() else None
+
+
 def _load_pbp(seasons: list[int]) -> pd.DataFrame:
     """pbp season by season, trimmed to _PBP_COLS (memory)."""
     from sportsmodel.nfl.nflverse import load_release
@@ -261,18 +305,24 @@ def build_tables(src: dict, ctx_fill: Callable[[pd.DataFrame, dict, pd.DataFrame
     return {"feats": feats, "team": team, "pg": pg, "tg": tg, "stubs": stubs, "extra": extra}
 
 
-def build_and_write(src: dict, t0: float, t_fetch: float) -> None:
-    """Build both tables from fetched sources, write the parquets, print the summary."""
+def build_and_write(src: dict, t0: float, t_fetch: float, out_dir: Path | None = None) -> None:
+    """Build both tables from fetched sources, write the parquets + the build
+    record (QB params), print the summary."""
+    out_dir = OUT_DIR if out_dir is None else Path(out_dir)
     sched, depth = src["sched"], src["depth"]
     dropped = dropped_snap_mappings(src["snaps"], src["pfr2gsis"])
-    print(f"sources ready ({t_fetch:.1f}s); building feature tables...", flush=True)
+    qb = resolved_qb_params(src)
+    print(f"sources ready ({t_fetch:.1f}s); building feature tables (QB params {qb['mode']}: "
+          f"H={qb['H']:g} k={qb['k']:g})...", flush=True)
     built = build_tables(src)
     feats, team, stubs = built["feats"], built["team"], built["stubs"]
     print(f"{len(built['pg'])} player-games, {len(built['tg'])} team-games, {len(stubs)} stubs", flush=True)
 
-    OUT_DIR.mkdir(parents=True, exist_ok=True)
-    feats.to_parquet(OUT_DIR / "player_week_features.parquet", index=False)
-    team.to_parquet(OUT_DIR / "team_week_features.parquet", index=False)
+    out_dir.mkdir(parents=True, exist_ok=True)
+    build_info_path(out_dir).unlink(missing_ok=True)   # never describes other tables
+    feats.to_parquet(out_dir / "player_week_features.parquet", index=False)
+    team.to_parquet(out_dir / "team_week_features.parquet", index=False)
+    write_build_info(qb, out_dir)
     elapsed = time.monotonic() - t0
 
     played = feats["y_targets"].notna()
@@ -297,13 +347,23 @@ def build_and_write(src: dict, t0: float, t_fetch: float) -> None:
     print("WR p_depth_rank (rank within team-week-position) share by season:\n"
           + depth_rank_distribution(feats, "WR").to_string())
     print(f"feature columns: {sum(c.startswith(FEATURE_GROUPS) for c in feats.columns)}; "
-          f"written to {OUT_DIR}")
+          f"written to {out_dir} (QB params {qb['mode']} H={qb['H']:g} k={qb['k']:g})")
     print(f"build time: {elapsed:.1f}s (fetch {t_fetch:.1f}s, features {elapsed - t_fetch:.1f}s)")
 
 
-def main() -> None:
+def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
+    ap = argparse.ArgumentParser(description="Build the props-ML feature tables.")
+    ap.add_argument("--qb-params", choices=("gate", "serving"), default="gate",
+                    help="QB-profile (H, k) block of qb_profile_params.json (default gate; the "
+                         "v2 weekly retrain builds with serving)")
+    return ap.parse_args(argv)
+
+
+def main(argv: list[str] | None = None) -> None:
+    args = parse_args(argv)
+    qb_params(args.qb_params, QB_PARAMS_PATH)   # fail before the (long) fetch if the block is missing
     t0 = time.monotonic()
-    src = fetch_sources()
+    src = {**fetch_sources(), "qb_params_mode": args.qb_params}
     build_and_write(src, t0, time.monotonic() - t0)
 
 

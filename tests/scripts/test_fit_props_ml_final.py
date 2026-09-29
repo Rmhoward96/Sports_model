@@ -970,9 +970,16 @@ def test_predict_b_uses_the_given_role_table():
     assert oor_v1 == set() and oor_v2 == {(2025, 5, "q2", "pass_yds")}
 
 
+def _feature_build(tmp_path, H=1.5, k=200.0, mode="serving"):
+    path = tmp_path / "feature_build.json"
+    path.write_text(json.dumps({"qb_params": {"mode": mode, "H": H, "k": k}}))
+    return path
+
+
 def test_main_gate_name_picks_the_version_inputs_and_dir(monkeypatch, tmp_path):
     seen = {}
     monkeypatch.setattr(fpf, "QB_PARAMS_PATH", _qb_params_file(tmp_path))
+    monkeypatch.setattr(fpf, "FEATURE_BUILD_PATH", _feature_build(tmp_path))
 
     def load(args):
         seen["load"] = (args.gate_name, args.pipeline, args.calibration)
@@ -1007,3 +1014,62 @@ def test_main_v2_final_fit_without_serving_block_is_refused(monkeypatch, tmp_pat
     monkeypatch.setattr(fpf, "run_final_fit", boom)
     assert fpf.main(["--gate-name", "_v2"]) == 1
     assert "serving" in capsys.readouterr().out
+
+
+# ---- Fix round 1 (Ruling S1): v2 trains on the serving QB params ------------------------
+
+def test_feature_build_record_name_matches_the_builder():
+    _b = pathlib.Path(__file__).resolve().parents[2] / "scripts" / "build_player_features.py"
+    spec = importlib.util.spec_from_file_location("bpf_for_fpf", _b)
+    bpf = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(bpf)
+    assert fpf.FEATURE_BUILD_PATH == fpf.tpm.PLAYER_PATH.with_name(bpf.BUILD_INFO_FILE)
+    assert fpf.FEATURE_BUILD_PATH.parent == bpf.OUT_DIR
+
+
+def test_tables_qb_refusal():
+    serving = {"H": 1.5, "k": 200.0}
+    ok = {"qb_params": {"mode": "serving", "H": 1.5, "k": 200.0}}
+    assert fpf.tables_qb_refusal(ok, serving) is None
+    assert "no build record" in fpf.tables_qb_refusal(None, serving)
+    assert "no build record" in fpf.tables_qb_refusal({}, serving)
+    why = fpf.tables_qb_refusal({"qb_params": {"mode": "gate", "H": 1.0, "k": 100.0}}, serving)
+    assert "gate H=1 k=100" in why and "H=1.5 k=200" in why and "--qb-params serving" in why
+
+
+@pytest.mark.parametrize("argv", [["--gate-name", "_v2"], ["--gate-name", "_v2", "--holdout-weeks", "2"]])
+@pytest.mark.parametrize("build", ["gate_tables", "no_record"])
+def test_main_v2_refuses_tables_not_built_on_the_serving_params(monkeypatch, tmp_path, capsys,
+                                                                argv, build):
+    monkeypatch.setattr(fpf, "QB_PARAMS_PATH", _qb_params_file(tmp_path))
+    monkeypatch.setattr(fpf, "FEATURE_BUILD_PATH",
+                        _feature_build(tmp_path, 1.0, 100.0, "gate") if build == "gate_tables"
+                        else tmp_path / "missing.json")
+
+    def boom(*a, **k):
+        raise AssertionError("v2 ran on tables built with other QB params")
+
+    for name in ("_load_inputs", "run_final_fit", "run_quick_gate"):
+        monkeypatch.setattr(fpf, name, boom)
+    assert fpf.main(argv) == 1
+    out = capsys.readouterr().out
+    assert out.startswith("REFUSED:") and "--qb-params serving" in out
+
+
+def test_main_v2_refuses_a_missing_serving_block_in_both_modes(monkeypatch, tmp_path, capsys):
+    monkeypatch.setattr(fpf, "QB_PARAMS_PATH", _qb_params_file(tmp_path, serving=False))
+    monkeypatch.setattr(fpf, "FEATURE_BUILD_PATH", _feature_build(tmp_path))
+    monkeypatch.setattr(fpf, "_load_inputs", lambda args: (_ for _ in ()).throw(AssertionError("loaded")))
+    for argv in (["--gate-name", "_v2"], ["--gate-name", "_v2", "--holdout-weeks", "2"]):
+        assert fpf.main(argv) == 1
+        assert "REFUSED" in capsys.readouterr().out
+
+
+def test_main_v1_never_reads_the_build_record(monkeypatch, tmp_path):
+    monkeypatch.setattr(fpf, "FEATURE_BUILD_PATH", _feature_build(tmp_path, 9.0, 9.0, "gate"))
+    monkeypatch.setattr(fpf, "read_feature_build",
+                        lambda path=None: (_ for _ in ()).throw(AssertionError("v1 read the record")))
+    monkeypatch.setattr(fpf, "_load_inputs", lambda args: {"pipeline": _pipeline()})
+    monkeypatch.setattr(fpf, "run_final_fit", lambda **kw: {})
+    monkeypatch.setattr(fpf, "run_quick_gate", lambda n, **kw: {"pass": True})
+    assert fpf.main([]) == 0 and fpf.main(["--holdout-weeks", "2"]) == 0

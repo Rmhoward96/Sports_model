@@ -1905,12 +1905,16 @@ def test_main_no_books_switch_passes_an_empty_override(monkeypatch, tmp_path):
 
 # ---- matchup log line -----------------------------------------------------------------
 
-def test_matchup_line_names_qb1_and_the_matchup_features():
-    players = [_player("KC_WR", "Wide Guy"), PlayerInput(
-        player_id="00-0033873", name="Patrick Mahomes", pos="QB", target_share=0.0, carry_share=0.05,
-        ypt=0.0, ypc=4.0, ypr=0.0, catch_rate=0.0, td_share=0.05, rec_td_share=0.0,
-        rush_td_share=0.1)]
-    t_rows = pd.DataFrame({"team": ["KC", "BAL"], "qb_ypa": [7.123, 6.0], "qb_ratio_ypa": [1.0, 0.9],
+def _qb(pid, name):
+    return PlayerInput(player_id=pid, name=name, pos="QB", target_share=0.0, carry_share=0.05,
+                       ypt=0.0, ypc=4.0, ypr=0.0, catch_rate=0.0, td_share=0.05, rec_td_share=0.0,
+                       rush_td_share=0.1)
+
+
+def test_matchup_line_names_the_features_qb1_and_the_matchup_features():
+    players = [_player("KC_WR", "Wide Guy"), _qb("00-0033873", "Patrick Mahomes")]
+    t_rows = pd.DataFrame({"team": ["KC", "BAL"], "qb1_id": ["00-0033873", "BAL_QB"],
+                           "qb_ypa": [7.123, 6.0], "qb_ratio_ypa": [1.0, 0.9],
                            "mx_pass_minus_rush": [0.051, -0.02], "di_op_vacated_cov": [0.4, 0.0],
                            "di_op_vacated_rush": [0.0, 0.0], "di_op_vacated_run": [np.nan, 0.0]})
     line = gsn.matchup_line("KC", 2026, 3, players, t_rows)
@@ -1920,6 +1924,61 @@ def test_matchup_line_names_qb1_and_the_matchup_features():
     assert gsn.matchup_line("NYJ", 2026, 3, [], t_rows) == (
         "matchup: NYJ 2026 wk3 QB1=na qb_ypa=na qb_ratio_ypa=na mx_pass_minus_rush=na "
         "di_op_vacated_cov=na di_op_vacated_rush=na di_op_vacated_run=na")
+    # the features' QB1 is NOT the first pos=="QB" player: a backup QB listed first
+    # and a feature QB1 different from the sim's QB are both named correctly
+    kc2 = t_rows.assign(qb1_id=["KC_QB2", "BAL_QB"])
+    line = gsn.matchup_line("KC", 2026, 3, [_qb("00-0033873", "Patrick Mahomes"),
+                                             _player("KC_QB2", "Backup Guy", pos="QB")], kc2)
+    assert line.startswith("matchup: KC 2026 wk3 QB1=Backup Guy (KC_QB2) qb_ypa=7.123")
+    assert line.endswith(" sim_QB=Patrick Mahomes (00-0033873)")
+    # a feature QB1 the spec does not carry: its gsis alone
+    assert "QB1=00-0099999 " in gsn.matchup_line("KC", 2026, 3, [], t_rows.assign(qb1_id="00-0099999"))
+
+
+def test_build_ml_tables_adds_the_builders_qb1_to_the_team_rows(monkeypatch):
+    """qb1_id = qb_profile.qb1_by_team_week on the builder's own inputs: the
+    chart's QB1 unless Out on the (live-injected) report, the books override wins."""
+    depth = pd.DataFrame({"season": [2026] * 4, "week": [3] * 4, "club_code": ["KC", "KC", "BAL", "BAL"],
+                          "position": ["QB"] * 4, "depth_team": [1, 2, 1, 2],
+                          "gsis_id": ["KC_QB1", "KC_QB2", "BAL_QB1", "BAL_QB2"],
+                          "full_name": ["Kc One", "Kc Two", "Bal One", "Bal Two"],
+                          "football_name": ["Kc", "Kc", "Bal", "Bal"]})
+    team = pd.DataFrame({"team": ["KC", "BAL", "KC"], "season": [2026, 2026, 2025], "week": [3, 3, 3]})
+
+    class FakeBpf:
+        SEASONS = [2016]
+
+        @staticmethod
+        def fetch_sources(seasons):
+            return {"injuries": None, "depth": depth, "sched": pd.DataFrame({"x": [1]})}
+
+        @staticmethod
+        def build_tables(src, ctx_fill=None, qb1_override=None):
+            return {"feats": pd.DataFrame(), "team": team}
+
+    monkeypatch.setattr(gsn, "_load_script", lambda name: FakeBpf)
+    report = {"by_team": {"BAL": [{"player": "Bal One", "status": "Out"}]}, "target_week": 3}
+    _, got, _ = gsn._build_ml_tables(2026, gsn.datetime(2026, 9, 27, tzinfo=gsn.timezone.utc),
+                                     report=report, qb1_override={(2026, 3, "KC"): "KC_QB2"})
+    assert list(got["qb1_id"].iloc[:2]) == ["KC_QB2", "BAL_QB2"]   # override; Out starter skipped
+    assert pd.isna(got["qb1_id"].iloc[2])                           # another season: not computed
+
+
+def test_main_qb_override_failure_warns_and_keeps_the_game(monkeypatch, tmp_path, capsys):
+    rec = _install_io(monkeypatch, tmp_path, "shadow")
+    _install_ml(monkeypatch, rec, tmp_path)
+    monkeypatch.setattr(gsn, "promote_books_qb",
+                        lambda depth_df, team, *a: (depth_df, ("Old", "New")) if team == "KC" else (depth_df, None))
+
+    def boom(*a, **k):
+        raise KeyError("depth_team")
+
+    monkeypatch.setattr(gsn, "_note_qb_override", boom)
+    gsn.main()
+    out = capsys.readouterr().out
+    assert "::warning::qb-check: KC props-ML QB1 override failed (KeyError('depth_team'))" in out
+    assert {r["game_pk"] for r in _written(rec, "sim", "sim-nfl-v1")} == {11, 12}   # nothing skipped
+    assert rec.build_kwargs[0]["qb1_override"] == {}
 
 
 def test_main_logs_one_matchup_line_per_team(monkeypatch, tmp_path, capsys):

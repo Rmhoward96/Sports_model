@@ -41,7 +41,12 @@ Versions (``--gate-name``)
   "nfl-sim-ml-v2"`` and ``"qb_profile_params"`` = the ``serving`` block of
   ``assets/nfl/props_ml/qb_profile_params.json`` (the final fit is refused
   when that block is missing: run ``tune_qb_profile.py --mode serving``).
-  Live serving builds the v2 feature tables with those (H, k).
+  Live serving builds the v2 feature tables with those (H, k), so v2 also
+  TRAINS on them (Ruling S1): both v2 modes (quick gate and final fit) refuse
+  (``REFUSED: ...``, exit 1) unless the feature tables' build record
+  (``data/props_ml/feature_build.json``, written by
+  ``build_player_features.py --qb-params serving``) carries the serving
+  block's (H, k).
 
 ``trained_through`` = the last (season, week) with a played label in the player
 table; every model trains on rows strictly before ``trained_through + 1 week``
@@ -76,6 +81,7 @@ from __future__ import annotations
 import argparse
 import importlib.util
 import json
+import math
 import shutil
 import sys
 import tempfile
@@ -132,6 +138,8 @@ tpm = tpb.tpm
 
 MODEL_ROOT = tpm.DATA_DIR / "models"
 QB_PARAMS_PATH = ROOT / "assets" / "nfl" / "props_ml" / "qb_profile_params.json"
+# the feature tables' build record (build_player_features.BUILD_INFO_FILE)
+FEATURE_BUILD_PATH = tpm.PLAYER_PATH.with_name("feature_build.json")
 # --gate-name -> the served model version it fits (the v1 comparison run
 # ``_v1cmp`` is a gate input only: never fit or served)
 GATE_VERSIONS = {"": ML_V1, tpb.V2_GATE_NAME: ML_V2}
@@ -180,6 +188,29 @@ def serving_qb_block(path: Path | None = None) -> dict:
         raise RuntimeError(f"{path} has no 'serving' block -- run "
                            "`uv run python scripts/tune_qb_profile.py --mode serving` first")
     return dict(block)
+
+
+def read_feature_build(path: Path | None = None) -> dict | None:
+    """The feature tables' build record, or None when absent."""
+    path = FEATURE_BUILD_PATH if path is None else Path(path)
+    return json.loads(path.read_text()) if path.is_file() else None
+
+
+def tables_qb_refusal(build_info: Mapping | None, serving: Mapping) -> str | None:
+    """Why the v2 fit must not use these tables, or None: the tables must have
+    been built with the serving block's (H, k) -- the params v2 is served
+    with (Ruling S1). PURE."""
+    fix = "rebuild them: `uv run python scripts/build_player_features.py --qb-params serving`"
+    qb = (build_info or {}).get("qb_params")
+    if not qb:
+        return f"the feature tables have no build record ({FEATURE_BUILD_PATH.name}): {fix}"
+    same = all(math.isclose(float(qb[c]), float(serving[c]), rel_tol=1e-9, abs_tol=1e-12)
+               for c in ("H", "k"))
+    if not same:
+        return (f"the feature tables were built with QB params {qb.get('mode')} H={float(qb['H']):g} "
+                f"k={float(qb['k']):g}, but v2 is served with the serving block "
+                f"H={float(serving['H']):g} k={float(serving['k']):g}: {fix}")
+    return None
 
 
 # ---- pure helpers: weeks / config inputs --------------------------------------------------
@@ -673,6 +704,17 @@ def main(argv: list[str] | None = None) -> int:
         print(f"new_weeks={'true' if new else 'false'}", flush=True)
         return 0
 
+    qb = None
+    if gate_version(args.gate_name) != ML_V1:   # v2 trains and serves on the serving QB params
+        try:
+            qb = serving_qb_block()
+        except RuntimeError as exc:
+            print(f"REFUSED: {exc}", flush=True)
+            return 1
+        refusal = tables_qb_refusal(read_feature_build(), qb)
+        if refusal:
+            print(f"REFUSED: {refusal}", flush=True)
+            return 1
     inputs = _load_inputs(args)
     refusal = pipeline_refusal(inputs["pipeline"])
     if refusal:
@@ -682,13 +724,6 @@ def main(argv: list[str] | None = None) -> int:
         gate = run_quick_gate(args.holdout_weeks, **inputs, out_dir=out_dir,
                               n_sims=args.n_sims, log=log, gate_name=args.gate_name)
         return 0 if gate["pass"] else 1
-    qb = None
-    if gate_version(args.gate_name) != ML_V1:
-        try:
-            qb = serving_qb_block()
-        except RuntimeError as exc:
-            print(f"REFUSED: {exc}", flush=True)
-            return 1
     run_final_fit(**inputs, out_dir=out_dir, log=log, gate_name=args.gate_name,
                   qb_profile_params=qb)
     return 0

@@ -34,9 +34,9 @@ SIM_ML_ENV = "${{ vars.SIM_ML_MODE || 'off' }}"
 DOWNLOAD_CALLS = ("fetch_verified props-ml-latest nfl-sim-ml-v1", "fetch_verified props-ml-v2 nfl-sim-ml-v2")
 VERIFY_WARNING = "::warning::props-ml: release verification failed"
 MATRIX = [
-    {"version": "nfl-sim-ml-v1", "gate_name": "", "release": "props-ml-latest",
+    {"version": "nfl-sim-ml-v1", "gate_name": "", "qb_params": "gate", "release": "props-ml-latest",
      "prev_release": "props-ml-prev"},
-    {"version": "nfl-sim-ml-v2", "gate_name": "_v2", "release": "props-ml-v2",
+    {"version": "nfl-sim-ml-v2", "gate_name": "_v2", "qb_params": "serving", "release": "props-ml-v2",
      "prev_release": "props-ml-v2-prev"},
 ]
 FINAL_FIT = 'uv run python scripts/fit_props_ml_final.py --gate-name "$GATE_NAME"'
@@ -45,7 +45,7 @@ PUBLISH = 'gh release upload "$RELEASE"'
 
 def leg_env(leg: dict) -> dict:
     """The train job's env for one matrix leg (the job-level `env:` mapping)."""
-    return {"MODEL_VERSION": leg["version"], "GATE_NAME": leg["gate_name"],
+    return {"MODEL_VERSION": leg["version"], "GATE_NAME": leg["gate_name"], "QB_PARAMS": leg["qb_params"],
             "RELEASE": leg["release"], "PREV_RELEASE": leg["prev_release"],
             "MODELS_DIR": f"data/props_ml/models/{leg['version']}"}
 needs_sha256sum = pytest.mark.skipif(shutil.which("sha256sum") is None, reason="sha256sum not installed")
@@ -300,6 +300,8 @@ def test_train_job_order_gate_before_publish(train_wf):
     assert steps[2]["uses"] == "astral-sh/setup-uv@v10.0.1"
     assert steps[3]["run"].strip() == "uv sync"
     build = step_index(steps, runs("scripts/build_player_features.py"))
+    # v1 legs build on the gate QB params, v2 on the serving ones (Ruling S1)
+    assert steps[build]["run"].strip() == 'uv run python scripts/build_player_features.py --qb-params "$QB_PARAMS"'
     gate = step_index(steps, runs("scripts/fit_props_ml_final.py --holdout-weeks 2"))
     assert steps[gate]["run"].strip() == ('uv run python scripts/fit_props_ml_final.py '
                                           '--holdout-weeks 2 --gate-name "$GATE_NAME"')
@@ -322,6 +324,7 @@ def test_train_matrix_one_leg_per_served_version(train_wf):
     assert job["strategy"]["matrix"]["include"] == MATRIX
     assert job["env"] == {"MODEL_VERSION": "${{ matrix.version }}",
                           "GATE_NAME": "${{ matrix.gate_name }}",
+                          "QB_PARAMS": "${{ matrix.qb_params }}",
                           "RELEASE": "${{ matrix.release }}",
                           "PREV_RELEASE": "${{ matrix.prev_release }}",
                           "MODELS_DIR": "data/props_ml/models/${{ matrix.version }}"}
