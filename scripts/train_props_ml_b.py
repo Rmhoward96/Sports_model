@@ -52,12 +52,25 @@ Checkpoints ``records_{baseline,kept_a}__<tag>__b7.parquet`` and
 ``b_oof__<tag>__b7.parquet`` (``PROPS_ML_RESUME=1``) carry the identity:
 git HEAD, feature fingerprints, sources fingerprint, PROD, seed, record_pmf.
 Env: PROPS_ML_SEASONS, PROPS_ML_N_SIMS, PROPS_ML_WEEKLY_REFIT, PROPS_ML_RESUME
-(as in scripts/train_props_ml.py, whose helpers this script reuses) and
-PROPS_ML_GATE_NAME (default ""; e.g. ``_v2``): main() reads ``a_gate{name}.json``
-(whose own ``gate_name`` must match); every output, checkpoint, OOF and served
-file gets the suffix appended last; ``_v2`` also switches B's role table to
-``ROLE_SUBSETS_V2`` everywhere B trains, predicts and records roles (any other
-name keeps the v1 ``ROLE_SUBSETS``, byte-identical to the unnamed run).
+(as in scripts/train_props_ml.py, whose helpers this script reuses),
+PROPS_ML_DECIDE_SEASONS (``tpm.decide_seasons_from_env``; default every run
+season): every SELECTION decision -- the A re-check's starting sources, the
+blend and calibration rung decisions and the final per-market sources -- uses
+only the records / population keys of those seasons, while per-season blend
+weights and calibration maps stay walk-forward and the final pass is still
+scored on all seasons pooled and on 2025 alone; and PROPS_ML_GATE_NAME, one
+of ``GATE_NAMES`` (anything else raises ValueError):
+
+- ``""``: v1 -- ``a_gate.json``, v1 ``ROLE_SUBSETS``, unsuffixed files (the
+  committed v1 outputs);
+- ``"_v1cmp"``: the v1 comparison run for the v2 gate -- ``a_gate.json``, v1
+  ``ROLE_SUBSETS``, every output, checkpoint, OOF and served file suffixed
+  ``_v1cmp`` (never the committed v1 files);
+- ``"_v2"``: ``a_gate_v2.json``, ``ROLE_SUBSETS_V2`` everywhere B trains,
+  predicts and records roles, every file suffixed ``_v2``.
+
+The A gate json passed in must carry the ``gate_name`` its table entry
+expects (none / "" for ``a_gate.json``).
 """
 from __future__ import annotations
 
@@ -135,6 +148,13 @@ OOF_COLS = ("season", "week", "home", "player_id", "market", "w", "pit_pre", "p_
 # The selected served composite's post-calibration records (``served_frame``).
 SERVED_COLS = ("season", "week", "home", "player_id", "market", "mean", "rps", "pit", "actual")
 V2_GATE_NAME = "_v2"
+V1CMP_GATE_NAME = "_v1cmp"
+# PROPS_ML_GATE_NAME -> (A gate json name, its expected ``gate_name``, B role table)
+GATE_NAMES: dict[str, tuple[str, str, dict]] = {
+    "": ("a_gate.json", "", ROLE_SUBSETS),
+    V1CMP_GATE_NAME: ("a_gate.json", "", ROLE_SUBSETS),
+    V2_GATE_NAME: ("a_gate_v2.json", V2_GATE_NAME, ROLE_SUBSETS_V2),
+}
 
 
 # ---- pure helpers ---------------------------------------------------------------------
@@ -143,15 +163,24 @@ def rec_key(r: Mapping) -> tuple:
     return (r["season"], r["week"], r["player_id"], r["market"])
 
 
+def gate_entry(gate_name: str) -> tuple[str, str, dict]:
+    """``GATE_NAMES[gate_name]``; ValueError for any other name."""
+    if gate_name not in GATE_NAMES:
+        raise ValueError(f"PROPS_ML_GATE_NAME {gate_name!r} is not one of "
+                         f"{sorted(GATE_NAMES)}")
+    return GATE_NAMES[gate_name]
+
+
 def role_subsets(gate_name: str) -> dict:
-    """B's role table: ``ROLE_SUBSETS_V2`` for gate name ``_v2``, else the v1
-    ``ROLE_SUBSETS`` (Ruling P1)."""
-    return ROLE_SUBSETS_V2 if gate_name == V2_GATE_NAME else ROLE_SUBSETS
+    """B's role table for the gate name (Ruling P1): v1 ``ROLE_SUBSETS`` for
+    "" and ``_v1cmp``, ``ROLE_SUBSETS_V2`` for ``_v2``."""
+    return gate_entry(gate_name)[2]
 
 
 def a_gate_path(gate_name: str) -> Path:
-    """The A gate json this ladder builds on: ``a_gate{gate_name}.json``."""
-    return A_GATE_PATH.with_name(f"{A_GATE_PATH.stem}{gate_name}{A_GATE_PATH.suffix}")
+    """The A gate json this ladder builds on (``a_gate.json`` for "" and
+    ``_v1cmp``, ``a_gate_v2.json`` for ``_v2``)."""
+    return A_GATE_PATH.with_name(gate_entry(gate_name)[0])
 
 
 def served_path(data_dir: Path, base_tag: str, gate_name: str = "") -> Path:
@@ -499,8 +528,9 @@ def _rung_section(title: str, step: dict) -> list[str]:
 
 
 CAVEATS = tpm.CAVEATS + (
-    "- Per-market sources are chosen on the same test seasons the final gate scores "
-    "(a market is served from ML only if its own pooled RPS beats the baseline's).",
+    "- Per-market sources are chosen on the decide seasons (a market is served from ML "
+    "only if its own RPS there beats the baseline's); when those include the final-gate "
+    "seasons the final gate is not an independent check of that choice.",
     "- B models are fit unweighted with max_iter 150 (runtime rulings); A keeps the "
     "per-season tuned values from a_gate.json.",
     "- The B role thresholds (dist_models.ROLE_SUBSETS) were chosen after a 2025 smoke run: "
@@ -523,7 +553,10 @@ def render_report(gate: dict) -> str:
              f"{gate['run_tag']}"
              + (f"; gate name {gate['gate_name']} (a_gate{gate['gate_name']}.json)"
                 if gate.get("gate_name") else "") + ".",
-             f"- Kept A toggles (a_gate{gate.get('gate_name', '')}.json): "
+             f"- Decide seasons (A re-check sources, rung decisions, final per-market "
+             f"sources): {', '.join(map(str, gate.get('decide_seasons', gate['seasons'])))}; "
+             "blend weights and calibration maps stay walk-forward per season.",
+             f"- Kept A toggles ({a_gate_path(gate.get('gate_name', '')).name}): "
              f"{', '.join(gate['pipeline']['kept_a_toggles'])}.",
              f"- Baseline: current sim ({', '.join(f'{k} {v}' for k, v in ident['prod'].items())}); "
              f"{gate['n_games_baseline']} games; the kept-A run covered exactly these.",
@@ -563,7 +596,9 @@ def render_report(gate: dict) -> str:
     nan = float("nan")
     lines += ["## Final gate (served pipeline vs current sim)", "",
               f"A market is served from ML iff its RPS <= the baseline's AND its ECE <= the "
-              f"baseline's + {ECE_TOL} (all seasons).", "",
+              f"baseline's + {ECE_TOL} on the decide seasons "
+              f"({', '.join(map(str, gate.get('decide_seasons', gate['seasons'])))}; the table "
+              "shows those scores).", "",
               "| market | n | RPS base | RPS ML | ECE base | ECE ML | source | w_final | calibrate |",
               "|---|---:|---:|---:|---:|---:|---|---:|---|"]
     for m, v in gate["pipeline"]["markets"].items():
@@ -580,8 +615,9 @@ def render_report(gate: dict) -> str:
         lines += (tpm._decision_block(d["season_2025"]) if d.get("season_2025") is not None
                   else ["Season 2025 was not part of this run."])
         lines += ["", f"pass = {d['pass']}"]
-    lines += ["", "The selected verdict is optimistic by construction: its per-market sources "
-              "are chosen on the same seasons it is scored on; the unselected decision is not.",
+    lines += ["", "The selected verdict is optimistic by construction where its per-market "
+              "sources were chosen on seasons it is scored on (the decide seasons above); the "
+              "unselected decision is not.",
               "", f"final_pass = {f['pass']} (unselected: {un['pass']})", "",
               "## Caveats", "", *CAVEATS, ""]
     return "\n".join(lines)
@@ -601,12 +637,19 @@ def run_b_ladder(env: Mapping[str, str], *, bsn, player_tbl: pd.DataFrame,
     ``gate_name`` (none = "")."""
     t0 = time.time()
     gate_name = tpm.gate_name_from_env(env)
-    if str(a_gate.get("gate_name", "")) != gate_name:
-        raise ValueError(f"PROPS_ML_GATE_NAME {gate_name!r} does not match the A gate's "
-                         f"gate_name {a_gate.get('gate_name', '')!r}: pass a_gate{gate_name}.json")
-    subsets = role_subsets(gate_name)
+    a_file, a_name, subsets = gate_entry(gate_name)
+    if str(a_gate.get("gate_name") or "") != a_name:
+        raise ValueError(f"PROPS_ML_GATE_NAME {gate_name!r} needs {a_file} (gate_name "
+                         f"{a_name!r}); the A gate passed has gate_name "
+                         f"{a_gate.get('gate_name', '')!r}")
     raw = env.get("PROPS_ML_SEASONS")
     seasons = [int(x) for x in raw.split(",") if x.strip()] if raw else list(tpm.TEST_SEASONS)
+    decide = tpm.decide_seasons_from_env(env, seasons)
+    decide_set = set(decide)
+
+    def dec(recs):
+        """Only the records of the decide seasons (selection decisions)."""
+        return [r for r in recs if r["season"] in decide_set]
     n_sims = int(env.get("PROPS_ML_N_SIMS") or tpm.DEFAULT_N_SIMS)
     refit_weeks = tpm.refit_weeks_from_env(env)
     resume = env.get("PROPS_ML_RESUME") == "1"
@@ -621,7 +664,7 @@ def run_b_ladder(env: Mapping[str, str], *, bsn, player_tbl: pd.DataFrame,
     identity = {**identity, "prod": dict(tpm.PROD), "seed": seed,
                 "backtest_sources": tpm.sources_fingerprint(sources)}
     log(f"tag={tag} seasons={seasons} n_sims={n_sims} refit={list(refit_weeks)} resume={resume} "
-        f"kept_a={sorted(kept_a)} gate_name={gate_name!r}")
+        f"kept_a={sorted(kept_a)} gate_name={gate_name!r} decide_seasons={decide}")
     injuries_q = tpm.questionable_index(player_tbl)
 
     def run(name: str, toggles: frozenset[str]) -> tuple[list[dict], dict]:
@@ -677,8 +720,10 @@ def run_b_ladder(env: Mapping[str, str], *, bsn, player_tbl: pd.DataFrame,
     n_pop = {m: sum(1 for k in population if k[3] == m) for m in MARKETS}
     log(f"stage=population {n_pop}")
 
-    log("stage=a-recheck")
-    a_step = rung_step("a_recheck", base_recs, pop_a, base_recs, population)
+    base_dec = dec(base_recs)
+    pop_dec = {k for k in population if k[0] in decide_set}
+    log(f"stage=a-recheck (decide seasons {decide})")
+    a_step = rung_step("a_recheck", base_dec, dec(pop_a), base_dec, pop_dec)
     a_sources = market_sources(a_step["decision"]["per_market"], MARKETS, A_WORSE_TOL)
     log(f"A re-check: skill {a_step['decision']['skill']:+.4f}; sources {a_sources}")
 
@@ -728,8 +773,8 @@ def run_b_ladder(env: Mapping[str, str], *, bsn, player_tbl: pd.DataFrame,
     log("stage=blend weights + rung")
     weights = season_weights(with_b(kept_ml), seasons, MARKETS)
     cand = apply_by_season(pop_a, b_eff, weights)
-    blend = {**rung_step("blend", kept_comp, composite(base_recs, cand, a_sources), base_recs,
-                         population), "weights": {str(k): v for k, v in weights.items()}}
+    blend = {**rung_step("blend", dec(kept_comp), dec(composite(base_recs, cand, a_sources)),
+                         base_dec, pop_dec), "weights": {str(k): v for k, v in weights.items()}}
     log(f"DECISION rung=blend: {tpm._fmt_decision_line(blend['decision'])} => "
         f"{'PASS' if blend['pass'] else 'FAIL'} weights={weights}")
     if blend["pass"]:
@@ -740,8 +785,8 @@ def run_b_ladder(env: Mapping[str, str], *, bsn, player_tbl: pd.DataFrame,
     log("stage=calibration maps + rung")
     calibs = season_calibrations(pre_calib, seasons, MARKETS)
     cand = apply_by_season(pop_a, b_eff, kept_w, calibs)
-    calib = {**rung_step("calibration", kept_comp, composite(base_recs, cand, a_sources),
-                         base_recs, population),
+    calib = {**rung_step("calibration", dec(kept_comp),
+                         dec(composite(base_recs, cand, a_sources)), base_dec, pop_dec),
              "maps": {str(s): {m: calib_label(c, m) for m, c in v.items()}
                       for s, v in calibs.items()}}
     log(f"DECISION rung=calibration: {tpm._fmt_decision_line(calib['decision'])} => "
@@ -750,7 +795,8 @@ def run_b_ladder(env: Mapping[str, str], *, bsn, player_tbl: pd.DataFrame,
         kept_ml, kept_rungs = cand, kept_rungs + ["calibration"]
 
     log("stage=final gate")
-    ml_pm = per_market_scores(tpm.checked_paired_frame(base_recs, kept_ml, population, base_recs,
+    # per-market sources: decided on the decide seasons only
+    ml_pm = per_market_scores(tpm.checked_paired_frame(base_dec, dec(kept_ml), pop_dec, base_dec,
                                                        "final-ml"))
     sources = market_sources(ml_pm, MARKETS, 1.0, ece_tol=ECE_TOL)
 
@@ -787,7 +833,7 @@ def run_b_ladder(env: Mapping[str, str], *, bsn, player_tbl: pd.DataFrame,
                                                                                  index=False)
     gate = {"run_date": run_date, "seasons": seasons, "n_sims": n_sims,
             "refit_weeks": list(refit_weeks), "run_tag": tag, "gate_name": gate_name,
-            "identity": identity,
+            "decide_seasons": decide, "identity": identity,
             "tuned": tuned_json, "n_games_baseline": len(base_games), "n_population": n_pop,
             "a_recheck": {**a_step, "sources": a_sources},
             "b_oof": {**b_stats, "fits": int(b_stats.get("fits", 0)), "missing": missing,
@@ -813,7 +859,7 @@ def main() -> None:
     def log(msg: str) -> None:
         print(f"[+{(time.time() - t0) / 60:7.1f} min] {msg}", flush=True)
 
-    a_path = a_gate_path(tpm.gate_name_from_env(os.environ))
+    a_path = a_gate_path(tpm.gate_name_from_env(os.environ))  # ValueError on an unknown name
     for p in (tpm.PLAYER_PATH, tpm.TEAM_PATH, a_path):
         if not p.exists():
             raise SystemExit(f"missing {p}: build the features / run the A gate first")

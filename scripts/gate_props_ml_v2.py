@@ -2,12 +2,20 @@
 
 Compares the two model versions' SERVED composites -- the post-calibration
 records ``scripts/train_props_ml_b.py`` writes for the selected per-market
-sources: ``data/props_ml/served__<tag>.parquet`` (v1: ``a_gate.json`` +
-``ROLE_SUBSETS``) and ``served__<tag>_v2.parquet`` (``PROPS_ML_GATE_NAME=_v2``:
-``a_gate_v2.json`` + ``ROLE_SUBSETS_V2``) -- on the verdict seasons 2024 and
+sources: ``data/props_ml/served__<tag>_v1cmp.parquet`` (the v1 comparison run,
+``PROPS_ML_GATE_NAME=_v1cmp``: ``a_gate.json`` + ``ROLE_SUBSETS``; the
+committed v1 files are never rewritten) and ``served__<tag>_v2.parquet``
+(``PROPS_ML_GATE_NAME=_v2``: ``a_gate_v2.json`` + ``ROLE_SUBSETS_V2``) -- on the
+verdict seasons 2024 and
 2025 (tuning and rung decisions used 2021-2023), plus a game-level check from
 two ``backtest_sim_nfl.run_backtest`` runs of the kept A of each version
 (``gate_ml_game_lines.run_ml_side``; same games, per-game seeded streams).
+
+Provenance: the two B-ladder gate jsons (``b_gate_v1cmp.json``,
+``b_gate_v2.json``) must exist, carry their gate names, share the run tag and
+the decide seasons (``PROPS_ML_DECIDE_SEASONS``; both ladders select on
+2021-2023), and each must name the served file loaded for it; both identities
+(git, feature fingerprints, tag, decide seasons) go into the json and report.
 
 Ship rule (``v2_checks.verdict``, as Props-2):
 
@@ -71,15 +79,18 @@ gml = _load_script("gate_ml_game_lines")
 VERDICT_SEASONS: tuple[int, ...] = (2024, 2025)
 FINAL_SEASON = vc.FINAL_SEASON
 V2_NAME = "_v2"
+V1CMP_NAME = "_v1cmp"
 DEFAULT_N_SIMS = 1000
 N_BOOT = 1000
 BOOT_SEED = 0
 
 DATA_DIR = tpm.DATA_DIR
-SERVED_V1 = DATA_DIR / f"served__{tpm.DEFAULT_TAG}.parquet"
+SERVED_V1 = DATA_DIR / f"served__{tpm.DEFAULT_TAG}{V1CMP_NAME}.parquet"
 SERVED_V2 = DATA_DIR / f"served__{tpm.DEFAULT_TAG}{V2_NAME}.parquet"
 A_GATE_V1 = tpm.GATE_PATH
 A_GATE_V2 = tpm.GATE_PATH.with_name(f"{tpm.GATE_PATH.stem}{V2_NAME}{tpm.GATE_PATH.suffix}")
+B_GATE_V1 = tpm.GATE_PATH.with_name(f"b_gate{V1CMP_NAME}.json")
+B_GATE_V2 = tpm.GATE_PATH.with_name(f"b_gate{V2_NAME}.json")
 GATE_PATH = ROOT / "assets" / "nfl" / "props_ml" / "v2_gate.json"
 REPORT_DIR = tpm.REPORT_DIR
 DEFAULT_TAG = tpm.run_tag(list(VERDICT_SEASONS), tpm.REFIT_WEEKS)
@@ -111,6 +122,51 @@ def check_gate_names(a_gate_v1: Mapping, a_gate_v2: Mapping) -> None:
     if str(a_gate_v2.get("gate_name", "")) != V2_NAME:
         raise ValueError(f"v2 A gate has gate_name {a_gate_v2.get('gate_name', '')!r}; expected "
                          f"{V2_NAME!r} (a_gate{V2_NAME}.json)")
+
+
+def load_b_gate(path: Path, gate_name: str) -> dict:
+    """A B-ladder gate json; SystemExit naming the command when it is missing."""
+    path = Path(path)
+    if not path.exists():
+        raise SystemExit(f"missing {path}: run PROPS_ML_GATE_NAME={gate_name} "
+                         "PROPS_ML_DECIDE_SEASONS=2021,2022,2023 "
+                         ".venv/bin/python scripts/train_props_ml_b.py first")
+    return json.loads(path.read_text())
+
+
+def b_gate_provenance(b_gate_v1: Mapping, b_gate_v2: Mapping,
+                      served_files: Mapping[str, str]) -> dict:
+    """``{v1, v2: {gate_name, run_tag, decide_seasons, git, player_features,
+    team_features, served}}`` of the two B ladders. ValueError unless their
+    gate names are ``_v1cmp`` / ``_v2``, both record decide seasons, their run
+    tags and decide seasons are equal, and each names the served file loaded
+    for it (``served_files``)."""
+    out = {}
+    for label, g, want in (("v1", b_gate_v1, V1CMP_NAME), ("v2", b_gate_v2, V2_NAME)):
+        if g.get("gate_name") != want:
+            raise ValueError(f"{label} B gate has gate_name {g.get('gate_name')!r}; expected "
+                             f"{want!r} (b_gate{want}.json)")
+        if g.get("decide_seasons") is None:
+            raise ValueError(f"{label} B gate records no decide_seasons: rerun its B ladder "
+                             "with this code and PROPS_ML_DECIDE_SEASONS")
+        served = Path(str(g.get("served_path", ""))).name
+        if served != served_files[label]:
+            raise ValueError(f"{label} B gate wrote {served!r} but the gate loaded "
+                             f"{served_files[label]!r}")
+        ident = g.get("identity") or {}
+        out[label] = {"gate_name": want, "run_tag": g.get("run_tag"),
+                      "decide_seasons": [int(x) for x in g["decide_seasons"]],
+                      "git": ident.get("git_head"),
+                      "player_features": (ident.get("player_features") or {}).get("sha256"),
+                      "team_features": (ident.get("team_features") or {}).get("sha256"),
+                      "served": served}
+    if out["v1"]["run_tag"] != out["v2"]["run_tag"]:
+        raise ValueError(f"B gate run tags differ: v1 {out['v1']['run_tag']!r} vs v2 "
+                         f"{out['v2']['run_tag']!r}")
+    if out["v1"]["decide_seasons"] != out["v2"]["decide_seasons"]:
+        raise ValueError(f"B gate decide_seasons differ: v1 {out['v1']['decide_seasons']} vs v2 "
+                         f"{out['v2']['decide_seasons']}")
+    return out
 
 
 def spot_checks(served_v1: pd.DataFrame, served_v2: pd.DataFrame, feats: pd.DataFrame,
@@ -229,6 +285,10 @@ def render_report(gate: dict) -> str:
               f"(per-game seeded streams); refit weeks {', '.join(map(str, gate['refit_weeks']))}; "
               f"games scheduled {cov['schedule_games']}, v1 {cov['ml_games']}, v2 "
               f"{cov['elo_games']}, paired {cov['paired_games']}.",
+              *[f"- B ladder {k} ({b['gate_name']}): run tag {b['run_tag']}, decide seasons "
+                f"{', '.join(map(str, b['decide_seasons']))}, git {b['git']}, player sha256 "
+                f"{str(b['player_features'])[:12]}, team sha256 {str(b['team_features'])[:12]}, "
+                f"served `{b['served']}`." for k, b in gate["b_ladders"].items()],
               "- Kept A: v1 " + ", ".join(gate["a_gates"]["v1"]["kept"]) + "; v2 "
               + ", ".join(gate["a_gates"]["v2"]["kept"]) + ".",
               f"- Code: git {ident.get('git_head')}; features: player sha256 "
@@ -236,8 +296,10 @@ def render_report(gate: dict) -> str:
               f"{ident['team_features']['sha256'][:12]}.",
               f"- Elapsed: {gate['elapsed_s'] / 60:.1f} min.", "",
               "## Caveats", "",
-              "- v2's per-market sources, blend and calibration rungs were chosen by its own B "
-              "ladder on 2021–2025 (as v1's were); this gate scores 2024–2025 only.",
+              "- Both B ladders chose their per-market sources, blend and calibration rungs "
+              "on their decide seasons ("
+              + ", ".join(map(str, gate["b_ladders"]["v2"]["decide_seasons"]))
+              + "); blend weights and calibration maps are walk-forward per season.",
               "- The player baseline is the player's own recent actuals, so both versions' "
               "deviations include regression to the mean; the check compares their SIGNS and "
               "how well they track the actual deviations, not their level.",
@@ -249,7 +311,8 @@ def render_report(gate: dict) -> str:
 
 def run_gate_v2(env: Mapping[str, str], *, bsn, player_tbl: pd.DataFrame,
                 team_tbl: pd.DataFrame, identity: dict, a_gate_v1: Mapping, a_gate_v2: Mapping,
-                served_v1: pd.DataFrame, served_v2: pd.DataFrame, data_dir: Path = DATA_DIR,
+                served_v1: pd.DataFrame, served_v2: pd.DataFrame, b_gate_v1: Mapping,
+                b_gate_v2: Mapping, data_dir: Path = DATA_DIR,
                 gate_path: Path = GATE_PATH, report_dir: Path = REPORT_DIR,
                 log: Callable[[str], None] = print, run_date: str | None = None,
                 served_files: Mapping[str, str] | None = None) -> dict:
@@ -257,6 +320,8 @@ def run_gate_v2(env: Mapping[str, str], *, bsn, player_tbl: pd.DataFrame,
     writes the gate json and report; returns the gate dict."""
     t0 = time.time()
     check_gate_names(a_gate_v1, a_gate_v2)
+    served_files = dict(served_files or {"v1": SERVED_V1.name, "v2": SERVED_V2.name})
+    provenance = b_gate_provenance(b_gate_v1, b_gate_v2, served_files)
     raw = env.get("PROPS_ML_SEASONS")
     seasons = [int(x) for x in raw.split(",") if x.strip()] if raw else list(VERDICT_SEASONS)
     n_sims = int(env.get("PROPS_ML_N_SIMS") or DEFAULT_N_SIMS)
@@ -311,7 +376,7 @@ def run_gate_v2(env: Mapping[str, str], *, bsn, player_tbl: pd.DataFrame,
 
     gate = {"run_date": run_date, "seasons": seasons, "n_sims": n_sims, "run_tag": tag,
             "refit_weeks": list(refit_weeks), "identity": identity, "a_gates": a_gates,
-            "served_files": dict(served_files or {"v1": SERVED_V1.name, "v2": SERVED_V2.name}),
+            "served_files": served_files, "b_ladders": provenance,
             "n_paired": int(len(paired)), "verdict": verdict, "pass": bool(verdict["pass"]),
             "game": verdict["game"], "game_ci": {"metrics": game_ci["metrics"]},
             "coverage": cov, "qb_change": qb, "matchup": matchup,
@@ -335,9 +400,12 @@ def main() -> None:
     def log(msg: str) -> None:
         print(f"[+{(time.time() - t0) / 60:7.1f} min] {msg}", flush=True)
 
+    b_gate_v1 = load_b_gate(B_GATE_V1, V1CMP_NAME)
+    b_gate_v2 = load_b_gate(B_GATE_V2, V2_NAME)
     for p in (tpm.PLAYER_PATH, tpm.TEAM_PATH, A_GATE_V1, A_GATE_V2, SERVED_V1, SERVED_V2):
         if not p.exists():
-            raise SystemExit(f"missing {p}: run the v1 and v2 A / B ladders first")
+            raise SystemExit(f"missing {p}: run the v1 and v2 A ladders and the _v1cmp / _v2 "
+                             "B ladders first")
     identity = {"player_features": tpm.file_fingerprint(tpm.PLAYER_PATH),
                 "team_features": tpm.file_fingerprint(tpm.TEAM_PATH), "git_head": tpm.git_head()}
     log(f"git={identity['git_head'][:12]}")
@@ -346,7 +414,7 @@ def main() -> None:
                 a_gate_v1=json.loads(A_GATE_V1.read_text()),
                 a_gate_v2=json.loads(A_GATE_V2.read_text()),
                 served_v1=pd.read_parquet(SERVED_V1), served_v2=pd.read_parquet(SERVED_V2),
-                log=log)
+                b_gate_v1=b_gate_v1, b_gate_v2=b_gate_v2, log=log)
 
 
 if __name__ == "__main__":

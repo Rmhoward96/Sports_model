@@ -316,8 +316,11 @@ class _FakeBsn:
     MARKET_MAX = {m: KMAX for m in MARKETS if m != "anytime_td"}
     RECORD_MARKETS = MARKETS
 
-    def __init__(self, worse=("pass_tds",)):
+    def __init__(self, worse=("pass_tds",), worse_in=None):
+        # worse: markets whose A is pulled AWAY from the actual (all seasons);
+        # worse_in: {season: markets} -- the same, in that season only
         self.worse, self.fetches, self.runs = worse, [], []
+        self.worse_in = worse_in or {}
         self.src = {"pbp": pd.DataFrame({"season": [2021], "week": [1], "epa": [0.1]})}
 
     def backtest_fetch_seasons(self, seasons):
@@ -343,7 +346,8 @@ class _FakeBsn:
                             pmf = base
                             if spec_hook is not None:  # A: sharper around the actual ...
                                 n = len(base)
-                                tgt = (actual + n // 2) % n if m in self.worse else actual
+                                away = m in self.worse or m in self.worse_in.get(s, ())
+                                tgt = (actual + n // 2) % n if away else actual
                                 pmf = 0.7 * base + 0.3 * np.eye(n)[tgt]  # ... or away from it
                             rec = {"season": s, "week": w, "home": home, "player_id": pid,
                                    "market": m, "mean": MEANS[m], "p50": 0.0, "p90": 0.0,
@@ -656,6 +660,17 @@ def test_output_paths_gate_name_suffixes_every_output(tmp_path):
         tmp_path / "served__s2021-2025__every4_v2.parquet")
     assert tpb.role_subsets("") is tpb.ROLE_SUBSETS
     assert tpb.role_subsets("_v2") is tpb.ROLE_SUBSETS_V2
+    # the v1 comparison run: v1 A gate + v1 roles, every file suffixed _v1cmp
+    assert tpb.role_subsets("_v1cmp") is tpb.ROLE_SUBSETS
+    assert tpb.a_gate_path("_v1cmp") == tpb.A_GATE_PATH
+    assert tpb.output_paths("s2021-2025__every4", "2026-09-28", gate_name="_v1cmp", **kw)[:3] == (
+        tmp_path / "b_gate_v1cmp.json", tmp_path / "pipeline_v1cmp.json",
+        tmp_path / "calibration_v1cmp.json")
+    for bad in ("_v3", "_V2", "v2"):
+        with pytest.raises(ValueError, match="PROPS_ML_GATE_NAME"):
+            tpb.role_subsets(bad)
+        with pytest.raises(ValueError, match="PROPS_ML_GATE_NAME"):
+            tpb.a_gate_path(bad)
 
 
 def _v2_ptbl(seasons):
@@ -721,12 +736,17 @@ def test_gate_name_must_match_the_a_gate(tmp_path, monkeypatch):
     _stub_b(monkeypatch, "bad")
     with pytest.raises(ValueError, match="gate_name"):
         _run(tmp_path, _FakeBsn(), env_extra={"PROPS_ML_GATE_NAME": "_v2"})  # v1 A_GATE
-    with pytest.raises(ValueError, match="gate_name"):
-        tpb.run_b_ladder({"PROPS_ML_SEASONS": "2021"}, bsn=_FakeBsn(), player_tbl=_ptbl((2021,)),
-                         team_tbl=_ttbl(), identity={}, a_gate={**A_GATE, "gate_name": "_v2"},
-                         data_dir=tmp_path / "d2", gate_path=tmp_path / "b.json",
-                         pipeline_path=tmp_path / "p.json", report_dir=tmp_path / "r",
-                         log=lambda m: None)
+    for name, a_gate in (("", {**A_GATE, "gate_name": "_v2"}),
+                         ("_v1cmp", {**A_GATE, "gate_name": "_v2"})):
+        with pytest.raises(ValueError, match="gate_name"):
+            tpb.run_b_ladder({"PROPS_ML_SEASONS": "2021", "PROPS_ML_GATE_NAME": name},
+                             bsn=_FakeBsn(), player_tbl=_ptbl((2021,)), team_tbl=_ttbl(),
+                             identity={}, a_gate=a_gate, data_dir=tmp_path / "d2",
+                             gate_path=tmp_path / "b.json", pipeline_path=tmp_path / "p.json",
+                             report_dir=tmp_path / "r", log=lambda m: None)
+    with pytest.raises(ValueError, match="PROPS_ML_GATE_NAME"):
+        _run(tmp_path / "u", _FakeBsn(), env_extra={"PROPS_ML_GATE_NAME": "_v3"})
+    assert not (tmp_path / "u").exists()
 
 
 def test_served_composite_written_post_calibration_one_row_per_population_key(tmp_path,
@@ -756,3 +776,84 @@ def test_served_composite_written_post_calibration_one_row_per_population_key(tm
         assert r["pit"] == pytest.approx(want["pit"], abs=1e-5)
         assert r["actual"] == want["actual"] and r["home"] == want["home"]
     assert {src[m]["source"] for m in served.market.unique()} == {"ml", "baseline"}
+
+
+def test_v1cmp_writes_only_suffixed_files_and_leaves_v1_files_byte_identical(tmp_path,
+                                                                            monkeypatch):
+    fits = _stub_b(monkeypatch, "bad")
+    v1 = _run(tmp_path, _FakeBsn())
+    before = {p: p.read_bytes() for p in tmp_path.rglob("*") if p.is_file()}
+    assert before and not any("_v1cmp" in p.name for p in before)
+    fits.clear()
+    cmp_gate = _run(tmp_path, _FakeBsn(), env_extra={"PROPS_ML_GATE_NAME": "_v1cmp"})  # v1 A gate
+    after = {p for p in tmp_path.rglob("*") if p.is_file()}
+    for p, b in before.items():
+        assert p.read_bytes() == b, p                 # pre-existing v1 files untouched
+    new = after - set(before)
+    assert new and all("_v1cmp" in p.name for p in new)
+    assert {p.name for p in new} >= {
+        "b_gate__s2021-2022__every4_v1cmp.json", "pipeline__s2021-2022__every4_v1cmp.json",
+        "calibration__s2021-2022__every4_v1cmp.json",
+        "2026-09-25-props-ml-b-gate__s2021-2022__every4_v1cmp.md",
+        "records_baseline__s2021-2022__every4__b7_v1cmp.parquet",
+        "records_kept_a__s2021-2022__every4__b7_v1cmp.parquet",
+        "b_oof__s2021-2022__every4__b7_v1cmp.parquet",
+        "oof_b7__s2021-2022__every4_v1cmp.parquet", "served__s2021-2022__every4_v1cmp.parquet"}
+    # v1 roles and the v1 result
+    assert fits and all(f["subsets"] is tpb.ROLE_SUBSETS for f in fits)
+    assert cmp_gate["gate_name"] == "_v1cmp"
+    assert cmp_gate["final"]["all"]["skill"] == v1["final"]["all"]["skill"]
+    assert cmp_gate["pipeline"]["markets"] == v1["pipeline"]["markets"]
+
+
+def _spy_pairs(monkeypatch):
+    """name -> seasons of the population each paired frame is built on."""
+    seen = {}
+    real = tpb.tpm.checked_paired_frame
+
+    def spy(a, b, population, base, name):
+        seen.setdefault(name, set()).update(k[0] for k in population)
+        return real(a, b, population, base, name)
+
+    monkeypatch.setattr(tpb.tpm, "checked_paired_frame", spy)
+    return seen
+
+
+def test_decide_seasons_drive_every_selection_decision(tmp_path, monkeypatch):
+    _stub_b(monkeypatch, "bad")
+    seen = _spy_pairs(monkeypatch)
+    # A helps rec_yds in 2021 and hurts it in 2022
+    bsn = _FakeBsn(worse=(), worse_in={2022: ("rec_yds",)})
+    gate = _run(tmp_path, bsn, env_extra={"PROPS_ML_DECIDE_SEASONS": "2022"})
+    assert gate["decide_seasons"] == [2022]
+    for name in ("a_recheck", "blend", "calibration", "final-ml"):
+        assert seen[name] == {2022}, name              # selection: decide seasons only
+    assert seen["final"] == seen["final-un"] == {2021, 2022}   # the final score: all seasons
+    # rec_yds helps only in the non-decide season 2021 -> not selected
+    assert gate["a_recheck"]["sources"]["rec_yds"] == "baseline"
+    assert gate["pipeline"]["markets"]["rec_yds"]["source"] == "baseline"
+    pm = gate["final"]["ml_per_market"]["rec_yds"]
+    assert pm["n"] == WEEKS * GAMES * PLAYERS and pm["rps_c"] > pm["rps_b"]
+    b_gate = json.loads((tmp_path / "b_gate__s2021-2022__every4.json").read_text())
+    assert b_gate["decide_seasons"] == [2022]
+    md = (tmp_path / "reports" / "2026-09-25-props-ml-b-gate__s2021-2022__every4.md").read_text()
+    assert "Decide seasons" in md and "decide seasons (2022" in md
+
+    # the mirror: deciding on 2021 alone keeps rec_yds from ML
+    seen.clear()
+    g21 = _run(tmp_path / "b", _FakeBsn(worse=(), worse_in={2022: ("rec_yds",)}),
+               env_extra={"PROPS_ML_DECIDE_SEASONS": "2021"})
+    assert seen["blend"] == {2021}
+    assert g21["a_recheck"]["sources"]["rec_yds"] == "ml"
+    assert g21["final"]["ml_per_market"]["rec_yds"]["rps_c"] < \
+        g21["final"]["ml_per_market"]["rec_yds"]["rps_b"]
+
+
+def test_decide_seasons_default_is_every_run_season(tmp_path, monkeypatch):
+    _stub_b(monkeypatch, "bad")
+    seen = _spy_pairs(monkeypatch)
+    gate = _run(tmp_path, _FakeBsn())
+    assert gate["decide_seasons"] == [2021, 2022]
+    assert seen["blend"] == seen["final-ml"] == {2021, 2022}
+    with pytest.raises(ValueError, match="PROPS_ML_DECIDE_SEASONS"):
+        _run(tmp_path / "x", _FakeBsn(), env_extra={"PROPS_ML_DECIDE_SEASONS": "2019"})

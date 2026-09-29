@@ -228,10 +228,23 @@ IDENTITY = {"git_head": "deadbeef", "player_features": {"size": 1, "sha256": "a"
             "team_features": {"size": 1, "sha256": "b" * 64}}
 
 
+def _b_gate(name, **over):
+    g = {"gate_name": name, "run_tag": "s2021-2025__every4__b7", "decide_seasons": [2021, 2022, 2023],
+         "served_path": f"/x/data/props_ml/served__s2021-2025__every4{name}.parquet",
+         "identity": {"git_head": f"git{name}", "player_features": {"sha256": "c" * 64},
+                      "team_features": {"sha256": "d" * 64}}}
+    g.update(over)
+    return g
+
+
+B_V1, B_V2 = _b_gate("_v1cmp"), _b_gate("_v2")
+
+
 def _kw(tmp_path, **over):
     kw = dict(bsn=_FakeBsn(), player_tbl=_player_tbl(), team_tbl=pd.DataFrame({"season": [2024], "week": [1], "team": ["KC"]}),
               identity=dict(IDENTITY), a_gate_v1=A_V1, a_gate_v2=A_V2,
-              served_v1=_served("v1"), served_v2=_served("v2"), data_dir=tmp_path / "data",
+              served_v1=_served("v1"), served_v2=_served("v2"), b_gate_v1=B_V1, b_gate_v2=B_V2,
+              data_dir=tmp_path / "data",
               gate_path=tmp_path / "v2_gate.json", report_dir=tmp_path / "reports",
               log=lambda m: None, run_date="2026-09-28")
     kw.update(over)
@@ -279,8 +292,16 @@ def test_run_gate_v2_end_to_end(tmp_path, monkeypatch):
     md = (tmp_path / "reports" / "2026-09-28-matchup-qb-gate.md").read_text()
     assert md.split("\n\n")[1].startswith("**Verdict: PASS.**")
     for needle in ("QB-change", "Matchup response", "| RB | 5 |", "Keenum", "2025 alone",
-                   "win_brier", "margin_mae", "deadbeef"):
+                   "win_brier", "margin_mae", "deadbeef", "git_v1cmp", "git_v2",
+                   "decide seasons 2021, 2022, 2023", "s2021-2025__every4__b7",
+                   "served__s2021-2025__every4_v1cmp.parquet"):
         assert needle in md, needle
+    prov = out["b_ladders"]
+    assert prov["v1"] == {"gate_name": "_v1cmp", "run_tag": "s2021-2025__every4__b7",
+                          "decide_seasons": [2021, 2022, 2023], "git": "git_v1cmp",
+                          "player_features": "c" * 64, "team_features": "d" * 64,
+                          "served": "served__s2021-2025__every4_v1cmp.parquet"}
+    assert prov["v2"]["git"] == "git_v2" and prov["v2"]["served"].endswith("_v2.parquet")
     spot = gate["spot_checks"][0]
     assert spot["graded"] is True and spot["player_id"] == "KEENUM"
     assert spot["mean_v1"] == 262.0 and spot["mean_v2"] == 231.0 and spot["actual"] == 260.0
@@ -319,7 +340,9 @@ def test_run_gate_v2_resume_reuses_game_checkpoints(tmp_path, monkeypatch):
 
 def test_paths_and_constants(tmp_path):
     assert gv2.VERDICT_SEASONS == (2024, 2025) and gv2.FINAL_SEASON == 2025
-    assert gv2.SERVED_V1 == gv2.tpm.DATA_DIR / "served__s2021-2025__every4.parquet"
+    assert gv2.SERVED_V1 == gv2.tpm.DATA_DIR / "served__s2021-2025__every4_v1cmp.parquet"
+    assert gv2.B_GATE_V1 == gv2.tpm.GATE_PATH.with_name("b_gate_v1cmp.json")
+    assert gv2.B_GATE_V2 == gv2.tpm.GATE_PATH.with_name("b_gate_v2.json")
     assert gv2.SERVED_V2 == gv2.tpm.DATA_DIR / "served__s2021-2025__every4_v2.parquet"
     assert gv2.A_GATE_V2 == gv2.tpm.GATE_PATH.with_name("a_gate_v2.json")
     assert gv2.GATE_PATH.name == "v2_gate.json"
@@ -338,3 +361,29 @@ def test_spot_check_without_a_served_record_is_reported_not_graded():
                            _served("v2").query("season < 2026"), feats)
     assert rows == [{"label": "Keenum PHI @ CHI 2026-09-28", "graded": False,
                      "note": "no served record (not in the gate's backtest seasons)"}]
+
+
+@pytest.mark.parametrize("which, over, match", [
+    ("v2", {"run_tag": "s2025__every4__b7"}, "run tags differ"),
+    ("v2", {"decide_seasons": [2021, 2022, 2023, 2024, 2025]}, "decide_seasons differ"),
+    ("v1", {"decide_seasons": None}, "no decide_seasons"),
+    ("v1", {"gate_name": ""}, "gate_name"),           # the committed v1 B gate, not _v1cmp
+    ("v2", {"gate_name": "_v1cmp"}, "gate_name"),
+    ("v1", {"served_path": "/x/served__s2021-2025__every4.parquet"}, "served"),
+])
+def test_b_gate_provenance_mismatches_fail_before_any_backtest(tmp_path, monkeypatch, which,
+                                                              over, match):
+    _stub_models(monkeypatch)
+    kw = _kw(tmp_path, **{f"b_gate_{which}": _b_gate("_v1cmp" if which == "v1" else "_v2",
+                                                       **over)})
+    with pytest.raises(ValueError, match=match):
+        gv2.run_gate_v2({}, **kw)
+    assert kw["bsn"].runs == [] and kw["bsn"].fetches == []
+    assert not (tmp_path / "v2_gate.json").exists()
+
+
+def test_load_b_gate_missing_file_names_the_command(tmp_path):
+    with pytest.raises(SystemExit, match="PROPS_ML_GATE_NAME=_v1cmp.*train_props_ml_b.py"):
+        gv2.load_b_gate(tmp_path / "b_gate_v1cmp.json", "_v1cmp")
+    (tmp_path / "b_gate_v2.json").write_text(json.dumps(B_V2))
+    assert gv2.load_b_gate(tmp_path / "b_gate_v2.json", "_v2") == B_V2
