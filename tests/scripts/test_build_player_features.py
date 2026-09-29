@@ -163,9 +163,12 @@ def test_build_tables_applies_ctx_fill_before_both_builders(monkeypatch):
     monkeypatch.setattr(bpf, "active_stubs", lambda *a: pd.DataFrame())
     monkeypatch.setattr(pf_mod, "build_feature_table",
                         lambda pg, tg, rz, ctx, *a, **k: seen.setdefault("feats_ctx", ctx))
-    monkeypatch.setattr(pf_mod, "build_team_table", lambda tg, ctx, epa: seen.setdefault("team_ctx", ctx))
+    monkeypatch.setattr(pf_mod, "build_team_table",
+                        lambda tg, ctx, epa, extra=None: seen.setdefault("team_ctx", ctx))
+    monkeypatch.setattr(pf_mod, "team_week_keys", lambda tg, ctx: pd.DataFrame())
+    monkeypatch.setattr(pf_mod, "extra_features", lambda *a, **k: pd.DataFrame())
     src = {"sched": pd.DataFrame({"s": [1]}), "pbp": None, "injuries": None, "depth": None,
-           "weekly": None, "snaps": None, "pfr2gsis": {}, "ngs": {}}
+           "weekly": None, "snaps": None, "pfr2gsis": {}, "ngs": {}, "weekly_qb": None}
 
     def fill(ctx, stadiums, sched):
         seen["fill_args"] = (ctx, stadiums, sched)
@@ -192,7 +195,8 @@ def test_fetch_sources_passes_seasons_to_every_loader(monkeypatch):
 
     def fake_load_release(dataset, seasons, **kw):
         calls.append((dataset, list(seasons)))
-        return pd.DataFrame({"season": list(seasons)})
+        return pd.DataFrame({"season": [s for s in seasons for _ in range(2)],
+                             "position": ["QB", "WR"] * len(seasons)})
 
     def fake_import_by_season(fn, seasons, name, **kw):
         calls.append((name, list(seasons)))
@@ -204,13 +208,116 @@ def test_fetch_sources_passes_seasons_to_every_loader(monkeypatch):
     monkeypatch.setattr(usage, "build_pfr_to_gsis", lambda ids: {})
     monkeypatch.setattr(nfl_data_py, "import_ids", lambda: pd.DataFrame())
 
-    bpf.fetch_sources([2020, 2021])
+    src = bpf.fetch_sources([2020, 2021])
     datasets = {d for d, _ in calls}
     assert {"schedules", "weekly", "snaps", "depth", "injuries", "ngs_receiving"} <= datasets
     # pbp is read season by season
     assert ("pbp", [2020]) in calls and ("pbp", [2021]) in calls
-    assert all(s == [2020, 2021] for d, s in calls if d != "pbp")
+    # QB history for the qb_ profiles: 1999 up to the first requested season (the
+    # requested seasons' weekly frame is reused, not downloaded twice)
+    hist = list(range(1999, 2020))
+    assert ("weekly", hist) in calls and ("weekly", [2020, 2021]) in calls
+    assert all(s == [2020, 2021] for d, s in calls if d != "pbp" and s != hist)
+    wq = src["weekly_qb"]
+    assert (wq["position"] == "QB").all() and sorted(wq["season"].unique()) == list(range(1999, 2022))
+    assert src["qb_params_mode"] == "gate"
 
     calls.clear()
     bpf.fetch_sources()
-    assert all(s == bpf.SEASONS for d, s in calls if d != "pbp")
+    assert all(s == bpf.SEASONS for d, s in calls if d != "pbp" and s != list(range(1999, bpf.SEASONS[0])))
+
+
+# ---- mx_/di_/qb_ wiring (build_tables with a stubbed src) ----------------------------------
+
+def _stub_src():
+    """A tiny but complete `src` built from the props fixture's raw extra sources
+    (4 teams x 2 seasons x 4 weeks): pbp, offense + defense snaps, weekly, weekly_qb."""
+    from tests.nfl import fixtures_props as fp
+    raw = fp.extra_sources()
+    games = fp._games()
+    home = games[games["is_home"] == 1]
+    sched = pd.DataFrame({"season": home["season"], "week": home["week"], "game_type": "REG",
+                          "home_team": home["team"], "away_team": home["opponent"]})
+    pbp = raw["pbp"].assign(qb_hit=0.0, wp=0.5, down=1.0, qtr=1.0, yardline_100=50.0,
+                            receiver_player_id=None, rusher_player_id=None)
+    wq = raw["weekly_qb"]
+    stat0 = ["targets", "carries", "receptions", "receiving_yards", "rushing_yards", "receiving_air_yards",
+             "receiving_yards_after_catch", "target_share", "air_yards_share", "receiving_tds", "rushing_tds"]
+    weekly = wq.assign(**{c: 0.0 for c in stat0})
+    qsnaps = pd.DataFrame({"season": wq["season"], "week": wq["week"], "game_type": "REG",
+                           "pfr_player_id": "P" + wq["player_id"], "team": wq["recent_team"],
+                           "opponent": wq["opponent_team"], "position": "QB", "offense_snaps": 60.0,
+                           "offense_pct": 1.0, "defense_snaps": 0.0, "defense_pct": 0.0})
+    snaps = pd.concat([raw["snaps"].assign(offense_pct=0.0), qsnaps], ignore_index=True)
+    pfr2gsis = {p: p[1:] for p in snaps["pfr_player_id"].unique()}
+    return {"sched": sched, "pbp": pbp, "weekly": weekly, "snaps": snaps, "depth": fp._depth(games),
+            "injuries": fp._injuries(), "ngs": {}, "pfr2gsis": pfr2gsis, "weekly_qb": wq}
+
+
+def _stub_context(monkeypatch):
+    import sportsmodel.nfl.context as ctx_mod
+    from tests.nfl import fixtures_props as fp
+    monkeypatch.setattr(ctx_mod, "load_stadiums", lambda: {})
+    monkeypatch.setattr(ctx_mod, "team_game_context", lambda sched, st: fp._games())
+
+
+def test_build_tables_adds_mx_di_qb_and_qb1_override_moves_only_that_team_week(monkeypatch):
+    _stub_context(monkeypatch)
+    built = bpf.build_tables(_stub_src())
+    team, feats = built["team"], built["feats"]
+    for t in (team, feats):
+        assert {"mx_pass_edge", "mx_op_ypc_allowed_adj", "di_op_vacated_cov", "qb_ypa", "qb_changed"} <= set(t.columns)
+    assert "y_team_off_tds" in team.columns and team["y_team_off_tds"].notna().all()
+    tt = team.set_index(["season", "week", "team"])
+    assert tt.loc[(2024, 3, "BAL"), "di_op_vacated_cov"] > 0          # BUF_CB Out, BAL faces BUF
+    assert tt.xs((2024, 3), level=["season", "week"])["qb_ypa"].notna().all()
+
+    over = bpf.build_tables(_stub_src(), qb1_override={(2024, 3, "BAL"): "BAL_QB"})
+    ot = over["team"].set_index(["season", "week", "team"])
+    diff = ~pd.Series(ot["qb_ypa"].to_numpy() == tt["qb_ypa"].to_numpy(), index=tt.index) & tt["qb_ypa"].notna()
+    assert list(tt.index[diff]) == [(2024, 3, "BAL")]
+
+
+def test_build_tables_new_columns_use_only_the_new_prefixes(monkeypatch):
+    """Global constraint: the build adds only mx_/di_/qb_ features (+ the
+    y_team_off_tds label) -- the v1 prefixes see exactly v1's columns."""
+    import sportsmodel.nfl.player_features as pf_mod
+    _stub_context(monkeypatch)
+    with_extra = bpf.build_tables(_stub_src())
+    monkeypatch.setattr(pf_mod, "extra_features",
+                        lambda tw, *a, **k: tw[["season", "week", "team"]].copy())
+    without = bpf.build_tables(_stub_src())
+    for name in ("feats", "team"):
+        added = set(with_extra[name].columns) - set(without[name].columns)
+        assert added and all(c.startswith(("mx_", "di_", "qb_")) for c in added), name
+        assert set(without[name].columns) <= set(with_extra[name].columns)
+
+
+def test_qb_params_gate_by_default_serving_on_request_and_missing_serving_is_clear(tmp_path, monkeypatch):
+    import json
+
+    import pytest
+
+    p = tmp_path / "qb_profile_params.json"
+    p.write_text(json.dumps({"gate": {"H": 1.0, "k": 100.0}}))
+    assert bpf.qb_params("gate", p) == (1.0, 100.0)
+    with pytest.raises(RuntimeError, match="serving.*tune_qb_profile.py --mode serving"):
+        bpf.qb_params("serving", p)
+    p.write_text(json.dumps({"gate": {"H": 1.0, "k": 100.0}, "serving": {"H": 2.0, "k": 50.0}}))
+    assert bpf.qb_params("serving", p) == (2.0, 50.0)
+    with pytest.raises(ValueError):
+        bpf.qb_params("bogus", p)
+    # build_tables reads the block named by src["qb_params_mode"]
+    seen = {}
+    import sportsmodel.nfl.player_features as pf_mod
+    _stub_context(monkeypatch)
+    monkeypatch.setattr(bpf, "QB_PARAMS_PATH", p)
+
+    def spy(tw, *a, **k):
+        seen["Hk"] = a[6:8]
+        return tw[["season", "week", "team"]].copy()
+    monkeypatch.setattr(pf_mod, "extra_features", spy)
+    bpf.build_tables({**_stub_src(), "qb_params_mode": "serving"})
+    assert seen["Hk"] == (2.0, 50.0)
+    bpf.build_tables(_stub_src())
+    assert seen["Hk"] == (1.0, 100.0)

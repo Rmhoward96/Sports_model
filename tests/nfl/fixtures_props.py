@@ -12,6 +12,15 @@ Scripted events (2024 week 3 is the perturbation target):
 - BUF_WR is Doubtful in 2024 wk3 but plays (his own wk3 game must not feed
   his teammates' vacated share).
 - KC_RB2 plays every 2023 game, then is an active-but-no-snap stub all 2024.
+- Defenders (for the `di_` features): each team has a CB, DE and LB. BUF_CB
+  is Out and KC_DE Doubtful in 2024 wk3 (no snaps that week); MIA_LB is Out
+  in 2023 wk2.
+
+`feature_inputs(..., extra=True)` also builds `extra` (the mx_/di_/qb_
+frame) with `player_features.extra_features` from raw play-by-play,
+defender snaps and weekly QB rows (`extra_sources`), which the same
+perturbation reaches (play yards/EPA/success/sacks, weekly passing stats;
+defender snap shares are mapped x -> 1 - x so they stay in [0, 1]).
 """
 from __future__ import annotations
 
@@ -30,7 +39,7 @@ _OUT = {(2024, 3): ["KC_WR", "BAL_QB"]}
 
 PG_STATS = ["snap_pct", "y_targets", "y_carries", "y_pass_att", "y_receptions", "y_rec_yds", "y_rush_yds",
             "y_pass_yds", "y_pass_tds", "y_anytime_td", "rec_air_yards", "yac", "target_share", "air_yards_share"]
-TG_STATS = ["pass_att", "rush_att", "plays", "dropbacks", "pressures_allowed", "neutral_pass_rate"]
+TG_STATS = ["pass_att", "rush_att", "plays", "dropbacks", "pressures_allowed", "neutral_pass_rate", "off_tds"]
 RZ_STATS = ["rz_targets", "rz_carries", "gl_carries"]
 NGS_STATS = {
     "rec": ["avg_separation", "avg_cushion", "avg_intended_air_yards", "avg_yac_above_expectation"],
@@ -124,14 +133,19 @@ def _context(rng, games) -> pd.DataFrame:
     return c
 
 
+_DEF_OUT = {(2024, 3): ["BUF_CB", "KC_DE"], (2023, 2): ["MIA_LB"]}
+_DEFENDERS = (("CB", "CB"), ("DE", "DE"), ("LB", "LB"))
+
+
 def _injuries() -> pd.DataFrame:
     return pd.DataFrame({
-        "season": [2024, 2024, 2024, 2024, 2023, 2024],
-        "week": [3, 3, 3, 3, 2, 3],
-        "team": ["KC", "BAL", "MIA", "BUF", "KC", "BUF"],
-        "gsis_id": ["KC_WR", "BAL_QB", "MIA_TE", "BUF_RB", "KC_TE", "BUF_WR"],
-        "full_name": ["a", "b", "c", "d", "e", "f"],
-        "report_status": ["Out", "Out", "Questionable", np.nan, "Doubtful", "Doubtful"],
+        "season": [2024, 2024, 2024, 2024, 2023, 2024, 2024, 2024, 2023],
+        "week": [3, 3, 3, 3, 2, 3, 3, 3, 2],
+        "team": ["KC", "BAL", "MIA", "BUF", "KC", "BUF", "BUF", "KC", "MIA"],
+        "gsis_id": ["KC_WR", "BAL_QB", "MIA_TE", "BUF_RB", "KC_TE", "BUF_WR", "BUF_CB", "KC_DE", "MIA_LB"],
+        "full_name": ["a", "b", "c", "d", "e", "f", "g", "h", "i"],
+        "report_status": ["Out", "Out", "Questionable", np.nan, "Doubtful", "Doubtful", "Out", "Doubtful",
+                          "Out"],
     })
 
 
@@ -167,9 +181,83 @@ def _at_or_after(df: pd.DataFrame, s: int, w: int, *, week0_is_season: bool = Fa
     return (df["season"] > s) | ((df["season"] == s) & later)
 
 
-def feature_inputs(perturb_from: tuple[int, int] | None = None, offset: float = 0.0) -> dict:
+PBP_STATS = ["yards_gained", "epa", "success", "sack", "pass_touchdown", "rush_touchdown"]
+WEEKLY_QB_STATS = ["attempts", "passing_yards", "passing_tds", "passing_interceptions", "sacks_suffered"]
+EXTRA_H, EXTRA_K = 1.0, 100.0
+
+
+def _plays(rng, games) -> pd.DataFrame:
+    """Raw REG play-by-play: 12 dropbacks (1 sack) + 10 runs per offense-game."""
+    rows = []
+    for g in games.itertuples(index=False):
+        for i in range(22):
+            kind = "pass" if i < 12 else "run"
+            sack = int(i == 0)
+            yds = -6.0 if sack else float(rng.integers(-2, 16)) if kind == "pass" else float(rng.integers(-2, 9))
+            td = int(rng.random() < 0.04) if not sack else 0
+            rows.append({"season": g.season, "week": g.week, "season_type": "REG", "play_type": kind,
+                         "posteam": g.team, "defteam": g.opponent, "sack": float(sack), "yards_gained": yds,
+                         "epa": float(rng.normal(0.02 * yds, 0.5)), "success": float(yds >= 4),
+                         "pass_touchdown": float(td if kind == "pass" else 0),
+                         "rush_touchdown": float(td if kind == "run" else 0)})
+    return pd.DataFrame(rows)
+
+
+def _def_snaps(rng, games) -> pd.DataFrame:
+    """Defender snap rows (pfr ids = 'P' + gsis id); Out defenders have no row."""
+    rows = []
+    for g in games.itertuples(index=False):
+        for suffix, pos in _DEFENDERS:
+            pid = f"{g.team}_{suffix}"
+            if pid in _DEF_OUT.get((g.season, g.week), []):
+                continue
+            rows.append({"season": g.season, "week": g.week, "game_type": "REG", "pfr_player_id": "P" + pid,
+                         "team": g.team, "opponent": g.opponent, "position": pos,
+                         "offense_snaps": 0.0, "defense_snaps": 50.0,
+                         "defense_pct": float(rng.uniform(0.3, 1.0))})
+    return pd.DataFrame(rows)
+
+
+def _weekly_qb(rng, pg) -> pd.DataFrame:
+    """nflverse-weekly-shaped QB rows from the played QB rows of `pg`."""
+    q = pg[pg["position"] == "QB"]
+    n = len(q)
+    return pd.DataFrame({
+        "player_id": q["player_id"].to_numpy(), "season": q["season"].to_numpy(), "week": q["week"].to_numpy(),
+        "season_type": "REG", "position": "QB", "recent_team": q["team"].to_numpy(),
+        "opponent_team": q["opponent"].to_numpy(), "attempts": q["y_pass_att"].to_numpy(),
+        "passing_yards": q["y_pass_yds"].to_numpy(), "passing_tds": q["y_pass_tds"].to_numpy(),
+        "passing_interceptions": rng.integers(0, 3, n).astype(float),
+        "sacks_suffered": rng.integers(0, 5, n).astype(float),
+    })
+
+
+def extra_sources(perturb_from: tuple[int, int] | None = None, offset: float = 0.0) -> dict:
+    """Raw inputs of the mx_/di_/qb_ features (see module doc), perturbed like
+    `feature_inputs`: {"pbp", "snaps", "pfr2gsis", "weekly_qb"}."""
+    base = feature_inputs(perturb_from, offset)
+    rng = np.random.default_rng(2)
+    games = _games()
+    pbp, snaps = _plays(rng, games), _def_snaps(rng, games)
+    wq = _weekly_qb(rng, base["pg"])        # base pg is already perturbed
+    if perturb_from is not None:
+        s, w = perturb_from
+        m = _at_or_after(pbp, s, w)
+        pbp.loc[m, PBP_STATS] = pbp.loc[m, PBP_STATS] * 10 + offset
+        m = _at_or_after(snaps, s, w)
+        snaps.loc[m, "defense_pct"] = 1.0 - snaps.loc[m, "defense_pct"]
+        m = _at_or_after(wq, s, w)
+        extra_cols = ["passing_interceptions", "sacks_suffered"]
+        wq.loc[m, extra_cols] = wq.loc[m, extra_cols] * 10 + offset
+    pfr2gsis = {p: p[1:] for p in snaps["pfr_player_id"].unique()}
+    return {"pbp": pbp, "snaps": snaps, "pfr2gsis": pfr2gsis, "weekly_qb": wq}
+
+
+def feature_inputs(perturb_from: tuple[int, int] | None = None, offset: float = 0.0,
+                   extra: bool = False) -> dict:
     """`offset` (default 0) is added after the x10 so per-game ratios (yds/target,
-    carries/team rushes, ...) change too -- a pure x10 leaves them invariant."""
+    carries/team rushes, ...) change too -- a pure x10 leaves them invariant.
+    `extra=True` adds the "extra" (mx_/di_/qb_) frame built from `extra_sources`."""
     rng = np.random.default_rng(0)
     games = _games()
     pg = _player_games(rng, games)
@@ -178,6 +266,7 @@ def feature_inputs(perturb_from: tuple[int, int] | None = None, offset: float = 
     ngs = _ngs(rng, pg)
     ctx = _context(rng, games)
     game_epa = _game_epa(rng, games)
+    tg["off_tds"] = np.random.default_rng(1).integers(0, 6, len(tg))   # own stream: rng(0) draws unchanged
     tg[TG_STATS] = tg[TG_STATS].astype(float)       # same dtypes with or without perturbation
     if perturb_from is not None:
         s, w = perturb_from
@@ -190,19 +279,26 @@ def feature_inputs(perturb_from: tuple[int, int] | None = None, offset: float = 
         game_epa = {k: ({**v, "off": None if v["off"] is None else v["off"] * 10 + offset,
                          "def": None if v["def"] is None else v["def"] * 10 + offset} if k[:2] >= (s, w) else v)
                     for k, v in game_epa.items()}
-    return {"pg": pg, "tg": tg, "rz": rz, "ctx": ctx, "ngs": ngs, "injuries": _injuries(),
-            "depth": _depth(games), "game_epa": game_epa, "stubs": _stubs(games)}
+    out = {"pg": pg, "tg": tg, "rz": rz, "ctx": ctx, "ngs": ngs, "injuries": _injuries(),
+           "depth": _depth(games), "game_epa": game_epa, "stubs": _stubs(games)}
+    if extra:
+        from sportsmodel.nfl.player_features import extra_features, team_week_keys
+        src = extra_sources(perturb_from, offset)
+        out["extra"] = extra_features(team_week_keys(tg, ctx), src["pbp"], src["snaps"], src["pfr2gsis"],
+                                      out["injuries"], out["depth"], src["weekly_qb"], EXTRA_H, EXTRA_K)
+    return out
 
 
-def leaked_features(build, *, perturb_from: tuple[int, int] = (2024, 3), offset: float = 0.0) -> list[str]:
+def leaked_features(build, *, perturb_from: tuple[int, int] = (2024, 3), offset: float = 0.0,
+                    extra: bool = False) -> list[str]:
     """Leakage check, reusable for any table builder: feature columns (not
     ``y_*``) whose ``perturb_from`` week rows differ between
     ``build(feature_inputs())`` and ``build(feature_inputs(perturb_from, offset))``
     -- box scores at/after that week are garbage in the second build. An
     empty list means no feature read the target week or later."""
     keys = ["player_id", "season", "week"]
-    t0 = build(feature_inputs()).set_index(keys)
-    t1 = build(feature_inputs(perturb_from=perturb_from, offset=offset)).set_index(keys)
+    t0 = build(feature_inputs(extra=extra)).set_index(keys)
+    t1 = build(feature_inputs(perturb_from=perturb_from, offset=offset, extra=extra)).set_index(keys)
     rows = [k for k in t0.index if k[1:] == perturb_from]
     feats = [c for c in t0.columns if not c.startswith("y_")]
     a, b = t0.loc[rows, feats], t1.loc[rows, feats]

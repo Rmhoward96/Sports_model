@@ -15,7 +15,10 @@ Pure seams (unit tested in tests/scripts/test_build_player_features.py):
   depth_rank_distribution -- per-season p_depth_rank shares for one position
   dropped_snap_mappings   -- snap rows lost to a missing pfr -> gsis id mapping
   nan_share_by_group      -- NaN share per feature prefix group
-build_tables (no IO) is shared with live serving (generate_sim_nfl).
+  qb_params               -- (H, k) of the QB profiles from qb_profile_params.json
+build_tables (no IO beyond the committed params asset) is shared with live
+serving (generate_sim_nfl). It adds the mx_/di_/qb_ features
+(`player_features.extra_features`) to both tables.
 fetch_sources()/build_and_write()/main() are IO (network + parquet writes)
 and not unit tested.
 
@@ -24,6 +27,7 @@ Usage:
 """
 from __future__ import annotations
 
+import json
 import sys
 import time
 from collections.abc import Callable
@@ -37,13 +41,17 @@ from sportsmodel.nfl.teams import normalize_team  # noqa: E402
 
 SEASONS = list(range(2016, 2027))
 OUT_DIR = Path(__file__).resolve().parents[1] / "data" / "props_ml"
+QB_PARAMS_PATH = Path(__file__).resolve().parents[1] / "assets" / "nfl" / "props_ml" / "qb_profile_params.json"
+QB_FIRST_SEASON = 1999     # QB profiles use every QB game from 1999 on
 SKILL = ("QB", "RB", "WR", "TE")
-FEATURE_GROUPS = ("p_", "ngs_", "tm_", "op_", "st_", "cx_", "mk_")
+FEATURE_GROUPS = ("p_", "ngs_", "tm_", "op_", "st_", "cx_", "mk_", "mx_", "di_", "qb_")
 _STUB_COLS = ["player_id", "season", "week", "team", "opponent", "position"]
-# pbp columns read by team_games / player_redzone / team_game_epa (the full
-# release has ~370 columns; trimming per season keeps the 11-season frame small).
+# pbp columns read by team_games / player_redzone / team_game_epa / unit_games
+# (the full release has ~370 columns; trimming per season keeps the 11-season
+# frame small).
 _PBP_COLS = ["season", "week", "season_type", "play_type", "posteam", "defteam", "sack", "qb_hit",
-             "wp", "down", "qtr", "yardline_100", "receiver_player_id", "rusher_player_id", "epa"]
+             "wp", "down", "qtr", "yardline_100", "receiver_player_id", "rusher_player_id", "epa",
+             "yards_gained", "success", "pass_touchdown", "rush_touchdown"]
 
 
 def _norm(code) -> str | None:
@@ -155,6 +163,19 @@ def nan_share_by_group(df: pd.DataFrame) -> dict[str, float]:
     return res
 
 
+def qb_params(mode: str = "gate", path: Path | None = None) -> tuple[float, float]:
+    """(H, k) of the QB profiles: the `gate` block (fit on 2021-2023) or the
+    `serving` block (fit on 2021 -> latest) of qb_profile_params.json."""
+    if mode not in ("gate", "serving"):
+        raise ValueError(f"qb_params_mode must be 'gate' or 'serving', got {mode!r}")
+    path = QB_PARAMS_PATH if path is None else Path(path)
+    block = json.loads(Path(path).read_text()).get(mode)
+    if block is None:
+        raise RuntimeError(f"{path} has no {mode!r} block -- run "
+                           f"`uv run python scripts/tune_qb_profile.py --mode {mode}` first")
+    return float(block["H"]), float(block["k"])
+
+
 def _load_pbp(seasons: list[int]) -> pd.DataFrame:
     """pbp season by season, trimmed to _PBP_COLS (memory)."""
     from sportsmodel.nfl.nflverse import load_release
@@ -172,7 +193,10 @@ def _load_pbp(seasons: list[int]) -> pd.DataFrame:
 def fetch_sources(seasons: list[int] | None = None) -> dict:
     """IO: every nflverse input for `seasons` (default SEASONS; network).
     Live serving (generate_sim_nfl's SIM_ML_MODE path) passes
-    SEASONS[0]..current season."""
+    SEASONS[0]..current season. `weekly_qb` = the QB rows of weekly stats
+    1999..max(seasons) (the requested seasons' frame is reused; only the
+    earlier history is downloaded again); `qb_params_mode` defaults to
+    "gate" (set "serving" to use the serving (H, k))."""
     import nfl_data_py as nfl
 
     from sportsmodel.nfl.nflverse import import_by_season, load_release
@@ -180,10 +204,18 @@ def fetch_sources(seasons: list[int] | None = None) -> dict:
 
     seasons = SEASONS if seasons is None else list(seasons)
     sched = load_release("schedules", seasons)
+    weekly = load_release("weekly", seasons)
+    hist = [y for y in range(QB_FIRST_SEASON, max(seasons) + 1) if y not in seasons]
+    qb_frames = [weekly[weekly["position"] == "QB"]]
+    if hist:
+        h = load_release("weekly", hist)
+        qb_frames.insert(0, h[h["position"] == "QB"])
     return {
         "sched": sched,
         "pbp": _load_pbp(seasons),
-        "weekly": load_release("weekly", seasons),
+        "weekly": weekly,
+        "weekly_qb": pd.concat(qb_frames, ignore_index=True),
+        "qb_params_mode": "gate",
         "snaps": load_release("snaps", seasons),
         "depth": depth_charts_asof(load_release("depth", seasons), sched),
         "injuries": import_by_season(nfl.import_injuries, seasons, "injuries", required=False),
@@ -193,13 +225,16 @@ def fetch_sources(seasons: list[int] | None = None) -> dict:
     }
 
 
-def build_tables(src: dict, ctx_fill: Callable[[pd.DataFrame, dict, pd.DataFrame], pd.DataFrame] | None = None
-                 ) -> dict:
-    """Both feature tables from fetched sources (no IO). The one builder shared
-    by the parquet build (training) and live serving: serving passes
+def build_tables(src: dict, ctx_fill: Callable[[pd.DataFrame, dict, pd.DataFrame], pd.DataFrame] | None = None,
+                 qb1_override: dict | None = None) -> dict:
+    """Both feature tables from fetched sources (no network). The one builder
+    shared by the parquet build (training) and live serving: serving passes
     `ctx_fill(ctx, stadiums, sched)` (e.g. context.fill_forecast_weather with
     a fetcher) to fill upcoming games' forecast weather before both tables
-    are built. Returns {"feats", "team", "pg", "tg", "stubs"}."""
+    are built. The mx_/di_/qb_ features (`player_features.extra_features`)
+    use the QB-profile (H, k) of the `src["qb_params_mode"]` block ("gate"
+    by default) and `qb1_override` {(season, week, team): gsis_id} for QB1.
+    Returns {"feats", "team", "pg", "tg", "stubs", "extra"}."""
     from sportsmodel.nfl import context, efficiency, player_features
 
     sched, pbp, injuries, depth = src["sched"], src["pbp"], src["injuries"], src["depth"]
@@ -212,10 +247,14 @@ def build_tables(src: dict, ctx_fill: Callable[[pd.DataFrame, dict, pd.DataFrame
         ctx = ctx_fill(ctx, stadiums, sched)
     game_epa = efficiency.team_game_epa(pbp)
     stubs = active_stubs(depth, injuries, pg, sched)
+    H, k = qb_params(src.get("qb_params_mode", "gate"), QB_PARAMS_PATH)
+    extra = player_features.extra_features(player_features.team_week_keys(tg, ctx), pbp, src["snaps"],
+                                           src["pfr2gsis"], injuries, depth, src["weekly_qb"], H, k,
+                                           qb1_override=qb1_override)
     feats = player_features.build_feature_table(pg, tg, rz, ctx, src["ngs"], injuries, depth, game_epa,
-                                                stubs=stubs)
-    team = player_features.build_team_table(tg, ctx, game_epa)
-    return {"feats": feats, "team": team, "pg": pg, "tg": tg, "stubs": stubs}
+                                                stubs=stubs, extra=extra)
+    team = player_features.build_team_table(tg, ctx, game_epa, extra=extra)
+    return {"feats": feats, "team": team, "pg": pg, "tg": tg, "stubs": stubs, "extra": extra}
 
 
 def build_and_write(src: dict, t0: float, t_fetch: float) -> None:
@@ -245,6 +284,9 @@ def build_and_write(src: dict, t0: float, t_fetch: float) -> None:
     shares = nan_share_by_group(feats)
     print("NaN share per feature group (player table): "
           + ", ".join(f"{k}={v:.3f}" for k, v in shares.items()))
+    tshares = nan_share_by_group(team)
+    print("NaN share, new groups (team table): "
+          + ", ".join(f"{k}={tshares[k]:.3f}" for k in ("mx_", "di_", "qb_")))
     cov = chart_coverage(depth, sched)
     print(f"REG team-weeks by depth chart used (active_usage rule): exact {cov['exact']}, "
           f"fallback to an earlier chart {cov['fallback']}, none {cov['none']}")

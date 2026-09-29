@@ -5,7 +5,10 @@ rolling statistic and tested by perturbing week-w-and-later box scores.
 
 Column prefixes select feature groups per ladder rung (sim.nfl.learned):
 p_ usage/efficiency, ngs_ Next Gen Stats, tm_ own team, op_ opponent,
-st_ status, cx_ context, mk_ market; y_ are labels (never features).
+st_ status, cx_ context, mk_ market, mx_ unit matchup (unit_efficiency),
+di_ opponent defensive injuries (def_injuries), qb_ QB1 career profile
+(qb_profile); y_ are labels (never features). The mx_/di_/qb_ columns come
+in as one per-team-week `extra` frame (`extra_features`).
 """
 from __future__ import annotations
 
@@ -56,7 +59,8 @@ def player_games(weekly: pd.DataFrame, snaps: pd.DataFrame, pfr2gsis: dict[str, 
 def team_games(pbp: pd.DataFrame) -> pd.DataFrame:
     """Per (season, week, offense team) REG-season volume: pass attempts exclude
     sacks (matches sim rates B.3), neutral pass rate over wp 0.2-0.8, downs 1-2,
-    quarters 1-3."""
+    quarters 1-3. `off_tds` (a label only) = pass + rush touchdowns on the
+    offense's pass/run plays."""
     p = pbp[pbp["play_type"].isin(["pass", "run"]) & pbp["posteam"].notna()].copy()
     if "season_type" in p.columns:
         p = p[p["season_type"] == "REG"]
@@ -67,9 +71,11 @@ def team_games(pbp: pd.DataFrame) -> pd.DataFrame:
     p["_press"] = p["_db"] & (sack | (p["qb_hit"].fillna(0) == 1))
     neutral = p["wp"].between(0.2, 0.8) & p["down"].isin([1, 2]) & (p["qtr"] <= 3)
     p["_n"], p["_npass"] = neutral, neutral & p["_db"]
+    p["_td"] = p["pass_touchdown"].fillna(0) + p["rush_touchdown"].fillna(0)
     g = p.groupby(["season", "week", "posteam", "defteam"], as_index=False).agg(
         pass_att=("_pass", "sum"), rush_att=("_rush", "sum"), plays=("play_type", "size"),
-        dropbacks=("_db", "sum"), pressures_allowed=("_press", "sum"), _n=("_n", "sum"), _npass=("_npass", "sum"))
+        dropbacks=("_db", "sum"), pressures_allowed=("_press", "sum"), _n=("_n", "sum"), _npass=("_npass", "sum"),
+        off_tds=("_td", "sum"))
     g["neutral_pass_rate"] = np.where(g["_n"] > 0, g["_npass"] / g["_n"].where(g["_n"] > 0, 1), np.nan)
     g["team"], g["opponent"] = g["posteam"].map(_norm), g["defteam"].map(_norm)
     return g.drop(columns=["posteam", "defteam", "_n", "_npass"]).dropna(subset=["team", "opponent"])
@@ -103,7 +109,9 @@ _TM_COLS = ["pass_att", "rush_att", "plays", "neutral_pass_rate"]
 _OP_COLS = ["pass_att", "rush_att", "press_rate"]
 _REC_POS = ("RB", "WR", "TE")
 _HALFLIFE = 4.0
-_FEATURE_PREFIXES = ("p_", "ngs_", "tm_", "op_", "st_", "cx_", "mk_")
+_EXTRA_PREFIXES = ("mx_", "di_", "qb_")
+_FEATURE_PREFIXES = ("p_", "ngs_", "tm_", "op_", "st_", "cx_", "mk_", *_EXTRA_PREFIXES)
+_TEAM_FEATURE_PREFIXES = ("tm_", "op_", "cx_", "mk_", *_EXTRA_PREFIXES)
 
 
 def roll_features(df: pd.DataFrame, group: str, cols: list[str], prefix: str,
@@ -264,18 +272,80 @@ def _ctx_features(ctx: pd.DataFrame | None) -> pd.DataFrame:
     return out
 
 
-def build_team_table(tg: pd.DataFrame, ctx: pd.DataFrame | None, game_epa: dict) -> pd.DataFrame:
+def team_week_keys(tg: pd.DataFrame, ctx: pd.DataFrame | None) -> pd.DataFrame:
+    """(season, week, team, opponent) of every team-table row: played
+    team-games plus scheduled-but-unplayed team-weeks from `ctx`."""
+    return _team_base(tg, ctx)[_TEAM_KEYS + ["opponent"]].reset_index(drop=True)
+
+
+def _extra_cols(extra: pd.DataFrame | None) -> pd.DataFrame | None:
+    """`extra` reduced to keys + mx_/di_/qb_ columns, one row per team-week."""
+    if extra is None:
+        return None
+    cols = [c for c in extra.columns if c.startswith(_EXTRA_PREFIXES)]
+    return extra[_TEAM_KEYS + cols].drop_duplicates(_TEAM_KEYS)
+
+
+def extra_features(team_weeks: pd.DataFrame, pbp: pd.DataFrame, snaps: pd.DataFrame, pfr2gsis: dict[str, str],
+                   injuries: pd.DataFrame | None, depth: pd.DataFrame | None, weekly_qb: pd.DataFrame,
+                   H: float, k: float, qb1_override: dict | None = None) -> pd.DataFrame:
+    """The mx_/di_/qb_ features per team-week of `team_weeks` (season, week,
+    team, opponent; normalized codes), one row each, keyed (season, week, team):
+
+    - mx_*: `unit_efficiency.unit_features` (own offense + the opponent's
+      defense), from REG `pbp`.
+    - di_op_vacated_<g>: the OPPONENT defense's `di_vacated_<g>`
+      (`def_injuries.vacated_by_defense`, keyed by the defense) re-keyed to
+      the offense through the team-week's opponent.
+    - qb_*: `qb_profile.team_qb_features` for the as-of depth-chart QB1
+      (`qb1_override[(season, week, team)]` wins), profiles from every QB game
+      in `weekly_qb` (opponent-adjusted) with weighting (H, k). The
+      replacement level is computed per season from seasons before it, so no
+      later season reaches an earlier row.
+
+    Every value for (S, w) uses games strictly before (S, w); the week-w
+    injury report and as-of depth chart are pre-game inputs."""
+    from sportsmodel.nfl import def_injuries, qb_profile, unit_efficiency
+
+    tw = team_weeks[_TEAM_KEYS + ["opponent"]].drop_duplicates(_TEAM_KEYS).astype(
+        {"season": "int64", "week": "int64"}).reset_index(drop=True)
+    mx = unit_efficiency.unit_features(unit_efficiency.unit_games(pbp), tw)
+    out = pd.concat([tw, mx[[c for c in mx.columns if c.startswith("mx_")]]], axis=1)
+
+    dtw = tw[["season", "week", "opponent"]].drop_duplicates().rename(columns={"opponent": "team"})
+    vac = def_injuries.vacated_by_defense(def_injuries.defender_snaps(snaps, pfr2gsis), injuries, dtw)
+    vac = vac.rename(columns={"team": "opponent", **{f"di_vacated_{g}": f"di_op_vacated_{g}"
+                                                       for g in def_injuries.GROUPS}})
+    out = out.merge(vac, on=_OPP_KEYS, how="left")
+
+    qga = qb_profile.opponent_adjust(qb_profile.qb_games(weekly_qb))
+    qb1 = qb_profile.qb1_by_team_week(depth, injuries, tw, override=qb1_override)
+    parts = [qb_profile.team_qb_features(g, qb1, qga, H, k, qb_profile.replacement(qga, int(s)))
+             for s, g in tw.groupby("season", sort=True)]
+    qb = pd.concat(parts, ignore_index=True) if parts else pd.DataFrame(columns=list(qb_profile.TEAM_COLS))
+    out = out.merge(qb, on=_TEAM_KEYS, how="left")
+    return out.drop(columns="opponent")
+
+
+def build_team_table(tg: pd.DataFrame, ctx: pd.DataFrame | None, game_epa: dict,
+                     extra: pd.DataFrame | None = None) -> pd.DataFrame:
     """One row per (team, season, week): labels y_team_pass_att /
-    y_team_rush_att and strictly-prior tm_ (own offense), op_ (opponent's
-    defense), plus pre-game cx_/mk_ context."""
+    y_team_rush_att / y_team_off_tds and strictly-prior tm_ (own offense),
+    op_ (opponent's defense), plus pre-game cx_/mk_ context and the
+    mx_/di_/qb_ columns of `extra` (keys season, week, team; other columns
+    of `extra` are ignored)."""
     base = _team_base(tg, ctx)
     t = roll_features(base, "team", _TM_COLS, "tm_")
     t = t.merge(_opp_view(base), on=_OPP_KEYS, how="left")
     t = _epa_features(t, game_epa)
     t["y_team_pass_att"], t["y_team_rush_att"] = t["pass_att"], t["rush_att"]
+    t["y_team_off_tds"] = t["off_tds"] if "off_tds" in t.columns else np.nan
     t = t.merge(_ctx_features(ctx), on=_TEAM_KEYS, how="left")
-    feats = [c for c in t.columns if c.startswith(("tm_", "op_", "cx_", "mk_"))]
-    t = t[["team", "season", "week", "opponent", "y_team_pass_att", "y_team_rush_att"] + feats]
+    ex = _extra_cols(extra)
+    if ex is not None:
+        t = t.merge(ex, on=_TEAM_KEYS, how="left")
+    feats = [c for c in t.columns if c.startswith(_TEAM_FEATURE_PREFIXES)]
+    t = t[["team", "season", "week", "opponent", "y_team_pass_att", "y_team_rush_att", "y_team_off_tds"] + feats]
     return t.sort_values(["team", *_ORDER]).reset_index(drop=True)
 
 
@@ -427,16 +497,18 @@ def _depth_rank(depth: pd.DataFrame | None, pg: pd.DataFrame) -> pd.DataFrame:
     return d.groupby(KEYS, as_index=False)["p_depth_rank"].min()
 
 
-def build_feature_table(pg, tg, rz, ctx, ngs, injuries, depth, game_epa, stubs=None) -> pd.DataFrame:
+def build_feature_table(pg, tg, rz, ctx, ngs, injuries, depth, game_epa, stubs=None, extra=None) -> pd.DataFrame:
     """One row per (player_id, season, week): every played row plus `stubs`
     (active-but-no-snap players the sim may still need; labels NaN). `ngs` is
-    {"rec": df, "rush": df, "pass": df}. Returns KEYS, team, opponent,
-    position, `is_stub` (bool: a stub row, never a feature), y_* labels and
-    p_/ngs_/tm_/op_/st_/cx_/mk_ features. Same-game
+    {"rec": df, "rush": df, "pass": df}; `extra` (keys season, week, team) is
+    the per-team-week mx_/di_/qb_ frame, joined onto every player row of that
+    team-week. Returns KEYS, team, opponent, position, `is_stub` (bool: a
+    stub row, never a feature), y_* labels and
+    p_/ngs_/tm_/op_/st_/cx_/mk_/mx_/di_/qb_ features. Same-game
     box-score columns (snap_pct, target_share, ...) are never returned."""
     out = _ngs_rolls(_player_rolls(_player_base(pg, tg, rz, stubs)), ngs)
-    team_tbl = build_team_table(tg, ctx, game_epa)
-    team_feats = [c for c in team_tbl.columns if c.startswith(("tm_", "op_", "cx_", "mk_"))]
+    team_tbl = build_team_table(tg, ctx, game_epa, extra=extra)
+    team_feats = [c for c in team_tbl.columns if c.startswith(_TEAM_FEATURE_PREFIXES)]
     out = out.merge(team_tbl[_TEAM_KEYS + team_feats], on=_TEAM_KEYS, how="left")
     out = out.merge(_op_ypt_allowed(pg, team_tbl), on=_OPP_KEYS, how="left")
     out = _status(out, pg, injuries, depth)
