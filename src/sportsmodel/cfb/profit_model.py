@@ -11,9 +11,11 @@ wherever it is a feature. Moneyline has neither.
 model trained only on labelled rows of seasons [min_train_season, S) -- both
 price points -- and its isotonic calibrator is fitted on the out-of-fold raw
 predictions of the seasons strictly before S (identity until 2 such seasons
-exist). Out-of-fold raw predictions are produced for every season after
-min_train_season up to the last requested one, so a requested season's
-calibrator does not depend on which other seasons were requested.
+exist). The calibration pool is "mature" out-of-fold seasons only -- seasons
+s >= min_train_season + CAL_MIN_TRAIN_SEASONS, i.e. predicted by models trained
+on >= 3 seasons -- produced for every such season before S whether or not it
+was requested, so a season's calibrator does not depend on the request list.
+Calibrated probabilities are clipped to [P_MIN, P_MAX] so Kelly never sees 0/1.
 Rows with y = NaN (unscored games) are never trained or calibrated on; they
 are still scored.
 """
@@ -34,7 +36,13 @@ MONOTONE: dict[str, dict[str, int]] = {
     "total": {"line": -1, "f_edge_pts": 1},
     "moneyline": {"f_edge_pts": 1},   # f_edge_pts is not a moneyline feature
 }
-MIN_CAL_SEASONS = 2
+MIN_CAL_SEASONS = 2          # calibrate only with >= 2 pooled OOF seasons
+CAL_MIN_TRAIN_SEASONS = 3    # pooled OOF seasons come from models trained on >= 3
+P_MIN, P_MAX = 0.01, 0.99    # calibrated-probability clip
+
+# HGB defaults (tunable per market by the gate on 2019-2022 OOF log-loss)
+HGB_DEFAULTS = {"learning_rate": 0.05, "max_iter": 300, "min_samples_leaf": 100,
+                "l2_regularization": 1.0}
 
 
 def monotonic_cst(market: str, cols: list[str]) -> list[int]:
@@ -60,10 +68,13 @@ class MarketModel:
         return self.clf.predict_proba(_X(df, self.cols))[:, 1]
 
 
-def fit_market(df: pd.DataFrame, market: str, *, max_iter: int = 300,
-               seed: int = 0) -> MarketModel:
+def fit_market(df: pd.DataFrame, market: str, *, learning_rate: float = 0.05,
+               max_iter: int = 300, min_samples_leaf: int = 100,
+               l2_regularization: float = 1.0, seed: int = 0) -> MarketModel:
     """Fit the market's classifier on the labelled rows of `df` (rows of that
-    market; y-NaN rows dropped)."""
+    market; y-NaN rows dropped). early_stopping is off explicitly: sklearn's
+    'auto' switches it on above 10k rows, which the live all-seasons fit would
+    cross but the gate's walk-forward fits do not."""
     cols = list(FEATURE_COLS[market])
     train = df[df["y"].notna()]
     if "market" in train.columns:
@@ -71,8 +82,9 @@ def fit_market(df: pd.DataFrame, market: str, *, max_iter: int = 300,
     if train.empty:
         raise ValueError(f"no labelled {market} rows to train on")
     clf = HistGradientBoostingClassifier(
-        learning_rate=0.05, max_leaf_nodes=31, min_samples_leaf=100,
-        l2_regularization=1.0, max_iter=max_iter, random_state=seed,
+        learning_rate=learning_rate, max_leaf_nodes=31,
+        min_samples_leaf=min_samples_leaf, l2_regularization=l2_regularization,
+        max_iter=max_iter, early_stopping=False, random_state=seed,
         monotonic_cst=monotonic_cst(market, cols))
     X = _X(train, cols)
     # sklearn cannot bin an all-NaN column (e.g. f_move before openers exist,
@@ -85,14 +97,13 @@ def fit_market(df: pd.DataFrame, market: str, *, max_iter: int = 300,
 @dataclass
 class Calibrator:
     """Isotonic map raw p -> calibrated p (clipped outside the fitted range);
-    identity when unfitted."""
+    identity when unfitted. Output is clipped to [P_MIN, P_MAX] either way."""
     iso: IsotonicRegression | None = field(default=None)
 
     def predict(self, p) -> np.ndarray:
         p = np.asarray(p, dtype=np.float64)
-        if self.iso is None or p.size == 0:
-            return p.copy()
-        return self.iso.predict(p)
+        out = p.copy() if (self.iso is None or p.size == 0) else self.iso.predict(p)
+        return np.clip(out, P_MIN, P_MAX)
 
 
 def fit_calibrator(p_raw, y) -> Calibrator:
@@ -125,13 +136,15 @@ def ece(p, y, bins: int = 10) -> float:
 
 
 def walk_forward_oof(df: pd.DataFrame, market: str, seasons: list[int],
-                     min_train_season: int = 2015, *, max_iter: int = 300,
-                     seed: int = 0) -> pd.DataFrame:
+                     min_train_season: int = 2015, *, learning_rate: float = 0.05,
+                     max_iter: int = 300, min_samples_leaf: int = 100,
+                     l2_regularization: float = 1.0, seed: int = 0) -> pd.DataFrame:
     """Out-of-fold predictions for the requested seasons (all rows of the
     market in those seasons, labelled or not) with `p_raw` (model trained on
     labelled rows of seasons [min_train_season, S)) and `p` (isotonic
-    calibrator fitted on the OOF p_raw / y of seasons in (min_train_season, S);
-    identity with fewer than 2 such seasons)."""
+    calibrator fitted on the OOF p_raw / y of the mature seasons
+    [min_train_season + 3, S); identity with fewer than 2 such seasons; clipped
+    to [P_MIN, P_MAX]). HGB hyperparameters pass through to fit_market."""
     if not seasons:
         raise ValueError("no seasons requested")
     d = df[df["market"] == market] if "market" in df.columns else df
@@ -143,17 +156,22 @@ def walk_forward_oof(df: pd.DataFrame, market: str, seasons: list[int],
             raise ValueError(f"season {s}: no labelled {market} training rows "
                              f"in [{min_train_season}, {s})")
 
-    # raw OOF for every season after min_train_season up to the last requested
+    hgb = {"learning_rate": learning_rate, "max_iter": max_iter,
+           "min_samples_leaf": min_samples_leaf,
+           "l2_regularization": l2_regularization, "seed": seed}
+    # raw OOF for the requested seasons plus every mature pool season before
+    # the last requested one
     last = requested[-1]
-    oof_seasons = sorted({int(s) for s in d["season"].unique()
-                          if min_train_season < s <= last} | set(requested))
+    first_pool = min_train_season + CAL_MIN_TRAIN_SEASONS
+    pool_seasons = {int(s) for s in d["season"].unique() if first_pool <= s < last}
+    oof_seasons = sorted(pool_seasons | set(requested))
     raw: dict[int, pd.DataFrame] = {}
     for s in oof_seasons:
         train = d[labelled & (d["season"] >= min_train_season) & (d["season"] < s)]
         test = d[d["season"] == s]
         if train.empty or test.empty:
             continue
-        model = fit_market(train, market, max_iter=max_iter, seed=seed)
+        model = fit_market(train, market, **hgb)
         out = test.copy()
         out["p_raw"] = model.predict(test)
         raw[s] = out
@@ -162,7 +180,7 @@ def walk_forward_oof(df: pd.DataFrame, market: str, seasons: list[int],
     for s in requested:
         if s not in raw:
             continue
-        prior = [raw[t] for t in sorted(raw) if t < s]
+        prior = [raw[t] for t in sorted(raw) if first_pool <= t < s]
         if len(prior) >= MIN_CAL_SEASONS:
             hist = pd.concat(prior)
             cal = fit_calibrator(hist["p_raw"], hist["y"])
@@ -171,4 +189,6 @@ def walk_forward_oof(df: pd.DataFrame, market: str, seasons: list[int],
         out = raw[s]
         out["p"] = cal.predict(out["p_raw"].to_numpy())
         parts.append(out)
+    if not parts:
+        raise ValueError(f"no {market} rows in any requested season {requested}")
     return pd.concat(parts, ignore_index=True)

@@ -126,32 +126,52 @@ def test_walk_forward_never_trains_on_predicted_season():
 
 
 def test_season_predictions_ignore_own_and_later_labels_and_pre_min_train():
-    df = synth("spread", seasons=range(2013, 2021), n=800, seed=7)
-    base = pm.walk_forward_oof(df, "spread", [2019], max_iter=40)
+    # 2020: model on 2015-2019, calibrator on the mature pool {2018, 2019}
+    df = synth("spread", seasons=range(2013, 2022), n=800, seed=7)
+    base = pm.walk_forward_oof(df, "spread", [2020], max_iter=40)
     flipped = df.copy()
-    sel = (flipped["season"] >= 2019) | (flipped["season"] < 2015)
+    sel = (flipped["season"] >= 2020) | (flipped["season"] < 2015)
     flipped.loc[sel, "y"] = 1.0 - flipped.loc[sel, "y"]
-    again = pm.walk_forward_oof(flipped, "spread", [2019], max_iter=40)
+    again = pm.walk_forward_oof(flipped, "spread", [2020], max_iter=40)
     np.testing.assert_allclose(base["p_raw"].to_numpy(), again["p_raw"].to_numpy())
     np.testing.assert_allclose(base["p"].to_numpy(), again["p"].to_numpy())
+    assert not np.allclose(base["p"].to_numpy(), np.clip(base["p_raw"], 0.01, 0.99))
 
 
-def test_identity_calibration_until_two_prior_oof_seasons():
-    df = synth("spread", seasons=range(2015, 2020), n=800)
-    oof = pm.walk_forward_oof(df, "spread", [2016, 2017, 2018, 2019], max_iter=30)
-    for s in (2016, 2017):   # 0 and 1 prior OOF seasons -> identity
+def test_identity_calibration_until_two_mature_oof_seasons():
+    # mature pool seasons are >= 2015 + 3 = 2018
+    df = synth("spread", seasons=range(2015, 2021), n=800)
+    oof = pm.walk_forward_oof(df, "spread", [2016, 2017, 2018, 2019, 2020], max_iter=30)
+    for s in (2016, 2017, 2018, 2019):   # 0 or 1 mature prior seasons -> identity
         o = oof[oof["season"] == s]
-        np.testing.assert_allclose(o["p"].to_numpy(), o["p_raw"].to_numpy())
-    o = oof[oof["season"] == 2019]  # 3 prior OOF seasons -> isotonic
+        np.testing.assert_allclose(o["p"].to_numpy(),
+                                   np.clip(o["p_raw"].to_numpy(), 0.01, 0.99))
+    o = oof[oof["season"] == 2020]  # pool {2018, 2019} -> isotonic
     assert not np.allclose(o["p"].to_numpy(), o["p_raw"].to_numpy())
 
 
-def test_calibration_uses_prior_oof_even_when_not_requested():
-    df = synth("spread", seasons=range(2015, 2020), n=800)
-    only = pm.walk_forward_oof(df, "spread", [2019], max_iter=30)
-    full = pm.walk_forward_oof(df, "spread", [2016, 2017, 2018, 2019], max_iter=30)
-    np.testing.assert_allclose(only["p"].to_numpy(),
-                               full.loc[full["season"] == 2019, "p"].to_numpy())
+def test_calibration_pool_is_mature_prior_oof_seasons(monkeypatch):
+    df = synth("spread", seasons=range(2015, 2022), n=500)
+    seen = []
+    real = pm.fit_calibrator
+
+    def spy(p_raw, y):
+        seen.append(len(p_raw))
+        return real(p_raw, y)
+
+    monkeypatch.setattr(pm, "fit_calibrator", spy)
+    pm.walk_forward_oof(df, "spread", [2021], max_iter=20)
+    # 2021's calibrator: OOF of 2018, 2019, 2020 only (not 2016/2017, not 2021)
+    assert seen == [3 * 500]
+
+
+def test_calibration_independent_of_requested_seasons():
+    df = synth("spread", seasons=range(2015, 2021), n=800)
+    only = pm.walk_forward_oof(df, "spread", [2020], max_iter=30)
+    full = pm.walk_forward_oof(df, "spread", [2016, 2017, 2018, 2019, 2020], max_iter=30)
+    o = full[full["season"] == 2020]
+    np.testing.assert_allclose(only["p"].to_numpy(), o["p"].to_numpy())
+    assert not np.allclose(o["p"].to_numpy(), np.clip(o["p_raw"], 0.01, 0.99))
 
 
 def test_unlabelled_rows_of_predicted_season_are_scored():
@@ -181,10 +201,15 @@ def test_walk_forward_filters_to_market():
 def test_ece_values():
     assert pm.ece(np.array([0.5, 0.5]), np.array([0.0, 1.0])) == pytest.approx(0.0)
     assert pm.ece(np.array([0.9, 0.9, 0.9, 0.9]), np.array([1, 1, 0, 0])) == pytest.approx(0.4)
-    # two bins, weighted by count: |0.15-0|*2/4 + |0.85-1|*2/4 = 0.15
+    # four single-observation bins (1, 2, 8, 9): (0.1 + 0.2 + 0.2 + 0.1) / 4
     p = np.array([0.1, 0.2, 0.8, 0.9])
     assert pm.ece(p, np.array([0, 0, 1, 1])) == pytest.approx(0.15)
     assert pm.ece(np.array([0.0, 1.0]), np.array([0, 1])) == pytest.approx(0.0)
+    # unequal bins: bin 1 holds 3 obs (mean p 0.14, mean y 2/3), bin 7 holds 1
+    # (0.71 vs 0): (3*|0.14 - 2/3| + 1*0.71) / 4
+    p = np.array([0.12, 0.14, 0.16, 0.71])
+    expected = (3 * abs(0.14 - 2 / 3) + 0.71) / 4
+    assert pm.ece(p, np.array([0, 1, 1, 0])) == pytest.approx(expected)
 
 
 def test_calibrator_isotonic_clip_and_identity():
@@ -200,6 +225,16 @@ def test_calibrator_isotonic_clip_and_identity():
     np.testing.assert_allclose(ident.predict(np.array([0.1, 0.7])), [0.1, 0.7])
 
 
+def test_calibrated_probabilities_clipped_away_from_0_and_1():
+    # separable data -> isotonic would output exact 0 and 1
+    p_raw = np.array([0.1, 0.2, 0.3, 0.7, 0.8, 0.9])
+    cal = pm.fit_calibrator(p_raw, np.array([0, 0, 0, 1, 1, 1]))
+    out = cal.predict(np.array([0.0, 0.1, 0.5, 0.9, 1.0]))
+    assert out.min() == pytest.approx(0.01) and out.max() == pytest.approx(0.99)
+    np.testing.assert_allclose(pm.Calibrator().predict(np.array([0.0, 0.004, 0.5, 0.999, 1.0])),
+                               [0.01, 0.01, 0.5, 0.99, 0.99])
+
+
 def test_fit_tolerates_all_nan_training_column():
     # f_move is all-NaN before openers exist (pre-2021); it must be ignored
     df = synth("spread", seasons=[2015], n=800)
@@ -209,3 +244,42 @@ def test_fit_tolerates_all_nan_training_column():
     base = m.predict(probe)
     probe["f_move"] = np.linspace(-5, 5, 50)
     np.testing.assert_allclose(m.predict(probe), base)
+
+
+def test_early_stopping_is_off_even_above_10k_rows():
+    df = synth("spread", seasons=[2015, 2016], n=5500)       # 11k rows
+    m = pm.fit_market(df, "spread", max_iter=15)
+    assert m.clf.early_stopping is False
+    assert m.clf.n_iter_ == 15
+
+
+def test_hyperparameters_pass_through(monkeypatch):
+    df = synth("spread", seasons=[2015], n=600)
+    m = pm.fit_market(df, "spread", learning_rate=0.1, max_iter=7,
+                      min_samples_leaf=40, l2_regularization=3.0, seed=4)
+    params = m.clf.get_params()
+    assert (params["learning_rate"], params["max_iter"], params["min_samples_leaf"],
+            params["l2_regularization"], params["random_state"]) == (0.1, 7, 40, 3.0, 4)
+    d = pm.fit_market(df, "spread").clf.get_params()
+    assert (d["learning_rate"], d["max_iter"], d["min_samples_leaf"],
+            d["l2_regularization"], d["max_leaf_nodes"]) == (0.05, 300, 100, 1.0, 31)
+
+    calls = []
+    real = pm.fit_market
+
+    def spy(train, market, **kw):
+        calls.append(kw)
+        return real(train, market, **kw)
+
+    monkeypatch.setattr(pm, "fit_market", spy)
+    df2 = synth("spread", seasons=[2015, 2016], n=300)
+    pm.walk_forward_oof(df2, "spread", [2016], learning_rate=0.2, max_iter=5,
+                        min_samples_leaf=30, l2_regularization=0.5, seed=2)
+    assert calls == [{"learning_rate": 0.2, "max_iter": 5, "min_samples_leaf": 30,
+                      "l2_regularization": 0.5, "seed": 2}]
+
+
+def test_walk_forward_raises_when_no_requested_season_has_rows():
+    df = synth("spread", seasons=range(2015, 2018), n=300)
+    with pytest.raises(ValueError, match="no spread rows in any requested season"):
+        pm.walk_forward_oof(df, "spread", [2030], max_iter=5)
