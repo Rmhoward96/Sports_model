@@ -41,7 +41,17 @@ def _pbp():
         "yardline_100": [15, 40, 4, 30, 60, 50],
         "receiver_player_id": ["w1", None, None, None, "w1", None],
         "rusher_player_id": [None, None, "r1", "r1", None, None],
+        "pass_touchdown": [1, 0, 0, 0, 0, 0], "rush_touchdown": [0, 0, 1, 0, 0, 0],
     })
+
+
+def test_team_games_off_tds_counts_pass_and_rush_tds_per_offense():
+    bal = _pbp().assign(posteam="BAL", defteam="KC", pass_touchdown=[0, 0, 0, 0, 1, 0],
+                        rush_touchdown=[0, 0, 0, 1, 0, 0])
+    tg = team_games(pd.concat([_pbp(), bal], ignore_index=True)).set_index("team")
+    assert tg.loc["KC", "off_tds"] == 2 and tg.loc["BAL", "off_tds"] == 2
+    one = team_games(_pbp().assign(rush_touchdown=0)).iloc[0]
+    assert one["off_tds"] == 1
 
 
 def test_team_games_counts_attempts_excluding_sacks():
@@ -62,6 +72,7 @@ def test_player_redzone_ignores_non_plays():
         "season": [2024], "week": [1], "season_type": ["REG"], "play_id": [6], "posteam": ["KC"], "defteam": ["BAL"],
         "play_type": ["qb_kneel"], "sack": [0], "qb_hit": [0], "wp": [0.99], "down": [1], "qtr": [4],
         "yardline_100": [2], "receiver_player_id": [None], "rusher_player_id": ["r1"],
+        "pass_touchdown": [0], "rush_touchdown": [0],
     })
     rz = player_redzone(pd.concat([_pbp(), kneel], ignore_index=True)).set_index("player_id")
     assert rz.loc["r1", "rz_carries"] == 1 and rz.loc["r1", "gl_carries"] == 1
@@ -95,6 +106,83 @@ def test_perturbing_target_week_and_later_does_not_change_features():
     t1 = _build(feature_inputs(perturb_from=(2024, 3))).set_index(["player_id", "season", "week"])
     key = [k for k in t0.index if k[1:] == (2024, 3)]
     assert not t0.loc[key, "y_targets"].equals(t1.loc[key, "y_targets"])  # labels did change
+
+
+_NEW = ("mx_", "di_", "qb_")
+
+
+def test_perturbation_guard_covers_mx_di_qb_features():
+    """The same perturbation, with `extra` built from raw pbp / defender snaps /
+    weekly QB rows: no mx_/di_/qb_ value at (2024, 3) moves, while the
+    perturbation does reach those features a week later (the guard bites)."""
+    from tests.nfl.fixtures_props import feature_inputs, leaked_features
+    assert leaked_features(_build, extra=True) == []
+    assert leaked_features(_build, extra=True, offset=3.7) == []
+    keys = ["player_id", "season", "week"]
+    t0 = _build(feature_inputs(extra=True)).set_index(keys)
+    t1 = _build(feature_inputs(perturb_from=(2024, 3), offset=3.7, extra=True)).set_index(keys)
+    new = [c for c in t0.columns if c.startswith(_NEW)]
+    assert {"mx_pass_edge", "mx_op_pass_epa_allowed_adj", "di_op_vacated_cov", "di_op_vacated_rush",
+            "di_op_vacated_run", "qb_ypa", "qb_ratio_ypa", "qb_changed"} <= set(new)
+    now = [k for k in t0.index if k[1:] == (2024, 3)]
+    assert t0.loc[now, ["mx_pass_edge", "qb_ypa", "di_op_vacated_cov"]].notna().all().all()
+    later = [k for k in t0.index if k[1:] == (2024, 4)]
+    for c in ("mx_pass_edge", "mx_op_ypc_allowed_adj", "qb_ypa", "qb_int_rate"):
+        assert not t0.loc[later, c].equals(t1.loc[later, c]), c
+
+
+def test_team_table_perturbation_guard_covers_extra_and_labels_off_tds():
+    from sportsmodel.nfl.player_features import build_team_table
+    from tests.nfl.fixtures_props import feature_inputs
+
+    def team(inp):
+        return build_team_table(inp["tg"], inp["ctx"], inp["game_epa"], extra=inp["extra"]).set_index(
+            ["team", "season", "week"])
+    t0 = team(feature_inputs(extra=True))
+    t1 = team(feature_inputs(perturb_from=(2024, 3), offset=3.7, extra=True))
+    rows = [k for k in t0.index if k[1:] == (2024, 3)]
+    feats = [c for c in t0.columns if not c.startswith("y_") and c != "opponent"]
+    assert [c for c in feats if not t0.loc[rows, c].equals(t1.loc[rows, c])] == []
+    assert not t0.loc[rows, "y_team_off_tds"].equals(t1.loc[rows, "y_team_off_tds"])
+
+
+def test_extra_di_is_the_opponent_defense_vacated_share():
+    """di_op_vacated_<g> of an offense = its opponent's defensive di_vacated_<g>
+    (BUF_CB Out in 2024 wk3 -> BAL's offense, which faces BUF, sees it)."""
+    from sportsmodel.nfl.def_injuries import defender_snaps, vacated_by_defense
+    from sportsmodel.nfl.player_features import extra_features, team_week_keys
+    from tests.nfl.fixtures_props import EXTRA_H, EXTRA_K, extra_sources, feature_inputs
+    inp, src = feature_inputs(), extra_sources()
+    tw = team_week_keys(inp["tg"], inp["ctx"])
+    ex = extra_features(tw, src["pbp"], src["snaps"], src["pfr2gsis"], inp["injuries"], inp["depth"],
+                        src["weekly_qb"], EXTRA_H, EXTRA_K).set_index(["season", "week", "team"])
+    assert len(ex) == len(tw) and not ex.index.duplicated().any()
+    vac = vacated_by_defense(defender_snaps(src["snaps"], src["pfr2gsis"]), inp["injuries"],
+                             tw[["season", "week", "team"]]).set_index(["season", "week", "team"])
+    assert vac.loc[(2024, 3, "BUF"), "di_vacated_cov"] > 0
+    for (s, w, t), opp in tw.set_index(["season", "week", "team"])["opponent"].items():
+        for g in ("cov", "rush", "run"):
+            a, b = ex.loc[(s, w, t), f"di_op_vacated_{g}"], vac.loc[(s, w, opp), f"di_vacated_{g}"]
+            assert (np.isnan(a) and np.isnan(b)) or a == b
+    assert ex.loc[(2024, 3, "BAL"), "di_op_vacated_cov"] > 0 and ex.loc[(2024, 3, "BUF"), "di_op_vacated_cov"] == 0
+    # QB1 override replaces the depth chart's QB1 for that team-week only
+    ov = extra_features(tw, src["pbp"], src["snaps"], src["pfr2gsis"], inp["injuries"], inp["depth"],
+                        src["weekly_qb"], EXTRA_H, EXTRA_K,
+                        qb1_override={(2024, 3, "BAL"): "BAL_QB"}).set_index(["season", "week", "team"])
+    diff = ~np.isclose(ov["qb_ypa"], ex["qb_ypa"], equal_nan=True)
+    assert list(ex.index[diff]) == [(2024, 3, "BAL")]
+
+
+def test_extra_columns_join_every_player_row_and_only_new_prefixes():
+    from tests.nfl.fixtures_props import feature_inputs
+    inp = feature_inputs()
+    tw = inp["tg"][["season", "week", "team"]].drop_duplicates()
+    extra = tw.assign(mx_pass_edge=0.1, di_op_vacated_cov=0.0, qb_ypa=7.0)
+    out = _build({**inp, "extra": extra})
+    assert {"mx_pass_edge", "di_op_vacated_cov", "qb_ypa"} <= set(out.columns)
+    assert out["mx_pass_edge"].notna().all()
+    before = set(_build(inp).columns)
+    assert set(out.columns) - before == {"mx_pass_edge", "di_op_vacated_cov", "qb_ypa"}
 
 
 def test_planted_leaky_feature_is_caught():
@@ -161,7 +249,21 @@ def test_team_table_labels_and_opponent_view():
     assert np.isclose(tt.loc[("KC", 2023, 2), "op_press_rate_r3"], mia["pressures_allowed"] / mia["dropbacks"])
     assert tt.loc[("KC", 2023, 2), "tm_pass_att_r3"] == tg.loc[("KC", 2023, 1), "pass_att"]
     assert {"cx_rest", "cx_home", "mk_implied", "tm_off_adj", "op_def_adj", "op_def_prev"} <= set(tt.columns)
-    assert not any(c in tt.columns for c in ("pass_att", "rush_att", "plays", "neutral_pass_rate"))
+    assert not any(c in tt.columns for c in ("pass_att", "rush_att", "plays", "neutral_pass_rate", "off_tds"))
+    assert tt.loc[("KC", 2023, 2), "y_team_off_tds"] == tg.loc[("KC", 2023, 2), "off_tds"]
+
+
+def test_team_table_extra_adds_only_new_prefix_columns():
+    from sportsmodel.nfl.player_features import build_team_table
+    from tests.nfl.fixtures_props import feature_inputs
+    inp = feature_inputs()
+    base = build_team_table(inp["tg"], inp["ctx"], inp["game_epa"])
+    tw = base[["season", "week", "team"]]
+    extra = tw.assign(opponent="XXX", mx_pass_edge=0.1, di_op_vacated_cov=0.0, qb_ypa=7.0, junk=1.0)
+    tt = build_team_table(inp["tg"], inp["ctx"], inp["game_epa"], extra=extra)
+    assert set(tt.columns) - set(base.columns) == {"mx_pass_edge", "di_op_vacated_cov", "qb_ypa"}
+    assert len(tt) == len(base) and tt["qb_ypa"].eq(7.0).all()
+    pd.testing.assert_frame_equal(tt[base.columns], base)
 
 
 def test_leakage_guard_also_moves_ratio_features():

@@ -387,3 +387,123 @@ def test_tune_trains_and_validates_on_the_sim_population(tbl, monkeypatch):
     tune(p, 2024, VOL)
     assert all(c["n"] == int((p.season < 2023).sum()) for c in calls)
     assert set(scored) == {int((p.season == 2023).sum())}
+
+
+# ---- matchup / def_injuries / qb_profile rungs, QB drive-TD shift -------------------
+
+import pandas as pd  # noqa: E402
+
+from sportsmodel.sim.nfl import learned  # noqa: E402
+from sportsmodel.sim.nfl.spec import TeamRates  # noqa: E402
+
+
+def test_new_rungs_select_only_their_prefix():
+    df = pd.DataFrame(columns=["p_a", "tm_b", "mx_c", "di_d", "qb_e", "cx_f", "y_x"])
+    assert learned.feature_columns(df, frozenset({"volume"})) == ["p_a", "tm_b"]
+    assert learned.feature_columns(df, frozenset({"volume", "matchup"})) == ["p_a", "tm_b", "mx_c"]
+    assert "qb_e" in learned.feature_columns(df, frozenset({"volume", "qb_profile"}))
+    assert learned.feature_columns(df, frozenset({"volume", "def_injuries"})) == ["p_a", "tm_b", "di_d"]
+    assert RUNG_PREFIXES["matchup"] == ("mx_",)
+    assert RUNG_PREFIXES["def_injuries"] == ("di_",)
+    assert RUNG_PREFIXES["qb_profile"] == ("qb_",)
+
+
+def test_drive_td_shift_keeps_outcomes_summing_to_one():
+    rates = TeamRates(drive_outcomes={"td": 0.25, "fg": 0.15, "punt": 0.4, "turnover": 0.12,
+                                      "downs": 0.05, "end": 0.03}, pass_rate=0.6,
+                      drives_per_game=11, rz_td_rate=0.55)
+    out = learned._shift_td(rates, e=1.0, ratio=0.8)
+    assert np.isclose(sum(out.drive_outcomes.values()), 1.0)
+    assert np.isclose(out.drive_outcomes["td"], 0.25 * 0.8)
+    assert out.drive_outcomes["fg"] > 0.15 and out.drive_outcomes["punt"] > 0.4
+    assert out.drive_outcomes["turnover"] == 0.12
+
+
+def test_drive_td_shift_multiplier_is_clipped_and_mass_proportional():
+    rates = TeamRates(drive_outcomes={"td": 0.25, "fg": 0.15, "punt": 0.4, "turnover": 0.12,
+                                      "downs": 0.05, "end": 0.03}, pass_rate=0.6,
+                      drives_per_game=11, rz_td_rate=0.55)
+    up = learned._shift_td(rates, e=2.0, ratio=1.5)       # 1 + 2 * 0.5 = 2 -> clipped to 1.3
+    assert np.isclose(up.drive_outcomes["td"], 0.25 * 1.3)
+    gain = 0.25 * 0.3
+    assert np.isclose(up.drive_outcomes["fg"], 0.15 - gain * 0.15 / 0.55)
+    assert np.isclose(up.drive_outcomes["punt"], 0.4 - gain * 0.4 / 0.55)
+    down = learned._shift_td(rates, e=5.0, ratio=0.5)     # -> clipped to 0.7
+    assert np.isclose(down.drive_outcomes["td"], 0.25 * 0.7)
+    assert np.isclose(sum(down.drive_outcomes.values()), 1.0)
+    assert rates.drive_outcomes["td"] == 0.25              # input not mutated
+    same = learned._shift_td(rates, e=0.7, ratio=1.0)
+    assert same.drive_outcomes == pytest.approx(rates.drive_outcomes)
+
+
+def _planted_team_table(slope: float, seed: int = 3) -> pd.DataFrame:
+    """Team rows whose y_team_off_tds = trailing * (1 + slope * (r - 1)) (+ tiny
+    noise), trailing = the team's halflife-4 EWM of its strictly prior TDs."""
+    rng = np.random.default_rng(seed)
+    rows = []
+    for team in ("HOM", "AWY", "THR"):
+        ys: list[float] = []
+        for season in (2022, 2023, 2024):
+            for week in range(1, 18):
+                r = float(rng.uniform(0.7, 1.3))
+                if ys:
+                    trailing = float(pd.Series(ys).ewm(halflife=4).mean().iloc[-1])
+                    y = trailing * (1 + slope * (r - 1)) * (1 + rng.normal(0, 0.01))
+                else:
+                    y = 2.5
+                ys.append(y)
+                rows.append({"team": team, "season": season, "week": week,
+                             "y_team_pass_att": float(rng.poisson(33)),
+                             "y_team_rush_att": float(rng.poisson(25)),
+                             "y_team_off_tds": y, "tm_pass_att_ewm": rng.uniform(28, 40),
+                             "qb_ratio_ypa": r})
+    return pd.DataFrame(rows)
+
+
+def test_fit_td_elasticity_recovers_planted_slope(tbl):
+    team = _planted_team_table(0.8)
+    common = dict(upto=(2024, 18), test_season=2024, decay=1.0, max_iter=5)
+    m = fit_models(tbl.player, team, frozenset({"volume", "qb_profile"}), **common)
+    assert m.td_elasticity is not None and abs(m.td_elasticity - 0.8) < 0.05
+    assert "qb_ratio_ypa" in m.team_cols
+    off = fit_models(tbl.player, team, frozenset({"volume"}), **common)
+    assert off.td_elasticity is None
+    assert "qb_ratio_ypa" not in off.team_cols
+
+
+def test_fit_td_elasticity_none_with_fewer_than_50_rows(tbl):
+    team = _planted_team_table(0.8)
+    # 3 teams x weeks 1..17 of 2022 before (2022, 18): 51 rows, minus each team's
+    # first game (no trailing) -> 48 usable rows.
+    m = fit_models(tbl.player, team, frozenset({"volume", "qb_profile"}),
+                   upto=(2022, 18), test_season=2022, decay=1.0, max_iter=5)
+    assert m.td_elasticity is None
+
+
+def test_fit_td_elasticity_ignores_rows_at_or_after_upto(tbl):
+    team = _planted_team_table(0.8)
+    poisoned = team.copy()
+    late = (poisoned.season == 2024) & (poisoned.week >= 9)
+    poisoned.loc[late, "y_team_off_tds"] = 99.0
+    common = dict(upto=(2024, 9), test_season=2024, decay=1.0, max_iter=5)
+    toggles = frozenset({"volume", "qb_profile"})
+    a = fit_models(tbl.player, team, toggles, **common).td_elasticity
+    b = fit_models(tbl.player, poisoned, toggles, **common).td_elasticity
+    assert a == b
+
+
+def test_apply_shifts_drive_td_only_with_elasticity(tbl, spec):
+    m = fit_models(tbl.player, tbl.team, VOL, upto=(2024, 1), test_season=2024,
+                   decay=1.0, max_iter=20)
+    trows = tbl.team_rows_for(2024, 1).assign(
+        qb_ratio_ypa=lambda d: np.where(d.team == "HOM", 0.8, np.nan))
+    prows = tbl.rows_for(2024, 1)
+    assert m.td_elasticity is None
+    base = apply_to_spec(spec, m, prows, trows, questionable=set(), q_weight=0.5)
+    assert base.home.drive_outcomes == spec.home.drive_outcomes
+    m.td_elasticity = 1.0
+    out = apply_to_spec(spec, m, prows, trows, questionable=set(), q_weight=0.5)
+    assert np.isclose(out.home.drive_outcomes["td"], spec.home.drive_outcomes["td"] * 0.8)
+    assert np.isclose(sum(out.home.drive_outcomes.values()), 1.0)
+    assert out.home.pass_att_pg == base.home.pass_att_pg      # volume still learned
+    assert out.away.drive_outcomes == spec.away.drive_outcomes  # NaN ratio -> unchanged

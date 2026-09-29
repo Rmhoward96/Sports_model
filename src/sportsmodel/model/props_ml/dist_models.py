@@ -22,6 +22,12 @@ plus a strictly-prior usage EWM (e.g. pass_yds: QB with ``p_y_pass_att_ewm``
 mostly zero labels (non-QBs for pass_yds) and predict 0 for every tau < 0.95
 even for starting QBs.
 
+``ROLE_SUBSETS`` is the v1 table the live artifacts were fitted with (and are
+checked against at load) -- it must not change. ``ROLE_SUBSETS_V2`` is v1 with
+the QB role additionally requiring recent attempts (``p_y_pass_att_r10 > 0``),
+so a stale QB (long-ago EWM, nothing in the last 10 games) is out of role.
+``in_role`` / ``fit_market`` take the table as ``subsets`` (default v1).
+
 Leakage contract (same as ``sim.nfl.learned``): ``fit_market`` itself keeps
 only rows with ``(season, week) < upto``, the label present, ``is_stub``
 not set (B models E[stat | played]) and in the market's role, so callers
@@ -66,6 +72,8 @@ KINDS: dict[str, Kind] = {
 
 # market -> pre-game role subset: ``positions`` (None = any) and a strictly
 # prior usage EWM column that must be >= ``min``. None = every row.
+# A role may instead carry ``conds``: a list of ``(col, min, strict)`` that must
+# ALL hold (``col > min`` when strict, else ``col >= min``; NaN fails).
 _QB_ROLE = {"positions": ("QB",), "col": "p_y_pass_att_ewm", "min": 10.0}
 _RUSH_ROLE = {"positions": None, "col": "p_y_carries_ewm", "min": 3.0}
 _REC_ROLE = {"positions": ("WR", "TE", "RB"), "col": "p_y_targets_ewm", "min": 2.0}
@@ -74,6 +82,13 @@ ROLE_SUBSETS: dict[str, dict | None] = {
     "rush_yds": _RUSH_ROLE, "rush_att": _RUSH_ROLE,
     "rec_yds": _REC_ROLE, "receptions": _REC_ROLE,
     "anytime_td": None,
+}
+
+# v2: the QB role also needs pass attempts in the last 10 games (stale QB out).
+_QB_ROLE_V2 = {"positions": ("QB",),
+               "conds": [("p_y_pass_att_ewm", 10.0, False), ("p_y_pass_att_r10", 0.0, True)]}
+ROLE_SUBSETS_V2: dict[str, dict | None] = {
+    **ROLE_SUBSETS, "pass_yds": _QB_ROLE_V2, "pass_tds": _QB_ROLE_V2,
 }
 
 # NB size above this is treated as Poisson.
@@ -168,14 +183,27 @@ def _classifier(max_iter: int) -> HistGradientBoostingClassifier:
         **{k: v for k, v in reg.items() if k in allowed and k != "loss"})
 
 
-def in_role(df: pd.DataFrame, market: str) -> pd.Series:
+def role_conditions(spec: dict) -> list[tuple[str, float, bool]]:
+    """A role's ``(col, min, strict)`` conditions (``conds``, or the single
+    ``col`` / ``min`` form as one non-strict condition)."""
+    if "conds" in spec:
+        return [(str(c), float(m), bool(st)) for c, m, st in spec["conds"]]
+    return [(spec["col"], float(spec["min"]), False)]
+
+
+def in_role(df: pd.DataFrame, market: str,
+            subsets: dict[str, dict | None] = ROLE_SUBSETS) -> pd.Series:
     """Boolean Series: rows in ``market``'s pre-game role subset
-    (``ROLE_SUBSETS``). A NaN usage EWM is out of role; the position comes
+    (``subsets``, default the v1 ``ROLE_SUBSETS``). Every condition of the
+    role must hold; a NaN usage column is out of role; the position comes
     from ``position`` (``p_pos`` if absent)."""
-    spec = ROLE_SUBSETS[market]
+    spec = subsets[market]
     if spec is None:
         return pd.Series(True, index=df.index, dtype=bool)
-    ok = (pd.to_numeric(df[spec["col"]], errors="coerce") >= spec["min"]).fillna(False)
+    ok = pd.Series(True, index=df.index, dtype=bool)
+    for col, lo, strict in role_conditions(spec):
+        v = pd.to_numeric(df[col], errors="coerce")
+        ok &= ((v > lo) if strict else (v >= lo)).fillna(False).astype(bool)
     if spec["positions"] is not None:
         pos = df["position"] if "position" in df.columns else df["p_pos"]
         ok &= pos.astype(object).isin(spec["positions"]).fillna(False)
@@ -183,8 +211,9 @@ def in_role(df: pd.DataFrame, market: str) -> pd.Series:
 
 
 def _training_slice(df: pd.DataFrame, label: str, upto: tuple[int, int],
-                    market: str) -> pd.DataFrame:
-    m = _before(df, upto) & df[label].notna() & in_role(df, market)
+                    market: str, subsets: dict[str, dict | None] = ROLE_SUBSETS
+                    ) -> pd.DataFrame:
+    m = _before(df, upto) & df[label].notna() & in_role(df, market, subsets)
     if STUB_COL in df.columns:
         m &= ~df[STUB_COL].fillna(False).astype(bool)
     return df[m]
@@ -220,9 +249,11 @@ def _tier_dispersion(mu: np.ndarray, y: np.ndarray) -> dict:
 
 def fit_market(df: pd.DataFrame, market: str, cols: list[str], *,
                upto: tuple[int, int], test_season: int, decay: float,
-               max_iter: int) -> MarketModel:
-    """Fit the B model for ``market`` on played, in-role (``in_role``) rows
-    before ``upto`` with the label present; sample weight ``decay ** (test_season - season)``.
+               max_iter: int, subsets: dict[str, dict | None] = ROLE_SUBSETS
+               ) -> MarketModel:
+    """Fit the B model for ``market`` on played, in-role (``in_role`` with
+    ``subsets``, default v1 ``ROLE_SUBSETS``) rows before ``upto`` with the
+    label present; sample weight ``decay ** (test_season - season)``.
     ``decay == 1.0`` fits UNWEIGHTED (``sample_weight=None``): scikit-learn's
     weighted binning path costs ~12 s per fit on the real table even when all
     weights are equal.
@@ -233,7 +264,7 @@ def fit_market(df: pd.DataFrame, market: str, cols: list[str], *,
     if market not in LABELS:
         raise ValueError(f"unknown market {market!r}")
     label, kind = LABELS[market], KINDS[market]
-    tr = _training_slice(df, label, upto, market)
+    tr = _training_slice(df, label, upto, market, subsets)
     if tr.empty:
         raise ValueError(f"fit_market({market}): no training rows before {upto}")
     used = [c for c in cols if tr[c].notna().any()]

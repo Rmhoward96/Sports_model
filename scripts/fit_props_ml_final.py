@@ -9,7 +9,7 @@ ladder's OOF rows, and ``data_end`` = the last OOF (season, week)), plus
 Final fit (default, ``--holdout-weeks 0``)
 -----------------------------------------
 Fits the gated pipeline on every completed game in the feature table and
-writes ``data/props_ml/models/`` atomically (temp dir, then swap):
+writes ``data/props_ml/models/<version>/`` atomically (temp dir, then swap):
 
 * ``learned.joblib`` -- A (``learned.fit_models``) with the kept toggles and
   the MOST RECENT test season's tuned ``(decay, max_iter)`` from
@@ -28,6 +28,25 @@ Loading / verifying the artifacts (``load_artifacts``, ``required_columns``,
 ``calib_for_apply``, ``b_markets``, the file names) lives in
 ``sportsmodel.model.props_ml.artifacts`` (shared with live serving,
 ``sim.nfl.ml_serving``); this script re-exports those names.
+
+Versions (``--gate-name``)
+--------------------------
+* none (default): ``nfl-sim-ml-v1`` -- ``pipeline.json`` / ``calibration.json``
+  / ``a_gate.json``, v1 ``ROLE_SUBSETS``, written to
+  ``data/props_ml/models/nfl-sim-ml-v1/``; the config is exactly v1's (no
+  ``model_version`` key: a config without one IS v1).
+* ``_v2``: ``nfl-sim-ml-v2`` -- ``pipeline_v2.json`` / ``calibration_v2.json``
+  / ``a_gate_v2.json`` (re-tunes nothing), ``ROLE_SUBSETS_V2``, written to
+  ``data/props_ml/models/nfl-sim-ml-v2/`` with ``"model_version":
+  "nfl-sim-ml-v2"`` and ``"qb_profile_params"`` = the ``serving`` block of
+  ``assets/nfl/props_ml/qb_profile_params.json`` (the final fit is refused
+  when that block is missing: run ``tune_qb_profile.py --mode serving``).
+  Live serving builds the v2 feature tables with those (H, k), so v2 also
+  TRAINS on them (Ruling S1): both v2 modes (quick gate and final fit) refuse
+  (``REFUSED: ...``, exit 1) unless the feature tables' build record
+  (``data/props_ml/feature_build.json``, written by
+  ``build_player_features.py --qb-params serving``) carries the serving
+  block's (H, k).
 
 ``trained_through`` = the last (season, week) with a played label in the player
 table; every model trains on rows strictly before ``trained_through + 1 week``
@@ -62,6 +81,7 @@ from __future__ import annotations
 import argparse
 import importlib.util
 import json
+import math
 import shutil
 import sys
 import tempfile
@@ -77,11 +97,15 @@ import joblib  # noqa: E402
 import pandas as pd  # noqa: E402
 
 from sportsmodel.model.props_eval import population_from_baseline, rung_decision  # noqa: E402
+from sportsmodel.model.props_ml import artifacts  # noqa: E402,F401  (re-exported)
 from sportsmodel.model.props_ml.artifacts import (  # noqa: E402,F401  (re-exported)
     CALIB_FILE,
     CONFIG_FILE,
     FORMAT_VERSION,
     LEARNED_FILE,
+    ML_V1,
+    ML_V2,
+    ROLE_TABLES,
     Artifacts,
     _is_artifact,
     b_markets,
@@ -96,6 +120,7 @@ from sportsmodel.model.props_ml.dist_models import (  # noqa: E402
     fit_market,
     in_role,
     predict_pmfs,
+    role_conditions,
 )
 from sportsmodel.sim.nfl import learned  # noqa: E402
 
@@ -111,11 +136,81 @@ def _load_script(name: str):
 tpb = _load_script("train_props_ml_b")
 tpm = tpb.tpm
 
-MODEL_DIR = tpm.DATA_DIR / "models"
+MODEL_ROOT = tpm.DATA_DIR / "models"
+QB_PARAMS_PATH = ROOT / "assets" / "nfl" / "props_ml" / "qb_profile_params.json"
+# the feature tables' build record (build_player_features.BUILD_INFO_FILE)
+FEATURE_BUILD_PATH = tpm.PLAYER_PATH.with_name("feature_build.json")
+# --gate-name -> the served model version it fits (the v1 comparison run
+# ``_v1cmp`` is a gate input only: never fit or served)
+GATE_VERSIONS = {"": ML_V1, tpb.V2_GATE_NAME: ML_V2}
 QUICK_GATE_FILE = "quick_gate.json"
 QUICK_MIN_SKILL = 0.0
 QUICK_MAX_RPS_RATIO = 1.05
 KEY = ["season", "week", "player_id"]
+
+
+def gate_version(gate_name: str) -> str:
+    """The model version a ``--gate-name`` fits; ValueError for any other name."""
+    if gate_name not in GATE_VERSIONS:
+        raise ValueError(f"--gate-name {gate_name!r} is not one of {sorted(GATE_VERSIONS)}")
+    return GATE_VERSIONS[gate_name]
+
+
+def gate_subsets(gate_name: str) -> dict:
+    """B's role table for the gate name's version (Ruling P1)."""
+    return ROLE_TABLES[gate_version(gate_name)]
+
+
+def model_dir(version: str) -> Path:
+    """``data/props_ml/models/<version>/``."""
+    if version not in ROLE_TABLES:
+        raise ValueError(f"unknown props-ML model version {version!r}")
+    return MODEL_ROOT / version
+
+
+MODEL_DIR = model_dir(ML_V1)
+
+
+def input_paths(gate_name: str) -> tuple[Path, Path, Path]:
+    """(pipeline json, calibration json, A gate json) of the gate name."""
+    gate_version(gate_name)
+    return (tpb.PIPELINE_PATH.with_name(f"pipeline{gate_name}.json"),
+            tpb.CALIBRATION_PATH.with_name(f"calibration{gate_name}.json"),
+            tpb.a_gate_path(gate_name))
+
+
+def serving_qb_block(path: Path | None = None) -> dict:
+    """The ``serving`` block of qb_profile_params.json (fit on 2021 -> latest);
+    RuntimeError when it is absent."""
+    path = QB_PARAMS_PATH if path is None else Path(path)
+    block = json.loads(Path(path).read_text()).get("serving")
+    if not block:
+        raise RuntimeError(f"{path} has no 'serving' block -- run "
+                           "`uv run python scripts/tune_qb_profile.py --mode serving` first")
+    return dict(block)
+
+
+def read_feature_build(path: Path | None = None) -> dict | None:
+    """The feature tables' build record, or None when absent."""
+    path = FEATURE_BUILD_PATH if path is None else Path(path)
+    return json.loads(path.read_text()) if path.is_file() else None
+
+
+def tables_qb_refusal(build_info: Mapping | None, serving: Mapping) -> str | None:
+    """Why the v2 fit must not use these tables, or None: the tables must have
+    been built with the serving block's (H, k) -- the params v2 is served
+    with (Ruling S1). PURE."""
+    fix = "rebuild them: `uv run python scripts/build_player_features.py --qb-params serving`"
+    qb = (build_info or {}).get("qb_params")
+    if not qb:
+        return f"the feature tables have no build record ({FEATURE_BUILD_PATH.name}): {fix}"
+    same = all(math.isclose(float(qb[c]), float(serving[c]), rel_tol=1e-9, abs_tol=1e-12)
+               for c in ("H", "k"))
+    if not same:
+        return (f"the feature tables were built with QB params {qb.get('mode')} H={float(qb['H']):g} "
+                f"k={float(qb['k']):g}, but v2 is served with the serving block "
+                f"H={float(serving['H']):g} k={float(serving['k']):g}: {fix}")
+    return None
 
 
 # ---- pure helpers: weeks / config inputs --------------------------------------------------
@@ -214,14 +309,15 @@ def kept_toggles(pipeline: Mapping, a_gate: Mapping) -> frozenset[str]:
     return kept
 
 
-def role_columns(player_tbl: pd.DataFrame, markets) -> list[str]:
-    """Columns ``in_role`` reads for ``markets`` (sorted)."""
+def role_columns(player_tbl: pd.DataFrame, markets, subsets: Mapping = ROLE_SUBSETS) -> list[str]:
+    """Columns ``in_role`` reads for ``markets`` under the role table
+    ``subsets`` (every condition column; sorted)."""
     cols = set()
     for m in markets:
-        spec = ROLE_SUBSETS[m]
+        spec = subsets[m]
         if spec is None:
             continue
-        cols.add(spec["col"])
+        cols.update(c for c, _, _ in role_conditions(spec))
         if spec["positions"] is not None:
             cols.add("position" if "position" in player_tbl.columns else "p_pos")
     return sorted(cols)
@@ -239,24 +335,25 @@ def holdout_sources(sources: Mapping, weeks) -> dict:
 # ---- pure helpers: B fit / predict ----------------------------------------------------------
 
 def fit_b_models(player_tbl: pd.DataFrame, cols: list[str], markets, upto: tuple[int, int],
-                 log: Callable[[str], None]) -> dict:
-    """``{m: MarketModel}``: ``fit_market`` on in-role rows strictly before
-    ``upto``, unweighted, ``max_iter`` 150 (the ladder's B settings)."""
+                 log: Callable[[str], None], subsets: Mapping = ROLE_SUBSETS) -> dict:
+    """``{m: MarketModel}``: ``fit_market`` on in-role (``subsets``) rows
+    strictly before ``upto``, unweighted, ``max_iter`` 150 (the ladder's B
+    settings)."""
     out = {}
     for m in markets:
         t0 = time.time()
         out[m] = fit_market(player_tbl, m, cols, upto=upto, test_season=int(upto[0]),
-                            decay=tpb.B_DECAY, max_iter=tpb.B_MAX_ITER)
+                            decay=tpb.B_DECAY, max_iter=tpb.B_MAX_ITER, subsets=subsets)
         log(f"stage=fit-b market={m} upto={upto} {time.time() - t0:.1f}s")
     return out
 
 
-def predict_b(models: Mapping, player_tbl: pd.DataFrame, recs, market_max: Mapping
-              ) -> tuple[dict, set]:
+def predict_b(models: Mapping, player_tbl: pd.DataFrame, recs, market_max: Mapping,
+              subsets: Mapping = ROLE_SUBSETS) -> tuple[dict, set]:
     """``(rec_key -> B pmf, out-of-role keys)`` for records of markets in
     ``models`` from their (season, week, player_id) feature rows; a record
-    whose feature row is out of role is in the set (B := A); one without a
-    feature row is in neither (missing)."""
+    whose feature row is out of role (``subsets``) is in the set (B := A);
+    one without a feature row is in neither (missing)."""
     feats = player_tbl.drop_duplicates(KEY)
     by_m = tpb._by_market(recs)
     out, oor = {}, set()
@@ -265,7 +362,7 @@ def predict_b(models: Mapping, player_tbl: pd.DataFrame, recs, market_max: Mappi
             continue
         keys = pd.DataFrame([{k: r[k] for k in KEY} for r in by_m[m]])
         rows = keys.merge(feats, on=KEY, how="inner")
-        role = in_role(rows, m).to_numpy()
+        role = in_role(rows, m, subsets).to_numpy()
         oor |= {(int(s), int(w), str(p), m) for s, w, p in
                 zip(rows["season"][~role], rows["week"][~role], rows["player_id"][~role])}
         rows = rows[role]
@@ -304,9 +401,19 @@ def _learned_columns(lm) -> dict:
 
 def build_config(pipeline: Mapping, *, learned_models, b_models: Mapping, a_fit: Mapping,
                  trained_through: tuple[int, int], market_max: Mapping, role_cols: list[str],
-                 identity: Mapping, created_at: str) -> dict:
-    """``props_ml_config.json``: pipeline.json + everything serving needs."""
-    return {**pipeline, "format_version": FORMAT_VERSION,
+                 identity: Mapping, created_at: str, gate_name: str = "",
+                 qb_profile_params: Mapping | None = None) -> dict:
+    """``props_ml_config.json``: pipeline.json + everything serving needs.
+    v1 (no gate name) is exactly today's config; ``_v2`` adds
+    ``model_version`` and ``qb_profile_params`` (required: ValueError) and
+    records ``ROLE_SUBSETS_V2``."""
+    version = gate_version(gate_name)
+    extra = {}
+    if version != ML_V1:
+        if not qb_profile_params:
+            raise ValueError(f"{version} config needs qb_profile_params (the serving block)")
+        extra = {"model_version": version, "qb_profile_params": dict(qb_profile_params)}
+    return {**pipeline, **extra, "format_version": FORMAT_VERSION,
             "trained_through": [int(trained_through[0]), int(trained_through[1])],
             "fit_upto": list(next_week(trained_through)),
             "git": identity.get("git_head"), "pipeline_git": pipeline.get("git"),
@@ -314,7 +421,8 @@ def build_config(pipeline: Mapping, *, learned_models, b_models: Mapping, a_fit:
                          "team": identity.get("team_features")},
             "created_at": created_at, "a_fit": dict(a_fit),
             "b_fit": {"decay": tpb.B_DECAY, "max_iter": tpb.B_MAX_ITER},
-            "b_markets": list(b_models), "q_weight": tpm.Q_WEIGHT, "role_subsets": ROLE_SUBSETS,
+            "b_markets": list(b_models), "q_weight": tpm.Q_WEIGHT,
+            "role_subsets": ROLE_TABLES[version],
             "market_max": {**{m: int(k) for m, k in market_max.items()}, BINARY_MARKET: 1},
             "feature_columns": {"learned": _learned_columns(learned_models),
                                 "b": {m: list(model.cols) for m, model in b_models.items()},
@@ -387,13 +495,19 @@ def _now() -> str:
 def run_final_fit(*, bsn, player_tbl: pd.DataFrame, team_tbl: pd.DataFrame, pipeline: Mapping,
                   a_gate: Mapping, calibration: Mapping, identity: Mapping,
                   out_dir: Path = MODEL_DIR, log: Callable[[str], None] = print,
-                  created_at: str | None = None) -> dict:
+                  created_at: str | None = None, gate_name: str = "",
+                  qb_profile_params: Mapping | None = None) -> dict:
     """Fit A and B on every completed week; write the artifacts (with the
     committed calibration maps); return the config. RuntimeError (nothing
-    fit or written) when ``pipeline_refusal`` names a reason."""
+    fit or written) when ``pipeline_refusal`` names a reason, or for v2
+    (``gate_name`` ``_v2``) without the serving ``qb_profile_params``."""
     refusal = pipeline_refusal(pipeline)
     if refusal:
         raise RuntimeError(refusal)
+    subsets = gate_subsets(gate_name)
+    if gate_version(gate_name) != ML_V1 and not qb_profile_params:
+        raise RuntimeError("the v2 final fit needs the 'serving' qb_profile_params block -- run "
+                           "`uv run python scripts/tune_qb_profile.py --mode serving` first")
     kept, a_fit = kept_toggles(pipeline, a_gate), a_fit_params(a_gate)
     check_calibration(pipeline, calibration)
     tt = trained_through(player_tbl)
@@ -405,20 +519,22 @@ def run_final_fit(*, bsn, player_tbl: pd.DataFrame, team_tbl: pd.DataFrame, pipe
     log(f"stage=fit-a done {time.time() - t0:.1f}s")
     need_b = b_markets(pipeline)
     b_models = fit_b_models(player_tbl, learned.feature_columns(player_tbl, kept), need_b, upto,
-                            log)
+                            log, subsets)
     config = build_config(pipeline, learned_models=lm, b_models=b_models, a_fit=a_fit,
                           trained_through=tt, market_max=bsn.MARKET_MAX,
-                          role_cols=role_columns(player_tbl, need_b), identity=identity,
-                          created_at=created_at or _now())
+                          role_cols=role_columns(player_tbl, need_b, subsets), identity=identity,
+                          created_at=created_at or _now(), gate_name=gate_name,
+                          qb_profile_params=qb_profile_params)
     save_artifacts(out_dir, lm, b_models, calibration, config)
-    log(f"wrote {out_dir}: learned + B {need_b} + calibration + config "
+    log(f"wrote {out_dir}: {gate_version(gate_name)} learned + B {need_b} + calibration + config "
         f"(trained_through={list(tt)})")
     return config
 
 
 def _quick_gate_body(n_weeks: int, rec: dict, *, bsn, player_tbl, team_tbl, pipeline, a_gate,
-                     calibration, n_sims, log) -> dict:
+                     calibration, n_sims, log, gate_name: str = "") -> dict:
     """The quick gate's evaluation; fills ``rec`` (holdout) as it goes."""
+    subsets = gate_subsets(gate_name)
     refusal = pipeline_refusal(pipeline)
     if refusal:
         return {"pass": False, "reasons": [refusal]}
@@ -441,7 +557,7 @@ def _quick_gate_body(n_weeks: int, rec: dict, *, bsn, player_tbl, team_tbl, pipe
                             decay=a_fit["decay"], max_iter=a_fit["max_iter"])
     need_b = b_markets(pipeline)
     b_models = fit_b_models(player_tbl, learned.feature_columns(player_tbl, kept), need_b, start,
-                            log)
+                            log, subsets)
     fetch = bsn.backtest_fetch_seasons(seasons)
     log(f"stage=sources fetching {fetch}")
     sources = holdout_sources(bsn.fetch_backtest_sources(fetch), weeks)
@@ -475,7 +591,7 @@ def _quick_gate_body(n_weeks: int, rec: dict, *, bsn, player_tbl, team_tbl, pipe
     if not checks:
         base_pop = [r for r in base_recs if tpb.rec_key(r) in population]
         pop_a = [r for r in runs["pipeline"] if tpb.rec_key(r) in population]
-        b_pmfs, oor = predict_b(b_models, player_tbl, pop_a, bsn.MARKET_MAX)
+        b_pmfs, oor = predict_b(b_models, player_tbl, pop_a, bsn.MARKET_MAX, subsets)
         checks += b_missing_reasons(pop_a, b_pmfs, oor, need_b)
         b_eff = {**b_pmfs, **{tpb.rec_key(r): r["pmf"] for r in pop_a if tpb.rec_key(r) in oor}}
         ml = tpb.apply_pipeline(pop_a, b_eff, weights, calib_for_apply(calibration))
@@ -497,7 +613,8 @@ def _quick_gate_body(n_weeks: int, rec: dict, *, bsn, player_tbl, team_tbl, pipe
 def run_quick_gate(n_weeks: int, *, bsn, player_tbl: pd.DataFrame, team_tbl: pd.DataFrame,
                    pipeline: Mapping, a_gate: Mapping, calibration: Mapping,
                    identity: Mapping, out_dir: Path = MODEL_DIR, n_sims: int = 1000,
-                   log: Callable[[str], None] = print, created_at: str | None = None) -> dict:
+                   log: Callable[[str], None] = print, created_at: str | None = None,
+                   gate_name: str = "") -> dict:
     """Score the pipeline fit without the last ``n_weeks`` completed weeks
     after ``data_end`` on them vs the baseline. ``quick_gate.json`` is removed
     first and written on every exit path (an exception writes a failing
@@ -506,7 +623,8 @@ def run_quick_gate(n_weeks: int, *, bsn, player_tbl: pd.DataFrame, team_tbl: pd.
     path = Path(out_dir) / QUICK_GATE_FILE
     path.parent.mkdir(parents=True, exist_ok=True)
     path.unlink(missing_ok=True)
-    rec = {"mode": "quick_gate", "created_at": created_at or _now(), "holdout_weeks": None,
+    rec = {"mode": "quick_gate", "gate_name": gate_name, "model_version": gate_version(gate_name),
+           "created_at": created_at or _now(), "holdout_weeks": None,
            "n_sims": n_sims, "thresholds": {"min_skill": QUICK_MIN_SKILL,
                                             "max_rps_ratio": QUICK_MAX_RPS_RATIO},
            "identity": dict(identity)}
@@ -520,7 +638,8 @@ def run_quick_gate(n_weeks: int, *, bsn, player_tbl: pd.DataFrame, team_tbl: pd.
     try:
         body = _quick_gate_body(n_weeks, rec, bsn=bsn, player_tbl=player_tbl,
                                 team_tbl=team_tbl, pipeline=pipeline, a_gate=a_gate,
-                                calibration=calibration, n_sims=n_sims, log=log)
+                                calibration=calibration, n_sims=n_sims, log=log,
+                                gate_name=gate_name)
         gate = {**rec, **body}   # rec gains the holdout while the body runs
     except Exception as exc:
         write({**rec, "pass": False, "reasons": [f"error: {type(exc).__name__}: {exc}"]})
@@ -532,15 +651,17 @@ def run_quick_gate(n_weeks: int, *, bsn, player_tbl: pd.DataFrame, team_tbl: pd.
 # ---- IO ----------------------------------------------------------------------------------
 
 def _load_inputs(args) -> dict:
-    """Tables, pipeline / calibration / A-gate json, identity, backtest module."""
-    for p in (tpm.PLAYER_PATH, tpm.TEAM_PATH, tpb.A_GATE_PATH, args.pipeline, args.calibration):
+    """Tables, pipeline / calibration / A-gate json (of ``args.gate_name``),
+    identity, backtest module."""
+    a_gate_path = input_paths(args.gate_name)[2]
+    for p in (tpm.PLAYER_PATH, tpm.TEAM_PATH, a_gate_path, args.pipeline, args.calibration):
         if not Path(p).exists():
             raise SystemExit(f"missing {p}: build the features / run the A and B gates first")
     return {"bsn": tpm._load_backtest(), "player_tbl": pd.read_parquet(tpm.PLAYER_PATH),
             "team_tbl": pd.read_parquet(tpm.TEAM_PATH),
             "pipeline": json.loads(Path(args.pipeline).read_text()),
             "calibration": json.loads(Path(args.calibration).read_text()),
-            "a_gate": json.loads(tpb.A_GATE_PATH.read_text()),
+            "a_gate": json.loads(a_gate_path.read_text()),
             "identity": {"player_features": tpm.file_fingerprint(tpm.PLAYER_PATH),
                          "team_features": tpm.file_fingerprint(tpm.TEAM_PATH),
                          "git_head": tpm.git_head()}}
@@ -551,15 +672,25 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--holdout-weeks", type=int, default=0,
                     help="quick gate on the last N completed weeks after data_end (0 = final fit)")
     ap.add_argument("--n-sims", type=int, default=1000, help="sims per game (quick gate)")
-    ap.add_argument("--out-dir", type=Path, default=MODEL_DIR)
-    ap.add_argument("--pipeline", type=Path, default=tpb.PIPELINE_PATH)
-    ap.add_argument("--calibration", type=Path, default=tpb.CALIBRATION_PATH)
+    ap.add_argument("--gate-name", default="", choices=sorted(GATE_VERSIONS),
+                    help="'' = nfl-sim-ml-v1 (default); _v2 = nfl-sim-ml-v2 (pipeline_v2.json, "
+                         "calibration_v2.json, a_gate_v2.json, ROLE_SUBSETS_V2, serving QB params)")
+    ap.add_argument("--out-dir", type=Path, default=None,
+                    help="default data/props_ml/models/<version of --gate-name>/")
+    ap.add_argument("--pipeline", type=Path, default=None,
+                    help="default pipeline{gate-name}.json")
+    ap.add_argument("--calibration", type=Path, default=None,
+                    help="default calibration{gate-name}.json")
     ap.add_argument("--check-new-weeks", type=Path, metavar="CONFIG",
                     help="only report whether the player table has a labelled week after "
                          "CONFIG's trained_through (last line new_weeks=true|false); fits nothing")
     ap.add_argument("--player-table", type=Path, default=tpm.PLAYER_PATH,
                     help="player feature table for --check-new-weeks")
     args = ap.parse_args(argv)
+    pipe_path, cal_path, _ = input_paths(args.gate_name)
+    args.pipeline = pipe_path if args.pipeline is None else args.pipeline
+    args.calibration = cal_path if args.calibration is None else args.calibration
+    out_dir = model_dir(gate_version(args.gate_name)) if args.out_dir is None else args.out_dir
     t0 = time.time()
 
     def log(msg: str) -> None:
@@ -573,16 +704,28 @@ def main(argv: list[str] | None = None) -> int:
         print(f"new_weeks={'true' if new else 'false'}", flush=True)
         return 0
 
+    qb = None
+    if gate_version(args.gate_name) != ML_V1:   # v2 trains and serves on the serving QB params
+        try:
+            qb = serving_qb_block()
+        except RuntimeError as exc:
+            print(f"REFUSED: {exc}", flush=True)
+            return 1
+        refusal = tables_qb_refusal(read_feature_build(), qb)
+        if refusal:
+            print(f"REFUSED: {refusal}", flush=True)
+            return 1
     inputs = _load_inputs(args)
     refusal = pipeline_refusal(inputs["pipeline"])
     if refusal:
         print(f"REFUSED: {refusal}", flush=True)
         return 1
     if args.holdout_weeks > 0:
-        gate = run_quick_gate(args.holdout_weeks, **inputs, out_dir=args.out_dir,
-                              n_sims=args.n_sims, log=log)
+        gate = run_quick_gate(args.holdout_weeks, **inputs, out_dir=out_dir,
+                              n_sims=args.n_sims, log=log, gate_name=args.gate_name)
         return 0 if gate["pass"] else 1
-    run_final_fit(**inputs, out_dir=args.out_dir, log=log)
+    run_final_fit(**inputs, out_dir=out_dir, log=log, gate_name=args.gate_name,
+                  qb_profile_params=qb)
     return 0
 
 

@@ -55,17 +55,29 @@ Props-ML serving (SIM_ML_MODE)
 ------------------------------
 `SIM_ML_MODE` = off (default) | shadow | live. `off` imports/loads nothing
 ML. Otherwise, AFTER the current sim is simulated and written, `run_ml`
+serves ONE props-ML version (`ML_VERSIONS` = nfl-sim-ml-v1 | nfl-sim-ml-v2):
+the SERVED one (`nfl_sim_serving`), else v1 (the ML version below means
+that one; "nfl-sim-ml-v1" in the rest of this docstring reads as it). It
 builds the props-ML feature tables with the training builder
 (scripts/build_player_features.py `fetch_sources` + `build_tables`, seasons
-2016..current, forecast weather filled for upcoming games), loads the
-artifacts in data/props_ml/models (with the tables, so a column mismatch is
-rejected at load), and per game: `ml_serving.build_ml_spec` -> simulate with
-the backtest's per-game seed -> `ml_player_dists` once -> writes nfl_sim +
-nfl_player_sim under `nfl-sim-ml-v1` in ONE transaction
-(`db.upsert_nfl_sim_slate`). The ML version is a complete slate: its GAME
-rows are the CURRENT sim's (props were gated, game predictions were not --
-the ML sims feed player dists only; ML_GAME_LINES=on changes this, see
-below), its player rows are the ML dists for
+2016..current, forecast weather filled for upcoming games, the version's
+serving QB-profile params -- `serving_qb_params` -- and the books QB
+check's promotions as `qb1_override`; the 1999-2015 weekly QB history is
+downloaded only when a non-v1 version is served, and while the served config
+reads no mx_/di_/qb_ column a failure building those features is NaN
+columns + a `::warning::props-ml:` line, not an ML failure), loads the
+version's artifacts in
+data/props_ml/models/<version>/ (`ml_model_dir`; with the tables, so a
+column mismatch is rejected at load; a config naming another version is
+rejected before the build), prints one `matchup:` line per team (QB1,
+qb_ypa, qb_ratio_ypa, mx_pass_minus_rush, di_op_vacated_*), and per game:
+`ml_serving.build_ml_spec` -> simulate with the backtest's per-game seed ->
+`ml_player_dists` once -> writes nfl_sim + nfl_player_sim under the ML
+version in ONE transaction (`db.upsert_nfl_sim_slate`). The ML version is
+a complete slate: its GAME rows are the CURRENT sim's (props were gated,
+game predictions were not -- the ML sims feed player dists only;
+ML_GAME_LINES=on changes this, see below), its player rows are the ML
+dists for
 `source == "ml"` markets of the player-markets inside the gated population
 (`props_eval.gate_population` on the current sim's dist means) and the
 current sim's dists for everything else. A game the ML path can't serve
@@ -88,17 +100,23 @@ injected into the feature build first (names -> gsis via the target week's
 as-of depth chart; unmapped names are counted and printed).
 
 The SERVED version decides what must be written (`nfl_sim_serving`, read
-once after the current sim is written -- `db.served_nfl_sim_version`):
+once after the current sim is written -- `db.served_nfl_sim_version`); an
+ML version below means either of ML_VERSIONS, and every ML row /
+game_predictions row is written under the served one:
   * table missing (None): the *_current views are unfiltered, so anything
-    under `nfl-sim-ml-v1` would be served live -- shadow/live are a GLOBAL
+    under an ML version would be served live -- shadow/live are a GLOBAL
     failure ("nfl_sim_serving missing ...") that writes NOTHING under the ML
     version; off is unchanged.
-  * `sim-nfl-v1`: shadow/live write the ML slate best-effort; a global
+  * `sim-nfl-v1`: shadow/live write the v1 ML slate best-effort; a global
     failure writes nothing under the ML version; off writes nothing ML.
-  * `nfl-sim-ml-v1`: an ML-version slate is written EVERY run in every mode
-    -- ML where it succeeds, else a full copy of the current sim's rows (a
-    global failure writes the copy, then applies the exit semantics); off
+  * an ML version (nfl-sim-ml-v1 / nfl-sim-ml-v2): a slate under THAT
+    version is written EVERY run in every mode -- ML with that version's
+    artifacts where it succeeds, else a full copy of the current sim's rows
+    (a global failure -- e.g. v2 served while only the v1 release is
+    downloaded -- writes the copy, then applies the exit semantics); off
     writes the copy and prints a rollback `::warning::`.
+  * anything else (`sim-nfl-v1`, an unknown version): as `sim-nfl-v1`, with
+    v1 computed.
   * the read itself fails: shadow/live are a global failure writing nothing;
     off prints a `::warning::` and exits 1 (the served slate may be stale).
 
@@ -119,10 +137,10 @@ disabled and injury-watch skips generate_nfl.py):
     None; if its sim fails it is a `::warning::ml-game-lines:` line (it has
     no row at all). An ESPN failure warns and keeps the predictions_current
     slate (kickoffs and market lines as served).
-  * only while the served version is `nfl-sim-ml-v1`: an ML-served game's
+  * only while the served version is an ML version: an ML-served game's
     nfl_sim ML-version game row comes from its ML sims (reverses Props-2 I3
     for the switched state), and every game gets a `game_predictions` row
-    under `nfl-sim-ml-v1` in `generate_nfl.build_game_row`'s exact shape
+    under the served ML version in `generate_nfl.build_game_row`'s exact shape
     (`game_prediction_row`) -- from the ML sims when the game was ML-served,
     else from the current sim (per-game fallback, global ML failure, or
     SIM_ML_MODE=off), so the slate stays complete. A failed game_predictions
@@ -237,8 +255,14 @@ QUESTIONABLE_WEIGHT = float(os.getenv("SIM_QUESTIONABLE_WEIGHT", "0.75"))
 # same but exits 1 (red run) when the ML path fails. The current sim is
 # always simulated and written first, so its rows never depend on the ML path.
 ML_MODES = ("off", "shadow", "live")
-ML_MODEL_VERSION = "nfl-sim-ml-v1"
-ML_MODEL_DIR = config.PROJECT_ROOT / "data" / "props_ml" / "models"
+# The props-ML versions this script can serve; each has its own artifacts dir
+# (`ml_model_dir`). The SERVED version (nfl_sim_serving) picks which one runs
+# and labels every ML row / game_predictions row; while the site serves
+# anything else, shadow/live compute ML_MODEL_VERSION (v1).
+ML_VERSIONS = ("nfl-sim-ml-v1", "nfl-sim-ml-v2")
+ML_MODEL_VERSION = ML_VERSIONS[0]
+ML_MODELS_ROOT = config.PROJECT_ROOT / "data" / "props_ml" / "models"
+QB_PARAMS_PATH = config.PROJECT_ROOT / "assets" / "nfl" / "props_ml" / "qb_profile_params.json"
 _SCRIPTS_DIR = Path(__file__).resolve().parent
 
 # ML_GAME_LINES (ML-only NFL): "off" (default) = today's behavior; "on" = the
@@ -246,6 +270,15 @@ _SCRIPTS_DIR = Path(__file__).resolve().parent
 # treated as off with a `::warning::ml-game-lines:` line.
 ML_GAME_LINES_VALUES = ("on", "off")
 _LINES_WARN = "::warning::ml-game-lines: "
+
+
+def ml_model_dir(version: str) -> Path:
+    """`data/props_ml/models/<version>/`: one artifacts dir per ML version
+    (the workflows download props-ml-latest -> nfl-sim-ml-v1 and props-ml-v2
+    -> nfl-sim-ml-v2)."""
+    if version not in ML_VERSIONS:
+        raise ValueError(f"{version!r} is not a props-ML version ({', '.join(ML_VERSIONS)})")
+    return ML_MODELS_ROOT / version
 
 
 # =============================================================================
@@ -416,7 +449,7 @@ def gated_player_markets(current: dict[str, dict]) -> set[tuple[str, str]]:
                            for pid, markets in current.items() for m, d in markets.items())
 
 
-def game_prediction_row(game: dict, sims, gl_cfg) -> dict:
+def game_prediction_row(game: dict, sims, gl_cfg, model_version: str = ML_MODEL_VERSION) -> dict:
     """One game's sims -> a `game_predictions` row in EXACTLY the shape
     `generate_nfl.build_game_row` / `gameline.build_gameline` emit. PURE.
 
@@ -433,7 +466,8 @@ def game_prediction_row(game: dict, sims, gl_cfg) -> dict:
     pred_* are the sims' means. The dists are plain dicts: `main()` JSON-encodes
     them at the DB boundary, as generate_nfl does. `game` carries
     game_pk/commence_time/home_team/away_team (display names) and, from
-    `merge_espn_slate`, game_date/market_spread/market_total."""
+    `merge_espn_slate`, game_date/market_spread/market_total. `model_version`:
+    the served ML version the row is written under."""
     margin_dist = margin_pmf(sims, half_range=gl_cfg.offset)
     total_dist = {"kind": "pmf", "pmf": total_pmf(sims, max_total=gl_cfg.total_max)}
     scores = pred_scores(sims)
@@ -446,7 +480,7 @@ def game_prediction_row(game: dict, sims, gl_cfg) -> dict:
         "pred_home_score": scores["pred_home_score"],
         "pred_away_score": scores["pred_away_score"],
         "sport": "nfl",
-        "model_version": ML_MODEL_VERSION,
+        "model_version": model_version,
         "game_pk": game["game_pk"],
         "game_date": game.get("game_date"),
         "commence_time": game["commence_time"],
@@ -642,23 +676,25 @@ def _load_espn_slate() -> list[dict]:
     return espn.fetch_schedule(int(tw["season"]), int(tw["week"]), season_type=int(tw["season_type"]))
 
 
-def _write_game_lines(games: list[dict], sims_for_game: dict, ml_served: set) -> None:
+def _write_game_lines(games: list[dict], sims_for_game: dict, ml_served: set,
+                      model_version: str = ML_MODEL_VERSION) -> None:
     """ML_GAME_LINES=on: one `game_predictions` row per game in `games` with
     sims (`game_prediction_row`, dists JSON-encoded at this boundary like
-    generate_nfl's main), under ML_MODEL_VERSION, in one upsert. `ml_served`:
-    the game_pks whose sims are the ML sims (the rest are the current sim's)."""
+    generate_nfl's main), under `model_version` (the served ML version), in
+    one upsert. `ml_served`: the game_pks whose sims are the ML sims (the rest
+    are the current sim's)."""
     gl_cfg = nfl_config.load_gameline()
     rows = []
     for g in games:
         sims = sims_for_game.get(g["game_pk"])
         if sims is None:
             continue
-        row = game_prediction_row(g, sims, gl_cfg)
+        row = game_prediction_row(g, sims, gl_cfg, model_version)
         rows.append({**row, "margin_dist": json.dumps(row["margin_dist"]),
                      "total_dist": json.dumps(row["total_dist"])})
     upsert_game_predictions(rows)
     n_ml = sum(1 for r in rows if r["game_pk"] in ml_served)
-    print(f"game_lines: wrote {len(rows)} game_predictions rows under {ML_MODEL_VERSION} "
+    print(f"game_lines: wrote {len(rows)} game_predictions rows under {model_version} "
           f"(ml_sim={n_ml} current_sim={len(rows) - n_ml})", flush=True)
 
 
@@ -749,7 +785,26 @@ def _st_nan_shares(feats: pd.DataFrame, season: int, weeks: set[int]) -> dict[st
             for c in ST_NAN_COLS}
 
 
-def _build_ml_tables(upto_season: int, now: datetime, report: dict | None = None
+EXTRA_PREFIXES = ("mx_", "di_", "qb_")
+
+
+def config_reads_extra_features(cfg: dict) -> bool:
+    """Whether a props-ML artifacts config reads any mx_/di_/qb_ column
+    (`artifacts.required_columns`: fitted, role and B columns of both
+    tables). A config whose columns cannot be listed counts as reading them
+    (the safe side: its feature build stays fatal). PURE."""
+    from sportsmodel.model.props_ml.artifacts import required_columns
+
+    try:
+        req = required_columns(cfg)
+    except Exception:  # noqa: BLE001 -- unknown shape: keep the fatal build
+        return True
+    return any(str(c).startswith(EXTRA_PREFIXES) for cols in req.values() for c in cols)
+
+
+def _build_ml_tables(upto_season: int, now: datetime, report: dict | None = None,
+                     qb1_override: dict | None = None, qb_params: tuple[float, float] | None = None,
+                     qb_history: bool = True, extras_optional: bool = False
                      ) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
     """(player table, team table, nflverse schedule) for serving, built by the
     SAME builder as training (scripts/build_player_features.py): seasons
@@ -757,23 +812,135 @@ def _build_ml_tables(upto_season: int, now: datetime, report: dict | None = None
     team-week (incl. the target week), and upcoming games' NaN weather filled
     from the kickoff-hour forecast. When nflverse has no injury rows for the
     live report's target week yet, the live statuses are injected first
-    (`_inject_live_injuries`). Features are strictly pre-game by
-    construction (rolling features read only earlier weeks). IO (network)."""
+    (`_inject_live_injuries`). `qb1_override` {(season, week, team): gsis}
+    (the books QB check's promotions) sets QB1 for the qb_ features;
+    `qb_params` (H, k) are the served version's QB-profile params
+    (`serving_qb_params`). `qb_history`: download the 1999-2015 weekly QB
+    history (`run_ml`: only when the served version is not v1; every history
+    season must load). `extras_optional` (`run_ml`: the served config reads no
+    mx_/di_/qb_ column): a failure building those features -- or the matchup
+    log's QB1 -- gives NaN columns + a `::warning::props-ml:` line instead of
+    failing the ML path. Features are strictly pre-game by construction
+    (rolling features read only earlier weeks). IO (network)."""
     from sportsmodel.nfl.context import fetch_hourly_forecast, fill_forecast_weather
 
     bpf = _load_script("build_player_features")
     seasons = list(range(bpf.SEASONS[0], upto_season + 1))
     print(f"props-ML: building feature tables for seasons {seasons[0]}-{seasons[-1]}", flush=True)
-    src = bpf.fetch_sources(seasons)
+    src = bpf.fetch_sources(seasons, qb_history=qb_history)
     src["injuries"], msg = _inject_live_injuries(src.get("injuries"), src.get("depth"), report, upto_season)
     print(msg, flush=True)
+    if qb_params is not None:
+        src["qb_params"] = (float(qb_params[0]), float(qb_params[1]))
     ts = pd.Timestamp(now)
 
     def ctx_fill(ctx, stadiums, sched):
         return fill_forecast_weather(ctx, stadiums, sched, fetch_hourly_forecast, now=ts)
 
-    built = bpf.build_tables(src, ctx_fill=ctx_fill)
-    return built["feats"], built["team"], src["sched"]
+    built = bpf.build_tables(src, ctx_fill=ctx_fill, qb1_override=qb1_override or None,
+                             extra_fallback=extras_optional)
+    team = built["team"]
+    try:
+        qb1 = _feature_qb1(src, team, upto_season, qb1_override)
+    except Exception as exc:  # noqa: BLE001 -- the log's QB1 only; fatal when a model reads qb_
+        if not extras_optional:
+            raise
+        qb1 = None
+        flat = " ".join(f"{type(exc).__name__}: {exc}".split())
+        print(f"::warning::props-ml: matchup-log QB1 failed ({flat}); matchup: lines show QB1=na",
+              flush=True)
+    if qb1 is not None:   # for the matchup log only (not a feature prefix: no model reads it)
+        team = team.assign(qb1_id=qb1)
+    return built["feats"], team, src["sched"]
+
+
+def _feature_qb1(src: dict, team: pd.DataFrame, season: int, qb1_override: dict | None
+                 ) -> pd.Series | None:
+    """Per team-table row of `season`: the QB1 gsis the builder's qb_ features
+    used -- `qb_profile.qb1_by_team_week` on the SAME inputs build_tables
+    passed it (src depth, src injuries incl. the live injection, the books
+    override); other seasons NaN. None when the table has no team-week keys."""
+    from sportsmodel.nfl import qb_profile
+
+    if not len(team) or not {"season", "week", "team"} <= set(team.columns):
+        return None
+    cur = (team["season"] == season).to_numpy()
+    tw = team.loc[cur, ["season", "week", "team"]]
+    got = qb_profile.qb1_by_team_week(src.get("depth"), src.get("injuries"), tw,
+                                      override=qb1_override or None)
+    out = pd.Series(np.nan, index=team.index, dtype=object)
+    out[cur] = got["qb1_id"].to_numpy()
+    return out
+
+
+def serving_qb_params(version: str, cfg: dict, path: Path | None = None
+                      ) -> tuple[tuple[float, float], str]:
+    """((H, k), log line) of the QB profiles for the `version` serving build.
+    The artifacts' own `qb_profile_params` block (v2: the serving block the
+    models were published with) wins; a config without one (v1) reads the
+    `serving` block of qb_profile_params.json. v1 without a serving block
+    falls back to the `gate` block with a `::warning::` line (v1 models read no
+    qb_ columns: its serving is unaffected); v2 without its block raises. PURE
+    (reads `path`)."""
+    block = cfg.get("qb_profile_params")
+    if block:
+        hk = (float(block["H"]), float(block["k"]))
+        return hk, (f"props-ML: {version} QB profiles H={hk[0]:g} k={hk[1]:g} "
+                    f"(the artifacts' serving params)")
+    if version != ML_MODEL_VERSION:
+        raise RuntimeError(f"props-ML {version} artifacts have no qb_profile_params (refit with "
+                           f"fit_props_ml_final.py --gate-name)")
+    doc = json.loads(Path(QB_PARAMS_PATH if path is None else path).read_text())
+    if doc.get("serving"):
+        hk = (float(doc["serving"]["H"]), float(doc["serving"]["k"]))
+        return hk, f"props-ML: {version} QB profiles H={hk[0]:g} k={hk[1]:g} (serving block)"
+    hk = (float(doc["gate"]["H"]), float(doc["gate"]["k"]))
+    return hk, (f"::warning::props-ml: qb_profile_params.json has no serving block; the {version} "
+                f"feature build uses the gate QB params H={hk[0]:g} k={hk[1]:g} ({version} models read "
+                f"no qb_ columns) -- run tune_qb_profile.py --mode serving")
+
+
+MATCHUP_COLS = ("qb_ypa", "qb_ratio_ypa", "mx_pass_minus_rush",
+                "di_op_vacated_cov", "di_op_vacated_rush", "di_op_vacated_run")
+
+
+def matchup_line(team: str, season: int, week: int, players, t_rows: pd.DataFrame) -> str:
+    """One `matchup:` log line for a team's live week: QB1 = the QB whose
+    profile the qb_ features used (the team row's `qb1_id`, set by
+    `_build_ml_tables` from the builder's own QB1 rule; named from the spec's
+    players when there), then the team row's QB / matchup / defensive injury
+    features (`na` = missing / NaN). When the sim's QB (the spec's one
+    pos=="QB" player) is a different player it is appended as `sim_QB=`. PURE."""
+    row = t_rows[t_rows["team"].astype(str) == team] if "team" in t_rows.columns else t_rows.iloc[:0]
+    names = {str(pl.player_id): pl.name for pl in players}
+
+    def who(pid) -> str:
+        return f"{names[pid]} ({pid})" if pid in names else pid
+
+    qb1 = row["qb1_id"].iloc[0] if len(row) and "qb1_id" in row.columns else np.nan
+    qb1 = None if pd.isna(qb1) else str(qb1)
+    sim_qb = next((str(pl.player_id) for pl in players if str(pl.pos).upper() == "QB"), None)
+    parts = []
+    for c in MATCHUP_COLS:
+        v = row[c].iloc[0] if len(row) and c in row.columns else np.nan
+        fmt = "{:+.3f}" if c == "mx_pass_minus_rush" else "{:.3f}"
+        parts.append(f"{c}=" + ("na" if pd.isna(v) else fmt.format(float(v))))
+    qb1_s = "na" if qb1 is None else who(qb1)
+    line = f"matchup: {team} {season} wk{week} QB1={qb1_s} " + " ".join(parts)
+    if sim_qb is not None and sim_qb != qb1:
+        line += f" sim_QB={who(sim_qb)}"
+    return line
+
+
+def _promoted_qb_gsis(before: pd.DataFrame, after: pd.DataFrame, team: str) -> str | None:
+    """The gsis id `promote_books_qb` moved to QB1 for `team` (its row's
+    depth_team changed), or None. PURE."""
+    if after is before or len(after) != len(before) or "gsis_id" not in after.columns:
+        return None
+    dt_after, dt_before = after["depth_team"].astype(str).to_numpy(), before["depth_team"].astype(str).to_numpy()
+    changed = (after["club_code"].astype(str).to_numpy() == team) & (dt_after != dt_before)
+    ids = pd.unique(after.loc[changed, "gsis_id"].dropna().astype(str))
+    return str(ids[0]) if len(ids) == 1 else None
 
 
 class _MlGameFallback(Exception):
@@ -787,7 +954,7 @@ class _MlPostseason(_MlGameFallback):
 
 SERVING_MISSING = "nfl_sim_serving missing — run db/migration_nfl_sim_serving.sql"
 OFF_SERVED_ML_WARNING = (
-    "::warning::props-ml: SIM_ML_MODE=off but the site serves nfl-sim-ml-v1 — served the current "
+    "::warning::props-ml: SIM_ML_MODE=off but the site serves {version} — served the current "
     "sim under the ML version; UPDATE nfl_sim_serving back to sim-nfl-v1 to roll back")
 
 
@@ -842,6 +1009,8 @@ def _ml_game(game_pk, *, game_keys, specs_by_game, sims_by_game, feats, team, sc
     teams = (home, away)
     p_rows = feats[(feats["season"] == upto_season) & (feats["week"] == week) & feats["team"].isin(teams)]
     t_rows = team[(team["season"] == upto_season) & (team["week"] == week) & team["team"].isin(teams)]
+    for code, players in ((home, spec.home_players), (away, spec.away_players)):
+        print(matchup_line(code, upto_season, week, players, t_rows), flush=True)
     missing = _missing_feature_rows(spec, home, away, p_rows, t_rows)
     if missing:
         raise _MlGameFallback(f"missing feature rows ({missing})")
@@ -865,15 +1034,24 @@ def run_ml(*, ok_games: list[dict], game_keys: dict[Any, tuple[str, str, float]]
            specs_by_game: dict, sims_by_game: dict, analytic_by_game: dict,
            upto_season: int, n_sims: int, now: datetime, report: dict | None = None,
            diag: dict | None = None, game_lines: bool = False, game_sims: dict | None = None,
-           ml_served: set | None = None, allow_missing_analytic: bool = False) -> tuple[int, int, int]:
+           ml_served: set | None = None, allow_missing_analytic: bool = False,
+           model_version: str = ML_MODEL_VERSION, qb1_override: dict | None = None
+           ) -> tuple[int, int, int]:
     """The props-ML slate for the games the current sim produced; writes it
-    under ML_MODEL_VERSION in ONE transaction (`upsert_nfl_sim_slate`) and
+    under `model_version` (the served ML version, else v1) in ONE transaction
+    (`upsert_nfl_sim_slate`) with that version's artifacts
+    (`ml_model_dir(model_version)`; their config's `model_version` must match,
+    none = v1) and
     returns (ml_games, ml_players, ml_fallback_games): the ML-SERVED games,
     their player rows, and the games served from the current sim.
 
     GLOBAL failures raise (`main` applies the served-version + SIM_ML_MODE
-    failure semantics): artifacts missing/incompatible, a config market_max
-    that differs from MARKET_MAX, the feature build, EVERY REG game falling
+    failure semantics): artifacts missing/incompatible/another version (a
+    v2 served with only v1 artifacts downloaded never loads the v1 ones),
+    no QB params for the version (`serving_qb_params`), a config market_max
+    that differs from MARKET_MAX, the feature build (except, for a config that
+    reads no mx_/di_/qb_ column -- v1 --, those features: NaN + a warning;
+    `config_reads_extra_features`), EVERY REG game falling
     back (a postseason-only slate excepted), the DB write. Every game is
     computed before anything is written, so a global failure writes no
     partial ML slate.
@@ -881,7 +1059,7 @@ def run_ml(*, ok_games: list[dict], game_keys: dict[Any, tuple[str, str, float]]
     PER-GAME failures fall back: a game that is not a REG game (postseason),
     lacks feature rows (team rows for both teams, a row per active player),
     trips a learned share fallback, or raises anywhere in its ML work gets
-    the CURRENT sim's nfl_player_sim rows under ML_MODEL_VERSION (the ML
+    the CURRENT sim's nfl_player_sim rows under `model_version` (the ML
     slate always covers every current-sim game), is counted, and all such
     games are listed on one `::warning::props-ml:` line.
 
@@ -898,17 +1076,33 @@ def run_ml(*, ok_games: list[dict], game_keys: dict[Any, tuple[str, str, float]]
     from ML sims. `allow_missing_analytic`: passed to `assemble_sim_rows`.
     `game_keys`: {game_pk -> (home_abbrev, away_abbrev, ratings_tilt)}.
     `report`: the live injury report (`current_report`), for the feature
-    build's target-week injury injection. `diag` (filled in place once the
-    tables are built): {"st_nan": `_st_nan_shares` over the slate's REG
+    build's target-week injury injection. `qb1_override`: the books QB
+    check's {(season, week, team): gsis} promotions, into the feature build.
+    One `matchup:` line per team of each REG game is printed. `diag` (filled
+    in place once the tables are built): {"st_nan": `_st_nan_shares` over the slate's REG
     weeks} for the summary line.
     """
     from sportsmodel.model.props_ml.artifacts import CONFIG_FILE
     from sportsmodel.sim.nfl import ml_serving
 
-    if not (ML_MODEL_DIR / CONFIG_FILE).is_file():   # fail before the (minutes-long) feature build
-        raise RuntimeError(f"props-ML artifacts missing: no {CONFIG_FILE} in {ML_MODEL_DIR}")
+    model_dir = ml_model_dir(model_version)
+    if not (model_dir / CONFIG_FILE).is_file():   # fail before the (minutes-long) feature build
+        raise RuntimeError(f"props-ML artifacts missing: no {CONFIG_FILE} in {model_dir} "
+                           f"({model_version})")
+    raw_cfg = json.loads((model_dir / CONFIG_FILE).read_text())
+    got = raw_cfg.get("model_version") or ML_MODEL_VERSION
+    if got != model_version:
+        raise RuntimeError(f"props-ML artifacts in {model_dir} are {got}, not {model_version}")
+    qb_params, qb_note = serving_qb_params(model_version, raw_cfg)
+    print(qb_note, flush=True)
     bsn = _load_script("backtest_sim_nfl")
-    feats, team, sched = _build_ml_tables(upto_season, now, report=report)
+    # v1 reads no mx_/di_/qb_ column: no 1999-2015 QB-history download, and a
+    # failure building those features is NaN + a warning (not an ML failure)
+    extras_optional = not config_reads_extra_features(raw_cfg)
+    feats, team, sched = _build_ml_tables(upto_season, now, report=report,
+                                          qb1_override=dict(qb1_override or {}), qb_params=qb_params,
+                                          qb_history=model_version != ML_MODEL_VERSION,
+                                          extras_optional=extras_optional)
     if diag is not None:
         weeks = set()
         for g in ok_games:
@@ -919,9 +1113,9 @@ def run_ml(*, ok_games: list[dict], game_keys: dict[Any, tuple[str, str, float]]
             except ValueError:
                 pass
         diag["st_nan"] = _st_nan_shares(feats, upto_season, weeks)
-    artifacts = ml_serving.load_artifacts(ML_MODEL_DIR, feats, team)
+    artifacts = ml_serving.load_artifacts(model_dir, feats, team)
     if artifacts is None:
-        raise RuntimeError(f"props-ML artifacts missing or incompatible in {ML_MODEL_DIR}")
+        raise RuntimeError(f"props-ML artifacts missing or incompatible in {model_dir}")
     mismatches = _market_max_mismatches(artifacts.config)
     if mismatches:
         raise RuntimeError("props-ML market_max mismatch with the sim's MARKET_MAX: " + "; ".join(mismatches))
@@ -954,7 +1148,7 @@ def run_ml(*, ok_games: list[dict], game_keys: dict[Any, tuple[str, str, float]]
 
     row_sims = {**sims_by_game, **ml_sims_by_game} if game_lines else sims_by_game
     sim_rows, player_rows = assemble_sim_rows(ok_games, row_sims, specs_by_game, analytic_by_game,
-                                              model_version=ML_MODEL_VERSION, dists_by_game=dists_by_game,
+                                              model_version=model_version, dists_by_game=dists_by_game,
                                               allow_missing_analytic=allow_missing_analytic)
     upsert_nfl_sim_slate(sim_rows, player_rows)
     if game_sims is not None:
@@ -966,12 +1160,14 @@ def run_ml(*, ok_games: list[dict], game_keys: dict[Any, tuple[str, str, float]]
 
 
 def _write_copy_slate(ok_games: list[dict], sims_by_game: dict, specs_by_game: dict,
-                      analytic_by_game: dict, allow_missing_analytic: bool = False) -> tuple[int, int]:
-    """The current sim's rows re-labelled ML_MODEL_VERSION, in one
-    transaction: (game rows, player rows). For when the site serves the ML
-    version but the ML path produced nothing (off mode / global failure)."""
+                      analytic_by_game: dict, allow_missing_analytic: bool = False,
+                      model_version: str = ML_MODEL_VERSION) -> tuple[int, int]:
+    """The current sim's rows re-labelled `model_version` (the served ML
+    version), in one transaction: (game rows, player rows). For when the site
+    serves an ML version but the ML path produced nothing (off mode / global
+    failure)."""
     sim_rows, player_rows = assemble_sim_rows(ok_games, sims_by_game, specs_by_game, analytic_by_game,
-                                              model_version=ML_MODEL_VERSION,
+                                              model_version=model_version,
                                               allow_missing_analytic=allow_missing_analytic)
     upsert_nfl_sim_slate(sim_rows, player_rows)
     return len(sim_rows), len(player_rows)
@@ -994,6 +1190,26 @@ def _ml_summary(mode: str, games: int, players: int, fallback_games: int, status
                    for c in ST_NAN_COLS)
     print(f"ml_mode={mode} ml_games={games} ml_players={players} "
           f"ml_fallback_games={fallback_games} ml_status={status} {nan}", flush=True)
+
+
+def _note_qb_override(qb1_override: dict, before: pd.DataFrame, after: pd.DataFrame, abbrev: str,
+                      schedules: pd.DataFrame, upto_season: int, home_abbrev: str,
+                      away_abbrev: str) -> None:
+    """Record a books-QB promotion for the props-ML feature build:
+    qb1_override[(season, the game's REG schedule week, normalized team)] =
+    the promoted gsis. A game with no REG schedule row (postseason: no ML
+    features) or an unidentifiable promoted row adds nothing."""
+    gsis = _promoted_qb_gsis(before, after, abbrev)
+    if gsis is None:
+        return
+    home, away = _norm_team(home_abbrev) or home_abbrev, _norm_team(away_abbrev) or away_abbrev
+    try:
+        week = _schedule_week(schedules, upto_season, home, away)
+    except (ValueError, KeyError):
+        return
+    qb1_override[(int(upto_season), int(week), _norm_team(abbrev) or abbrev)] = gsis
+    print(f"qb-check: props-ML QB1 override {upto_season} wk{week} {_norm_team(abbrev) or abbrev} "
+          f"-> {gsis}", flush=True)
 
 
 def _utcnow() -> datetime:
@@ -1126,6 +1342,9 @@ def main() -> None:
     analytic_by_game: dict = {}
     ok_games: list[dict] = []
     game_keys: dict = {}   # game_pk -> (home_abbrev, away_abbrev, ratings_tilt), for the ML path
+    # the books QB check's promotions, for the props-ML feature build's QB1:
+    # {(season, schedule week, normalized team): promoted gsis}
+    qb1_override: dict = {}
     n_empty_active = 0
 
     for g in games:
@@ -1134,6 +1353,7 @@ def main() -> None:
             home_abbrev = crosswalk[g["home_team"]]
             away_abbrev = crosswalk[g["away_team"]]
             for abbrev in (home_abbrev, away_abbrev):
+                before = depth_df
                 try:
                     depth_df, switch = promote_books_qb(
                         depth_df, abbrev, upto_season, upto_week,
@@ -1145,6 +1365,12 @@ def main() -> None:
                 if switch:
                     print(f"::warning::qb-check: {abbrev} QB1 {switch[0]} -> {switch[1]} "
                           f"(books post a pass_yds line only for {switch[1]})", flush=True)
+                    try:   # an overlay for the ML features: never skips a current-sim game
+                        _note_qb_override(qb1_override, before, depth_df, abbrev, schedules,
+                                          upto_season, home_abbrev, away_abbrev)
+                    except Exception as exc:  # noqa: BLE001
+                        print(f"::warning::qb-check: {abbrev} props-ML QB1 override failed ({exc!r}); "
+                              f"the ML features use the chart's QB1", flush=True)
             home_players, home_qb = active_usage(
                 home_abbrev,
                 upto_season,
@@ -1217,23 +1443,26 @@ def main() -> None:
         served, served_error = served_nfl_sim_version(), None
     except Exception as exc:  # noqa: BLE001 -- unknown served version: see below per mode
         served, served_error = None, f"could not read nfl_sim_serving ({type(exc).__name__}: {exc})"
-    must_write = served_error is None and served == ML_MODEL_VERSION
+    must_write = served_error is None and served in ML_VERSIONS
+    # the ML version this run computes / writes: the served one, else v1 (shadow)
+    ml_version = served if must_write else ML_MODEL_VERSION
     slate = dict(ok_games=ok_games, sims_by_game=sims_by_game, specs_by_game=specs_by_game,
-                 analytic_by_game=analytic_by_game, allow_missing_analytic=lines_on)
+                 analytic_by_game=analytic_by_game, allow_missing_analytic=lines_on,
+                 model_version=ml_version)
     # ML_GAME_LINES=on writes game_predictions only while the site serves the
     # ML version (on + served sim-nfl-v1 = a misconfiguration: warn, no writes).
     write_lines = lines_on and must_write
     if lines_on and not must_write:
         shown = "unknown (read failed)" if served_error is not None else served
-        print(f"{_LINES_WARN}ML_GAME_LINES=on but the site serves {shown} (not {ML_MODEL_VERSION}); "
-              f"no game_predictions written", flush=True)
+        print(f"{_LINES_WARN}ML_GAME_LINES=on but the site serves {shown} (not an ML version: "
+              f"{', '.join(ML_VERSIONS)}); no game_predictions written", flush=True)
 
     def game_lines_ok(sims_for_game: dict, ml_served: set) -> bool:
         """Write this run's game_predictions (write_lines only); False when the write fails."""
         if not write_lines:
             return True
         try:
-            _write_game_lines(ok_games, sims_for_game, ml_served)
+            _write_game_lines(ok_games, sims_for_game, ml_served, ml_version)
             return True
         except Exception as exc:  # noqa: BLE001 -- loud: the served game lines are now stale
             flat = " ".join(f"{type(exc).__name__}: {exc}".split())
@@ -1244,13 +1473,13 @@ def main() -> None:
     if ml_mode == "off":
         if served_error is not None:
             print(f"::warning::props-ml: {' '.join(served_error.split())}; if the site serves "
-                  f"{ML_MODEL_VERSION} its slate was not refreshed", flush=True)
+                  f"an ML version its slate was not refreshed", flush=True)
             sys.exit(1)
         if must_write:
             n_g, n_p = _write_copy_slate(**slate)
             print(f"props-ML: SIM_ML_MODE=off, served={served}: wrote the current sim under "
-                  f"{ML_MODEL_VERSION} (games={n_g} players={n_p})", flush=True)
-            print(OFF_SERVED_ML_WARNING, flush=True)
+                  f"{ml_version} (games={n_g} players={n_p})", flush=True)
+            print(OFF_SERVED_ML_WARNING.format(version=ml_version), flush=True)
             if not game_lines_ok(sims_by_game, set()):
                 sys.exit(1)
         return
@@ -1272,7 +1501,8 @@ def main() -> None:
                 sims_by_game=sims_by_game, analytic_by_game=analytic_by_game,
                 upto_season=upto_season, n_sims=n_sims, now=now, report=report, diag=diag,
                 game_lines=write_lines, game_sims=game_sims, ml_served=ml_served,
-                allow_missing_analytic=lines_on)
+                allow_missing_analytic=lines_on, model_version=ml_version,
+                qb1_override=qb1_override)
             reason = None
         except Exception as exc:  # noqa: BLE001 -- any ML failure -> SIM_ML_MODE failure semantics
             reason = f"{type(exc).__name__}: {exc}"
@@ -1288,12 +1518,12 @@ def main() -> None:
         try:
             n_g, n_p = _write_copy_slate(**slate)
             counts = (0, n_p, n_g)
-            print(f"props-ML: served={served}: wrote the current sim under {ML_MODEL_VERSION} "
+            print(f"props-ML: served={served}: wrote the current sim under {ml_version} "
                   f"(games={n_g} players={n_p})", flush=True)
         except Exception as exc:  # noqa: BLE001 -- report it; the exit semantics still apply
             flat = " ".join(f"{type(exc).__name__}: {exc}".split())
             print(f"::warning::props-ml: copy slate write failed too ({flat}); the served "
-                  f"{ML_MODEL_VERSION} slate was not refreshed", flush=True)
+                  f"{ml_version} slate was not refreshed", flush=True)
         # game lines follow what nfl_sim now holds for the ML version: the current sim
         lines_ok = game_lines_ok(sims_by_game, set())
     _ml_summary(ml_mode, *counts, "failed", diag.get("st_nan"))

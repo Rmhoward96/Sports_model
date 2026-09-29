@@ -15,20 +15,34 @@ Pure seams (unit tested in tests/scripts/test_build_player_features.py):
   depth_rank_distribution -- per-season p_depth_rank shares for one position
   dropped_snap_mappings   -- snap rows lost to a missing pfr -> gsis id mapping
   nan_share_by_group      -- NaN share per feature prefix group
-build_tables (no IO) is shared with live serving (generate_sim_nfl).
+  qb_params               -- (H, k) of the QB profiles from qb_profile_params.json
+build_tables (no IO beyond the committed params asset) is shared with live
+serving (generate_sim_nfl). It adds the mx_/di_/qb_ features
+(`player_features.extra_features`) to both tables.
 fetch_sources()/build_and_write()/main() are IO (network + parquet writes)
 and not unit tested.
 
+Build record: next to the parquets, feature_build.json records the
+QB-profile params the tables were built with ({"qb_params": {"mode", "H",
+"k"}}; `read_build_info`). It is removed before the parquets are written and
+rewritten after, so it never describes other tables. The v2 final fit
+(fit_props_ml_final.py --gate-name _v2) refuses tables whose (H, k) differ
+from the serving block it publishes.
+
 Usage:
-    uv run python scripts/build_player_features.py
+    uv run python scripts/build_player_features.py                      # gate QB params
+    uv run python scripts/build_player_features.py --qb-params serving  # v2 weekly retrain
 """
 from __future__ import annotations
 
+import argparse
+import json
 import sys
 import time
 from collections.abc import Callable
 from pathlib import Path
 
+import numpy as np
 import pandas as pd
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
@@ -37,13 +51,18 @@ from sportsmodel.nfl.teams import normalize_team  # noqa: E402
 
 SEASONS = list(range(2016, 2027))
 OUT_DIR = Path(__file__).resolve().parents[1] / "data" / "props_ml"
+QB_PARAMS_PATH = Path(__file__).resolve().parents[1] / "assets" / "nfl" / "props_ml" / "qb_profile_params.json"
+BUILD_INFO_FILE = "feature_build.json"   # the tables' build record (QB params)
+QB_FIRST_SEASON = 1999     # QB profiles use every QB game from 1999 on
 SKILL = ("QB", "RB", "WR", "TE")
-FEATURE_GROUPS = ("p_", "ngs_", "tm_", "op_", "st_", "cx_", "mk_")
+FEATURE_GROUPS = ("p_", "ngs_", "tm_", "op_", "st_", "cx_", "mk_", "mx_", "di_", "qb_")
 _STUB_COLS = ["player_id", "season", "week", "team", "opponent", "position"]
-# pbp columns read by team_games / player_redzone / team_game_epa (the full
-# release has ~370 columns; trimming per season keeps the 11-season frame small).
+# pbp columns read by team_games / player_redzone / team_game_epa / unit_games
+# (the full release has ~370 columns; trimming per season keeps the 11-season
+# frame small).
 _PBP_COLS = ["season", "week", "season_type", "play_type", "posteam", "defteam", "sack", "qb_hit",
-             "wp", "down", "qtr", "yardline_100", "receiver_player_id", "rusher_player_id", "epa"]
+             "wp", "down", "qtr", "yardline_100", "receiver_player_id", "rusher_player_id", "epa",
+             "yards_gained", "success", "pass_touchdown", "rush_touchdown", "qb_scramble"]
 
 
 def _norm(code) -> str | None:
@@ -155,6 +174,53 @@ def nan_share_by_group(df: pd.DataFrame) -> dict[str, float]:
     return res
 
 
+def qb_params(mode: str = "gate", path: Path | None = None) -> tuple[float, float]:
+    """(H, k) of the QB profiles: the `gate` block (fit on 2021-2023) or the
+    `serving` block (fit on 2021 -> latest) of qb_profile_params.json."""
+    if mode not in ("gate", "serving"):
+        raise ValueError(f"qb_params_mode must be 'gate' or 'serving', got {mode!r}")
+    path = QB_PARAMS_PATH if path is None else Path(path)
+    block = json.loads(Path(path).read_text()).get(mode)
+    if block is None:
+        raise RuntimeError(f"{path} has no {mode!r} block -- run "
+                           f"`uv run python scripts/tune_qb_profile.py --mode {mode}` first")
+    return float(block["H"]), float(block["k"])
+
+
+def resolved_qb_params(src: dict) -> dict:
+    """{"mode", "H", "k"} build_tables uses for `src`: an explicit
+    `src["qb_params"]` (mode "explicit"), else the `qb_params_mode` block."""
+    if src.get("qb_params") is not None:
+        H, k = src["qb_params"]
+        return {"mode": "explicit", "H": float(H), "k": float(k)}
+    mode = src.get("qb_params_mode", "gate")
+    H, k = qb_params(mode, QB_PARAMS_PATH)
+    return {"mode": mode, "H": H, "k": k}
+
+
+def build_info_path(out_dir: Path | None = None) -> Path:
+    return Path(OUT_DIR if out_dir is None else out_dir) / BUILD_INFO_FILE
+
+
+def write_build_info(qb: dict, out_dir: Path | None = None) -> Path:
+    """Write the tables' build record ({"qb_params": qb, "created_at"})."""
+    from datetime import datetime, timezone
+
+    path = build_info_path(out_dir)
+    path.write_text(json.dumps({"qb_params": {"mode": qb["mode"], "H": float(qb["H"]),
+                                              "k": float(qb["k"])},
+                                "created_at": datetime.now(timezone.utc).isoformat(timespec="seconds")},
+                               indent=2, sort_keys=True) + "\n")
+    return path
+
+
+def read_build_info(out_dir: Path | None = None) -> dict | None:
+    """The tables' build record, or None when there is none (tables built
+    before the record existed, or a build that did not finish)."""
+    path = build_info_path(out_dir)
+    return json.loads(path.read_text()) if path.is_file() else None
+
+
 def _load_pbp(seasons: list[int]) -> pd.DataFrame:
     """pbp season by season, trimmed to _PBP_COLS (memory)."""
     from sportsmodel.nfl.nflverse import load_release
@@ -169,10 +235,41 @@ def _load_pbp(seasons: list[int]) -> pd.DataFrame:
     return pd.concat(frames, ignore_index=True)
 
 
-def fetch_sources(seasons: list[int] | None = None) -> dict:
+def qb_history_seasons(seasons: list[int]) -> list[int]:
+    """The weekly QB-history seasons QB_FIRST_SEASON..max(seasons) that are
+    not requested seasons (downloaded separately). PURE."""
+    return [y for y in range(QB_FIRST_SEASON, max(seasons) + 1) if y not in seasons]
+
+
+def load_qb_history(hist: list[int]) -> pd.DataFrame:
+    """IO: the QB rows of weekly stats for EVERY `hist` season. A season that
+    fails to download (network error, 404) raises instead of being skipped:
+    a silently missing season would quietly change the QB profiles (and the
+    serving build would drift from the training build)."""
+    from sportsmodel.nfl.nflverse import load_release
+
+    h = load_release("weekly", hist)
+    got = set(pd.to_numeric(h["season"], errors="coerce").dropna().astype(int)) if len(h) else set()
+    missing = sorted(set(hist) - got)
+    if missing:
+        raise RuntimeError(f"nflverse weekly QB history: season(s) {missing} unavailable -- the QB "
+                           f"profiles need every season {hist[0]}-{hist[-1]}; refusing a partial "
+                           "history")
+    return h[h["position"] == "QB"]
+
+
+def fetch_sources(seasons: list[int] | None = None, *, qb_history: bool = True) -> dict:
     """IO: every nflverse input for `seasons` (default SEASONS; network).
     Live serving (generate_sim_nfl's SIM_ML_MODE path) passes
-    SEASONS[0]..current season."""
+    SEASONS[0]..current season. `weekly_qb` = the QB rows of weekly stats
+    1999..max(seasons) (the requested seasons' frame is reused; only the
+    earlier history is downloaded again, and every history season must load:
+    `load_qb_history`). `qb_history=False` (live serving of a version that
+    reads no qb_ columns, i.e. v1) skips the history download: `weekly_qb` is
+    then the requested seasons' QB rows only, so the qb_ features are NOT the
+    training ones. Training / CLI builds keep the full history (default).
+    `qb_params_mode` defaults to "gate" (set "serving" to use the serving
+    (H, k))."""
     import nfl_data_py as nfl
 
     from sportsmodel.nfl.nflverse import import_by_season, load_release
@@ -180,10 +277,17 @@ def fetch_sources(seasons: list[int] | None = None) -> dict:
 
     seasons = SEASONS if seasons is None else list(seasons)
     sched = load_release("schedules", seasons)
+    weekly = load_release("weekly", seasons)
+    hist = qb_history_seasons(seasons) if qb_history else []
+    qb_frames = [weekly[weekly["position"] == "QB"]]
+    if hist:
+        qb_frames.insert(0, load_qb_history(hist))
     return {
         "sched": sched,
         "pbp": _load_pbp(seasons),
-        "weekly": load_release("weekly", seasons),
+        "weekly": weekly,
+        "weekly_qb": pd.concat(qb_frames, ignore_index=True),
+        "qb_params_mode": "gate",
         "snaps": load_release("snaps", seasons),
         "depth": depth_charts_asof(load_release("depth", seasons), sched),
         "injuries": import_by_season(nfl.import_injuries, seasons, "injuries", required=False),
@@ -193,13 +297,41 @@ def fetch_sources(seasons: list[int] | None = None) -> dict:
     }
 
 
-def build_tables(src: dict, ctx_fill: Callable[[pd.DataFrame, dict, pd.DataFrame], pd.DataFrame] | None = None
-                 ) -> dict:
-    """Both feature tables from fetched sources (no IO). The one builder shared
-    by the parquet build (training) and live serving: serving passes
+def extra_feature_columns() -> list[str]:
+    """Every mx_/di_/qb_ column `player_features.extra_features` adds to both
+    tables (from the feature modules' constants). PURE."""
+    from sportsmodel.nfl import def_injuries, qb_profile, unit_efficiency
+
+    mx = [c for m in unit_efficiency.UNIT_METRICS
+          for c in (f"mx_tm_{m}_adj", f"mx_tm_{m}_prev", f"mx_op_{m}_allowed_adj",
+                    f"mx_op_{m}_allowed_prev")]
+    mx += ["mx_pass_edge", "mx_rush_edge", "mx_pass_minus_rush"]
+    di = [f"di_op_vacated_{g}" for g in def_injuries.GROUPS]
+    qb = [c for c in qb_profile.TEAM_COLS if c.startswith("qb_")]
+    return mx + di + qb
+
+
+EXTRA_WARN = "::warning::props-ml: "
+
+
+def build_tables(src: dict, ctx_fill: Callable[[pd.DataFrame, dict, pd.DataFrame], pd.DataFrame] | None = None,
+                 qb1_override: dict | None = None, extra_fallback: bool = False) -> dict:
+    """Both feature tables from fetched sources (no network). The one builder
+    shared by the parquet build (training) and live serving: serving passes
     `ctx_fill(ctx, stadiums, sched)` (e.g. context.fill_forecast_weather with
     a fetcher) to fill upcoming games' forecast weather before both tables
-    are built. Returns {"feats", "team", "pg", "tg", "stubs"}."""
+    are built. The mx_/di_/qb_ features (`player_features.extra_features`)
+    use the QB-profile (H, k) `src["qb_params"]` when given (live serving:
+    the served version's own params), else the `src["qb_params_mode"]` block
+    ("gate" by default), and `qb1_override` {(season, week, team): gsis_id}
+    for QB1.
+    `extra_fallback` (live serving of a config that reads NO mx_/di_/qb_
+    column, i.e. v1): an exception while building those features gives NaN
+    columns for all of them (`extra_feature_columns`) plus a
+    `::warning::props-ml:` line instead of failing the build; otherwise (the
+    default: training, v2 serving) it propagates.
+    Returns {"feats", "team", "pg", "tg", "stubs", "extra", "extra_error"}
+    (`extra_error`: the swallowed exception's text, else None)."""
     from sportsmodel.nfl import context, efficiency, player_features
 
     sched, pbp, injuries, depth = src["sched"], src["pbp"], src["injuries"], src["depth"]
@@ -212,24 +344,48 @@ def build_tables(src: dict, ctx_fill: Callable[[pd.DataFrame, dict, pd.DataFrame
         ctx = ctx_fill(ctx, stadiums, sched)
     game_epa = efficiency.team_game_epa(pbp)
     stubs = active_stubs(depth, injuries, pg, sched)
+    explicit = src.get("qb_params")
+    H, k = ((float(explicit[0]), float(explicit[1])) if explicit is not None
+            else qb_params(src.get("qb_params_mode", "gate"), QB_PARAMS_PATH))
+    extra_error = None
+    try:
+        extra = player_features.extra_features(player_features.team_week_keys(tg, ctx), pbp, src["snaps"],
+                                               src["pfr2gsis"], injuries, depth, src["weekly_qb"], H, k,
+                                               qb1_override=qb1_override)
+    except Exception as exc:  # noqa: BLE001 -- only swallowed when no served model reads them
+        if not extra_fallback:
+            raise
+        extra, extra_error = None, " ".join(f"{type(exc).__name__}: {exc}".split())
+        print(f"{EXTRA_WARN}mx_/di_/qb_ feature build failed ({extra_error}); those columns are NaN "
+              "(the served config reads none of them)", flush=True)
     feats = player_features.build_feature_table(pg, tg, rz, ctx, src["ngs"], injuries, depth, game_epa,
-                                                stubs=stubs)
-    team = player_features.build_team_table(tg, ctx, game_epa)
-    return {"feats": feats, "team": team, "pg": pg, "tg": tg, "stubs": stubs}
+                                                stubs=stubs, extra=extra)
+    team = player_features.build_team_table(tg, ctx, game_epa, extra=extra)
+    if extra_error is not None:
+        nan_cols = {c: np.nan for c in extra_feature_columns()}
+        feats, team = feats.assign(**nan_cols), team.assign(**nan_cols)
+    return {"feats": feats, "team": team, "pg": pg, "tg": tg, "stubs": stubs, "extra": extra,
+            "extra_error": extra_error}
 
 
-def build_and_write(src: dict, t0: float, t_fetch: float) -> None:
-    """Build both tables from fetched sources, write the parquets, print the summary."""
+def build_and_write(src: dict, t0: float, t_fetch: float, out_dir: Path | None = None) -> None:
+    """Build both tables from fetched sources, write the parquets + the build
+    record (QB params), print the summary."""
+    out_dir = OUT_DIR if out_dir is None else Path(out_dir)
     sched, depth = src["sched"], src["depth"]
     dropped = dropped_snap_mappings(src["snaps"], src["pfr2gsis"])
-    print(f"sources ready ({t_fetch:.1f}s); building feature tables...", flush=True)
+    qb = resolved_qb_params(src)
+    print(f"sources ready ({t_fetch:.1f}s); building feature tables (QB params {qb['mode']}: "
+          f"H={qb['H']:g} k={qb['k']:g})...", flush=True)
     built = build_tables(src)
     feats, team, stubs = built["feats"], built["team"], built["stubs"]
     print(f"{len(built['pg'])} player-games, {len(built['tg'])} team-games, {len(stubs)} stubs", flush=True)
 
-    OUT_DIR.mkdir(parents=True, exist_ok=True)
-    feats.to_parquet(OUT_DIR / "player_week_features.parquet", index=False)
-    team.to_parquet(OUT_DIR / "team_week_features.parquet", index=False)
+    out_dir.mkdir(parents=True, exist_ok=True)
+    build_info_path(out_dir).unlink(missing_ok=True)   # never describes other tables
+    feats.to_parquet(out_dir / "player_week_features.parquet", index=False)
+    team.to_parquet(out_dir / "team_week_features.parquet", index=False)
+    write_build_info(qb, out_dir)
     elapsed = time.monotonic() - t0
 
     played = feats["y_targets"].notna()
@@ -245,19 +401,32 @@ def build_and_write(src: dict, t0: float, t_fetch: float) -> None:
     shares = nan_share_by_group(feats)
     print("NaN share per feature group (player table): "
           + ", ".join(f"{k}={v:.3f}" for k, v in shares.items()))
+    tshares = nan_share_by_group(team)
+    print("NaN share, new groups (team table): "
+          + ", ".join(f"{k}={tshares[k]:.3f}" for k in ("mx_", "di_", "qb_")))
     cov = chart_coverage(depth, sched)
     print(f"REG team-weeks by depth chart used (active_usage rule): exact {cov['exact']}, "
           f"fallback to an earlier chart {cov['fallback']}, none {cov['none']}")
     print("WR p_depth_rank (rank within team-week-position) share by season:\n"
           + depth_rank_distribution(feats, "WR").to_string())
     print(f"feature columns: {sum(c.startswith(FEATURE_GROUPS) for c in feats.columns)}; "
-          f"written to {OUT_DIR}")
+          f"written to {out_dir} (QB params {qb['mode']} H={qb['H']:g} k={qb['k']:g})")
     print(f"build time: {elapsed:.1f}s (fetch {t_fetch:.1f}s, features {elapsed - t_fetch:.1f}s)")
 
 
-def main() -> None:
+def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
+    ap = argparse.ArgumentParser(description="Build the props-ML feature tables.")
+    ap.add_argument("--qb-params", choices=("gate", "serving"), default="gate",
+                    help="QB-profile (H, k) block of qb_profile_params.json (default gate; the "
+                         "v2 weekly retrain builds with serving)")
+    return ap.parse_args(argv)
+
+
+def main(argv: list[str] | None = None) -> None:
+    args = parse_args(argv)
+    qb_params(args.qb_params, QB_PARAMS_PATH)   # fail before the (long) fetch if the block is missing
     t0 = time.monotonic()
-    src = fetch_sources()
+    src = {**fetch_sources(), "qb_params_mode": args.qb_params}
     build_and_write(src, t0, time.monotonic() - t0)
 
 

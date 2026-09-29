@@ -1,12 +1,19 @@
 """Props-ML model artifacts: file names, load and verify (props ML, Props-2).
 
-``scripts/fit_props_ml_final.py`` writes ``data/props_ml/models/``
+``scripts/fit_props_ml_final.py`` writes ``data/props_ml/models/<version>/``
 (``save_artifacts``): ``learned.joblib`` (rung-A ``LearnedModels``),
 ``b_<market>.joblib`` (B ``MarketModel`` for every market that READS B:
 ``source == "ml"`` and ``w_final < 1``), ``calibration.json`` (the committed
 serving maps) and ``props_ml_config.json`` (pipeline + everything serving
 needs). The script and live serving (``sim.nfl.ml_serving``) both load and
 verify them through this module, so the checks live in one place.
+
+Model versions (``ML_VERSIONS``): each served props-ML version has its own
+artifacts dir, ``data/props_ml/models/<version>/``. A config's
+``model_version`` names it; a config without one is ``nfl-sim-ml-v1`` (the
+artifacts published before v2 existed). The version picks the B role table
+(``role_subsets_for``: v1 ``ROLE_SUBSETS``, v2 ``ROLE_SUBSETS_V2``) that the
+load check compares against and serving applies.
 """
 from __future__ import annotations
 
@@ -20,7 +27,12 @@ import numpy as np
 import pandas as pd
 from sklearn.exceptions import InconsistentVersionWarning
 
-from sportsmodel.model.props_ml.dist_models import ROLE_SUBSETS
+from sportsmodel.model.props_ml.dist_models import ROLE_SUBSETS, ROLE_SUBSETS_V2
+
+ML_V1 = "nfl-sim-ml-v1"
+ML_V2 = "nfl-sim-ml-v2"
+ML_VERSIONS = (ML_V1, ML_V2)
+ROLE_TABLES: dict[str, dict] = {ML_V1: ROLE_SUBSETS, ML_V2: ROLE_SUBSETS_V2}
 
 CONFIG_FILE = "props_ml_config.json"
 LEARNED_FILE = "learned.joblib"
@@ -38,6 +50,20 @@ class Artifacts(NamedTuple):
 def _jsonable(x):
     """``x`` as it reads back from JSON (tuples -> lists)."""
     return json.loads(json.dumps(x))
+
+
+def config_model_version(config: Mapping) -> str:
+    """The config's ``model_version`` (none = ``nfl-sim-ml-v1``: the v1
+    artifacts predate the key). ValueError for a version not in ML_VERSIONS."""
+    v = config.get("model_version") or ML_V1
+    if v not in ROLE_TABLES:
+        raise ValueError(f"props_ml_config.json model_version {v!r} is not one of {list(ML_VERSIONS)}")
+    return v
+
+
+def role_subsets_for(config: Mapping) -> dict:
+    """The B role table of the config's model version (Ruling P1)."""
+    return ROLE_TABLES[config_model_version(config)]
 
 
 def _is_artifact(name: str) -> bool:
@@ -111,8 +137,10 @@ def _joblib_load(path: Path):
 
 def load_artifacts(out_dir: Path, player_tbl: pd.DataFrame | None = None,
                    team_tbl: pd.DataFrame | None = None) -> Artifacts:
-    """Load what ``save_artifacts`` wrote. ValueError on a format mismatch, a
-    config ``role_subsets`` differing from ``dist_models.ROLE_SUBSETS``, a B
+    """Load what ``save_artifacts`` wrote. ValueError on a format mismatch, an
+    unknown ``model_version``, a config ``role_subsets`` differing from the
+    role table of its model version (``role_subsets_for``; compared after a
+    JSON round trip, so V2's ``conds`` tuples match their saved lists), a B
     model set differing from the markets that read B, a model pickled under
     another scikit-learn version or unreadable, or (with tables) a required
     feature column missing (``verify_feature_columns``). Missing files raise
@@ -122,9 +150,11 @@ def load_artifacts(out_dir: Path, player_tbl: pd.DataFrame | None = None,
     if config.get("format_version") != FORMAT_VERSION:
         raise ValueError(f"props_ml_config.json format_version {config.get('format_version')} "
                          f"!= {FORMAT_VERSION}")
-    if config.get("role_subsets") != _jsonable(ROLE_SUBSETS):
-        raise ValueError("props_ml_config.json role_subsets differ from dist_models.ROLE_SUBSETS: "
-                         "refit the models")
+    version = config_model_version(config)
+    if _jsonable(config.get("role_subsets")) != _jsonable(ROLE_TABLES[version]):
+        table = "ROLE_SUBSETS_V2" if version == ML_V2 else "ROLE_SUBSETS"
+        raise ValueError(f"props_ml_config.json role_subsets differ from dist_models.{table} "
+                         f"({version}): refit the models")
     files = config["artifact_files"]
     if set(files["b"]) != set(b_markets(config)):
         raise ValueError(f"B models {sorted(files['b'])} != markets reading B "

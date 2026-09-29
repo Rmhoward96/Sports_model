@@ -18,8 +18,10 @@ name: injury-watch
 #
 # Requires repo secrets: DATABASE_URL, SPORTSDATA_API_KEY.
 # Optional repo variable SIM_ML_MODE (off | shadow | live; unset = off) turns on
-# props-ML serving in the NFL sim step; the models are downloaded from the
-# props-ml-latest Release (train-props-ml.yml) only when it is not off.
+# props-ML serving in the NFL sim step; the models are downloaded (only when it
+# is not off) from the props-ml-latest Release -> nfl-sim-ml-v1 and props-ml-v2
+# -> nfl-sim-ml-v2 (train-props-ml.yml); the sim serves the version
+# nfl_sim_serving names.
 # Optional repo variable ML_GAME_LINES (on | off; unset = off): when on, the ML
 # sim (generate_sim_nfl.py) is the NFL game-line source, so the Elo
 # generate_nfl.py step is skipped (its newer rows would win predictions_current).
@@ -65,24 +67,41 @@ jobs:
           SM_DATA_DIR: ${{ github.workspace }}/data
         run: uv run python scripts/generate_nfl.py
 
-      - name: Download props-ML models (Release props-ml-latest)
+      - name: Download props-ML models (props-ml-latest -> nfl-sim-ml-v1, props-ml-v2 -> nfl-sim-ml-v2)
         if: steps.check.outputs.changed == 'true' && env.SIM_ML_MODE != 'off'
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          gh release download props-ml-latest -D data/props_ml/models --clobber || echo "no props-ml release"
-          # Verify the set against MANIFEST.sha256 (uploaded last by train-props-ml.yml);
-          # on any failure remove the models so the sim takes its "no artifacts"
-          # ML failure path (current sim still written). Never fails the step.
-          if [ -d data/props_ml/models ]; then
+          # One models dir per served version -- the NFL sim step serves the
+          # version nfl_sim_serving names: Release props-ml-latest ->
+          # data/props_ml/models/nfl-sim-ml-v1 (unchanged release), props-ml-v2 ->
+          # data/props_ml/models/nfl-sim-ml-v2. Each set is verified against its
+          # own MANIFEST.sha256 (uploaded last by train-props-ml.yml); a missing
+          # Release or any verification failure removes THAT version's dir with a
+          # ::warning:: (the sim takes its "no artifacts" ML failure path only if
+          # that version is served). A missing props-ml-v2 Release is only a
+          # ::notice:: (expected until v2 ships; the step cannot read the served
+          # version): if the site serves nfl-sim-ml-v2 the sim step then fails
+          # its ML path with a ::warning::props-ml: (artifacts missing). Never
+          # fails the step.
+          fetch_verified() {
+            rel="$1"
+            dir="data/props_ml/models/$2"
+            missing="${3:-warning}"
+            rm -rf "$dir"
+            if ! gh release download "$rel" -D "$dir" --clobber; then
+              rm -rf "$dir"
+              echo "::$missing::props-ml: no $rel release; $2 disabled"
+              return 0
+            fi
             reason=""
-            if [ ! -f data/props_ml/models/MANIFEST.sha256 ]; then
+            if [ ! -f "$dir/MANIFEST.sha256" ]; then
               reason="MANIFEST.sha256 missing"
-            elif ! (cd data/props_ml/models && sha256sum -c --strict --quiet MANIFEST.sha256); then
+            elif ! (cd "$dir" && sha256sum -c --strict --quiet MANIFEST.sha256); then
               reason="checksum mismatch or missing file"
             else
-              listed=" $(sed -E 's/^[0-9a-f]{64} [ *]//' data/props_ml/models/MANIFEST.sha256 | tr '\n' ' ')"
-              for f in data/props_ml/models/*; do
+              listed=" $(sed -E 's/^[0-9a-f]{64} [ *]//' "$dir/MANIFEST.sha256" | tr '\n' ' ')"
+              for f in "$dir"/*; do
                 n="$(basename "$f")"
                 [ "$n" = MANIFEST.sha256 ] && continue
                 case "$listed" in
@@ -92,12 +111,14 @@ jobs:
               done
             fi
             if [ -n "$reason" ]; then
-              rm -rf data/props_ml/models
-              echo "::warning::props-ml: release verification failed ($reason); models removed"
+              rm -rf "$dir"
+              echo "::warning::props-ml: release verification failed ($rel: $reason); $2 models removed"
             else
-              echo "props-ml release verified"
+              echo "props-ml release verified ($rel -> $dir)"
             fi
-          fi
+          }
+          fetch_verified props-ml-latest nfl-sim-ml-v1
+          fetch_verified props-ml-v2 nfl-sim-ml-v2 notice
 
       - name: Generate NFL sim predictions (Monte Carlo + player distributions)
         if: steps.check.outputs.changed == 'true'
