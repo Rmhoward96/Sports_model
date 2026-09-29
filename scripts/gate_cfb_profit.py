@@ -173,14 +173,39 @@ _BET_COLS = ["season", "week", "game_pk", "day", "side", "p_side", "edge", "dec"
              "stake_frac", "result"]
 
 
-def _chronological(rows: pd.DataFrame) -> pd.DataFrame:
+def _chronological(rows: pd.DataFrame) -> tuple[pd.DataFrame, int]:
+    """Rows with their ET slate `day`, sorted chronologically. A row without a
+    kickoff takes the most common slate day of its (season, week) among the
+    rows that have one (the week's Saturday, in practice); with none it is
+    dropped. Returns (rows, n_dropped)."""
     kick = pd.to_datetime(rows["start_date"], utc=True, errors="coerce")
     day = kick.dt.tz_convert("America/New_York").dt.strftime("%Y-%m-%d")
-    fallback = (rows["season"].astype(int).astype(str) + "-wk"
-                + rows["week"].astype(int).astype(str).str.zfill(2))
-    out = rows.assign(_kick=kick, day=day.where(kick.notna(), fallback))
-    return out.sort_values(["season", "_kick", "week", "game_pk"], na_position="last",
-                           kind="mergesort")
+    out = rows.assign(_kick=kick, day=day)
+    missing = out["day"].isna()
+    if missing.any():
+        known = out[~missing]
+        week_day = (known.groupby(["season", "week"])["day"]
+                    .agg(lambda d: d.value_counts().sort_index().idxmax()).to_dict())
+        fill = [week_day.get((s, w)) for s, w in zip(out.loc[missing, "season"],
+                                                     out.loc[missing, "week"])]
+        out.loc[missing, "day"] = fill
+    n_before = len(out)
+    out = out[out["day"].notna()]
+    n_dropped = n_before - len(out)
+    if n_dropped:
+        _log(f"  warning: {n_dropped} row(s) with no kickoff and no dated game in their "
+             "week dropped from betting")
+    out = out.sort_values(["season", "day", "_kick", "game_pk"], na_position="last",
+                          kind="mergesort")
+    return out, n_dropped
+
+
+def _first_side_result(rows: pd.DataFrame) -> pd.Series:
+    """'win'/'loss'/'push'/'void' of the first side; from `result` when the
+    table carries it (build_rows), else from y (NaN -> void)."""
+    if "result" in rows.columns:
+        return rows["result"].fillna("void")
+    return rows["y"].map({1.0: "win", 0.0: "loss"}).fillna("void")
 
 
 def make_bets(rows: pd.DataFrame, market: str, p_col: str, kelly_frac: float,
@@ -189,15 +214,23 @@ def make_bets(rows: pd.DataFrame, market: str, p_col: str, kelly_frac: float,
 
     `rows[p_col]` is P(first side wins) (home covers / over / home wins).
     At most one side per row (= per game, market, price_point); stakes capped
-    at 3 % per bet and 15 % per ET slate day (`kelly.apply_day_cap`)."""
-    r = rows[rows["y"].notna() & rows[p_col].notna()]
+    at 3 % per bet and 15 % per ET slate day (`kelly.apply_day_cap`). Pushed
+    and void rows are bet like any other (the bet is placed before the result
+    is known) and settle as a push: stake returned, but it is staked, counted
+    and takes up day-cap room. `bets.attrs["n_dropped_no_day"]` counts rows
+    left out for want of a slate day."""
+    r = rows[rows[p_col].notna()].assign(_res=_first_side_result(rows))
+    n_dropped = 0
+    if not r.empty:
+        r, n_dropped = _chronological(r)
     if r.empty:
-        return pd.DataFrame(columns=_BET_COLS)
-    r = _chronological(r)
+        bets = pd.DataFrame(columns=_BET_COLS)
+        bets.attrs["n_dropped_no_day"] = n_dropped
+        return bets
     sides = SIDES[market]
     recs = []
-    cols = ["season", "week", "game_pk", "day", p_col, "y", "ml_home", "ml_away"]
-    for season, week, pk, day, p, y, ml_h, ml_a in r[cols].itertuples(index=False):
+    cols = ["season", "week", "game_pk", "day", p_col, "_res", "ml_home", "ml_away"]
+    for season, week, pk, day, p, res, ml_h, ml_a in r[cols].itertuples(index=False):
         if market == "moneyline":
             try:
                 d_first = kelly.american_to_decimal(ml_h)
@@ -216,24 +249,32 @@ def make_bets(rows: pd.DataFrame, market: str, p_col: str, kelly_frac: float,
         frac = kelly.stake_fraction(p_side, dec, kelly_frac)
         if not frac > 0:
             continue
-        won = (float(y) == 1.0) == first
+        if res in ("push", "void"):
+            result = "push"
+        else:
+            result = "win" if (res == "win") == first else "loss"
         recs.append({"season": int(season), "week": int(week), "game_pk": pk, "day": day,
                      "side": side, "p_side": p_side, "edge": edge, "dec": dec,
-                     "stake_frac": frac, "result": "win" if won else "loss"})
+                     "stake_frac": frac, "result": result})
     bets = pd.DataFrame(recs, columns=_BET_COLS)
+    bets.attrs["n_dropped_no_day"] = n_dropped
     if bets.empty:
         return bets
     capped = bets["stake_frac"].to_numpy(dtype=float).copy()
     for _, idx in bets.groupby("day", sort=False).indices.items():
         capped[idx] = kelly.apply_day_cap(list(capped[idx]))
     bets["stake_frac"] = capped
-    return bets.reset_index(drop=True)
+    out = bets.reset_index(drop=True)
+    out.attrs["n_dropped_no_day"] = n_dropped
+    return out
 
 
 def _stake_unit_roi(bets: pd.DataFrame) -> float:
     if bets.empty:
         return float("nan")
-    unit = np.where(bets["result"] == "win", bets["dec"].astype(float) - 1.0, -1.0)
+    res = bets["result"].to_numpy()
+    unit = np.where(res == "win", bets["dec"].astype(float) - 1.0,
+                    np.where(res == "push", 0.0, -1.0))
     stake = bets["stake_frac"].to_numpy(dtype=float)
     return float((stake * unit).sum() / stake.sum()) if stake.sum() > 0 else float("nan")
 
@@ -247,7 +288,8 @@ def _log_loss(p, y) -> float:
 
 
 def evaluate(rows: pd.DataFrame, market: str, p_col: str, policy: dict) -> dict:
-    """All verdict metrics for one stream of rows under a frozen policy."""
+    """All verdict metrics for one stream of rows under a frozen policy. Bets
+    include pushed/void rows; ECE, log-loss and n_rows use labelled rows only."""
     bets = make_bets(rows, market, p_col, policy["kelly_frac"], policy["min_edge"])
     sim = kelly.simulate(bets, START_BANKROLL)
     lo, hi = kelly.roi_ci(bets)
@@ -255,6 +297,8 @@ def evaluate(rows: pd.DataFrame, market: str, p_col: str, policy: dict) -> dict:
     return {
         "n_rows": int(len(lab)),
         "n_bets": int(len(bets)),
+        "n_push": int((bets["result"] == "push").sum()),
+        "n_dropped_no_day": int(bets.attrs.get("n_dropped_no_day", 0)),
         "win_rate": float((bets["result"] == "win").mean()) if len(bets) else float("nan"),
         "sim": sim,
         "flat": kelly.flat_pnl(bets),
@@ -387,7 +431,9 @@ def run_market(rows: pd.DataFrame, cov: dict, market: str, sigmas: dict, *,
                oof_fn: OofFn = walk_forward_oof, hp_grid: list[dict] = HP_GRID,
                tuning_only: bool = False) -> dict:
     t0 = time.time()
-    d = rows[(rows["market"] == market) & rows["y"].notna()].copy()
+    # every row of the market: labelled rows train/calibrate/score; pushed and
+    # void rows (y NaN) are only predicted and bet
+    d = rows[rows["market"] == market].copy()
     d["p_base"] = baseline_probs(d, sigmas)
 
     _log(f"[{market}] hyperparameter grid ({len(hp_grid)} combos)")
@@ -397,7 +443,6 @@ def run_market(rows: pd.DataFrame, cov: dict, market: str, sigmas: dict, *,
     oof_seasons = _predictable_seasons(d, [s for s in OOF_SEASONS if s <= top])
     _log(f"[{market}] full OOF {oof_seasons} with {hp}")
     oof = oof_fn(d, market, oof_seasons, min_train_season=MIN_TRAIN_SEASON, **hp)
-    oof = oof[oof["y"].notna()]
 
     streams = {}
     for pp in PRICE_POINTS[market]:
@@ -439,7 +484,9 @@ def run_market(rows: pd.DataFrame, cov: dict, market: str, sigmas: dict, *,
                        "combined": {"seasons": counted,
                                     "model": evaluate(comb, market, "p", policy),
                                     "baseline": evaluate(comb, market, "p_base", base_policy),
-                                    "calibration": reliability(comb["p"], comb["y"])}}
+                                    "calibration": reliability(
+                                        comb.loc[comb["y"].notna(), "p"],
+                                        comb.loc[comb["y"].notna(), "y"])}}
     res["verdict"] = verdict
 
     pv = verdict[PRIMARY_PP[market]]
@@ -494,7 +541,9 @@ def _clean(x):
         return int(x)
     if isinstance(x, (float, np.floating)):
         x = float(x)
-        return x if math.isfinite(x) else None
+        if math.isinf(x):
+            return "-inf" if x < 0 else "inf"      # a wiped-out bankroll stays visible
+        return None if math.isnan(x) else x
     return x
 
 
@@ -522,10 +571,11 @@ def _policy_str(p: dict) -> str:
 
 def _verdict_table(v: dict) -> list[str]:
     lines = ["| season | coverage | counted | rows | bets | log growth (total) | "
-             "log growth / bet | end bankroll | Kelly ROI ($) | stake-unit ROI [95% CI] | "
+             "log growth / bet | pushes | end bankroll | Kelly ROI ($) | "
+             "stake-unit ROI [95% CI] | "
              "flat $10 P&L (ROI) | max DD | ECE | baseline bets | baseline log growth | "
              "baseline end bankroll |",
-             "|" + "---|" * 16]
+             "|" + "---|" * 17]
     entries = [(str(s), r) for s, r in v["seasons"].items()]
     entries.append(("combined", {**v["combined"], "coverage": None,
                                  "counted": ",".join(map(str, v["combined"]["seasons"])) or "none"}))
@@ -536,7 +586,8 @@ def _verdict_table(v: dict) -> list[str]:
         lines.append(
             f"| {label} | {_f(r['coverage'], 3, pct=True)} | {counted} | {m['n_rows']} | "
             f"{m['n_bets']} | {_f(m['sim']['log_growth_total'], 4)} | "
-            f"{_f(m['sim']['log_growth_per_bet'], 5)} | {_f(m['sim']['end_bankroll'], 2)} | "
+            f"{_f(m['sim']['log_growth_per_bet'], 5)} | {m['n_push']} | "
+            f"{_f(m['sim']['end_bankroll'], 2)} | "
             f"{_f(m['sim']['roi'], 3, pct=True)} | {_f(m['roi_units'], 3, pct=True)} "
             f"[{_f(lo, 3, pct=True)}, {_f(hi, 3, pct=True)}] | "
             f"{_f(m['flat']['profit'], 2)} ({_f(m['flat']['roi'], 3, pct=True)}) | "
@@ -565,6 +616,12 @@ def render_report(results: dict) -> str:
           "bankroll. **Stake-unit ROI** = Σ stake_frac·P&L / Σ stake_frac (the unit the "
           "season-week cluster bootstrap CI uses; the ship rule's CI clause uses it). "
           "Flat $10 = the same bets at $10 each.",
+          "- Pushes (and voids) stay in the bet set — a bet is placed before the result "
+          "is known — and settle at 0 with the stake returned; they count as bets and "
+          "as staked and take up day-cap room. ECE, log-loss, the calibration deciles and "
+          "the table's `rows` use the labelled rows only (pushes excluded).",
+          "- The ship rule's ECE is over ALL labelled combined-verdict rows at the primary "
+          "price point, bet or not.",
           "- Baseline = the ratings model's own Normal probabilities (sigmas "
           f"{_f(results['sigmas'].get('sigma_margin'), 2)} / "
           f"{_f(results['sigmas'].get('sigma_total'), 2)}) through the same policy, tuned "
@@ -683,7 +740,7 @@ def load_inputs(max_season: int) -> tuple[pd.DataFrame, pd.DataFrame, dict]:
          f"({time.time() - t0:.1f}s)")
     priors = pd.read_parquet(a / "priors.parquet")
     fbs = set(json.loads((a / "fbs_teams.json").read_text()))
-    rows = build_rows(raw, priors, fbs)
+    rows = build_rows(raw, priors, fbs, keep_pushes=True)   # pushes are bet (G3)
     gl = json.loads((a / "gameline.json").read_text())
     sigmas = {"sigma_margin": gl["sigma_margin"], "sigma_total": gl["sigma_total"]}
     return rows, pd.DataFrame(raw), sigmas

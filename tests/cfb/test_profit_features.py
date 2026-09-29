@@ -227,6 +227,35 @@ def test_unscored_rows_kept_with_nan_label():
         ("moneyline", "close")}
 
 
+def test_keep_pushes_marks_push_rows_unlabelled():
+    g1 = raw_game(spread_open=6.5, market_spread=7.0,       # close pushes
+                  total_open=60.0, market_total=61.5,        # open pushes
+                  ml_home=-250, ml_away=200, actual_margin=7.0, actual_total=60.0)
+    g0 = raw_game(game_pk=2, actual_margin=0.0, ml_home=-110, ml_away=-110)  # tied ML
+    default = pf.build_rows([g1, g0], EMPTY_PRIORS, FBS)
+    assert _row(default, "spread", "close") is None
+    assert _row(default, "moneyline", "close", 2) is None
+    assert set(default["result"]) <= {"win", "loss"}
+    assert (default["result"] == np.where(default["y"] == 1, "win", "loss")).all()
+
+    kept = pf.build_rows([g1, g0], EMPTY_PRIORS, FBS, keep_pushes=True)
+    for market, pp, pk in (("spread", "close", 1), ("total", "open", 1),
+                           ("moneyline", "close", 2)):
+        r = _row(kept, market, pp, pk)
+        assert r is not None and r["result"] == "push" and math.isnan(r["y"])
+    assert _row(kept, "spread", "open")["result"] == "win"
+    assert _row(kept, "total", "close")["result"] == "loss"
+    # every labelled row is identical to the default table
+    lab = kept[kept["y"].notna()].reset_index(drop=True)
+    pd.testing.assert_frame_equal(lab, default.reset_index(drop=True))
+
+
+def test_unscored_rows_are_void():
+    g = raw_game(actual_margin=None, actual_total=None, market_spread=7.0)
+    df = pf.build_rows([g], EMPTY_PRIORS, FBS, keep_pushes=True)
+    assert list(df["result"]) == ["void"] and df["y"].isna().all()
+
+
 def test_rest_days_count_unplayed_scheduled_games():
     games = [
         raw_game(game_pk=1, week=1, start_date="2022-09-01T23:00Z", market_spread=3.0),

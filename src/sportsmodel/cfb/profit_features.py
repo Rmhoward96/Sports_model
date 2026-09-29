@@ -9,7 +9,8 @@
 - moneyline x close only (CFBD gives median closing moneylines; no opener)
 
 Spread convention: `line` is the home-margin line L (home favored => positive).
-A home spread bet wins iff actual_margin > L; pushes are dropped. Total label is
+A home spread bet wins iff actual_margin > L; pushes are dropped (kept, unlabelled,
+with keep_pushes=True for betting simulations). Total label is
 the over; moneyline label is the home win (ties dropped).
 
 Leakage: every f_* value uses only information before the game -- the
@@ -91,7 +92,11 @@ FEATURE_COLS: dict[str, list[str]] = {
 }
 
 KEY_COLS = ["season", "week", "game_pk", "home_team", "away_team", "market", "price_point"]
-_EXTRA_COLS = ["start_date", "actual_margin", "actual_total"]
+_EXTRA_COLS = ["start_date", "actual_margin", "actual_total", "result"]
+# `result` of the FIRST side (home covers / over / home wins): "win" (y=1),
+# "loss" (y=0), "push" (kept only with keep_pushes=True; y NaN) or "void"
+# (no result yet / never played; y NaN)
+_RESULT = {1.0: "win", 0.0: "loss"}
 _ALL_FEATURES = ["line", "f_move", *_COMMON]
 COLUMNS = [*KEY_COLS, "line", "ml_home", "ml_away", *_ALL_FEATURES[1:], "y", *_EXTRA_COLS]
 
@@ -219,16 +224,27 @@ def _label(market: str, r: dict, line: float) -> float | None:
     return 1.0 if actual > ref else 0.0
 
 
-def build_rows(raw: list[dict], priors: pd.DataFrame, fbs: set[str]) -> pd.DataFrame:
+def _result(y: float | None) -> str:
+    if y is None:
+        return "push"
+    return _RESULT.get(y, "void")
+
+
+def build_rows(raw: list[dict], priors: pd.DataFrame, fbs: set[str], *,
+               keep_pushes: bool = False) -> pd.DataFrame:
     """Walk-forward rows -> the (game, market, price_point) feature table.
 
-    Rows whose result pushes the priced line (or a tied moneyline) are dropped.
+    Rows whose result pushes the priced line (or a tied moneyline) are dropped,
+    unless keep_pushes=True: then they are kept with y = NaN (never trained or
+    calibrated on) and result "push", so a betting simulation can settle them
+    (stake returned) instead of conditioning the bet set on the final score.
     Unscored games (raw from `raw_model_predictions(..., include_unscored=True)`,
     actual_* None) are KEPT with y = NaN -- no label, no push drop -- so the
     live step prices them with the same code. Training consumers must drop
     y-NaN rows. Rest days count every raw game with a start_date (played or
     not), so pass include_unscored=True to count unplayed scheduled games too.
-    Extra non-feature columns: start_date (slate day), actual_margin/total.
+    Extra non-feature columns: start_date (slate day), actual_margin/total,
+    result ("win"/"loss" of the first side, "push", "void" = no result).
     """
     lookup = _priors_lookup(priors)
     rests = _rest_days(raw)
@@ -266,20 +282,22 @@ def build_rows(raw: list[dict], priors: pd.DataFrame, fbs: set[str]) -> pd.DataF
                 priced.append((market, "close", close, opener, model))
         for market, pp, line, opener, model in priced:
             y = _label(market, r, line)
-            if y is None:
+            if y is None and not keep_pushes:
                 continue
             out.append({**base, "market": market, "price_point": pp, "line": line,
                         "ml_home": math.nan, "ml_away": math.nan,
                         "f_move": line - opener, "f_edge_pts": model - line,
-                        **common, "y": y})
+                        **common, "y": math.nan if y is None else y,
+                        "result": _result(y)})
 
         ml_h, ml_a = _num(r.get("ml_home")), _num(r.get("ml_away"))
         if not (math.isnan(ml_h) or math.isnan(ml_a)):
             y = _label("moneyline", r, 0.0)
-            if y is not None:
+            if y is not None or keep_pushes:
                 out.append({**base, "market": "moneyline", "price_point": "close",
                             "line": math.nan, "ml_home": ml_h, "ml_away": ml_a,
-                            "f_move": math.nan, "f_edge_pts": mm, **common, "y": y})
+                            "f_move": math.nan, "f_edge_pts": mm, **common,
+                            "y": math.nan if y is None else y, "result": _result(y)})
 
     df = pd.DataFrame(out, columns=COLUMNS)
     float_cols = [c for c in COLUMNS if c.startswith("f_")] + [

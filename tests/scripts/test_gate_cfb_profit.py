@@ -78,7 +78,7 @@ def synth_raw(seasons=range(2015, 2026), n_games=60, seed=0, *, plant_verdict=Fa
 
 
 def rows_and_games(raw):
-    return build_rows(raw, pd.DataFrame(), set()), pd.DataFrame(raw)
+    return build_rows(raw, pd.DataFrame(), set(), keep_pushes=True), pd.DataFrame(raw)
 
 
 class StubOOF:
@@ -98,6 +98,7 @@ class StubOOF:
         noise = ((d["game_pk"].astype(int) * 7919) % 101) / 101.0 - 0.5
         y = d["y"].to_numpy()
         p = 0.5 + 0.3 * noise.to_numpy() + (0.02 + 0.01 * idx) * (y - 0.5)
+        p = np.where(np.isnan(y), 0.8, p)          # unlabelled (push/void): strong home
         verdict = d["season"].isin(gate.VERDICT_SEASONS).to_numpy()
         if self.planted:
             p = np.where(verdict & (idx == 0), np.where(y == 1, 0.97, 0.03), p)
@@ -391,3 +392,99 @@ def test_main_tuning_only_cuts_data_and_writes_nothing(tmp_path, monkeypatch, ca
     assert seen["max_season"] == 2022
     assert list(tmp_path.iterdir()) == []
     assert json.loads(capsys.readouterr().out)["markets"]["spread"]["policy"]
+
+
+# ------------------------------------------------ pushes, voids, chronology ---
+
+def test_push_bet_occupies_day_cap_and_settles_at_zero():
+    wins = [_row(game_pk=i, p=0.9, y=1.0, result="win") for i in range(5)]
+    push = _row(game_pk=99, p=0.9, y=np.nan, result="push")
+    void = _row(game_pk=98, p=0.9, y=np.nan, result="void")
+    with_push = gate.make_bets(pd.DataFrame(wins + [push]), "spread", "p", 0.5, 0.0)
+    assert 99 in set(with_push["game_pk"])
+    assert with_push.set_index("game_pk").loc[99, "result"] == "push"
+    scale = 0.15 / 0.18                                   # 6 x 3 % -> 15 % day cap
+    assert with_push["stake_frac"].tolist() == pytest.approx([0.03 * scale] * 6)
+    d = 1 + 100 / 110
+    sim = kelly_sim = gate.kelly.simulate(with_push, 100.0)
+    assert sim["n_bets"] == 6
+    assert sim["staked"] == pytest.approx(15.0)                       # push included
+    assert kelly_sim["profit"] == pytest.approx(5 * 100 * 0.03 * scale * (d - 1))
+    assert gate._stake_unit_roi(with_push) == pytest.approx(5 * (d - 1) / 6)
+    # a void settles like a push
+    v = gate.make_bets(pd.DataFrame(wins + [void]), "spread", "p", 0.5, 0.0)
+    assert v.set_index("game_pk").loc[98, "result"] == "push"
+    assert gate.kelly.simulate(v, 100.0)["profit"] == pytest.approx(kelly_sim["profit"])
+
+
+def test_verdict_bet_set_keeps_pushes_but_ece_ignores_them():
+    raw = synth_raw()
+    pushed = [r for r in raw if r["season"] == 2023][:3]
+    for r in pushed:                         # the close AND the opener push
+        r["market_spread"] = r["spread_open"] = r["actual_margin"]
+    rows, games = rows_and_games(raw)
+    assert (rows["result"] == "push").sum() >= 6
+    res = gate.run_gate(rows, games, SIGMAS, oof_fn=StubOOF(), markets=("spread",))
+    s23 = res["markets"]["spread"]["verdict"]["open"]["seasons"][2023]["model"]
+    assert s23["n_push"] == 3                 # stub prices pushes at p=.8 -> all bet
+    assert s23["n_rows"] == 60 - 3            # ECE/log-loss rows exclude pushes
+
+
+def test_nat_kickoff_takes_its_weeks_slate_day_or_is_dropped():
+    rows = pd.DataFrame([
+        _row(game_pk=1, week=1, start_date="2023-09-02T17:00Z"),
+        _row(game_pk=2, week=2, start_date="2023-09-09T17:00Z"),
+        _row(game_pk=3, week=1, start_date=None),                   # -> 2023-09-02
+        _row(game_pk=4, week=5, start_date=None),                   # no week-5 date
+    ])
+    bets = gate.make_bets(rows, "spread", "p", 0.25, 0.0)
+    assert list(bets["game_pk"]) == [1, 3, 2]                        # chronological
+    assert bets.set_index("game_pk").loc[3, "day"] == "2023-09-02"
+    assert bets.attrs["n_dropped_no_day"] == 1
+
+
+def test_to_json_keeps_infinities_as_strings():
+    out = json.loads(gate.to_json({"a": float("-inf"), "b": float("inf"),
+                                   "c": float("nan"), "d": 1.5}))
+    assert out == {"a": "-inf", "b": "inf", "c": None, "d": 1.5}
+
+
+def test_baseline_verdict_uses_the_baseline_policy(monkeypatch):
+    fixed = {"p": {"kelly_frac": 0.25, "min_edge": 0.0},
+             "p_base": {"kelly_frac": 0.5, "min_edge": 0.03}}
+    monkeypatch.setattr(gate, "tune_policy",
+                        lambda streams, market, p_col: (dict(fixed[p_col]), []))
+    seen = []
+    real = gate.evaluate
+
+    def spy(rows, market, p_col, policy):
+        seen.append((p_col, dict(policy)))
+        return real(rows, market, p_col, policy)
+
+    monkeypatch.setattr(gate, "evaluate", spy)
+    rows, games = rows_and_games(synth_raw(n_games=30))
+    gate.run_gate(rows, games, SIGMAS, oof_fn=StubOOF(), markets=("spread",))
+    assert {c for c, _ in seen} == {"p", "p_base"}
+    for p_col, policy in seen:
+        assert policy == fixed[p_col]
+
+
+def test_load_inputs_keeps_pushes_for_betting(monkeypatch):
+    from sportsmodel.cfb import walkforward
+    raw = synth_raw(seasons=range(2021, 2023), n_games=10)
+    seen = {}
+    monkeypatch.setattr(walkforward, "raw_model_predictions",
+                        lambda span, elo, blend, **kw: (seen.update(max=int(span.season.max()))
+                                                        or raw))
+    real = gate.build_rows
+
+    def spy(r, priors, fbs, **kw):
+        seen["kw"] = kw
+        return real(r, priors, fbs, **kw)
+
+    monkeypatch.setattr(gate, "build_rows", spy)
+    rows, games, sigmas = gate.load_inputs(2022)
+    assert seen["kw"] == {"keep_pushes": True}
+    assert seen["max"] == 2022
+    assert set(sigmas) == {"sigma_margin", "sigma_total"}
+    assert len(games) == len(raw)
