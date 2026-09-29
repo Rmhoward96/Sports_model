@@ -53,6 +53,13 @@ def _market_from_odds(odds: list | None) -> dict:
             "market_total": float(total) if total is not None else None}
 
 
+def _conf_id(competitor: dict) -> str | None:
+    """ESPN conference id (string) for a scoreboard competitor, None if absent
+    (FCS opponents and some payloads omit it)."""
+    cid = competitor["team"].get("conferenceId")
+    return str(cid) if cid not in (None, "") else None
+
+
 def parse_schedule(payload) -> list[dict]:
     default_season = payload.get("season", {}).get("year")
     default_week = payload.get("week", {}).get("number")
@@ -61,6 +68,7 @@ def parse_schedule(payload) -> list[dict]:
         c = _competitors(ev)
         season = ev.get("season", {}).get("year", default_season)
         week = ev.get("week", {}).get("number", default_week)
+        comp0 = ev["competitions"][0]
         out.append({
             "game_pk": int(ev["id"]),
             "home_team": normalize(c["home"]["team"]["id"]),
@@ -70,10 +78,15 @@ def parse_schedule(payload) -> list[dict]:
             "home_score": _score(c["home"]),
             "away_score": _score(c["away"]),
             "commence_time": ev["date"],
+            "start_date": ev["date"],
+            "neutral_site": bool(comp0.get("neutralSite")),
+            "conference_game": bool(comp0.get("conferenceCompetition")),
+            "home_conf": _conf_id(c["home"]),
+            "away_conf": _conf_id(c["away"]),
             "status": ev["status"]["type"]["name"],
             "week": week,
             "season": season,
-            **_market_from_odds(ev["competitions"][0].get("odds")),
+            **_market_from_odds(comp0.get("odds")),
         })
     return out
 

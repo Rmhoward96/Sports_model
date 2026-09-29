@@ -116,3 +116,44 @@ def test_build_priors_rows_passthrough_fields_and_defaults():
     assert coralville["recruiting_points"] is None
     assert coralville["portal_net"] == 0.0  # no portal entry -> defaults to 0
     assert coralville["coach_first_year"] is False  # no coach entry -> defaults False
+
+
+# -- backfill tolerance: early seasons where an endpoint returns nothing --------
+
+import pandas as pd
+
+
+def test_build_priors_rows_empty_portal_payload_gives_nan_portal_net():
+    """Portal data starts in 2021: for 2016 the endpoint returns nothing, so
+    portal_net is unknown (NaN in the parquet), NOT a fabricated 0.0."""
+    parsed = {**PARSED, "portal": {}}
+    rows = build_priors_rows(parsed, 2016)
+    assert len(rows) == 3
+    for r in rows:
+        assert r["portal_net"] is None
+    # mixed with a covered season, the column is float64 and 2016 is NaN
+    df = pd.DataFrame(rows + build_priors_rows(PARSED, 2022))
+    assert df["portal_net"].dtype == "float64"
+    assert df.loc[df.season == 2016, "portal_net"].isna().all()
+    assert df.loc[df.season == 2022, "portal_net"].notna().all()
+    # everything else is still populated
+    assert _by_name(rows, "Ames")["sp_rating"] == 20.0
+
+
+
+def test_safe_fetch_returns_empty_on_error_and_on_empty(monkeypatch, capsys):
+    def boom(path, key, params=None):
+        raise RuntimeError("404")
+    monkeypatch.setattr(bcp.cfbd, "_get", boom)
+    assert bcp._fetch_parsed(bcp.cfbd.parse_portal, "/player/portal", "k", {"year": 2016}) == {}
+    assert "WARN" in capsys.readouterr().out
+
+    monkeypatch.setattr(bcp.cfbd, "_get", lambda path, key, params=None: [])
+    assert bcp._fetch_parsed(bcp.cfbd.parse_portal, "/player/portal", "k", {"year": 2016}) == {}
+
+
+def test_safe_fetch_passes_through_data(monkeypatch):
+    payload = [{"origin": "Ames", "destination": "Boone", "rating": 0.9}]
+    monkeypatch.setattr(bcp.cfbd, "_get", lambda path, key, params=None: payload)
+    out = bcp._fetch_parsed(bcp.cfbd.parse_portal, "/player/portal", "k", {"year": 2022})
+    assert set(out) == {"Ames", "Boone"}
