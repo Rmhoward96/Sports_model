@@ -11,7 +11,8 @@ import pytest
 
 from sportsmodel.model import props_eval
 from sportsmodel.model.props_eval import pit_pmf, pit_uniform, rps_pmf
-from sportsmodel.model.props_ml.dist_models import ROLE_SUBSETS, fit_market, predict_pmfs
+from sportsmodel.model.props_ml.dist_models import (ROLE_SUBSETS, ROLE_SUBSETS_V2, fit_market,
+                                                     predict_pmfs)
 from sportsmodel.model.props_ml.pit_calibration import IDENTITY_PLATT, fit_pit_map
 from sportsmodel.sim.nfl import learned
 
@@ -389,11 +390,11 @@ def _spy_fits(monkeypatch):
                            "decay": decay, "max_iter": max_iter})
         return real_a(p, t, toggles, upto=upto, test_season=test_season, decay=decay, max_iter=3)
 
-    def fb(df, market, cols, *, upto, test_season, decay, max_iter):
+    def fb(df, market, cols, *, upto, test_season, decay, max_iter, subsets=ROLE_SUBSETS):
         calls["b"].append({"market": market, "cols": list(cols), "upto": upto, "decay": decay,
-                           "max_iter": max_iter})
+                           "max_iter": max_iter, "subsets": subsets})
         return real_b(df, market, cols, upto=upto, test_season=test_season, decay=decay,
-                      max_iter=2)
+                      max_iter=2, subsets=subsets)
 
     monkeypatch.setattr(learned, "fit_models", fa)
     monkeypatch.setattr(fpf, "fit_market", fb)
@@ -545,8 +546,9 @@ def _stub_quick(monkeypatch):
         assert q_weight == 1.0
         return spec
 
-    def fb(df, market, cols, *, upto, test_season, decay, max_iter):
-        calls["b"].append({"market": market, "upto": upto, "decay": decay, "max_iter": max_iter})
+    def fb(df, market, cols, *, upto, test_season, decay, max_iter, subsets=ROLE_SUBSETS):
+        calls["b"].append({"market": market, "upto": upto, "decay": decay, "max_iter": max_iter,
+                           "subsets": subsets})
         return {"market": market, "upto": upto}
 
     def fp(model, rows, kmax):
@@ -790,3 +792,218 @@ def test_new_labelled_weeks_after():
     tbl = pd.DataFrame({"season": [2026] * 3, "week": [1, 2, 3], "y_rec_yds": [1.0, 2.0, None]})
     assert fpf.new_labelled_weeks(tbl, (2026, 1)) == [(2026, 2)]
     assert fpf.new_labelled_weeks(tbl, (2026, 2)) == []
+
+
+# ---- Task 8: per-version artifacts (v1 unchanged, v2 via --gate-name _v2) ----------------
+
+SERVING_QB = {"H": 1.5, "k": 200.0, "fit_seasons": [2021, 2022, 2023, 2024, 2025, 2026],
+              "created_at": "2026-09-29T00:00:00+00:00"}
+
+
+def _qb_params_file(tmp_path, serving=True):
+    path = tmp_path / "qb_profile_params.json"
+    doc = {"gate": {"H": 1.0, "k": 100.0}}
+    if serving:
+        doc["serving"] = SERVING_QB
+    path.write_text(json.dumps(doc))
+    return path
+
+
+def test_version_paths_per_gate_name():
+    assets = fpf.tpb.A_GATE_PATH.parent
+    assert fpf.gate_version("") == "nfl-sim-ml-v1" and fpf.gate_version("_v2") == "nfl-sim-ml-v2"
+    with pytest.raises(ValueError):
+        fpf.gate_version("_v1cmp")      # the comparison run is never fit / served
+    assert fpf.input_paths("") == (assets / "pipeline.json", assets / "calibration.json",
+                                   assets / "a_gate.json")
+    assert fpf.input_paths("_v2") == (assets / "pipeline_v2.json", assets / "calibration_v2.json",
+                                      assets / "a_gate_v2.json")
+    root = fpf.tpm.DATA_DIR / "models"
+    assert fpf.model_dir("nfl-sim-ml-v1") == root / "nfl-sim-ml-v1" == fpf.MODEL_DIR
+    assert fpf.model_dir("nfl-sim-ml-v2") == root / "nfl-sim-ml-v2"
+    assert fpf.gate_subsets("") is ROLE_SUBSETS and fpf.gate_subsets("_v2") is ROLE_SUBSETS_V2
+
+
+def test_role_columns_read_every_condition_of_the_version_table():
+    p = pd.DataFrame({"position": ["QB"], "p_y_pass_att_ewm": [30.0], "p_y_pass_att_r10": [30.0]})
+    assert fpf.role_columns(p, ["pass_yds"]) == ["p_y_pass_att_ewm", "position"]
+    assert fpf.role_columns(p, ["pass_yds", "anytime_td"], ROLE_SUBSETS_V2) == [
+        "p_y_pass_att_ewm", "p_y_pass_att_r10", "position"]
+
+
+def test_serving_qb_block_reads_the_serving_params(tmp_path):
+    assert fpf.serving_qb_block(_qb_params_file(tmp_path)) == SERVING_QB
+    with pytest.raises(RuntimeError, match="serving"):
+        fpf.serving_qb_block(_qb_params_file(tmp_path, serving=False))
+
+
+def _v2_config(p, lm, b, qb=SERVING_QB):
+    return fpf.build_config(_pipeline_b(b), learned_models=lm, b_models=b,
+                            a_fit={"season": 2025, "decay": 0.8, "max_iter": 300},
+                            trained_through=(2025, 8), market_max={"rec_yds": 200, "receptions": 15},
+                            role_cols=fpf.role_columns(p, b, ROLE_SUBSETS_V2), identity=IDENT,
+                            created_at="2026-09-25T00:00:00+00:00", gate_name="_v2",
+                            qb_profile_params=qb)
+
+
+def test_v1_config_is_unchanged_no_version_keys(small_fit):
+    p, t, lm, b = small_fit
+    cfg = _config(p, lm, b)
+    assert "model_version" not in cfg and "qb_profile_params" not in cfg
+    assert cfg["role_subsets"] is ROLE_SUBSETS
+
+
+def test_v2_config_round_trips_and_loads_against_the_v2_role_table(tmp_path, small_fit):
+    p, t, lm, b = small_fit
+    cfg = _v2_config(p, lm, b)
+    assert cfg["model_version"] == "nfl-sim-ml-v2" and cfg["qb_profile_params"] == SERVING_QB
+    assert cfg["role_subsets"] is ROLE_SUBSETS_V2
+    out = tmp_path / "nfl-sim-ml-v2"
+    fpf.save_artifacts(out, lm, b, _calib(_pipeline_b(b)), cfg)
+    saved = json.loads((out / "props_ml_config.json").read_text())
+    # JSON turned the V2 "conds" tuples into lists: the load check must still match
+    assert isinstance(saved["role_subsets"]["pass_yds"]["conds"][0], list)
+    art = fpf.load_artifacts(out, p, t)
+    assert art.config["model_version"] == "nfl-sim-ml-v2"
+    assert fpf.artifacts.role_subsets_for(art.config) is ROLE_SUBSETS_V2
+    with pytest.raises(ValueError):
+        fpf.build_config(**{**_v2_kwargs(p, lm, b), "qb_profile_params": None})
+
+
+def _v2_kwargs(p, lm, b):
+    return dict(pipeline=_pipeline_b(b), learned_models=lm, b_models=b,
+                a_fit={"season": 2025, "decay": 0.8, "max_iter": 300}, trained_through=(2025, 8),
+                market_max={"rec_yds": 200}, role_cols=[], identity=IDENT,
+                created_at="2026-09-25T00:00:00+00:00", gate_name="_v2")
+
+
+@pytest.mark.parametrize("version,table,ok", [
+    (None, ROLE_SUBSETS, True),                       # the live v1 artifacts: no model_version
+    ("nfl-sim-ml-v1", ROLE_SUBSETS, True),
+    ("nfl-sim-ml-v2", ROLE_SUBSETS_V2, True),
+    ("nfl-sim-ml-v2", ROLE_SUBSETS, False),           # v2 config with the v1 table
+    (None, ROLE_SUBSETS_V2, False),                   # v1 config with the v2 table
+    ("nfl-sim-ml-v9", ROLE_SUBSETS, False),           # unknown version
+])
+def test_load_checks_role_subsets_against_the_config_model_version(tmp_path, small_fit, version,
+                                                                    table, ok):
+    p, t, lm, b = small_fit
+    cfg = {**_config(p, lm, b), "role_subsets": table}
+    if version is not None:
+        cfg["model_version"] = version
+    out = tmp_path / "m"
+    fpf.save_artifacts(out, lm, b, _calib(_pipeline_b(b)), cfg)
+    if ok:
+        fpf.load_artifacts(out, p, t)
+    else:
+        with pytest.raises(ValueError, match="role_subsets|model_version"):
+            fpf.load_artifacts(out, p, t)
+
+
+def test_run_final_fit_v2_fits_b_on_the_v2_roles_and_records_version(tmp_path, monkeypatch):
+    calls = _spy_fits(monkeypatch)
+    p, t = _real_tables()
+    p["p_y_pass_att_r10"] = p["p_y_pass_att_ewm"]
+    pipe = _pipeline(w={m: (1.0 if m == "rush_att" else 0.5) for m in MARKETS})
+    out = tmp_path / "nfl-sim-ml-v2"
+    cfg = fpf.run_final_fit(bsn=_Bsn(), player_tbl=p, team_tbl=t, pipeline=pipe, a_gate=A_GATE,
+                            calibration=_calib(pipe), identity=IDENT, out_dir=out,
+                            log=lambda m: None, created_at="2026-09-25T00:00:00+00:00",
+                            gate_name="_v2", qb_profile_params=SERVING_QB)
+    assert calls["b"] and all(c["subsets"] is ROLE_SUBSETS_V2 for c in calls["b"])
+    assert cfg["model_version"] == "nfl-sim-ml-v2" and cfg["qb_profile_params"] == SERVING_QB
+    assert "p_y_pass_att_r10" in cfg["feature_columns"]["role"]
+    art = fpf.load_artifacts(out, p, t)
+    assert art.config["model_version"] == "nfl-sim-ml-v2"
+
+
+def test_run_final_fit_v1_uses_v1_roles(tmp_path, monkeypatch):
+    calls = _spy_fits(monkeypatch)
+    p, t = _real_tables()
+    pipe = _pipeline(w={m: (1.0 if m == "rush_att" else 0.5) for m in MARKETS})
+    cfg = fpf.run_final_fit(bsn=_Bsn(), player_tbl=p, team_tbl=t, pipeline=pipe, a_gate=A_GATE,
+                            calibration=_calib(pipe), identity=IDENT, out_dir=tmp_path / "v1",
+                            log=lambda m: None)
+    assert calls["b"] and all(c["subsets"] is ROLE_SUBSETS for c in calls["b"])
+    assert "model_version" not in cfg
+
+
+def test_run_final_fit_v2_without_serving_qb_params_writes_nothing(tmp_path, monkeypatch):
+    calls = _spy_fits(monkeypatch)
+    p, t = _real_tables()
+    pipe = _pipeline()
+    with pytest.raises(RuntimeError, match="serving"):
+        fpf.run_final_fit(bsn=_Bsn(), player_tbl=p, team_tbl=t, pipeline=pipe, a_gate=A_GATE,
+                          calibration=_calib(pipe), identity=IDENT, out_dir=tmp_path / "v2",
+                          log=lambda m: None, gate_name="_v2", qb_profile_params=None)
+    assert calls["a"] == [] and not (tmp_path / "v2").exists()
+
+
+def test_quick_gate_v2_scores_b_on_the_v2_roles(tmp_path, monkeypatch):
+    calls = _stub_quick(monkeypatch)
+    pipe = _pipeline(w={m: (1.0 if m == "rush_att" else 0.5) for m in MARKETS})
+    ptbl = _qtbl().assign(p_y_pass_att_r10=lambda d: d["p_y_pass_att_ewm"])
+    gate = fpf.run_quick_gate(2, bsn=_FakeBsn(), player_tbl=ptbl,
+                              team_tbl=pd.DataFrame({"team": ["H0"], "season": [2025],
+                                                     "week": [1], "tm_x": [1.0]}),
+                              pipeline=pipe, a_gate=A_GATE, calibration=_calib(pipe),
+                              identity=IDENT, out_dir=tmp_path, n_sims=17, log=lambda m: None,
+                              gate_name="_v2")
+    assert gate["gate_name"] == "_v2"
+    assert calls["b"] and all(c["subsets"] is ROLE_SUBSETS_V2 for c in calls["b"])
+
+
+def test_predict_b_uses_the_given_role_table():
+    rows = pd.DataFrame({"season": [2025, 2025], "week": [5, 5], "player_id": ["q1", "q2"],
+                         "position": ["QB", "QB"], "p_y_pass_att_ewm": [30.0, 30.0],
+                         "p_y_pass_att_r10": [30.0, 0.0]})       # q2: stale QB (v2: out of role)
+    recs = [{"season": 2025, "week": 5, "home": "H", "player_id": pid, "market": "pass_yds"}
+            for pid in ("q1", "q2")]
+
+    class M:
+        pass
+
+    import unittest.mock as um
+    with um.patch.object(fpf, "predict_pmfs", lambda model, r, k: [np.ones(3) / 3] * len(r)):
+        _, oor_v1 = fpf.predict_b({"pass_yds": M()}, rows, recs, {"pass_yds": 2})
+        _, oor_v2 = fpf.predict_b({"pass_yds": M()}, rows, recs, {"pass_yds": 2}, ROLE_SUBSETS_V2)
+    assert oor_v1 == set() and oor_v2 == {(2025, 5, "q2", "pass_yds")}
+
+
+def test_main_gate_name_picks_the_version_inputs_and_dir(monkeypatch, tmp_path):
+    seen = {}
+    monkeypatch.setattr(fpf, "QB_PARAMS_PATH", _qb_params_file(tmp_path))
+
+    def load(args):
+        seen["load"] = (args.gate_name, args.pipeline, args.calibration)
+        return {"pipeline": _pipeline()}
+
+    monkeypatch.setattr(fpf, "_load_inputs", load)
+    monkeypatch.setattr(fpf, "run_final_fit", lambda **kw: seen.setdefault("fit", kw) and {})
+    monkeypatch.setattr(fpf, "run_quick_gate",
+                        lambda n, **kw: seen.setdefault("quick", kw) and {"pass": True})
+    assert fpf.main(["--gate-name", "_v2"]) == 0
+    pipe, cal, _ = fpf.input_paths("_v2")
+    assert seen["load"] == ("_v2", pipe, cal)
+    assert seen["fit"]["out_dir"] == fpf.model_dir("nfl-sim-ml-v2")
+    assert seen["fit"]["gate_name"] == "_v2" and seen["fit"]["qb_profile_params"] == SERVING_QB
+    assert fpf.main(["--gate-name", "_v2", "--holdout-weeks", "2"]) == 0
+    assert seen["quick"]["gate_name"] == "_v2"
+    assert seen["quick"]["out_dir"] == fpf.model_dir("nfl-sim-ml-v2")
+    seen.clear()
+    assert fpf.main([]) == 0                                       # no gate name: v1 as today
+    assert seen["load"] == ("", *fpf.input_paths("")[:2])
+    assert seen["fit"]["out_dir"] == fpf.model_dir("nfl-sim-ml-v1")
+    assert seen["fit"]["gate_name"] == "" and seen["fit"]["qb_profile_params"] is None
+
+
+def test_main_v2_final_fit_without_serving_block_is_refused(monkeypatch, tmp_path, capsys):
+    monkeypatch.setattr(fpf, "QB_PARAMS_PATH", _qb_params_file(tmp_path, serving=False))
+    monkeypatch.setattr(fpf, "_load_inputs", lambda args: {"pipeline": _pipeline()})
+
+    def boom(**kw):
+        raise AssertionError("fit ran without the serving QB params")
+
+    monkeypatch.setattr(fpf, "run_final_fit", boom)
+    assert fpf.main(["--gate-name", "_v2"]) == 1
+    assert "serving" in capsys.readouterr().out

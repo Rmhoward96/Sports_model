@@ -232,8 +232,10 @@ def build_tables(src: dict, ctx_fill: Callable[[pd.DataFrame, dict, pd.DataFrame
     `ctx_fill(ctx, stadiums, sched)` (e.g. context.fill_forecast_weather with
     a fetcher) to fill upcoming games' forecast weather before both tables
     are built. The mx_/di_/qb_ features (`player_features.extra_features`)
-    use the QB-profile (H, k) of the `src["qb_params_mode"]` block ("gate"
-    by default) and `qb1_override` {(season, week, team): gsis_id} for QB1.
+    use the QB-profile (H, k) `src["qb_params"]` when given (live serving:
+    the served version's own params), else the `src["qb_params_mode"]` block
+    ("gate" by default), and `qb1_override` {(season, week, team): gsis_id}
+    for QB1.
     Returns {"feats", "team", "pg", "tg", "stubs", "extra"}."""
     from sportsmodel.nfl import context, efficiency, player_features
 
@@ -247,7 +249,9 @@ def build_tables(src: dict, ctx_fill: Callable[[pd.DataFrame, dict, pd.DataFrame
         ctx = ctx_fill(ctx, stadiums, sched)
     game_epa = efficiency.team_game_epa(pbp)
     stubs = active_stubs(depth, injuries, pg, sched)
-    H, k = qb_params(src.get("qb_params_mode", "gate"), QB_PARAMS_PATH)
+    explicit = src.get("qb_params")
+    H, k = ((float(explicit[0]), float(explicit[1])) if explicit is not None
+            else qb_params(src.get("qb_params_mode", "gate"), QB_PARAMS_PATH))
     extra = player_features.extra_features(player_features.team_week_keys(tg, ctx), pbp, src["snaps"],
                                            src["pfr2gsis"], injuries, depth, src["weekly_qb"], H, k,
                                            qb1_override=qb1_override)

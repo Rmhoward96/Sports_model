@@ -321,3 +321,6 @@ def test_qb_params_gate_by_default_serving_on_request_and_missing_serving_is_cle
     assert seen["Hk"] == (2.0, 50.0)
     bpf.build_tables(_stub_src())
     assert seen["Hk"] == (1.0, 100.0)
+    # an explicit src["qb_params"] (live serving: the served artifacts' own block) wins
+    bpf.build_tables({**_stub_src(), "qb_params_mode": "serving", "qb_params": (1.5, 200.0)})
+    assert seen["Hk"] == (1.5, 200.0)

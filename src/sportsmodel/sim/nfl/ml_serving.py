@@ -1,7 +1,7 @@
 """Live props-ML serving: A -> sim -> B -> blend -> calibrate -> map.
 
 The gated pipeline (``scripts/fit_props_ml_final.py`` artifacts in
-``data/props_ml/models/``) applied to one upcoming game:
+``data/props_ml/models/<version>/``) applied to one upcoming game:
 
 1. ``build_ml_spec`` -- rung A: ``learned.apply_to_spec`` with the saved
    ``LearnedModels`` (team volume, shares, efficiency) on the game's pre-kickoff
@@ -9,7 +9,8 @@ The gated pipeline (``scripts/fit_props_ml_final.py`` artifacts in
 2. ``ml_player_dists`` -- per active player and ``source == "ml"`` market:
    A = the sim's pmf (``aggregate.nfl_player_prop_dists``); B =
    ``dist_models.predict_pmfs`` only for markets that read B (``b_markets``:
-   ``w_final < 1``) and only for in-role players (``dist_models.in_role``), else
+   ``w_final < 1``) and only for in-role players (``dist_models.in_role`` with
+   the role table of the artifacts' ``model_version``), else
    B := A (a player with no feature row keeps A too); blend at ``w_final`` and
    calibrate with calibration.json's maps (``pipeline.blend_calibrate`` -- the
    step the offline ladder / quick gate apply, so serving matches what was
@@ -80,8 +81,9 @@ def _b_pmfs(artifacts: Artifacts, rows: pd.DataFrame, a: dict, markets, market_m
     pmf for in-role players, the A pmf (B := A) for out-of-role ones; players
     without a feature row are absent (the caller keeps A)."""
     out: dict[tuple[str, str], np.ndarray] = {}
+    subsets = art_mod.role_subsets_for(artifacts.config)   # the artifacts' model version (P1)
     for m in markets:
-        role = in_role(rows, m).to_numpy()
+        role = in_role(rows, m, subsets).to_numpy()
         for pid in rows["player_id"][~role]:
             if m in a.get(pid, {}):
                 out[(pid, m)] = np.asarray(a[pid][m]["pmf"], dtype=float)

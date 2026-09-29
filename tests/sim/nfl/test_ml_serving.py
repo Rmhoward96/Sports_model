@@ -435,3 +435,28 @@ def test_serving_targets_respect_the_gate():
     got = ml_serving.serving_targets(a, {}, {"rec_yds": 1.0, "receptions": 1.0}, None,
                                      ["rec_yds", "receptions"], ["p1"], gate={("p1", "receptions")})
     assert set(got["p1"]) == {"receptions"}
+
+
+# ---- Task 8: B roles follow the loaded artifacts' model version -------------------------
+
+@pytest.mark.parametrize("version,table", [(None, "ROLE_SUBSETS"),
+                                           ("nfl-sim-ml-v2", "ROLE_SUBSETS_V2")])
+def test_b_role_table_is_the_artifacts_model_version(served, monkeypatch, version, table):
+    from sportsmodel.model.props_ml import dist_models
+
+    seen = []
+    real = ml_serving.in_role
+
+    def spy(df, market, subsets=dist_models.ROLE_SUBSETS):
+        seen.append(subsets)
+        return real(df, market, subsets)
+
+    monkeypatch.setattr(ml_serving, "in_role", spy)
+    art = served["art"]
+    cfg = {k: v for k, v in art.config.items() if k != "model_version"}
+    if version is not None:
+        cfg["model_version"] = version
+    rows = served["rows"].assign(p_y_pass_att_r10=served["rows"]["p_y_pass_att_ewm"])
+    ml_serving.ml_player_dists(served["spec"], _copy(served["sims"]), rows, served["trows"],
+                               art._replace(config=cfg), np.random.default_rng(0))
+    assert seen and all(s is getattr(dist_models, table) for s in seen)

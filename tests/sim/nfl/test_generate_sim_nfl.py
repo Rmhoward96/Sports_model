@@ -3,6 +3,7 @@ assembly seam, and main()'s SIM_ML_MODE off/shadow/live behavior with every
 IO dependency (DB upserts, nflverse, injury report, feature build, props-ML
 artifacts) monkeypatched -- no network, no DB."""
 import importlib.util
+import json
 import pathlib
 import sys
 import types
@@ -320,6 +321,7 @@ class _Rec:
         self.slates: list[tuple[list[dict], list[dict]]] = []   # upsert_nfl_sim_slate calls
         self.game_preds: list[list[dict]] = []   # upsert_game_predictions calls
         self.espn_calls = 0
+        self.build_kwargs: list[dict] = []   # _build_ml_tables keyword args (qb1_override, qb_params)
 
 
 _ML_SPEC_TAG = "ML"
@@ -429,17 +431,39 @@ _ML_MARKET_MAX = {"pass_yds": 400, "rush_yds": 200, "rec_yds": 200, "receptions"
 _ALL_PLAYERS = ["KC_p", "BAL_p", "BUF_p", "MIA_p"]
 
 
+_V2_QB = {"H": 1.5, "k": 200.0}
+
+
+def _qb_params_file(tmp_path, serving=True):
+    path = tmp_path / "qb_profile_params.json"
+    doc = {"gate": {"H": 1.0, "k": 100.0}}
+    if serving:
+        doc["serving"] = {"H": 2.0, "k": 50.0}
+    path.write_text(json.dumps(doc))
+    return path
+
+
 def _install_ml(monkeypatch, rec, tmp_path, *, artifacts="ok", dists_raise=None, config_file=True,
-                sched=None, feats=None, team=None, share_fallback_games=(), market_max=None):
+                sched=None, feats=None, team=None, share_fallback_games=(), market_max=None,
+                version="nfl-sim-ml-v1", config=None, qb_serving=True):
     """Fake the ML branch: model dir, feature-table builder + ml_serving functions.
+    `version`: the artifacts dir written (models/<version>/); `config`: its
+    props_ml_config.json (default: v1's has no model_version, v2's carries
+    model_version + qb_profile_params). `qb_serving`: whether the
+    qb_profile_params.json asset has a serving block.
     `dists_raise`: exception ml_player_dists raises (or {home_team: exc});
     `share_fallback_games`: home abbrevs whose build_ml_spec bumps
     learned.share_fallbacks."""
-    model_dir = tmp_path / "models"
-    model_dir.mkdir()
+    root = tmp_path / "models"
+    model_dir = root / version
+    model_dir.mkdir(parents=True, exist_ok=True)
     if config_file:
-        (model_dir / "props_ml_config.json").write_text("{}")
-    monkeypatch.setattr(gsn, "ML_MODEL_DIR", model_dir)
+        if config is None:
+            config = ({} if version == "nfl-sim-ml-v1"
+                      else {"model_version": version, "qb_profile_params": _V2_QB})
+        (model_dir / "props_ml_config.json").write_text(json.dumps(config))
+    monkeypatch.setattr(gsn, "ML_MODELS_ROOT", root)
+    monkeypatch.setattr(gsn, "QB_PARAMS_PATH", _qb_params_file(tmp_path, serving=qb_serving))
     if feats is None:
         feats = pd.DataFrame({"player_id": _ALL_PLAYERS, "season": 2026, "week": 3,
                               "team": [p.split("_")[0] for p in _ALL_PLAYERS],
@@ -452,7 +476,8 @@ def _install_ml(monkeypatch, rec, tmp_path, *, artifacts="ok", dists_raise=None,
         sched = pd.DataFrame({"season": [2026, 2026], "week": [3, 3], "game_type": ["REG", "REG"],
                               "home_team": ["KC", "BUF"], "away_team": ["BAL", "MIA"]})
     monkeypatch.setattr(gsn, "_build_ml_tables",
-                        lambda upto_season, now, report=None: (feats, team, sched))
+                        lambda upto_season, now, report=None, **kw:
+                        rec.build_kwargs.append(kw) or (feats, team, sched))
     learned = types.SimpleNamespace(share_fallbacks=0)
     cfg = {"markets": _ML_MARKETS, "market_max": dict(_ML_MARKET_MAX if market_max is None else market_max)}
     arts = None if artifacts is None else types.SimpleNamespace(config=cfg, learned=learned)
@@ -791,7 +816,7 @@ def test_main_live_exception_in_feature_build_exits_1(monkeypatch, tmp_path, cap
     rec = _install_io(monkeypatch, tmp_path, "live")
     _install_ml(monkeypatch, rec, tmp_path)
 
-    def broken(upto_season, now, report=None):
+    def broken(upto_season, now, report=None, **kw):
         raise OSError("nflverse down")
 
     monkeypatch.setattr(gsn, "_build_ml_tables", broken)
@@ -860,7 +885,7 @@ def test_main_live_no_config_fails_before_feature_build(monkeypatch, tmp_path, c
     rec = _install_io(monkeypatch, tmp_path, "live")
     _install_ml(monkeypatch, rec, tmp_path, config_file=False)
 
-    def must_not_build(upto_season, now, report=None):
+    def must_not_build(upto_season, now, report=None, **kw):
         raise AssertionError("feature build ran without artifacts")
 
     monkeypatch.setattr(gsn, "_build_ml_tables", must_not_build)
@@ -1166,7 +1191,7 @@ def test_build_ml_tables_feeds_injected_injuries_to_the_builder(monkeypatch, cap
                     "depth": _DEPTH, "sched": pd.DataFrame({"x": [1]})}
 
         @staticmethod
-        def build_tables(src, ctx_fill=None):
+        def build_tables(src, ctx_fill=None, qb1_override=None):
             seen["injuries"] = src["injuries"]
             return {"feats": pd.DataFrame(), "team": pd.DataFrame()}
 
@@ -1185,7 +1210,7 @@ def test_run_ml_passes_the_live_report_to_the_feature_build(monkeypatch, tmp_pat
                           "home_team": ["KC", "BUF"], "away_team": ["BAL", "MIA"]})
     got = {}
 
-    def build(upto_season, now, report=None):
+    def build(upto_season, now, report=None, **kw):
         got["report"] = report
         return feats, team, sched
 
@@ -1458,7 +1483,7 @@ def test_main_lines_on_but_served_not_ml_writes_no_game_predictions(
     assert rec.game_preds == []
     (warn,) = _lines_warnings(out)
     assert warn == (f"::warning::ml-game-lines: ML_GAME_LINES=on but the site serves {served} "
-                    "(not nfl-sim-ml-v1); no game_predictions written")
+                    "(not an ML version: nfl-sim-ml-v1, nfl-sim-ml-v2); no game_predictions written")
     # the ML-version nfl_sim rows (shadow, served v1) keep the current sim's game outputs
     if rec.slates:
         _assert_game_rows_equal_current(rec)
@@ -1636,3 +1661,304 @@ def test_main_lines_on_game_predictions_write_failure_exits_1(monkeypatch, tmp_p
         "::warning::ml-game-lines: game_predictions write failed (ConnectionError: gp write lost); "
         "the served NFL game lines were not refreshed"]
     assert _ml_summary_lines(out) == ["ml_mode=shadow ml_games=2 ml_players=20 ml_fallback_games=0 ml_status=ok"]
+
+
+# =============================================================================
+# Task 8: serve props-ML by the SERVED version (v1 / v2), live books-QB
+# override into the features, serving QB params, matchup log line.
+# =============================================================================
+
+def test_ml_versions_and_model_dirs():
+    from sportsmodel.model.props_ml import artifacts
+
+    assert gsn.ML_VERSIONS == ("nfl-sim-ml-v1", "nfl-sim-ml-v2") == artifacts.ML_VERSIONS
+    assert gsn.ML_MODEL_VERSION == "nfl-sim-ml-v1"
+    root = gsn.config.PROJECT_ROOT / "data" / "props_ml" / "models"
+    assert gsn.ml_model_dir("nfl-sim-ml-v1") == root / "nfl-sim-ml-v1"
+    assert gsn.ml_model_dir("nfl-sim-ml-v2") == root / "nfl-sim-ml-v2"
+    with pytest.raises(ValueError):
+        gsn.ml_model_dir("sim-nfl-v1")
+
+
+@pytest.mark.parametrize("mode,code", [("shadow", None), ("live", 1)])
+def test_main_served_v2_with_only_v1_artifacts_skips_ml_and_copies_under_v2(
+        monkeypatch, tmp_path, capsys, mode, code):
+    rec = _install_io(monkeypatch, tmp_path, mode, served="nfl-sim-ml-v2")
+    _install_ml(monkeypatch, rec, tmp_path, version="nfl-sim-ml-v1")   # no v2 release downloaded
+
+    def must_not_build(*a, **k):
+        raise AssertionError("feature build ran without v2 artifacts")
+
+    monkeypatch.setattr(gsn, "_build_ml_tables", must_not_build)
+    if code is None:
+        gsn.main()
+    else:
+        with pytest.raises(SystemExit) as exc:
+            gsn.main()
+        assert exc.value.code == code
+    out = capsys.readouterr().out
+    assert rec.load_artifacts_args == []                  # the v1 artifacts are never used for v2
+    warn = [ln for ln in out.splitlines() if ln.startswith("::warning::props-ml: ")]
+    assert len(warn) == 1 and "props-ML artifacts missing" in warn[0] and "nfl-sim-ml-v2" in warn[0]
+    # the copy rule, unchanged, under the SERVED version: the site gets this run's current sim
+    assert len(rec.slates) == 1
+    for kind in ("sim", "player"):
+        cur, v2 = _written(rec, kind, "sim-nfl-v1"), _written(rec, kind, "nfl-sim-ml-v2")
+        assert len(v2) == len(cur) > 0
+        assert _written(rec, kind, "nfl-sim-ml-v1") == []
+    assert "wrote the current sim under nfl-sim-ml-v2" in out
+
+
+def test_main_served_v2_with_v2_artifacts_writes_rows_and_game_lines_under_v2(
+        monkeypatch, tmp_path, capsys):
+    rec = _install_io(monkeypatch, tmp_path, "live", served="nfl-sim-ml-v2", lines="on")
+    _install_ml(monkeypatch, rec, tmp_path, version="nfl-sim-ml-v1")
+    _install_ml(monkeypatch, rec, tmp_path, version="nfl-sim-ml-v2")
+    gsn.main()
+    out = capsys.readouterr().out
+    assert [a[0] for a in rec.load_artifacts_args] == [tmp_path / "models" / "nfl-sim-ml-v2"]
+    ml = {(r["game_pk"], r["player_id"], r["market"]): r for r in _written(rec, "player", "nfl-sim-ml-v2")}
+    assert ml[(11, "KC_p", "rec_yds")]["mean"] == pytest.approx(99.0)
+    assert len(_written(rec, "sim", "nfl-sim-ml-v2")) == 2
+    assert _written(rec, "player", "nfl-sim-ml-v1") == [] and _written(rec, "sim", "nfl-sim-ml-v1") == []
+    gp = _game_preds(rec)
+    assert set(gp) == {11, 12} and {r["model_version"] for r in gp.values()} == {"nfl-sim-ml-v2"}
+    assert "game_lines: wrote 2 game_predictions rows under nfl-sim-ml-v2 (ml_sim=2 current_sim=0)" in out
+    # v2 builds the tables with the artifacts' own serving QB params
+    assert rec.build_kwargs[0]["qb_params"] == (1.5, 200.0)
+    assert _ml_summary_lines(out) == [
+        "ml_mode=live ml_games=2 ml_players=20 ml_fallback_games=0 ml_status=ok"]
+
+
+def test_main_served_v1_uses_the_v1_dir_even_with_v2_present(monkeypatch, tmp_path, capsys):
+    rec = _install_io(monkeypatch, tmp_path, "live", served="nfl-sim-ml-v1", lines="on")
+    _install_ml(monkeypatch, rec, tmp_path, version="nfl-sim-ml-v2")
+    _install_ml(monkeypatch, rec, tmp_path, version="nfl-sim-ml-v1")
+    gsn.main()
+    out = capsys.readouterr().out
+    assert [a[0] for a in rec.load_artifacts_args] == [tmp_path / "models" / "nfl-sim-ml-v1"]
+    assert len(_written(rec, "player", "nfl-sim-ml-v1")) == 20
+    assert _written(rec, "player", "nfl-sim-ml-v2") == []
+    assert {r["model_version"] for r in _game_preds(rec).values()} == {"nfl-sim-ml-v1"}
+    # v1: the asset's serving block (v1 models read no qb_ columns)
+    assert rec.build_kwargs[0]["qb_params"] == (2.0, 50.0)
+    assert not [ln for ln in out.splitlines() if ln.startswith("::warning::")]
+
+
+def test_main_served_v1_without_a_serving_qb_block_falls_back_to_gate_with_a_warning(
+        monkeypatch, tmp_path, capsys):
+    rec = _install_io(monkeypatch, tmp_path, "live", served="nfl-sim-ml-v1")
+    _install_ml(monkeypatch, rec, tmp_path, qb_serving=False)
+    gsn.main()   # v1 keeps serving (exit 0)
+    out = capsys.readouterr().out
+    assert rec.build_kwargs[0]["qb_params"] == (1.0, 100.0)
+    warn = [ln for ln in out.splitlines() if ln.startswith("::warning::props-ml: ")]
+    assert len(warn) == 1 and "no serving block" in warn[0] and "gate" in warn[0]
+    assert len(_written(rec, "player", "nfl-sim-ml-v1")) == 20
+    assert _ml_summary_lines(out) == [
+        "ml_mode=live ml_games=2 ml_players=20 ml_fallback_games=0 ml_status=ok"]
+
+
+def test_main_served_v2_artifacts_without_qb_params_are_a_global_failure(monkeypatch, tmp_path, capsys):
+    rec = _install_io(monkeypatch, tmp_path, "live", served="nfl-sim-ml-v2")
+    _install_ml(monkeypatch, rec, tmp_path, version="nfl-sim-ml-v2",
+                config={"model_version": "nfl-sim-ml-v2"})
+    with pytest.raises(SystemExit) as exc:
+        gsn.main()
+    assert exc.value.code == 1
+    out = capsys.readouterr().out
+    assert rec.build_kwargs == [] and "qb_profile_params" in out
+    assert len(_written(rec, "player", "nfl-sim-ml-v2")) == len(_written(rec, "player", "sim-nfl-v1"))
+
+
+def test_main_v1_artifacts_in_the_v2_dir_are_rejected(monkeypatch, tmp_path, capsys):
+    rec = _install_io(monkeypatch, tmp_path, "live", served="nfl-sim-ml-v2")
+    _install_ml(monkeypatch, rec, tmp_path, version="nfl-sim-ml-v2", config={})   # a v1 config
+    with pytest.raises(SystemExit):
+        gsn.main()
+    out = capsys.readouterr().out
+    assert "are nfl-sim-ml-v1, not nfl-sim-ml-v2" in out
+    assert rec.build_kwargs == [] and rec.load_artifacts_args == []
+
+
+def test_main_served_v2_off_mode_copies_under_v2(monkeypatch, tmp_path, capsys):
+    rec = _install_io(monkeypatch, tmp_path, "off", served="nfl-sim-ml-v2", lines="on")
+    _ml_path_must_not_run(monkeypatch)
+    gsn.main()
+    out = capsys.readouterr().out
+    assert len(_written(rec, "player", "nfl-sim-ml-v2")) == len(_written(rec, "player", "sim-nfl-v1"))
+    assert _written(rec, "player", "nfl-sim-ml-v1") == []
+    assert {r["model_version"] for r in _game_preds(rec).values()} == {"nfl-sim-ml-v2"}
+    assert ("::warning::props-ml: SIM_ML_MODE=off but the site serves nfl-sim-ml-v2 — served the "
+            "current sim under the ML version; UPDATE nfl_sim_serving back to sim-nfl-v1 to roll "
+            "back") in out.splitlines()
+
+
+@pytest.mark.parametrize("served", ["sim-nfl-v1", "nfl-sim-ml-v3"])
+def test_main_served_not_an_ml_version_shadows_v1(monkeypatch, tmp_path, capsys, served):
+    rec = _install_io(monkeypatch, tmp_path, "shadow", served=served)
+    _install_ml(monkeypatch, rec, tmp_path)
+    gsn.main()
+    assert len(_written(rec, "player", "nfl-sim-ml-v1")) == 20
+    assert [a[0] for a in rec.load_artifacts_args] == [tmp_path / "models" / "nfl-sim-ml-v1"]
+
+
+def test_game_prediction_row_carries_the_given_version():
+    gl_cfg = nfl_config.load_gameline()
+    sims = _sims_with([24, 27, 20, 17], [17, 20, 24, 27], ["a"], pass_yds=200)
+    assert gsn.game_prediction_row(_LINES_GAME, sims, gl_cfg)["model_version"] == "nfl-sim-ml-v1"
+    assert gsn.game_prediction_row(_LINES_GAME, sims, gl_cfg,
+                                   model_version="nfl-sim-ml-v2")["model_version"] == "nfl-sim-ml-v2"
+
+
+# ---- serving QB params -----------------------------------------------------------------
+
+def test_serving_qb_params_resolution(tmp_path):
+    (tmp_path / "a").mkdir()
+    (tmp_path / "b").mkdir()
+    with_serving = _qb_params_file(tmp_path / "a")
+    without = _qb_params_file(tmp_path / "b", serving=False)
+    v2cfg = {"model_version": "nfl-sim-ml-v2", "qb_profile_params": {"H": 1.5, "k": 200.0, "git": "x"}}
+    hk, note = gsn.serving_qb_params("nfl-sim-ml-v2", v2cfg, without)
+    assert hk == (1.5, 200.0) and not note.startswith("::warning::")
+    with pytest.raises(RuntimeError, match="qb_profile_params"):
+        gsn.serving_qb_params("nfl-sim-ml-v2", {"model_version": "nfl-sim-ml-v2"}, with_serving)
+    hk, note = gsn.serving_qb_params("nfl-sim-ml-v1", {}, with_serving)
+    assert hk == (2.0, 50.0) and not note.startswith("::warning::")
+    hk, note = gsn.serving_qb_params("nfl-sim-ml-v1", {}, without)
+    assert hk == (1.0, 100.0) and note.startswith("::warning::props-ml: ") and "gate" in note
+
+
+def test_build_ml_tables_passes_qb_override_and_params_to_the_one_builder(monkeypatch, capsys):
+    seen = {}
+
+    class FakeBpf:
+        SEASONS = [2016]
+
+        @staticmethod
+        def fetch_sources(seasons):
+            return {"injuries": None, "depth": _DEPTH, "sched": pd.DataFrame({"x": [1]}),
+                    "qb_params_mode": "gate"}
+
+        @staticmethod
+        def build_tables(src, ctx_fill=None, qb1_override=None):
+            seen["qb1_override"], seen["qb_params"] = qb1_override, src.get("qb_params")
+            return {"feats": pd.DataFrame(), "team": pd.DataFrame()}
+
+    monkeypatch.setattr(gsn, "_load_script", lambda name: FakeBpf)
+    over = {(2026, 3, "KC"): "00-2"}
+    gsn._build_ml_tables(2026, gsn.datetime(2026, 9, 27, tzinfo=gsn.timezone.utc), report=None,
+                         qb1_override=over, qb_params=(1.5, 200.0))
+    assert seen == {"qb1_override": over, "qb_params": (1.5, 200.0)}
+
+
+# ---- live books-QB override -----------------------------------------------------------
+
+_QB_DEPTH = pd.DataFrame({"season": [2026, 2026, 2026], "week": [3, 3, 3],
+                          "club_code": ["KC", "KC", "BAL"], "position": ["QB", "QB", "QB"],
+                          "depth_team": [1, 2, 1], "gsis_id": ["KC_QB1", "KC_QB2", "BAL_QB1"],
+                          "full_name": ["Starter Guy", "Backup Guy", "Ravens Guy"],
+                          "football_name": ["Starter", "Backup", "Ravens"]})
+
+
+def test_promoted_qb_gsis_is_the_row_the_books_check_moved():
+    fixed = _QB_DEPTH.copy()
+    fixed.loc[1, "depth_team"] = 0
+    assert gsn._promoted_qb_gsis(_QB_DEPTH, fixed, "KC") == "KC_QB2"
+    assert gsn._promoted_qb_gsis(_QB_DEPTH, fixed, "BAL") is None
+    assert gsn._promoted_qb_gsis(_QB_DEPTH, _QB_DEPTH, "KC") is None
+
+
+def test_main_books_qb_switch_reaches_the_feature_build(monkeypatch, tmp_path, capsys):
+    rec = _install_io(monkeypatch, tmp_path, "shadow", served="nfl-sim-ml-v1")
+    _install_ml(monkeypatch, rec, tmp_path)
+    sched = pd.DataFrame({"dataset": ["schedules"] * 2, "season": [2026, 2026], "week": [3, 3],
+                          "game_type": ["REG", "REG"], "home_team": ["KC", "BUF"],
+                          "away_team": ["BAL", "MIA"]})
+
+    def fake_load_release(dataset, seasons, **kw):
+        return sched if dataset == "schedules" else pd.DataFrame({"dataset": [dataset]})
+
+    monkeypatch.setattr(gsn, "load_release", fake_load_release)
+    monkeypatch.setattr(gsn, "depth_charts_asof", lambda raw, schedules: _QB_DEPTH.copy())
+
+    def fake_promote(depth_df, team, season, week, posted, out_names):
+        if team != "KC":
+            return depth_df, None
+        fixed = depth_df.copy()
+        fixed.loc[fixed["gsis_id"] == "KC_QB2", "depth_team"] = 0
+        return fixed, ("Starter Guy", "Backup Guy")
+
+    monkeypatch.setattr(gsn, "promote_books_qb", fake_promote)
+    gsn.main()
+    out = capsys.readouterr().out
+    assert "::warning::qb-check: KC QB1 Starter Guy -> Backup Guy" in out
+    assert rec.build_kwargs[0]["qb1_override"] == {(2026, 3, "KC"): "KC_QB2"}
+
+
+def test_main_no_books_switch_passes_an_empty_override(monkeypatch, tmp_path):
+    rec = _install_io(monkeypatch, tmp_path, "shadow")
+    _install_ml(monkeypatch, rec, tmp_path)
+    gsn.main()
+    assert rec.build_kwargs[0]["qb1_override"] == {}
+
+
+# ---- matchup log line -----------------------------------------------------------------
+
+def test_matchup_line_names_qb1_and_the_matchup_features():
+    players = [_player("KC_WR", "Wide Guy"), PlayerInput(
+        player_id="00-0033873", name="Patrick Mahomes", pos="QB", target_share=0.0, carry_share=0.05,
+        ypt=0.0, ypc=4.0, ypr=0.0, catch_rate=0.0, td_share=0.05, rec_td_share=0.0,
+        rush_td_share=0.1)]
+    t_rows = pd.DataFrame({"team": ["KC", "BAL"], "qb_ypa": [7.123, 6.0], "qb_ratio_ypa": [1.0, 0.9],
+                           "mx_pass_minus_rush": [0.051, -0.02], "di_op_vacated_cov": [0.4, 0.0],
+                           "di_op_vacated_rush": [0.0, 0.0], "di_op_vacated_run": [np.nan, 0.0]})
+    line = gsn.matchup_line("KC", 2026, 3, players, t_rows)
+    assert line == ("matchup: KC 2026 wk3 QB1=Patrick Mahomes (00-0033873) qb_ypa=7.123 "
+                    "qb_ratio_ypa=1.000 mx_pass_minus_rush=+0.051 di_op_vacated_cov=0.400 "
+                    "di_op_vacated_rush=0.000 di_op_vacated_run=na")
+    assert gsn.matchup_line("NYJ", 2026, 3, [], t_rows) == (
+        "matchup: NYJ 2026 wk3 QB1=na qb_ypa=na qb_ratio_ypa=na mx_pass_minus_rush=na "
+        "di_op_vacated_cov=na di_op_vacated_rush=na di_op_vacated_run=na")
+
+
+def test_main_logs_one_matchup_line_per_team(monkeypatch, tmp_path, capsys):
+    rec = _install_io(monkeypatch, tmp_path, "shadow")
+    team = pd.DataFrame({"team": ["KC", "BAL", "BUF", "MIA"], "season": 2026, "week": 3,
+                         "qb_ypa": [7.0, 6.5, 7.2, 6.8], "mx_pass_minus_rush": [0.1, -0.1, 0.0, 0.2]})
+    _install_ml(monkeypatch, rec, tmp_path, team=team)
+    gsn.main()
+    lines = [ln for ln in capsys.readouterr().out.splitlines() if ln.startswith("matchup: ")]
+    assert sorted(ln.split()[1] for ln in lines) == ["BAL", "BUF", "KC", "MIA"]
+    assert any(ln.startswith("matchup: KC 2026 wk3 QB1=na qb_ypa=7.000") for ln in lines)
+
+
+# ---- live defensive injuries reach di_op_vacated_* -------------------------------------
+
+def test_live_cb_on_the_report_maps_through_the_defense_chart_and_vacates_coverage():
+    """nflverse has no week-3 report yet: the live report's Out CB maps to his
+    gsis through the as-of chart's Defense-formation row, so the opponent's
+    di_op_vacated_cov is > 0 for the live week (not 0 / NaN by construction)."""
+    from sportsmodel.nfl import def_injuries
+
+    depth = pd.DataFrame({"season": [2026] * 3, "week": [3] * 3, "club_code": ["BAL"] * 3,
+                          "position": ["CB", "QB", "OLB"], "formation": ["Defense", "Offense", "Defense"],
+                          "depth_team": [1, 1, 1], "gsis_id": ["BAL_CB", "BAL_QB", "BAL_OLB"],
+                          "full_name": ["Marlon Humphrey", "Lamar Jackson", "Kyle Van Noy"],
+                          "football_name": ["Marlon", "Lamar", "Kyle"]})
+    report = {"by_team": {"BAL": [{"player": "Marlon Humphrey", "position": "CB", "status": "Out"}]},
+              "target_week": 3}
+    nflv = pd.DataFrame({"season": [2026], "week": [2], "team": ["BAL"], "gsis_id": ["BAL_QB"],
+                         "report_status": ["Questionable"]})
+    inj, msg = gsn._inject_live_injuries(nflv, depth, report, 2026)
+    assert "injected 1 live statuses (unmapped 0)" in msg
+    wk3 = inj[inj["week"] == 3]
+    assert list(wk3["gsis_id"]) == ["BAL_CB"] and list(wk3["report_status"]) == ["Out"]
+    snaps = pd.DataFrame({"game_type": "REG", "season": 2026, "week": [1, 2], "team": "BAL",
+                          "pfr_player_id": "pfr_cb", "position": "CB", "defense_snaps": [60, 62],
+                          "defense_pct": [0.95, 0.97]})
+    dsnaps = def_injuries.defender_snaps(snaps, {"pfr_cb": "BAL_CB"})
+    vac = def_injuries.vacated_by_defense(
+        dsnaps, inj, pd.DataFrame({"season": [2026], "week": [3], "team": ["BAL"]}))
+    assert vac["di_vacated_cov"].iloc[0] > 0.9
+    assert vac["di_vacated_rush"].iloc[0] == 0.0

@@ -3,28 +3,39 @@ name: train-props-ml
 # Weekly props-ML retrain + Release publish (docs/superpowers/plans/
 # 2026-09-25-nfl-props-ml-p2.md, Task 11).
 #
-# train job (every Tuesday, after Monday Night Football):
+# train job (every Tuesday, after Monday Night Football), one matrix leg per
+# served props-ML version (fail-fast off: a v2 failure never blocks v1):
+#   nfl-sim-ml-v1: pipeline.json / calibration.json / a_gate.json, published to
+#                  props-ml-latest (previous set: props-ml-prev) -- unchanged;
+#   nfl-sim-ml-v2: pipeline_v2.json / calibration_v2.json / a_gate_v2.json
+#                  (fit_props_ml_final.py --gate-name _v2), published to
+#                  props-ml-v2 (previous set: props-ml-v2-prev).
+# Per leg ($GATE_NAME, $RELEASE, $PREV_RELEASE, $MODELS_DIR from the matrix):
 #  0. guards (each prints a ::notice:: and skips the rest -- the job still
-#     succeeds): no committed assets/nfl/props_ml/pipeline.json with
-#     final_pass == true (a failed B gate is never fit or published); and,
-#     after the feature build, no labelled week after the published
-#     props_ml_config.json's trained_through (no release -> proceed);
+#     succeeds): no committed assets/nfl/props_ml/pipeline$GATE_NAME.json with
+#     final_pass == true (a failed B gate is never fit or published; v2 is
+#     skipped until its pipeline is committed); and, after the feature build,
+#     no labelled week after the published (in $RELEASE) props_ml_config.json's
+#     trained_through (no release -> proceed);
 #  1. rebuild the feature tables from nflverse (data/props_ml/*.parquet);
 #  2. QUICK GATE -- fit_props_ml_final.py --holdout-weeks 2 scores the pipeline
 #     vs the current sim on the last 2 completed weeks after pipeline.json's
 #     data_end and EXITS 1 ON FAILURE. The step's exit code is the gate (never
 #     quick_gate.json: a stale file can survive an input-load failure); a
-#     failure stops the job, so nothing below runs and nothing is published;
-#  3. final fit on every completed game -> data/props_ml/models/;
-#  4. publish: the current props-ml-latest assets are copied into props-ml-prev
+#     failure stops the leg, so nothing below runs and nothing is published;
+#  3. final fit on every completed game -> data/props_ml/models/<version>/
+#     (v2 needs the `serving` block of qb_profile_params.json: refused without);
+#  4. publish: the current $RELEASE assets are copied into $PREV_RELEASE
 #     (deleted + recreated: one-step rollback), then the new models are
-#     uploaded to props-ml-latest with --clobber (created with --latest=false
-#     when missing; stale assets no longer produced are removed) and
+#     uploaded to $RELEASE with --clobber (created with --latest=false when
+#     missing; stale assets no longer produced are removed) and
 #     MANIFEST.sha256 (sha256 of every model file) is uploaded LAST. A failure
-#     mid-upload restores the saved previous assets and fails the job.
+#     mid-upload restores the saved previous assets and fails the leg.
 # A full_ladder dispatch skips this job (it never publishes).
-# Serving (generate-sim-nfl.yml, injury-watch.yml) downloads props-ml-latest
-# only when the repo variable SIM_ML_MODE is shadow/live.
+# Serving (generate-sim-nfl.yml, injury-watch.yml) downloads props-ml-latest ->
+# models/nfl-sim-ml-v1 and props-ml-v2 -> models/nfl-sim-ml-v2 only when the
+# repo variable SIM_ML_MODE is shadow/live, and serves the version
+# nfl_sim_serving names.
 #
 # recheck job (runs beside train; never publishes, never commits; outputs go
 # to a run artifact):
@@ -40,8 +51,10 @@ name: train-props-ml
 # Rollback: UPDATE nfl_sim_serving SET model_version = 'sim-nfl-v1' first; then
 # (optionally) set SIM_ML_MODE=off. (With the site serving nfl-sim-ml-v1,
 # SIM_ML_MODE=off alone keeps serving the ML version -- filled with the
-# current sim's rows.) To roll back only the models: `gh release download
-# props-ml-prev` and re-upload to props-ml-latest.
+# current sim's rows.) v2 -> v1: UPDATE nfl_sim_serving SET model_version =
+# 'nfl-sim-ml-v1', then dispatch generate-sim-nfl (refreshes the v1 slate). To
+# roll back only the models: `gh release download props-ml-prev` (v2:
+# props-ml-v2-prev) and re-upload to props-ml-latest (props-ml-v2).
 on:
   schedule:
     - cron: "0 14 * * 2"   # Tuesdays 14:00 UTC
@@ -53,7 +66,7 @@ on:
         default: false
 
 permissions:
-  contents: write          # create / upload the props-ml-latest and props-ml-prev Releases
+  contents: write          # create / upload the per-version model Releases (+ their -prev sets)
 
 concurrency:
   group: props-ml-train
@@ -63,21 +76,41 @@ jobs:
   train:
     # a full_ladder dispatch runs only the ladder: it must never publish
     if: ${{ !inputs.full_ladder }}
+    name: train (${{ matrix.version }})
     runs-on: ubuntu-latest
     timeout-minutes: 120
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - version: nfl-sim-ml-v1
+            gate_name: ""
+            release: props-ml-latest
+            prev_release: props-ml-prev
+          - version: nfl-sim-ml-v2
+            gate_name: _v2
+            release: props-ml-v2
+            prev_release: props-ml-v2-prev
+    env:
+      MODEL_VERSION: ${{ matrix.version }}
+      GATE_NAME: ${{ matrix.gate_name }}
+      RELEASE: ${{ matrix.release }}
+      PREV_RELEASE: ${{ matrix.prev_release }}
+      MODELS_DIR: data/props_ml/models/${{ matrix.version }}
     steps:
       - uses: actions/checkout@v5
 
-      # Guard 1 (first): only a committed pipeline.json whose final_pass is a
-      # JSON true may be retrained / published. Otherwise skip (job succeeds).
+      # Guard 1 (first): only a committed pipeline$GATE_NAME.json whose
+      # final_pass is a JSON true may be retrained / published. Otherwise skip
+      # (the leg succeeds).
       - name: Guard (a passing pipeline.json)
         id: guard
         run: |
-          f=assets/nfl/props_ml/pipeline.json
+          f="assets/nfl/props_ml/pipeline${GATE_NAME}.json"
           if [ -f "$f" ] && [ "$(jq -r '.final_pass == true' "$f" 2>/dev/null || true)" = "true" ]; then
             echo "skip=false" >> "$GITHUB_OUTPUT"
           else
-            echo "::notice::props-ml: no passing pipeline.json — skipping retrain"
+            echo "::notice::props-ml: no passing pipeline.json — skipping retrain ($f, $MODEL_VERSION)"
             echo "skip=true" >> "$GITHUB_OUTPUT"
           fi
 
@@ -95,7 +128,7 @@ jobs:
 
       # Guard 2: nothing new to learn from -> skip. Compares the rebuilt feature
       # table's labelled weeks with the PUBLISHED config's trained_through; no
-      # props-ml-latest release (or no config asset) -> proceed.
+      # $RELEASE release (or no config asset) -> proceed.
       - name: Guard (a labelled week after the published trained_through)
         id: fresh
         if: steps.guard.outputs.skip != 'true'
@@ -106,7 +139,7 @@ jobs:
           d="$RUNNER_TEMP/props-ml-published"
           rm -rf "$d"
           mkdir -p "$d"
-          if gh release download props-ml-latest -p props_ml_config.json -D "$d" >/dev/null 2>&1 \
+          if gh release download "$RELEASE" -p props_ml_config.json -D "$d" >/dev/null 2>&1 \
               && [ -f "$d/props_ml_config.json" ]; then
             res="$(uv run python scripts/fit_props_ml_final.py --check-new-weeks "$d/props_ml_config.json" | tail -n 1)"
             if [ "$res" = "new_weeks=false" ]; then
@@ -115,18 +148,18 @@ jobs:
               exit 0
             fi
           else
-            echo "no published props_ml_config.json (no props-ml-latest release): retraining"
+            echo "no published props_ml_config.json (no $RELEASE release): retraining"
           fi
           echo "skip=false" >> "$GITHUB_OUTPUT"
 
       - name: Quick gate (last 2 completed weeks; exit 1 blocks the fit and publish)
         id: quick_gate
         if: steps.guard.outputs.skip != 'true' && steps.fresh.outputs.skip != 'true'
-        run: uv run python scripts/fit_props_ml_final.py --holdout-weeks 2
+        run: uv run python scripts/fit_props_ml_final.py --holdout-weeks 2 --gate-name "$GATE_NAME"
 
-      - name: Final fit (data/props_ml/models)
+      - name: Final fit (data/props_ml/models/<version>)
         if: steps.guard.outputs.skip != 'true' && steps.fresh.outputs.skip != 'true'
-        run: uv run python scripts/fit_props_ml_final.py
+        run: uv run python scripts/fit_props_ml_final.py --gate-name "$GATE_NAME"
 
       # Only the guards' `if:` (no status function, so success() is implied):
       # runs only when every step above succeeded and neither guard skipped.
@@ -134,14 +167,14 @@ jobs:
       # MANIFEST.sha256 LAST. Serving verifies the downloaded set against the
       # manifest, so a half-published (mixed) set is rejected, never loaded.
       # Any failure once the upload phase starts restores the saved previous
-      # assets into props-ml-latest (ERR trap) and fails the job.
-      - name: Publish models (props-ml-latest; previous assets -> props-ml-prev)
+      # assets into $RELEASE (ERR trap) and fails the leg.
+      - name: Publish models (${{ matrix.release }}; previous assets -> ${{ matrix.prev_release }})
         if: steps.guard.outputs.skip != 'true' && steps.fresh.outputs.skip != 'true'
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
-          models=data/props_ml/models
+          models="$MODELS_DIR"
           files=()
           names=()
           for f in "$models"/*; do
@@ -158,28 +191,28 @@ jobs:
           mkdir -p "$manifest_dir"
           (cd "$models" && sha256sum "${names[@]}") > "$manifest_dir/MANIFEST.sha256"
 
-          prev_dir="$RUNNER_TEMP/props-ml-prev"
+          prev_dir="$RUNNER_TEMP/$PREV_RELEASE"
           rm -rf "$prev_dir"
-          if gh release view props-ml-latest >/dev/null 2>&1; then
-            if gh release download props-ml-latest -D "$prev_dir"; then
-              gh release delete props-ml-prev -y --cleanup-tag || true
-              gh release create props-ml-prev "$prev_dir"/* --latest=false --target "$GITHUB_SHA" \
-                --title "props-ml models (previous)" \
-                --notes "props-ml-latest assets as of run $GITHUB_RUN_ID, kept for one-step rollback."
+          if gh release view "$RELEASE" >/dev/null 2>&1; then
+            if gh release download "$RELEASE" -D "$prev_dir"; then
+              gh release delete "$PREV_RELEASE" -y --cleanup-tag || true
+              gh release create "$PREV_RELEASE" "$prev_dir"/* --latest=false --target "$GITHUB_SHA" \
+                --title "props-ml models $MODEL_VERSION (previous)" \
+                --notes "$RELEASE assets as of run $GITHUB_RUN_ID, kept for one-step rollback."
             else
               rm -rf "$prev_dir"
-              echo "::warning::could not download the current props-ml-latest assets; props-ml-prev left as is"
+              echo "::warning::could not download the current $RELEASE assets; $PREV_RELEASE left as is"
             fi
           else
-            gh release create props-ml-latest --latest=false --target "$GITHUB_SHA" \
-              --title "props-ml models" \
-              --notes "Weekly props-ML models (train-props-ml.yml). Previous set: props-ml-prev."
+            gh release create "$RELEASE" --latest=false --target "$GITHUB_SHA" \
+              --title "props-ml models $MODEL_VERSION" \
+              --notes "Weekly props-ML $MODEL_VERSION models (train-props-ml.yml). Previous set: $PREV_RELEASE."
           fi
 
           restore_latest() {
             trap - ERR
             set +e
-            echo "::error::props-ml publish failed during upload; restoring the previous props-ml-latest assets"
+            echo "::error::props-ml publish failed during upload; restoring the previous $RELEASE assets"
             prev=()
             keep_prev=" "
             if [ -d "$prev_dir" ]; then
@@ -190,36 +223,36 @@ jobs:
               done
             fi
             if [ "${#prev[@]}" -eq 0 ]; then
-              echo "::error::no previous assets to restore; props-ml-latest has no matching MANIFEST.sha256, so serving rejects it"
+              echo "::error::no previous assets to restore; $RELEASE has no matching MANIFEST.sha256, so serving rejects it"
               exit 1
             fi
-            gh release upload props-ml-latest "${prev[@]}" --clobber
-            for name in $(gh release view props-ml-latest --json assets --jq '.assets[].name'); do
+            gh release upload "$RELEASE" "${prev[@]}" --clobber
+            for name in $(gh release view "$RELEASE" --json assets --jq '.assets[].name'); do
               case "$keep_prev" in
                 *" $name "*) ;;
-                *) gh release delete-asset props-ml-latest "$name" -y ;;
+                *) gh release delete-asset "$RELEASE" "$name" -y ;;
               esac
             done
             exit 1
           }
           trap restore_latest ERR
 
-          gh release upload props-ml-latest "${files[@]}" --clobber
+          gh release upload "$RELEASE" "${files[@]}" --clobber
 
           # drop assets the new fit no longer produces (e.g. a b_<market> model);
           # the old MANIFEST.sha256 stays until the new one clobbers it
           keep=" MANIFEST.sha256 ${names[*]} "
-          assets="$(gh release view props-ml-latest --json assets --jq '.assets[].name')"
+          assets="$(gh release view "$RELEASE" --json assets --jq '.assets[].name')"
           for name in $assets; do
             case "$keep" in
               *" $name "*) ;;
-              *) gh release delete-asset props-ml-latest "$name" -y ;;
+              *) gh release delete-asset "$RELEASE" "$name" -y ;;
             esac
           done
 
-          gh release upload props-ml-latest "$manifest_dir/MANIFEST.sha256" --clobber
+          gh release upload "$RELEASE" "$manifest_dir/MANIFEST.sha256" --clobber
           trap - ERR
-          echo "published ${#files[@]} files + MANIFEST.sha256 to props-ml-latest"
+          echo "published ${#files[@]} files + MANIFEST.sha256 to $RELEASE ($MODEL_VERSION)"
 
   recheck:
     runs-on: ubuntu-latest
