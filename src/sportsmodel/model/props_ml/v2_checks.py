@@ -14,9 +14,11 @@ opponent, position, is_stub, labels ``y_*``, ``qb_changed``,
   bootstrap CI excluding 0.
 - ``player_baseline`` / ``matchup_response`` (sub-check 2): per opponent
   ``mx_pass_minus_rush`` quintile (+ = pass D weak relative to run D; ruling
-  R1), the served mean's deviation from the player's own baseline must move
-  in the expected direction in BOTH tails, match the actual deviation's sign,
-  and track the actual deviations better than v1.
+  R1), the served mean's deviation from the player's own baseline, taken
+  RELATIVE to the group's all-games deviation (vs the average matchup;
+  ruling I2), must move in the expected direction in BOTH tails, match the
+  actual relative deviation's sign, and track the actual relative deviations
+  better than v1.
 - ``verdict``: the spec §6 ship rule.
 """
 from __future__ import annotations
@@ -170,6 +172,12 @@ def _sign(x: float) -> int:
     return 0 if not np.isfinite(x) or x == 0 else (1 if x > 0 else -1)
 
 
+def _rel(x: float, base: float) -> float:
+    """x - base, with float noise (|d| < 1e-12) read as exactly 0 (no sign)."""
+    d = x - base
+    return 0.0 if abs(d) < 1e-12 else float(d)
+
+
 def matchup_response(v1: pd.DataFrame, v2: pd.DataFrame, feats: pd.DataFrame) -> dict:
     """Sub-check 2 (both directions). Records of the ``MATCHUP_GROUPS``
     (position from the record's feature row) are bucketed by the OPPONENT
@@ -179,13 +187,22 @@ def matchup_response(v1: pd.DataFrame, v2: pd.DataFrame, feats: pd.DataFrame) ->
     distinct (season, week, opponent) values. Per group x quintile:
     ``pred_dev = Σmean / Σbaseline - 1`` (v1 and v2) and ``act_dev =
     Σactual / Σbaseline - 1`` over records present in both versions with a
-    baseline (``player_baseline``).
+    baseline (``player_baseline``); the same over ALL the group's records
+    gives the group's all-games deviations (``group_all``).
 
-    ``pass_top``: in quintile 5 (strong run D / weak pass D) v2's RB dev < 0
-    and QB / WR / TE dev > 0, each with the sign of act_dev; ``pass_bottom``:
-    the reverse in quintile 1; ``corr_v1`` / ``corr_v2``: Pearson of pred_dev
-    vs act_dev over the 20 cells (0.0 for a constant side); ``pass`` =
-    pass_top and pass_bottom and corr_v2 > corr_v1."""
+    Relative deviations (ruling I2): ``rel_<x> = <x>_q - <x>_all`` for
+    pred_dev_v1, pred_dev_v2 and act_dev. The raw deviation vs a player's
+    trailing mean carries a population-wide offset (regression to the mean of
+    a projection-gated population, in-game exits, season trend) that is the
+    same in every quintile and could fail a tail by construction; the spec's
+    intent is the move vs an AVERAGE matchup.
+
+    ``pass_top``: in quintile 5 (strong run D / weak pass D) v2's RB rel dev
+    < 0 and QB / WR / TE rel dev > 0, each with the sign of the actual rel
+    dev; ``pass_bottom``: the reverse in quintile 1; ``corr_v1`` /
+    ``corr_v2``: Pearson of the pred rel dev vs the actual rel dev over the
+    20 cells (0.0 for a constant side); ``pass`` = pass_top and pass_bottom
+    and corr_v2 > corr_v1. The table keeps the raw deviations too."""
     p = paired_served(v1, v2)
     groups = {m for _, m in MATCHUP_GROUPS}
     p = p[p["market"].isin(groups)].reset_index(drop=True)
@@ -200,33 +217,41 @@ def matchup_response(v1: pd.DataFrame, v2: pd.DataFrame, feats: pd.DataFrame) ->
              else [float("nan")] * 4)
     p = p.assign(quintile=1 + (p["mx_pass_minus_rush"].to_numpy(float)[:, None]
                                > np.asarray(edges)[None, :]).sum(axis=1))
-    table = []
+    def devs(c: pd.DataFrame) -> dict:
+        sb = float(c["baseline"].sum())
+
+        def dev(col: str) -> float:
+            return float(c[col].sum()) / sb - 1.0 if sb > 0 else float("nan")
+
+        return {"n": int(len(c)), "pred_dev_v1": dev("mean_b"), "pred_dev_v2": dev("mean_c"),
+                "act_dev": dev("actual")}
+
+    table, group_all = [], {}
     for pos, market in MATCHUP_GROUPS:
+        g = p[(p["position"] == pos) & (p["market"] == market)]
+        a = devs(g)
+        group_all[pos] = {"market": market, **a}
         for q in range(1, N_QUINTILES + 1):
-            c = p[(p["position"] == pos) & (p["market"] == market) & (p["quintile"] == q)]
-            sb = float(c["baseline"].sum())
-
-            def dev(col: str) -> float:
-                return float(c[col].sum()) / sb - 1.0 if sb > 0 else float("nan")
-
-            table.append({"group": pos, "market": market, "quintile": q, "n": int(len(c)),
-                          "pred_dev_v1": dev("mean_b"), "pred_dev_v2": dev("mean_c"),
-                          "act_dev": dev("actual")})
+            d = devs(g[g["quintile"] == q])
+            table.append({"group": pos, "market": market, "quintile": q, **d,
+                          **{f"rel_{k}": _rel(d[k], a[k])
+                             for k in ("pred_dev_v1", "pred_dev_v2", "act_dev")}})
     cell = {(t["group"], t["quintile"]): t for t in table}
 
     def tail_ok(q: int, direction: int) -> bool:
         for pos, _ in MATCHUP_GROUPS:
             t = cell[(pos, q)]
             want_sign = direction * TOP_SIGN[pos]
-            if not (_sign(t["pred_dev_v2"]) == want_sign == _sign(t["act_dev"])):
+            if not (_sign(t["rel_pred_dev_v2"]) == want_sign == _sign(t["rel_act_dev"])):
                 return False
         return True
 
     pass_top, pass_bottom = tail_ok(N_QUINTILES, 1), tail_ok(1, -1)
-    act = [t["act_dev"] for t in table]
-    corr_v1 = _pearson([t["pred_dev_v1"] for t in table], act)
-    corr_v2 = _pearson([t["pred_dev_v2"] for t in table], act)
-    return {"table": table, "edges": [float(e) for e in edges], "n_records": int(len(p)),
+    act = [t["rel_act_dev"] for t in table]
+    corr_v1 = _pearson([t["rel_pred_dev_v1"] for t in table], act)
+    corr_v2 = _pearson([t["rel_pred_dev_v2"] for t in table], act)
+    return {"table": table, "group_all": group_all, "edges": [float(e) for e in edges],
+            "n_records": int(len(p)), "relative_to": "group all-games deviation",
             "pass_top": bool(pass_top), "pass_bottom": bool(pass_bottom),
             "corr_v1": corr_v1, "corr_v2": corr_v2,
             "pass": bool(pass_top and pass_bottom and corr_v2 > corr_v1)}

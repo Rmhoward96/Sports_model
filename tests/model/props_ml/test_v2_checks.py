@@ -116,14 +116,15 @@ def _mx_feats():
     return pd.DataFrame(rows)
 
 
-def _served(dev):
-    """Served records at week 9: mean = baseline x (1 + dev[pos][quintile])."""
+def _served(dev, act_offset=0.0):
+    """Served records at week 9: mean = baseline x (1 + dev[pos][quintile]);
+    actual = baseline x (1 + ACT[pos][quintile] + act_offset)."""
     rows = []
     for i in range(5):
         for pos, (market, label, base) in GROUPS.items():
             rows.append({"season": 2024, "week": 9, "home": f"T{i}", "player_id": f"T{i}{pos}",
                          "market": market, "mean": base * (1 + dev[pos][i]), "rps": 1.0,
-                         "pit": 0.5, "actual": base * (1 + ACT[pos][i])})
+                         "pit": 0.5, "actual": base * (1 + ACT[pos][i] + act_offset)})
     # a market outside the four groups is ignored
     rows.append({"season": 2024, "week": 9, "home": "T0", "player_id": "T0RB",
                  "market": "receptions", "mean": 3.0, "rps": 1.0, "pit": 0.5, "actual": 2.0})
@@ -164,6 +165,35 @@ def test_matchup_response_bottom_only_failure_and_sign_must_match_actual():
     bad = {**V2, "QB": V2["QB"][:4] + [-0.05]}   # top QB predicted down, actual up
     got = vc.matchup_response(_served(V1), _served(bad), _mx_feats())
     assert got["pass_top"] is False and got["pass_bottom"] is True and got["pass"] is False
+
+
+def test_matchup_response_reads_deviations_relative_to_the_average_matchup():
+    """Ruling I2: a population-wide offset (every quintile's RAW actual
+    deviation negative, e.g. regression to the mean) does not fail a tail
+    when the pattern relative to the group's all-games deviation is right."""
+    offset = -0.30
+    v2_off = {g: [x + offset + 0.05 for x in V2[g]] for g in GROUPS}   # v2 carries most of it
+    got = vc.matchup_response(_served(V1, offset), _served(v2_off, offset), _mx_feats())
+    cells = {(c["group"], c["quintile"]): c for c in got["table"]}
+    # raw: every actual deviation is negative, so a raw-sign rule fails the up tail
+    assert all(c["act_dev"] < 0 for c in got["table"])
+    assert cells[("QB", 5)]["act_dev"] == pytest.approx(0.10 + offset)
+    assert cells[("QB", 5)]["pred_dev_v2"] < 0
+    # relative to the group's all-games deviation, the pattern is the designed one
+    assert got["group_all"]["QB"]["act_dev"] == pytest.approx(offset)
+    assert got["group_all"]["QB"]["pred_dev_v2"] == pytest.approx(offset + 0.05)
+    assert cells[("QB", 5)]["rel_act_dev"] == pytest.approx(0.10)
+    assert cells[("QB", 5)]["rel_pred_dev_v2"] == pytest.approx(0.075)
+    assert cells[("RB", 5)]["rel_act_dev"] == pytest.approx(-0.20)
+    assert cells[("RB", 5)]["rel_pred_dev_v2"] == pytest.approx(-0.15)
+    assert cells[("RB", 1)]["rel_pred_dev_v1"] == pytest.approx(0.0)
+    assert got["pass_top"] is True and got["pass_bottom"] is True
+    assert got["corr_v2"] == pytest.approx(1.0) and got["corr_v1"] == 0.0
+    assert got["pass"] is True
+    # the same offset with v2's relative pattern flipped for RB still fails both tails
+    flipped = {**v2_off, "RB": [2 * (offset + 0.05) - x for x in v2_off["RB"]]}
+    bad = vc.matchup_response(_served(V1, offset), _served(flipped, offset), _mx_feats())
+    assert bad["pass_top"] is False and bad["pass_bottom"] is False and bad["pass"] is False
 
 
 def test_matchup_response_needs_v2_to_beat_v1_correlation():

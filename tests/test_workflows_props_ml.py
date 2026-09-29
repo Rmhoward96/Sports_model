@@ -31,7 +31,8 @@ import pytest
 ROOT = Path(__file__).resolve().parents[1]
 WF = ROOT / ".github" / "workflows"
 SIM_ML_ENV = "${{ vars.SIM_ML_MODE || 'off' }}"
-DOWNLOAD_CALLS = ("fetch_verified props-ml-latest nfl-sim-ml-v1", "fetch_verified props-ml-v2 nfl-sim-ml-v2")
+DOWNLOAD_CALLS = ("fetch_verified props-ml-latest nfl-sim-ml-v1",
+                  "fetch_verified props-ml-v2 nfl-sim-ml-v2 notice")
 VERIFY_WARNING = "::warning::props-ml: release verification failed"
 MATRIX = [
     {"version": "nfl-sim-ml-v1", "gate_name": "", "qb_params": "gate", "release": "props-ml-latest",
@@ -593,11 +594,15 @@ def test_verify_both_releases_land_in_their_version_dirs(tmp_path):
 
 
 @needs_sha256sum
-def test_verify_missing_v2_release_warns_and_keeps_v1(tmp_path):
+def test_verify_missing_v2_release_is_a_notice_and_keeps_v1(tmp_path):
+    """M4: a missing props-ml-v2 Release is expected while v1 is served -- a
+    ::notice::, not a ::warning:: (if v2 IS served, the sim step's ML path
+    fails with its own ::warning::props-ml: artifacts-missing line)."""
     state = _release_state(tmp_path, {"props-ml-latest": MODEL_FILES, "props-ml-v2": None})
     r = _run_verify(tmp_path, state)
     assert r.returncode == 0, r.stderr
-    assert "::warning::props-ml: no props-ml-v2 release; nfl-sim-ml-v2 disabled" in r.stdout
+    assert "::notice::props-ml: no props-ml-v2 release; nfl-sim-ml-v2 disabled" in r.stdout
+    assert "::warning::" not in r.stdout
     assert not _dir(tmp_path, "nfl-sim-ml-v2").exists()
     assert sorted(p.name for p in _dir(tmp_path, "nfl-sim-ml-v1").iterdir()) == sorted(
         [*MODEL_FILES, "MANIFEST.sha256"])
@@ -638,8 +643,9 @@ def test_verify_no_releases_is_a_noop(tmp_path):
     state = _release_state(tmp_path, {"props-ml-latest": None, "props-ml-v2": None})
     r = _run_verify(tmp_path, state)
     assert r.returncode == 0, r.stderr
-    assert "no props-ml-latest release; nfl-sim-ml-v1 disabled" in r.stdout
-    assert "no props-ml-v2 release; nfl-sim-ml-v2 disabled" in r.stdout
+    # a missing v1 Release stays a warning; the v2 one is a notice (M4)
+    assert "::warning::props-ml: no props-ml-latest release; nfl-sim-ml-v1 disabled" in r.stdout
+    assert "::notice::props-ml: no props-ml-v2 release; nfl-sim-ml-v2 disabled" in r.stdout
     assert not _dir(tmp_path, "nfl-sim-ml-v1").exists() and not _dir(tmp_path, "nfl-sim-ml-v2").exists()
 
 
@@ -865,9 +871,71 @@ def test_train_guard_step_executes(train_wf, tmp_path, content, skip, leg):
         other = "pipeline_v2.json" if leg["gate_name"] == "" else "pipeline.json"
         (f.parent / other).write_text('{"final_pass": true, "markets": {}}' if skip == "true"
                                       else '{"final_pass": false}')
+    if leg["gate_name"] == "_v2":   # the v2-only guards pass here (tested separately below)
+        _v2_guard_files(tmp_path, gate='{"pass": true}', qb='{"gate": {}, "serving": {"H": 2, "k": 50}}',
+                        pipeline=None)
     out, stdout = _run_step(guard["run"], tmp_path, leg_env(leg))
     assert out == {"skip": skip}
     assert (GUARD_NOTICE in stdout) is (skip == "true")
+
+
+V2_GATE_NOTICE = "::notice::props-ml: no passing v2_gate.json (v2 vs v1) — skipping retrain"
+SERVING_NOTICE = "::notice::props-ml: no serving block in assets/nfl/props_ml/qb_profile_params.json"
+
+
+def _v2_guard_files(tmp_path: Path, *, gate: str | None, qb: str | None,
+                    pipeline: str | None = '{"final_pass": true}') -> None:
+    """The v2 leg's guard inputs (None = absent; `pipeline` None = leave as is)."""
+    d = tmp_path / "ws" / "assets" / "nfl" / "props_ml"
+    d.mkdir(parents=True, exist_ok=True)
+    if pipeline is not None:
+        (d / "pipeline_v2.json").write_text(pipeline)
+    for name, body in (("v2_gate.json", gate), ("qb_profile_params.json", qb)):
+        if body is None:
+            (d / name).unlink(missing_ok=True)
+        else:
+            (d / name).write_text(body)
+
+
+SERVING_OK = '{"gate": {"H": 1, "k": 100}, "serving": {"H": 2.0, "k": 50.0}}'
+
+
+@needs_jq
+@pytest.mark.parametrize("gate,qb,skip,notice", [
+    ('{"pass": true, "verdict": {}}', SERVING_OK, "false", None),
+    (None, SERVING_OK, "true", V2_GATE_NOTICE),                           # gate not run / committed
+    ('{"pass": false}', SERVING_OK, "true", V2_GATE_NOTICE),
+    ('{"pass": "true"}', SERVING_OK, "true", V2_GATE_NOTICE),             # only a JSON true counts
+    ("not json", SERVING_OK, "true", V2_GATE_NOTICE),
+    ('{"pass": true}', None, "true", SERVING_NOTICE),                     # M3: no params file
+    ('{"pass": true}', '{"gate": {"H": 1, "k": 100}}', "true", SERVING_NOTICE),   # no serving block
+    ('{"pass": true}', '{"serving": {"H": 2}}', "true", SERVING_NOTICE),  # incomplete block
+    ('{"pass": true}', "not json", "true", SERVING_NOTICE),
+])
+def test_train_guard_v2_leg_needs_the_v2_gate_and_a_serving_block(train_wf, tmp_path, gate, qb, skip,
+                                                                    notice):
+    """M2: the v2 leg also needs v2_gate.json pass == true (v2 vs v1; pipeline_v2's
+    final_pass is only v2 vs the current sim). M3: a missing serving block is a
+    ::notice:: skip, not a red build failure."""
+    guard = steps_of(train_wf["jobs"]["train"])[1]
+    _v2_guard_files(tmp_path, gate=gate, qb=qb)
+    out, stdout = _run_step(guard["run"], tmp_path, leg_env(MATRIX[1]))
+    assert out == {"skip": skip}
+    assert "::warning::" not in stdout and "::error::" not in stdout
+    for n in (V2_GATE_NOTICE, SERVING_NOTICE, GUARD_NOTICE):
+        assert (n in stdout) is (n == notice), n
+
+
+@needs_jq
+def test_train_guard_v1_leg_ignores_the_v2_only_guards(train_wf, tmp_path):
+    guard = steps_of(train_wf["jobs"]["train"])[1]
+    d = tmp_path / "ws" / "assets" / "nfl" / "props_ml"
+    d.mkdir(parents=True)
+    (d / "pipeline.json").write_text('{"final_pass": true}')
+    (d / "v2_gate.json").write_text('{"pass": false}')            # a failed v2 gate never blocks v1
+    (d / "qb_profile_params.json").write_text('{"gate": {"H": 1, "k": 100}}')   # no serving block
+    out, stdout = _run_step(guard["run"], tmp_path, leg_env(MATRIX[0]))
+    assert out == {"skip": "false"} and "::notice::" not in stdout
 
 
 def _fresh_bins(tmp_path: Path, *, release: bool, new_weeks: str) -> dict:

@@ -128,6 +128,9 @@ ECE_TOL = 0.005  # same tolerance rung_decision applies vs the kept config
 DATA_DIR = ROOT / "data" / "props_ml"
 PLAYER_PATH = DATA_DIR / "player_week_features.parquet"
 TEAM_PATH = DATA_DIR / "team_week_features.parquet"
+# the tables' build record (build_player_features.BUILD_INFO_FILE): QB-profile
+# params mode "gate" / "serving" / "explicit"; missing for tables built before it
+FEATURE_BUILD_PATH = DATA_DIR / "feature_build.json"
 GATE_PATH = ROOT / "assets" / "nfl" / "props_ml" / "a_gate.json"
 REPORT_DIR = ROOT / "docs" / "superpowers" / "reports"
 
@@ -354,6 +357,43 @@ def rung_passes(decision: dict, base_check: dict) -> bool:
 
 
 # ---- pure helpers: identity / checkpoints ----------------------------------------------
+
+def serving_tables_refusal(build: Mapping | None) -> str | None:
+    """Why the ladders / gate must not run on these feature tables, or None.
+
+    ``build`` is the tables' build record (``feature_build.json``). Mode
+    ``serving`` tables use QB-profile (H, k) fit on 2021 -> latest, which
+    includes the 2024-2025 verdict seasons, so a ladder or gate on them leaks
+    the verdict seasons into selection. A MISSING record (None) is a legacy
+    gate-mode build (tables built before the record existed): allowed."""
+    if build is None:
+        return None
+    mode = (build.get("qb_params") or {}).get("mode")
+    if mode == "serving":
+        qb = build.get("qb_params") or {}
+        return (f"the feature tables were built with the SERVING QB-profile params (H={qb.get('H')} "
+                f"k={qb.get('k')}: fit on 2021 -> latest, incl. the 2024-2025 verdict seasons); "
+                "rebuild with `uv run python scripts/build_player_features.py` (gate params) "
+                "before any ladder or gate run")
+    return None
+
+
+def read_feature_build(path: Path | None = None) -> dict | None:
+    """The tables' build record (``FEATURE_BUILD_PATH``), or None when absent."""
+    path = FEATURE_BUILD_PATH if path is None else Path(path)
+    return json.loads(path.read_text()) if path.is_file() else None
+
+
+def require_gate_tables(path: Path | None = None) -> dict | None:
+    """SystemExit (before any backtest) when the build record says the tables
+    were built with the serving QB params (``serving_tables_refusal``); else
+    the record (None = legacy gate build)."""
+    build = read_feature_build(path)
+    why = serving_tables_refusal(build)
+    if why is not None:
+        raise SystemExit(f"REFUSED: {why}")
+    return build
+
 
 def file_fingerprint(path: Path) -> dict:
     """``{"size", "sha256"}`` of a file's bytes."""
@@ -912,6 +952,7 @@ def main() -> None:
     def log(msg: str) -> None:
         print(f"[+{(time.time() - t0) / 60:7.1f} min] {msg}", flush=True)
 
+    require_gate_tables()   # before anything runs: serving-param tables leak the verdict seasons
     if not PLAYER_PATH.exists() or not TEAM_PATH.exists():
         raise SystemExit(f"missing {PLAYER_PATH} / {TEAM_PATH}: build them first with "
                          "`uv run python scripts/build_player_features.py`")

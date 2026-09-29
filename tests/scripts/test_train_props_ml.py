@@ -781,3 +781,36 @@ def test_gate_name_v2_never_overwrites_v1_outputs(tmp_path, monkeypatch):
     assert (rdir / "2026-09-28-props-ml-a-gate_v2.md").exists()
     assert {p.name for p in (tmp_path / "data").glob("*.parquet")} == {
         f"records_{n}__{tpm.DEFAULT_TAG}_v2.parquet" for n in ("baseline", *tpm.LADDER)}
+
+
+# ---- Ruling I1: serving-param tables are refused ------------------------------------------
+
+def test_serving_tables_refusal_by_build_record(tmp_path):
+    assert tpm.serving_tables_refusal(None) is None                   # legacy gate build: allowed
+    assert tpm.serving_tables_refusal({"qb_params": {"mode": "gate", "H": 1, "k": 100}}) is None
+    assert tpm.serving_tables_refusal({"qb_params": {"mode": "explicit", "H": 1, "k": 1}}) is None
+    why = tpm.serving_tables_refusal({"qb_params": {"mode": "serving", "H": 2.0, "k": 50.0}})
+    assert "SERVING" in why and "2024-2025" in why and "build_player_features.py" in why
+    assert tpm.FEATURE_BUILD_PATH == tpm.DATA_DIR / "feature_build.json"
+    path = tmp_path / "feature_build.json"
+    assert tpm.require_gate_tables(path) is None                        # no record
+    path.write_text('{"qb_params": {"mode": "gate", "H": 1.0, "k": 100.0}}')
+    assert tpm.require_gate_tables(path)["qb_params"]["mode"] == "gate"
+    path.write_text('{"qb_params": {"mode": "serving", "H": 2.0, "k": 50.0}}')
+    with pytest.raises(SystemExit, match="REFUSED"):
+        tpm.require_gate_tables(path)
+
+
+def test_main_refuses_serving_param_tables_before_any_backtest(tmp_path, monkeypatch):
+    fb = tmp_path / "feature_build.json"
+    fb.write_text('{"qb_params": {"mode": "serving", "H": 2.0, "k": 50.0}}')
+    for name in ("player_week_features.parquet", "team_week_features.parquet"):
+        (tmp_path / name).write_bytes(b"x")
+    monkeypatch.setattr(tpm, "FEATURE_BUILD_PATH", fb)
+    monkeypatch.setattr(tpm, "PLAYER_PATH", tmp_path / "player_week_features.parquet")
+    monkeypatch.setattr(tpm, "TEAM_PATH", tmp_path / "team_week_features.parquet")
+    boom = lambda *a, **k: (_ for _ in ()).throw(AssertionError("ran"))  # noqa: E731
+    monkeypatch.setattr(tpm, "_load_backtest", boom)
+    monkeypatch.setattr(tpm, "run_harness", boom)
+    with pytest.raises(SystemExit, match="REFUSED.*SERVING QB-profile params"):
+        tpm.main()

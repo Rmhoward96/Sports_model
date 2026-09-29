@@ -222,17 +222,20 @@ class _Models:
 
 A_V1 = {"kept": ["context", "efficiency", "market", "volume"],
         "tuned": {str(s): [1.0, 150] for s in range(2021, 2026)}}
-A_V2 = {"kept": ["context", "efficiency", "market", "matchup", "qb_profile", "volume"],
-        "tuned": {str(s): [0.8, 300] for s in range(2021, 2026)}, "gate_name": "_v2"}
 IDENTITY = {"git_head": "deadbeef", "player_features": {"size": 1, "sha256": "a" * 64},
             "team_features": {"size": 1, "sha256": "b" * 64}}
+A_V2 = {"kept": ["context", "efficiency", "market", "matchup", "qb_profile", "volume"],
+        "tuned": {str(s): [0.8, 300] for s in range(2021, 2026)}, "gate_name": "_v2",
+        "decide_seasons": [2021, 2022, 2023],
+        "identity": {"git_head": "gita", "player_features": {"size": 1, "sha256": "a" * 64},
+                     "team_features": {"size": 1, "sha256": "b" * 64}}}
 
 
 def _b_gate(name, **over):
     g = {"gate_name": name, "run_tag": "s2021-2025__every4__b7", "decide_seasons": [2021, 2022, 2023],
          "served_path": f"/x/data/props_ml/served__s2021-2025__every4{name}.parquet",
-         "identity": {"git_head": f"git{name}", "player_features": {"sha256": "c" * 64},
-                      "team_features": {"sha256": "d" * 64}}}
+         "identity": {"git_head": f"git{name}", "player_features": {"sha256": "a" * 64},
+                      "team_features": {"sha256": "b" * 64}}}
     g.update(over)
     return g
 
@@ -299,7 +302,7 @@ def test_run_gate_v2_end_to_end(tmp_path, monkeypatch):
     prov = out["b_ladders"]
     assert prov["v1"] == {"gate_name": "_v1cmp", "run_tag": "s2021-2025__every4__b7",
                           "decide_seasons": [2021, 2022, 2023], "git": "git_v1cmp",
-                          "player_features": "c" * 64, "team_features": "d" * 64,
+                          "player_features": "a" * 64, "team_features": "b" * 64,
                           "served": "served__s2021-2025__every4_v1cmp.parquet"}
     assert prov["v2"]["git"] == "git_v2" and prov["v2"]["served"].endswith("_v2.parquet")
     spot = gate["spot_checks"][0]
@@ -365,7 +368,9 @@ def test_spot_check_without_a_served_record_is_reported_not_graded():
 
 @pytest.mark.parametrize("which, over, match", [
     ("v2", {"run_tag": "s2025__every4__b7"}, "run tags differ"),
-    ("v2", {"decide_seasons": [2021, 2022, 2023, 2024, 2025]}, "decide_seasons differ"),
+    ("v2", {"decide_seasons": [2021, 2022]}, "decide_seasons differ"),
+    ("v2", {"decide_seasons": [2021, 2022, 2023, 2024, 2025]}, r"verdict season\(s\) \[2024, 2025\]"),
+    ("v1", {"decide_seasons": [2021, 2022, 2023, 2025]}, r"verdict season\(s\) \[2025\]"),
     ("v1", {"decide_seasons": None}, "no decide_seasons"),
     ("v1", {"gate_name": ""}, "gate_name"),           # the committed v1 B gate, not _v1cmp
     ("v2", {"gate_name": "_v1cmp"}, "gate_name"),
@@ -387,3 +392,79 @@ def test_load_b_gate_missing_file_names_the_command(tmp_path):
         gv2.load_b_gate(tmp_path / "b_gate_v1cmp.json", "_v1cmp")
     (tmp_path / "b_gate_v2.json").write_text(json.dumps(B_V2))
     assert gv2.load_b_gate(tmp_path / "b_gate_v2.json", "_v2") == B_V2
+
+
+# ---- Ruling I1: selection provenance + serving-param tables --------------------------------
+
+def _ident(player="a" * 64, team="b" * 64, **extra):
+    return {"player_features": {"sha256": player}, "team_features": {"sha256": team}, **extra}
+
+
+@pytest.mark.parametrize("over, match", [
+    ({"a_gate_v2": {**A_V2, "decide_seasons": None}}, "a_gate_v2.json.*no decide_seasons"),
+    ({"a_gate_v2": {k: v for k, v in A_V2.items() if k != "decide_seasons"}}, "no decide_seasons"),
+    ({"a_gate_v2": {**A_V2, "decide_seasons": [2021, 2022, 2023, 2024]}},
+     r"v2 A gate.*verdict season\(s\) \[2024\]"),
+    # fingerprints: every recorder must match the current tables
+    ({"a_gate_v2": {**A_V2, "identity": _ident(player="e" * 64)}}, "player_features fingerprints differ"),
+    ({"b_gate_v1": _b_gate("_v1cmp", identity=_ident(team="f" * 64))}, "team_features fingerprints differ"),
+    ({"b_gate_v2": _b_gate("_v2", identity=_ident(player="e" * 64))}, "player_features fingerprints differ"),
+    ({"identity": {**IDENTITY, "team_features": {"size": 1, "sha256": "f" * 64}}},
+     "team_features fingerprints differ"),
+    ({"a_gate_v2": {k: v for k, v in A_V2.items() if k != "identity"}}, "not recorded by"),
+    ({"feature_build": {"qb_params": {"mode": "serving", "H": 2.0, "k": 50.0}}}, "REFUSED.*SERVING"),
+])
+def test_selection_provenance_failures_stop_before_any_backtest(tmp_path, monkeypatch, over, match):
+    _stub_models(monkeypatch)
+    kw = _kw(tmp_path, **over)
+    with pytest.raises(ValueError, match=match):
+        gv2.run_gate_v2({}, **kw)
+    assert kw["bsn"].runs == [] and kw["bsn"].fetches == []
+    assert not (tmp_path / "v2_gate.json").exists()
+
+
+@pytest.mark.parametrize("build, shown", [
+    (None, "none (no build record: legacy gate-mode build)"),
+    ({"qb_params": {"mode": "gate", "H": 1.0, "k": 100.0}}, "gate (H=1 k=100)"),
+])
+def test_selection_provenance_is_recorded_in_json_and_report(tmp_path, monkeypatch, build, shown):
+    _stub_models(monkeypatch)
+    gate = gv2.run_gate_v2({}, **_kw(tmp_path, feature_build=build))
+    sel = json.loads((tmp_path / "v2_gate.json").read_text())["selection"]
+    assert sel == gate["selection"]
+    assert sel["a_gate_v2_decide_seasons"] == [2021, 2022, 2023]
+    assert sel["verdict_seasons"] == [2024, 2025]
+    assert sel["player_features"] == "a" * 64 and sel["team_features"] == "b" * 64
+    assert sel["feature_build"]["mode"] == shown.split(" (H=")[0]
+    md = (tmp_path / "reports" / "2026-09-28-matchup-qb-gate.md").read_text()
+    assert "Selection provenance: A ladder v2 decided on 2021, 2022, 2023" in md
+    assert "neither holds a verdict season: 2024, 2025" in md
+    assert f"table build record QB params: {shown}." in md
+
+
+def test_report_explains_relative_matchup_and_the_caveats(tmp_path, monkeypatch):
+    _stub_models(monkeypatch)
+    # the real served files hold 2021-2025 only: the 2026 spot check is never graded
+    gate = gv2.run_gate_v2({}, **_kw(tmp_path, served_v1=_served("v1").query("season < 2026"),
+                                     served_v2=_served("v2").query("season < 2026")))
+    md = (tmp_path / "reports" / "2026-09-28-matchup-qb-gate.md").read_text()
+    assert "RELATIVE TO THE AVERAGE MATCHUP" in md and "| RB | all |" in md
+    assert "rel actual" in md and "-0.000" not in md
+    assert "cannot be graded from this gate" in md and "`matchup:` / `qb-check:`" in md   # M6
+    assert "cannot be graded from the gate's 2021–2025 served files" in md
+    assert "GATE QB-profile params" in md and "weekly quick gate" in md                   # M7
+    assert "(1 + m) / 2" in md and "50 % shrink" in md                                    # I4
+    rows = {(t["group"], t["quintile"]): t for t in gate["matchup"]["table"]}
+    assert set(rows[("RB", 5)]) >= {"pred_dev_v2", "act_dev", "rel_pred_dev_v2", "rel_act_dev"}
+
+
+def test_main_refuses_serving_param_tables_before_anything_runs(tmp_path, monkeypatch):
+    fb = tmp_path / "feature_build.json"
+    fb.write_text(json.dumps({"qb_params": {"mode": "serving", "H": 2.0, "k": 50.0}}))
+    monkeypatch.setattr(gv2.tpm, "FEATURE_BUILD_PATH", fb)
+    boom = lambda *a, **k: (_ for _ in ()).throw(AssertionError("ran"))  # noqa: E731
+    monkeypatch.setattr(gv2, "load_b_gate", boom)
+    monkeypatch.setattr(gv2.tpm, "_load_backtest", boom)
+    monkeypatch.setattr(gv2, "run_gate_v2", boom)
+    with pytest.raises(SystemExit, match="REFUSED.*SERVING QB-profile params"):
+        gv2.main()

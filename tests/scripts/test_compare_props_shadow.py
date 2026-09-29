@@ -13,6 +13,13 @@ cps = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(cps)
 
 
+@pytest.fixture(autouse=True)
+def _no_serving_db(monkeypatch):
+    """main() never reaches the DB: no served ML version, no env override."""
+    monkeypatch.setattr(cps, "_served_version", lambda: None)
+    monkeypatch.delenv(cps.ML_VERSION_ENV, raising=False)
+
+
 def _sim(game_pk, pid, market, pmf, as_json=False, mean=0.0):
     dist = {"kind": "pmf", "pmf": list(pmf), "mean": mean}
     return {"game_pk": game_pk, "player_id": pid, "market": market,
@@ -256,7 +263,7 @@ def test_render_report_has_verdict_table_and_per_market_n():
 # ---------------------------------------------------------------- main (loader stubbed)
 
 def test_main_exits_zero_without_ml_rows(monkeypatch, tmp_path, capsys):
-    monkeypatch.setattr(cps, "load_shadow_data", lambda since: None)
+    monkeypatch.setattr(cps, "load_shadow_data", lambda since, ml_version: None)
     assert cps.main(["--out-dir", str(tmp_path)]) == 0
     assert "no nfl-sim-ml-v1 rows" in capsys.readouterr().out
     assert list(tmp_path.iterdir()) == []
@@ -271,14 +278,14 @@ def test_main_writes_report(monkeypatch, tmp_path, capsys):
             "null_commence": 2}
     seen = {}
 
-    def fake_load(since):
-        seen["since"] = since
+    def fake_load(since, ml_version):
+        seen["since"], seen["ml_version"] = since, ml_version
         return data
 
     monkeypatch.setattr(cps, "load_shadow_data", fake_load)
     assert cps.main(["--since", "2026-09-20", "--out-dir", str(tmp_path),
                      "--run-date", "2026-09-27"]) == 0
-    assert seen["since"] == "2026-09-20"
+    assert seen["since"] == "2026-09-20" and seen["ml_version"] == "nfl-sim-ml-v1"
     out = tmp_path / "2026-09-27-props-ml-shadow.md"
     assert out.exists()
     printed = capsys.readouterr().out
@@ -343,3 +350,67 @@ def test_render_report_shows_gated_verdict_and_a_separate_ungated_table():
     assert f"verdict: {res['ungated']['verdict']}" in ungated
     assert "not used for the verdict" in ungated
     assert "projected-usage gate" in head
+
+
+
+# ---------------------------------------------------------------- M5: the compared ML version
+
+def test_resolve_ml_version_cli_env_served_default():
+    def served(v):
+        return lambda: v
+
+    env = {cps.ML_VERSION_ENV: "nfl-sim-ml-v2"}
+    assert cps.resolve_ml_version("nfl-sim-ml-v1", env, served("nfl-sim-ml-v2"))[0] == "nfl-sim-ml-v1"
+    assert cps.resolve_ml_version(None, env, served("nfl-sim-ml-v1")) == ("nfl-sim-ml-v2",
+                                                                          cps.ML_VERSION_ENV)
+    assert cps.resolve_ml_version(None, {}, served("nfl-sim-ml-v2"))[0] == "nfl-sim-ml-v2"
+    assert cps.resolve_ml_version(None, {}, served("sim-nfl-v1"))[0] == "nfl-sim-ml-v1"
+    assert cps.resolve_ml_version(None, {}, served(None))[0] == "nfl-sim-ml-v1"
+
+    def unreadable():
+        raise RuntimeError("no DB")
+
+    assert cps.resolve_ml_version(None, {cps.ML_VERSION_ENV: " "}, unreadable)[0] == "nfl-sim-ml-v1"
+    with pytest.raises(ValueError, match="sim-nfl-v1"):
+        cps.resolve_ml_version(None, {cps.ML_VERSION_ENV: "sim-nfl-v1"}, served(None))
+
+
+def _main_data():
+    return {"since": "2026-09-20T00:00:00+00:00",
+            "v1": [_sim(1, "a", "rush_att", [0.5, 0.5], mean=12.0)],
+            "ml": [_sim(1, "a", "rush_att", [0.2, 0.8])],
+            "actuals": [_act(1, "a", "rush_att", 1.0)],
+            "lines": [_line(1, "a", "rush_att", 0.5)], "null_commence": 0}
+
+
+@pytest.mark.parametrize("argv, env, served, want", [
+    (["--ml-version", "nfl-sim-ml-v2"], None, None, "nfl-sim-ml-v2"),
+    ([], "nfl-sim-ml-v2", "nfl-sim-ml-v1", "nfl-sim-ml-v2"),
+    ([], None, "nfl-sim-ml-v2", "nfl-sim-ml-v2"),                  # default: the served one
+    ([], None, "sim-nfl-v1", "nfl-sim-ml-v1"),
+])
+def test_main_compares_the_resolved_ml_version(monkeypatch, tmp_path, capsys, argv, env, served,
+                                               want):
+    seen = {}
+    monkeypatch.setattr(cps, "_served_version", lambda: served)
+    if env:
+        monkeypatch.setenv(cps.ML_VERSION_ENV, env)
+    monkeypatch.setattr(cps, "load_shadow_data",
+                        lambda since, ml_version: seen.setdefault("v", ml_version) and _main_data())
+    assert cps.main([*argv, "--out-dir", str(tmp_path), "--run-date", "2026-10-05"]) == 0
+    assert seen["v"] == want
+    name = "2026-10-05-props-ml-shadow" + ("" if want == "nfl-sim-ml-v1" else f"-{want}") + ".md"
+    text = (tmp_path / name).read_text()
+    assert f"- Versions: sim-nfl-v1 (current sim) vs {want} (ML)" in text
+    assert f"vs {want}" in capsys.readouterr().out
+
+
+def test_main_rejects_an_unknown_ml_version(tmp_path):
+    with pytest.raises(SystemExit):
+        cps.main(["--ml-version", "sim-nfl-v1", "--out-dir", str(tmp_path)])
+
+
+def test_main_without_rows_names_the_compared_version(monkeypatch, tmp_path, capsys):
+    monkeypatch.setattr(cps, "load_shadow_data", lambda since, ml_version: None)
+    assert cps.main(["--ml-version", "nfl-sim-ml-v2", "--out-dir", str(tmp_path)]) == 0
+    assert "no nfl-sim-ml-v2 rows" in capsys.readouterr().out

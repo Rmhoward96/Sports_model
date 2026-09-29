@@ -1184,14 +1184,14 @@ def test_build_ml_tables_feeds_injected_injuries_to_the_builder(monkeypatch, cap
         SEASONS = [2016]
 
         @staticmethod
-        def fetch_sources(seasons):
+        def fetch_sources(seasons, **kw):
             seen["seasons"] = list(seasons)
             return {"injuries": pd.DataFrame({"season": [2026], "week": [2], "team": ["KC"],
                                               "gsis_id": ["00-1"], "report_status": ["Out"]}),
                     "depth": _DEPTH, "sched": pd.DataFrame({"x": [1]})}
 
         @staticmethod
-        def build_tables(src, ctx_fill=None, qb1_override=None):
+        def build_tables(src, ctx_fill=None, qb1_override=None, **kw):
             seen["injuries"] = src["injuries"]
             return {"feats": pd.DataFrame(), "team": pd.DataFrame()}
 
@@ -1836,12 +1836,12 @@ def test_build_ml_tables_passes_qb_override_and_params_to_the_one_builder(monkey
         SEASONS = [2016]
 
         @staticmethod
-        def fetch_sources(seasons):
+        def fetch_sources(seasons, **kw):
             return {"injuries": None, "depth": _DEPTH, "sched": pd.DataFrame({"x": [1]}),
                     "qb_params_mode": "gate"}
 
         @staticmethod
-        def build_tables(src, ctx_fill=None, qb1_override=None):
+        def build_tables(src, ctx_fill=None, qb1_override=None, **kw):
             seen["qb1_override"], seen["qb_params"] = qb1_override, src.get("qb_params")
             return {"feats": pd.DataFrame(), "team": pd.DataFrame()}
 
@@ -1949,11 +1949,11 @@ def test_build_ml_tables_adds_the_builders_qb1_to_the_team_rows(monkeypatch):
         SEASONS = [2016]
 
         @staticmethod
-        def fetch_sources(seasons):
+        def fetch_sources(seasons, **kw):
             return {"injuries": None, "depth": depth, "sched": pd.DataFrame({"x": [1]})}
 
         @staticmethod
-        def build_tables(src, ctx_fill=None, qb1_override=None):
+        def build_tables(src, ctx_fill=None, qb1_override=None, **kw):
             return {"feats": pd.DataFrame(), "team": team}
 
     monkeypatch.setattr(gsn, "_load_script", lambda name: FakeBpf)
@@ -2021,3 +2021,120 @@ def test_live_cb_on_the_report_maps_through_the_defense_chart_and_vacates_covera
         dsnaps, inj, pd.DataFrame({"season": [2026], "week": [3], "team": ["BAL"]}))
     assert vac["di_vacated_cov"].iloc[0] > 0.9
     assert vac["di_vacated_rush"].iloc[0] == 0.0
+
+
+# ---- final review I3: v1-safe live feature build --------------------------------------------
+
+def _fc_config(extra_cols=(), **over):
+    """A props_ml_config.json with a feature_columns block (artifacts.required_columns shape)."""
+    return {"feature_columns": {
+        "role": ["p_y_targets_ewm"],
+        "learned": {"fitted": {"targets": ["p_snap_pct_r3"], "carries": ["p_y_carries_ewm"],
+                               "eff": {"rec_yds": ["p_target_share_ewm"]},
+                               "team_pass": ["tm_pass_att_ewm", *extra_cols], "team_rush": None}},
+        "b": {"rec_yds": ["p_y_targets_ewm"]}}, **over}
+
+
+def test_config_reads_extra_features():
+    assert gsn.config_reads_extra_features(_fc_config()) is False                 # v1 shape
+    assert gsn.config_reads_extra_features(_fc_config(["qb_ratio_ypa"])) is True
+    cfg = _fc_config()
+    cfg["feature_columns"]["b"]["rec_yds"].append("mx_pass_edge")
+    assert gsn.config_reads_extra_features(cfg) is True
+    cfg = _fc_config()
+    cfg["feature_columns"]["role"].append("di_op_vacated_cov")
+    assert gsn.config_reads_extra_features(cfg) is True
+    assert gsn.config_reads_extra_features({}) is True                             # unknown: fatal side
+
+
+def test_run_ml_v1_skips_the_qb_history_and_makes_the_new_features_optional(monkeypatch, tmp_path):
+    rec = _install_io(monkeypatch, tmp_path, "live", served="nfl-sim-ml-v1")
+    _install_ml(monkeypatch, rec, tmp_path, config=_fc_config())
+    gsn.main()
+    assert rec.build_kwargs[0]["qb_history"] is False
+    assert rec.build_kwargs[0]["extras_optional"] is True
+
+
+def test_run_ml_v2_downloads_the_qb_history_and_keeps_the_new_features_fatal(monkeypatch, tmp_path):
+    rec = _install_io(monkeypatch, tmp_path, "live", served="nfl-sim-ml-v2")
+    _install_ml(monkeypatch, rec, tmp_path, version="nfl-sim-ml-v2",
+                config=_fc_config(["qb_ratio_ypa"], model_version="nfl-sim-ml-v2",
+                                  qb_profile_params=_V2_QB))
+    gsn.main()
+    assert rec.build_kwargs[0]["qb_history"] is True
+    assert rec.build_kwargs[0]["extras_optional"] is False
+
+
+def _fake_bpf_for_flags(seen):
+    class FakeBpf:
+        SEASONS = [2016]
+
+        @staticmethod
+        def fetch_sources(seasons, qb_history=True):
+            seen["qb_history"] = qb_history
+            return {"injuries": None, "depth": _DEPTH, "sched": pd.DataFrame({"x": [1]})}
+
+        @staticmethod
+        def build_tables(src, ctx_fill=None, qb1_override=None, extra_fallback=False):
+            seen["extra_fallback"] = extra_fallback
+            return {"feats": pd.DataFrame(), "team": pd.DataFrame()}
+    return FakeBpf
+
+
+@pytest.mark.parametrize("qb_history, optional", [(False, True), (True, False)])
+def test_build_ml_tables_passes_the_flags_to_the_builder(monkeypatch, qb_history, optional):
+    seen = {}
+    monkeypatch.setattr(gsn, "_load_script", lambda name: _fake_bpf_for_flags(seen))
+    gsn._build_ml_tables(2026, gsn.datetime(2026, 9, 27, tzinfo=gsn.timezone.utc),
+                         qb_history=qb_history, extras_optional=optional)
+    assert seen == {"qb_history": qb_history, "extra_fallback": optional}
+    seen.clear()
+    gsn._build_ml_tables(2026, gsn.datetime(2026, 9, 27, tzinfo=gsn.timezone.utc))
+    assert seen == {"qb_history": True, "extra_fallback": False}      # defaults: training-like
+
+
+def test_build_ml_tables_qb1_log_failure_is_a_warning_only_when_optional(monkeypatch, capsys):
+    seen = {}
+    monkeypatch.setattr(gsn, "_load_script", lambda name: _fake_bpf_for_flags(seen))
+
+    def boom(*a, **k):
+        raise KeyError("depth_team")
+
+    monkeypatch.setattr(gsn, "_feature_qb1", boom)
+    now = gsn.datetime(2026, 9, 27, tzinfo=gsn.timezone.utc)
+    with pytest.raises(KeyError):
+        gsn._build_ml_tables(2026, now, extras_optional=False)
+    _, team, _ = gsn._build_ml_tables(2026, now, extras_optional=True)
+    assert "qb1_id" not in team.columns
+    out = capsys.readouterr().out
+    assert "::warning::props-ml: matchup-log QB1 failed (KeyError: 'depth_team')" in out
+
+
+def test_v1_live_build_survives_a_new_feature_failure_end_to_end(monkeypatch, tmp_path, capsys):
+    """The real builder (stubbed sources): with extras optional an extra_features
+    exception yields NaN mx_/di_/qb_ columns + one warning, and the v1 columns
+    are built as usual."""
+    import sportsmodel.nfl.player_features as pf_mod
+    from tests.scripts import test_build_player_features as tbpf
+
+    bpf = gsn._load_script("build_player_features")
+    tbpf._stub_context(monkeypatch)
+
+    def boom(*a, **k):
+        raise ValueError("no QB history")
+
+    monkeypatch.setattr(pf_mod, "extra_features", boom)
+    monkeypatch.setattr(bpf, "fetch_sources", lambda seasons, qb_history=True: tbpf._stub_src())
+    monkeypatch.setattr(gsn, "_load_script", lambda name: bpf)
+    monkeypatch.setattr(gsn, "_inject_live_injuries", lambda inj, depth, report, season: (inj, "inj"))
+    import sportsmodel.nfl.context as ctx_mod
+    monkeypatch.setattr(ctx_mod, "fill_forecast_weather", lambda ctx, *a, **k: ctx)
+    now = gsn.datetime(2024, 9, 27, tzinfo=gsn.timezone.utc)
+    feats, team, _ = gsn._build_ml_tables(2024, now, qb_history=False, extras_optional=True)
+    out = capsys.readouterr().out
+    assert out.count("::warning::props-ml: mx_/di_/qb_ feature build failed (ValueError: no QB history)") == 1
+    for t in (feats, team):
+        assert t[bpf.extra_feature_columns()].isna().all().all()
+        assert len(t) > 0 and "tm_pass_att_ewm" in team.columns
+    with pytest.raises(ValueError, match="no QB history"):
+        gsn._build_ml_tables(2024, now, qb_history=True, extras_optional=False)

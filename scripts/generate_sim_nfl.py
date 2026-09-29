@@ -62,7 +62,11 @@ builds the props-ML feature tables with the training builder
 (scripts/build_player_features.py `fetch_sources` + `build_tables`, seasons
 2016..current, forecast weather filled for upcoming games, the version's
 serving QB-profile params -- `serving_qb_params` -- and the books QB
-check's promotions as `qb1_override`), loads the version's artifacts in
+check's promotions as `qb1_override`; the 1999-2015 weekly QB history is
+downloaded only when a non-v1 version is served, and while the served config
+reads no mx_/di_/qb_ column a failure building those features is NaN
+columns + a `::warning::props-ml:` line, not an ML failure), loads the
+version's artifacts in
 data/props_ml/models/<version>/ (`ml_model_dir`; with the tables, so a
 column mismatch is rejected at load; a config naming another version is
 rejected before the build), prints one `matchup:` line per team (QB1,
@@ -781,8 +785,26 @@ def _st_nan_shares(feats: pd.DataFrame, season: int, weeks: set[int]) -> dict[st
             for c in ST_NAN_COLS}
 
 
+EXTRA_PREFIXES = ("mx_", "di_", "qb_")
+
+
+def config_reads_extra_features(cfg: dict) -> bool:
+    """Whether a props-ML artifacts config reads any mx_/di_/qb_ column
+    (`artifacts.required_columns`: fitted, role and B columns of both
+    tables). A config whose columns cannot be listed counts as reading them
+    (the safe side: its feature build stays fatal). PURE."""
+    from sportsmodel.model.props_ml.artifacts import required_columns
+
+    try:
+        req = required_columns(cfg)
+    except Exception:  # noqa: BLE001 -- unknown shape: keep the fatal build
+        return True
+    return any(str(c).startswith(EXTRA_PREFIXES) for cols in req.values() for c in cols)
+
+
 def _build_ml_tables(upto_season: int, now: datetime, report: dict | None = None,
-                     qb1_override: dict | None = None, qb_params: tuple[float, float] | None = None
+                     qb1_override: dict | None = None, qb_params: tuple[float, float] | None = None,
+                     qb_history: bool = True, extras_optional: bool = False
                      ) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
     """(player table, team table, nflverse schedule) for serving, built by the
     SAME builder as training (scripts/build_player_features.py): seasons
@@ -793,14 +815,19 @@ def _build_ml_tables(upto_season: int, now: datetime, report: dict | None = None
     (`_inject_live_injuries`). `qb1_override` {(season, week, team): gsis}
     (the books QB check's promotions) sets QB1 for the qb_ features;
     `qb_params` (H, k) are the served version's QB-profile params
-    (`serving_qb_params`). Features are strictly pre-game by construction
+    (`serving_qb_params`). `qb_history`: download the 1999-2015 weekly QB
+    history (`run_ml`: only when the served version is not v1; every history
+    season must load). `extras_optional` (`run_ml`: the served config reads no
+    mx_/di_/qb_ column): a failure building those features -- or the matchup
+    log's QB1 -- gives NaN columns + a `::warning::props-ml:` line instead of
+    failing the ML path. Features are strictly pre-game by construction
     (rolling features read only earlier weeks). IO (network)."""
     from sportsmodel.nfl.context import fetch_hourly_forecast, fill_forecast_weather
 
     bpf = _load_script("build_player_features")
     seasons = list(range(bpf.SEASONS[0], upto_season + 1))
     print(f"props-ML: building feature tables for seasons {seasons[0]}-{seasons[-1]}", flush=True)
-    src = bpf.fetch_sources(seasons)
+    src = bpf.fetch_sources(seasons, qb_history=qb_history)
     src["injuries"], msg = _inject_live_injuries(src.get("injuries"), src.get("depth"), report, upto_season)
     print(msg, flush=True)
     if qb_params is not None:
@@ -810,9 +837,18 @@ def _build_ml_tables(upto_season: int, now: datetime, report: dict | None = None
     def ctx_fill(ctx, stadiums, sched):
         return fill_forecast_weather(ctx, stadiums, sched, fetch_hourly_forecast, now=ts)
 
-    built = bpf.build_tables(src, ctx_fill=ctx_fill, qb1_override=qb1_override or None)
+    built = bpf.build_tables(src, ctx_fill=ctx_fill, qb1_override=qb1_override or None,
+                             extra_fallback=extras_optional)
     team = built["team"]
-    qb1 = _feature_qb1(src, team, upto_season, qb1_override)
+    try:
+        qb1 = _feature_qb1(src, team, upto_season, qb1_override)
+    except Exception as exc:  # noqa: BLE001 -- the log's QB1 only; fatal when a model reads qb_
+        if not extras_optional:
+            raise
+        qb1 = None
+        flat = " ".join(f"{type(exc).__name__}: {exc}".split())
+        print(f"::warning::props-ml: matchup-log QB1 failed ({flat}); matchup: lines show QB1=na",
+              flush=True)
     if qb1 is not None:   # for the matchup log only (not a feature prefix: no model reads it)
         team = team.assign(qb1_id=qb1)
     return built["feats"], team, src["sched"]
@@ -1013,7 +1049,9 @@ def run_ml(*, ok_games: list[dict], game_keys: dict[Any, tuple[str, str, float]]
     failure semantics): artifacts missing/incompatible/another version (a
     v2 served with only v1 artifacts downloaded never loads the v1 ones),
     no QB params for the version (`serving_qb_params`), a config market_max
-    that differs from MARKET_MAX, the feature build, EVERY REG game falling
+    that differs from MARKET_MAX, the feature build (except, for a config that
+    reads no mx_/di_/qb_ column -- v1 --, those features: NaN + a warning;
+    `config_reads_extra_features`), EVERY REG game falling
     back (a postseason-only slate excepted), the DB write. Every game is
     computed before anything is written, so a global failure writes no
     partial ML slate.
@@ -1058,8 +1096,13 @@ def run_ml(*, ok_games: list[dict], game_keys: dict[Any, tuple[str, str, float]]
     qb_params, qb_note = serving_qb_params(model_version, raw_cfg)
     print(qb_note, flush=True)
     bsn = _load_script("backtest_sim_nfl")
+    # v1 reads no mx_/di_/qb_ column: no 1999-2015 QB-history download, and a
+    # failure building those features is NaN + a warning (not an ML failure)
+    extras_optional = not config_reads_extra_features(raw_cfg)
     feats, team, sched = _build_ml_tables(upto_season, now, report=report,
-                                          qb1_override=dict(qb1_override or {}), qb_params=qb_params)
+                                          qb1_override=dict(qb1_override or {}), qb_params=qb_params,
+                                          qb_history=model_version != ML_MODEL_VERSION,
+                                          extras_optional=extras_optional)
     if diag is not None:
         weeks = set()
         for g in ok_games:

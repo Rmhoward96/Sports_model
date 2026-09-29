@@ -1,6 +1,7 @@
-"""Props-ML shadow comparison report: the current sim (`sim-nfl-v1`) vs the
-ML version (`nfl-sim-ml-v1`) on finished NFL games, from the rows shadow mode
-wrote into `nfl_player_sim`.
+"""Props-ML shadow comparison report: the current sim (`sim-nfl-v1`) vs an
+ML version (`--ml-version` / env PROPS_SHADOW_ML_VERSION; default the SERVED
+ML version from nfl_sim_serving, else `nfl-sim-ml-v1`) on finished NFL games,
+from the rows shadow / live mode wrote into `nfl_player_sim`.
 
 After a week or more of SIM_ML_MODE=shadow, this report decides whether to
 switch the site to the ML version (see db/migration_nfl_sim_serving.sql).
@@ -39,20 +40,26 @@ else "mixed". Overall: markets with n = 0 (all identical) are ignored;
 otherwise "ML better" / "ML worse" when every differing market agrees, else
 "mixed"; "no difference (all paired pmfs identical)" when nothing differs.
 
-Read-only (the DB session is set read_only). `--since` defaults to the first nfl-sim-ml-v1 row's created_at;
-with no ML rows it prints a message and exits 0 without writing a report.
+Read-only (the DB session is set read_only). `--since` defaults to the first
+row's created_at of the compared ML version; with no rows of it it prints a
+message and exits 0 without writing a report. The report is named
+`<date>-props-ml-shadow.md` for nfl-sim-ml-v1 and
+`<date>-props-ml-shadow-<version>.md` for another version.
 
 Usage:
-    DATABASE_URL=... PYTHONPATH=src uv run python scripts/compare_props_shadow.py [--since 2026-09-20]
+    DATABASE_URL=... PYTHONPATH=src uv run python scripts/compare_props_shadow.py \
+        [--since 2026-09-20] [--ml-version nfl-sim-ml-v2]
 """
 from __future__ import annotations
 
 import argparse
 import json
 import math
+import os
 import sys
 from datetime import date
 from pathlib import Path
+from typing import Callable, Mapping
 
 import numpy as np
 
@@ -64,11 +71,44 @@ ROOT = Path(__file__).resolve().parents[1]
 REPORT_DIR = ROOT / "docs" / "superpowers" / "reports"
 
 V1_VERSION = "sim-nfl-v1"
-ML_VERSION = "nfl-sim-ml-v1"
+ML_VERSIONS = ("nfl-sim-ml-v1", "nfl-sim-ml-v2")
+ML_VERSION = ML_VERSIONS[0]   # the default when no ML version is served / readable
+ML_VERSION_ENV = "PROPS_SHADOW_ML_VERSION"
 MIN_N = 300
 MARKET_ORDER = ("pass_yds", "rush_yds", "rec_yds", "receptions", "rush_att",
                 "pass_tds", "anytime_td")
 _EPS = 1e-12
+
+
+# ---------------------------------------------------------------- ML version
+
+def resolve_ml_version(cli: str | None, env: Mapping[str, str],
+                       served: Callable[[], str | None]) -> tuple[str, str]:
+    """(the ML version to compare, where it came from): ``--ml-version``, else
+    env ``PROPS_SHADOW_ML_VERSION``, else the served version (``served()``,
+    i.e. nfl_sim_serving) when it is an ML version, else ``ML_VERSION``
+    (nfl-sim-ml-v1; also when the served version cannot be read). ValueError
+    for an explicit version that is not an ML version."""
+    for value, source in ((cli, "--ml-version"), (env.get(ML_VERSION_ENV), ML_VERSION_ENV)):
+        if value and value.strip():
+            v = value.strip()
+            if v not in ML_VERSIONS:
+                raise ValueError(f"{source} {v!r}: expected one of {', '.join(ML_VERSIONS)}")
+            return v, source
+    try:
+        s = served()
+    except Exception as exc:  # noqa: BLE001 -- the default must not need the serving table
+        print(f"could not read nfl_sim_serving ({type(exc).__name__}: {exc}); comparing {ML_VERSION}")
+        s = None
+    if s in ML_VERSIONS:
+        return str(s), "served (nfl_sim_serving)"
+    return ML_VERSION, "default (no ML version served)"
+
+
+def report_name(run_date: str, ml_version: str = ML_VERSION) -> str:
+    """The report file name; v1 keeps the historical name."""
+    sfx = "" if ml_version == ML_VERSION else f"-{ml_version}"
+    return f"{run_date}-props-ml-shadow{sfx}.md"
 
 
 # ---------------------------------------------------------------- pure scoring
@@ -274,7 +314,8 @@ def format_table(result: dict) -> str:
     return "\n".join(rows)
 
 
-def render_report(result: dict, since: str, run_date: str, null_commence: int = 0) -> str:
+def render_report(result: dict, since: str, run_date: str, null_commence: int = 0,
+                  ml_version: str = ML_VERSION) -> str:
     order = _ordered(result["markets"])
     n_by = ", ".join(f"{m} {result['markets'][m]['n']}" for m in order)
     ident_by = ", ".join(f"{m} {result['markets'][m]['n_identical']}" for m in order
@@ -290,7 +331,7 @@ def render_report(result: dict, since: str, run_date: str, null_commence: int = 
         "",
         "## Run",
         "",
-        f"- Versions: {V1_VERSION} (current sim) vs {ML_VERSION} (ML), from nfl_player_sim.",
+        f"- Versions: {V1_VERSION} (current sim) vs {ml_version} (ML), from nfl_player_sim.",
         f"- Since: {since} (games with commence_time on or after this, already kicked off).",
         "- Population (verdict): the GATED population -- keys inside the shared props-ML "
         "projected-usage gate (props_eval.gate_population) on the v1 means, the population "
@@ -336,9 +377,9 @@ def render_report(result: dict, since: str, run_date: str, null_commence: int = 
 
 # ---------------------------------------------------------------- DB (read-only)
 
-def load_shadow_data(since: str | None) -> dict | None:
+def load_shadow_data(since: str | None, ml_version: str = ML_VERSION) -> dict | None:
     """The only DB access (read-only session). Returns None when no
-    nfl-sim-ml-v1 rows exist, else {"since", "v1", "ml", "actuals", "lines",
+    `ml_version` rows exist, else {"since", "v1", "ml", "actuals", "lines",
     "null_commence"} for games with commence_time in [since, now()]. `since`
     defaults to the first ML row's created_at. `null_commence` counts sim rows
     (either version, created since `since`) the window drops for a NULL
@@ -349,7 +390,7 @@ def load_shadow_data(since: str | None) -> dict | None:
         pg.read_only = True  # before any statement: the session cannot write
         cur = pg.cursor()
         cur.execute("SELECT min(created_at) FROM nfl_player_sim WHERE model_version = %s",
-                    (ML_VERSION,))
+                    (ml_version,))
         first = cur.fetchone()[0]
         if first is None:
             return None
@@ -360,7 +401,7 @@ def load_shadow_data(since: str | None) -> dict | None:
             WHERE model_version IN (%s, %s) AND commence_time IS NULL
               AND created_at >= %s::timestamptz
             """,
-            (V1_VERSION, ML_VERSION, since_val),
+            (V1_VERSION, ml_version, since_val),
         )
         null_commence = int(cur.fetchone()[0])
         cur.execute(
@@ -370,7 +411,7 @@ def load_shadow_data(since: str | None) -> dict | None:
             WHERE model_version IN (%s, %s)
               AND commence_time >= %s::timestamptz AND commence_time <= now()
             """,
-            (V1_VERSION, ML_VERSION, since_val),
+            (V1_VERSION, ml_version, since_val),
         )
         sims = cur.fetchall()
         cur.execute(
@@ -382,7 +423,7 @@ def load_shadow_data(since: str | None) -> dict | None:
                 WHERE model_version = %s
                   AND commence_time >= %s::timestamptz AND commence_time <= now())
             """,
-            (ML_VERSION, since_val),
+            (ml_version, since_val),
         )
         actuals = cur.fetchall()
         cur.execute(
@@ -400,7 +441,7 @@ def load_shadow_data(since: str | None) -> dict | None:
     return {
         "since": since_val.isoformat() if hasattr(since_val, "isoformat") else str(since_val),
         "v1": [r for r in sim_dicts if r["model_version"] == V1_VERSION],
-        "ml": [r for r in sim_dicts if r["model_version"] == ML_VERSION],
+        "ml": [r for r in sim_dicts if r["model_version"] == ml_version],
         "actuals": [dict(zip(("game_pk", "player_id", "market", "actual", "season", "week"), r))
                     for r in actuals],
         "lines": [dict(zip(("game_pk", "player_id", "market", "line"), r)) for r in lines],
@@ -410,17 +451,30 @@ def load_shadow_data(since: str | None) -> dict | None:
 
 # ---------------------------------------------------------------- CLI
 
+def _served_version() -> str | None:
+    """nfl_sim_serving's model_version (IO; `db.served_nfl_sim_version`)."""
+    from sportsmodel.db import served_nfl_sim_version
+
+    return served_nfl_sim_version()
+
+
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     ap.add_argument("--since", default=None,
-                    help="start date/timestamp (default: first nfl-sim-ml-v1 row's created_at)")
+                    help="start date/timestamp (default: the compared ML version's first row's "
+                         "created_at)")
+    ap.add_argument("--ml-version", default=None, choices=ML_VERSIONS,
+                    help=f"ML version to compare (default: env {ML_VERSION_ENV}, else the served "
+                         f"ML version, else {ML_VERSION})")
     ap.add_argument("--out-dir", default=str(REPORT_DIR))
     ap.add_argument("--run-date", default=None, help="report date (default: today)")
     args = ap.parse_args(argv)
 
-    data = load_shadow_data(args.since)
+    ml_version, source = resolve_ml_version(args.ml_version, os.environ, _served_version)
+    print(f"comparing {V1_VERSION} vs {ml_version} ({source})")
+    data = load_shadow_data(args.since, ml_version)
     if data is None:
-        print(f"no {ML_VERSION} rows in nfl_player_sim yet -- nothing to compare "
+        print(f"no {ml_version} rows in nfl_player_sim yet -- nothing to compare "
               "(run generate_sim_nfl.py with SIM_ML_MODE=shadow first); no report written.")
         return 0
 
@@ -435,9 +489,10 @@ def main(argv: list[str] | None = None) -> int:
 
     out_dir = Path(args.out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
-    out = out_dir / f"{run_date}-props-ml-shadow.md"
+    out = out_dir / report_name(run_date, ml_version)
     out.write_text(render_report(result, since=data["since"], run_date=run_date,
-                                 null_commence=data.get("null_commence", 0)))
+                                 null_commence=data.get("null_commence", 0),
+                                 ml_version=ml_version))
     print(f"wrote {out}")
     return 0
 

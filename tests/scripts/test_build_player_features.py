@@ -402,3 +402,89 @@ def test_build_and_write_records_the_qb_params_next_to_the_parquets(tmp_path, mo
     with pytest.raises(OSError):
         bpf.build_and_write({**src, "qb_params_mode": "gate"}, 0.0, 0.0, out_dir=out)
     assert bpf.read_build_info(out) is None
+
+
+# ---- final review: v1-safe live build (I3) + complete QB history (M1) ----------------------
+
+def _fake_fetch_io(monkeypatch, weekly_missing=()):
+    """Fake every loader fetch_sources uses; `weekly_missing`: seasons the
+    weekly release lacks (a failed / 404 download that load_release skips)."""
+    import nfl_data_py
+
+    import sportsmodel.nfl.nflverse as nv
+    import sportsmodel.sim.nfl.usage as usage
+
+    calls: list[tuple[str, list[int]]] = []
+
+    def fake_load_release(dataset, seasons, **kw):
+        calls.append((dataset, list(seasons)))
+        got = [s for s in seasons if not (dataset == "weekly" and s in weekly_missing)]
+        return pd.DataFrame({"season": [s for s in got for _ in range(2)],
+                             "position": ["QB", "WR"] * len(got)})
+
+    monkeypatch.setattr(nv, "load_release", fake_load_release)
+    monkeypatch.setattr(nv, "import_by_season", lambda fn, seasons, name, **kw: pd.DataFrame())
+    monkeypatch.setattr(usage, "depth_charts_asof", lambda raw, sched: raw)
+    monkeypatch.setattr(usage, "build_pfr_to_gsis", lambda ids: {})
+    monkeypatch.setattr(nfl_data_py, "import_ids", lambda: pd.DataFrame())
+    return calls
+
+
+def test_fetch_sources_without_qb_history_downloads_no_history(monkeypatch):
+    calls = _fake_fetch_io(monkeypatch)
+    src = bpf.fetch_sources([2016, 2017], qb_history=False)
+    assert [s for d, s in calls if d == "weekly"] == [[2016, 2017]]      # no 1999-2015 download
+    assert sorted(src["weekly_qb"]["season"].unique()) == [2016, 2017]
+    assert (src["weekly_qb"]["position"] == "QB").all()
+    calls.clear()
+    bpf.fetch_sources([2016, 2017])                                      # default: full history
+    assert ("weekly", list(range(1999, 2016))) in calls
+    assert bpf.qb_history_seasons([2016, 2017]) == list(range(1999, 2016))
+
+
+def test_fetch_sources_raises_when_a_qb_history_season_is_missing(monkeypatch):
+    import pytest
+
+    _fake_fetch_io(monkeypatch, weekly_missing=(2003, 2011))
+    with pytest.raises(RuntimeError, match=r"season\(s\) \[2003, 2011\] unavailable"):
+        bpf.fetch_sources([2016, 2017])
+    # a missing REQUESTED season (e.g. the current one not yet published) is not history
+    _fake_fetch_io(monkeypatch, weekly_missing=(2017,))
+    assert sorted(bpf.fetch_sources([2016, 2017])["weekly_qb"]["season"].unique()) == \
+        list(range(1999, 2017))
+
+
+def test_extra_feature_columns_are_the_builders_columns(monkeypatch):
+    _stub_context(monkeypatch)
+    built = bpf.build_tables(_stub_src())
+    for name in ("feats", "team"):
+        got = [c for c in built[name].columns if c.startswith(("mx_", "di_", "qb_"))]
+        assert sorted(got) == sorted(bpf.extra_feature_columns()), name
+    assert built["extra_error"] is None
+
+
+def test_build_tables_extra_failure_is_nan_plus_warning_only_with_fallback(monkeypatch, capsys):
+    import numpy as np
+    import pytest
+
+    import sportsmodel.nfl.player_features as pf_mod
+    _stub_context(monkeypatch)
+    good = bpf.build_tables(_stub_src())
+
+    def boom(*a, **k):
+        raise KeyError("qb1_id")
+
+    monkeypatch.setattr(pf_mod, "extra_features", boom)
+    with pytest.raises(KeyError):                         # default (training, v2 serving): fatal
+        bpf.build_tables(_stub_src())
+    got = bpf.build_tables(_stub_src(), extra_fallback=True)
+    out = capsys.readouterr().out
+    assert "::warning::props-ml: mx_/di_/qb_ feature build failed (KeyError: 'qb1_id')" in out
+    assert got["extra_error"] == "KeyError: 'qb1_id'"
+    for name in ("feats", "team"):
+        extra = bpf.extra_feature_columns()
+        assert set(extra) <= set(got[name].columns) and got[name][extra].isna().all().all()
+        # every other column is exactly the normal build's
+        rest = [c for c in good[name].columns if c not in extra]
+        pd.testing.assert_frame_equal(got[name][rest], good[name][rest])
+    assert np.isnan(got["team"]["qb_ypa"]).all()

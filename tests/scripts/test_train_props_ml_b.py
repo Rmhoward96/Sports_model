@@ -857,3 +857,16 @@ def test_decide_seasons_default_is_every_run_season(tmp_path, monkeypatch):
     assert seen["blend"] == seen["final-ml"] == {2021, 2022}
     with pytest.raises(ValueError, match="PROPS_ML_DECIDE_SEASONS"):
         _run(tmp_path / "x", _FakeBsn(), env_extra={"PROPS_ML_DECIDE_SEASONS": "2019"})
+
+
+# ---- Ruling I1: serving-param tables are refused ------------------------------------------
+
+def test_main_refuses_serving_param_tables_before_any_backtest(tmp_path, monkeypatch):
+    fb = tmp_path / "feature_build.json"
+    fb.write_text(json.dumps({"qb_params": {"mode": "serving", "H": 2.0, "k": 50.0}}))
+    monkeypatch.setattr(tpb.tpm, "FEATURE_BUILD_PATH", fb)
+    boom = lambda *a, **k: (_ for _ in ()).throw(AssertionError("ran"))  # noqa: E731
+    monkeypatch.setattr(tpb.tpm, "_load_backtest", boom)
+    monkeypatch.setattr(tpb, "run_b_ladder", boom)
+    with pytest.raises(SystemExit, match="REFUSED.*SERVING QB-profile params"):
+        tpb.main()

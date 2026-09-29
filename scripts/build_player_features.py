@@ -42,6 +42,7 @@ import time
 from collections.abc import Callable
 from pathlib import Path
 
+import numpy as np
 import pandas as pd
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
@@ -234,13 +235,41 @@ def _load_pbp(seasons: list[int]) -> pd.DataFrame:
     return pd.concat(frames, ignore_index=True)
 
 
-def fetch_sources(seasons: list[int] | None = None) -> dict:
+def qb_history_seasons(seasons: list[int]) -> list[int]:
+    """The weekly QB-history seasons QB_FIRST_SEASON..max(seasons) that are
+    not requested seasons (downloaded separately). PURE."""
+    return [y for y in range(QB_FIRST_SEASON, max(seasons) + 1) if y not in seasons]
+
+
+def load_qb_history(hist: list[int]) -> pd.DataFrame:
+    """IO: the QB rows of weekly stats for EVERY `hist` season. A season that
+    fails to download (network error, 404) raises instead of being skipped:
+    a silently missing season would quietly change the QB profiles (and the
+    serving build would drift from the training build)."""
+    from sportsmodel.nfl.nflverse import load_release
+
+    h = load_release("weekly", hist)
+    got = set(pd.to_numeric(h["season"], errors="coerce").dropna().astype(int)) if len(h) else set()
+    missing = sorted(set(hist) - got)
+    if missing:
+        raise RuntimeError(f"nflverse weekly QB history: season(s) {missing} unavailable -- the QB "
+                           f"profiles need every season {hist[0]}-{hist[-1]}; refusing a partial "
+                           "history")
+    return h[h["position"] == "QB"]
+
+
+def fetch_sources(seasons: list[int] | None = None, *, qb_history: bool = True) -> dict:
     """IO: every nflverse input for `seasons` (default SEASONS; network).
     Live serving (generate_sim_nfl's SIM_ML_MODE path) passes
     SEASONS[0]..current season. `weekly_qb` = the QB rows of weekly stats
     1999..max(seasons) (the requested seasons' frame is reused; only the
-    earlier history is downloaded again); `qb_params_mode` defaults to
-    "gate" (set "serving" to use the serving (H, k))."""
+    earlier history is downloaded again, and every history season must load:
+    `load_qb_history`). `qb_history=False` (live serving of a version that
+    reads no qb_ columns, i.e. v1) skips the history download: `weekly_qb` is
+    then the requested seasons' QB rows only, so the qb_ features are NOT the
+    training ones. Training / CLI builds keep the full history (default).
+    `qb_params_mode` defaults to "gate" (set "serving" to use the serving
+    (H, k))."""
     import nfl_data_py as nfl
 
     from sportsmodel.nfl.nflverse import import_by_season, load_release
@@ -249,11 +278,10 @@ def fetch_sources(seasons: list[int] | None = None) -> dict:
     seasons = SEASONS if seasons is None else list(seasons)
     sched = load_release("schedules", seasons)
     weekly = load_release("weekly", seasons)
-    hist = [y for y in range(QB_FIRST_SEASON, max(seasons) + 1) if y not in seasons]
+    hist = qb_history_seasons(seasons) if qb_history else []
     qb_frames = [weekly[weekly["position"] == "QB"]]
     if hist:
-        h = load_release("weekly", hist)
-        qb_frames.insert(0, h[h["position"] == "QB"])
+        qb_frames.insert(0, load_qb_history(hist))
     return {
         "sched": sched,
         "pbp": _load_pbp(seasons),
@@ -269,8 +297,25 @@ def fetch_sources(seasons: list[int] | None = None) -> dict:
     }
 
 
+def extra_feature_columns() -> list[str]:
+    """Every mx_/di_/qb_ column `player_features.extra_features` adds to both
+    tables (from the feature modules' constants). PURE."""
+    from sportsmodel.nfl import def_injuries, qb_profile, unit_efficiency
+
+    mx = [c for m in unit_efficiency.UNIT_METRICS
+          for c in (f"mx_tm_{m}_adj", f"mx_tm_{m}_prev", f"mx_op_{m}_allowed_adj",
+                    f"mx_op_{m}_allowed_prev")]
+    mx += ["mx_pass_edge", "mx_rush_edge", "mx_pass_minus_rush"]
+    di = [f"di_op_vacated_{g}" for g in def_injuries.GROUPS]
+    qb = [c for c in qb_profile.TEAM_COLS if c.startswith("qb_")]
+    return mx + di + qb
+
+
+EXTRA_WARN = "::warning::props-ml: "
+
+
 def build_tables(src: dict, ctx_fill: Callable[[pd.DataFrame, dict, pd.DataFrame], pd.DataFrame] | None = None,
-                 qb1_override: dict | None = None) -> dict:
+                 qb1_override: dict | None = None, extra_fallback: bool = False) -> dict:
     """Both feature tables from fetched sources (no network). The one builder
     shared by the parquet build (training) and live serving: serving passes
     `ctx_fill(ctx, stadiums, sched)` (e.g. context.fill_forecast_weather with
@@ -280,7 +325,13 @@ def build_tables(src: dict, ctx_fill: Callable[[pd.DataFrame, dict, pd.DataFrame
     the served version's own params), else the `src["qb_params_mode"]` block
     ("gate" by default), and `qb1_override` {(season, week, team): gsis_id}
     for QB1.
-    Returns {"feats", "team", "pg", "tg", "stubs", "extra"}."""
+    `extra_fallback` (live serving of a config that reads NO mx_/di_/qb_
+    column, i.e. v1): an exception while building those features gives NaN
+    columns for all of them (`extra_feature_columns`) plus a
+    `::warning::props-ml:` line instead of failing the build; otherwise (the
+    default: training, v2 serving) it propagates.
+    Returns {"feats", "team", "pg", "tg", "stubs", "extra", "extra_error"}
+    (`extra_error`: the swallowed exception's text, else None)."""
     from sportsmodel.nfl import context, efficiency, player_features
 
     sched, pbp, injuries, depth = src["sched"], src["pbp"], src["injuries"], src["depth"]
@@ -296,13 +347,25 @@ def build_tables(src: dict, ctx_fill: Callable[[pd.DataFrame, dict, pd.DataFrame
     explicit = src.get("qb_params")
     H, k = ((float(explicit[0]), float(explicit[1])) if explicit is not None
             else qb_params(src.get("qb_params_mode", "gate"), QB_PARAMS_PATH))
-    extra = player_features.extra_features(player_features.team_week_keys(tg, ctx), pbp, src["snaps"],
-                                           src["pfr2gsis"], injuries, depth, src["weekly_qb"], H, k,
-                                           qb1_override=qb1_override)
+    extra_error = None
+    try:
+        extra = player_features.extra_features(player_features.team_week_keys(tg, ctx), pbp, src["snaps"],
+                                               src["pfr2gsis"], injuries, depth, src["weekly_qb"], H, k,
+                                               qb1_override=qb1_override)
+    except Exception as exc:  # noqa: BLE001 -- only swallowed when no served model reads them
+        if not extra_fallback:
+            raise
+        extra, extra_error = None, " ".join(f"{type(exc).__name__}: {exc}".split())
+        print(f"{EXTRA_WARN}mx_/di_/qb_ feature build failed ({extra_error}); those columns are NaN "
+              "(the served config reads none of them)", flush=True)
     feats = player_features.build_feature_table(pg, tg, rz, ctx, src["ngs"], injuries, depth, game_epa,
                                                 stubs=stubs, extra=extra)
     team = player_features.build_team_table(tg, ctx, game_epa, extra=extra)
-    return {"feats": feats, "team": team, "pg": pg, "tg": tg, "stubs": stubs, "extra": extra}
+    if extra_error is not None:
+        nan_cols = {c: np.nan for c in extra_feature_columns()}
+        feats, team = feats.assign(**nan_cols), team.assign(**nan_cols)
+    return {"feats": feats, "team": team, "pg": pg, "tg": tg, "stubs": stubs, "extra": extra,
+            "extra_error": extra_error}
 
 
 def build_and_write(src: dict, t0: float, t_fetch: float, out_dir: Path | None = None) -> None:

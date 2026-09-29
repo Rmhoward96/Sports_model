@@ -16,6 +16,14 @@ Provenance: the two B-ladder gate jsons (``b_gate_v1cmp.json``,
 the decide seasons (``PROPS_ML_DECIDE_SEASONS``; both ladders select on
 2021-2023), and each must name the served file loaded for it; both identities
 (git, feature fingerprints, tag, decide seasons) go into the json and report.
+Selection (``selection_provenance``): ``a_gate_v2.json``, ``b_gate_v1cmp.json``
+and ``b_gate_v2.json`` must each record decide seasons containing neither
+verdict season (2024, 2025), and their recorded feature fingerprints
+(``tpm.file_fingerprint`` sha256 of both tables) must equal each other and
+the tables this gate loads. Tables whose build record
+(``data/props_ml/feature_build.json``) says QB-param mode ``serving`` are
+refused before anything runs (``tpm.require_gate_tables``; no record = a
+legacy gate-mode build, allowed). All of it is recorded in the json/report.
 
 Ship rule (``v2_checks.verdict``, as Props-2):
 
@@ -149,6 +157,7 @@ def b_gate_provenance(b_gate_v1: Mapping, b_gate_v2: Mapping,
         if g.get("decide_seasons") is None:
             raise ValueError(f"{label} B gate records no decide_seasons: rerun its B ladder "
                              "with this code and PROPS_ML_DECIDE_SEASONS")
+        _check_decide_excludes_verdict(f"{label} B gate (b_gate{want}.json)", g["decide_seasons"])
         served = Path(str(g.get("served_path", ""))).name
         if served != served_files[label]:
             raise ValueError(f"{label} B gate wrote {served!r} but the gate loaded "
@@ -166,6 +175,53 @@ def b_gate_provenance(b_gate_v1: Mapping, b_gate_v2: Mapping,
     if out["v1"]["decide_seasons"] != out["v2"]["decide_seasons"]:
         raise ValueError(f"B gate decide_seasons differ: v1 {out['v1']['decide_seasons']} vs v2 "
                          f"{out['v2']['decide_seasons']}")
+    return out
+
+
+def _check_decide_excludes_verdict(what: str, decide) -> None:
+    """ValueError when ``decide`` (decide seasons) holds a verdict season."""
+    leaked = sorted(set(int(x) for x in decide) & set(VERDICT_SEASONS))
+    if leaked:
+        raise ValueError(f"{what} decided on verdict season(s) {leaked}: rerun it with "
+                         "PROPS_ML_DECIDE_SEASONS=2021,2022,2023 (the gate grades "
+                         f"{', '.join(map(str, VERDICT_SEASONS))})")
+
+
+def _fp(identity: Mapping | None, table: str) -> str | None:
+    return ((identity or {}).get(table) or {}).get("sha256")
+
+
+def selection_provenance(a_gate_v2: Mapping, provenance: Mapping, identity: Mapping) -> dict:
+    """The selection guard (Ruling I1): ``a_gate_v2`` must record decide
+    seasons without a verdict season (the B gates are checked in
+    ``b_gate_provenance``), and the feature fingerprints (sha256 of the player
+    and team tables) recorded by the v2 A ladder and both B ladders
+    (``provenance``) must equal each other and the tables the gate loads
+    (``identity``). ValueError otherwise; returns ``{"a_gate_v2_decide_seasons",
+    "verdict_seasons", "player_features", "team_features", "sources"}``."""
+    ds = a_gate_v2.get("decide_seasons")
+    if ds is None:
+        raise ValueError(f"v2 A gate (a_gate{V2_NAME}.json) records no decide_seasons: rerun the "
+                         "A ladder with PROPS_ML_DECIDE_SEASONS=2021,2022,2023")
+    _check_decide_excludes_verdict(f"v2 A gate (a_gate{V2_NAME}.json)", ds)
+    a_ident = a_gate_v2.get("identity") or {}
+    out = {"a_gate_v2_decide_seasons": [int(x) for x in ds],
+           "verdict_seasons": list(VERDICT_SEASONS)}
+    for table in ("player_features", "team_features"):
+        fps = {f"a_gate{V2_NAME}.json": _fp(a_ident, table),
+               f"b_gate{V1CMP_NAME}.json": provenance["v1"][table],
+               f"b_gate{V2_NAME}.json": provenance["v2"][table],
+               "current tables": _fp(identity, table)}
+        missing = sorted(k for k, v in fps.items() if not v)
+        if missing:
+            raise ValueError(f"{table} fingerprint not recorded by {missing}")
+        if len(set(fps.values())) != 1:
+            shown = ", ".join(f"{k} {v[:12]}" for k, v in fps.items())
+            raise ValueError(f"{table} fingerprints differ ({shown}): the ladders and the gate must "
+                             "run on the same feature tables -- rerun the stale ones")
+        out[table] = fps["current tables"]
+    out["sources"] = [f"a_gate{V2_NAME}.json", f"b_gate{V1CMP_NAME}.json", f"b_gate{V2_NAME}.json",
+                      "current tables"]
     return out
 
 
@@ -199,6 +255,13 @@ def spot_checks(served_v1: pd.DataFrame, served_v2: pd.DataFrame, feats: pd.Data
 
 def _f(x, spec: str) -> str:
     return "n/a" if x is None or (isinstance(x, float) and np.isnan(x)) else format(x, spec)
+
+
+def _build_text(fb: Mapping | None) -> str:
+    """The tables' build-record QB params as report text."""
+    fb = fb or {}
+    hk = f" (H={float(fb['H']):g} k={float(fb['k']):g})" if "H" in fb and "k" in fb else ""
+    return f"{fb.get('mode', 'unknown')}{hk}"
 
 
 def _verdict_text(gate: dict) -> str:
@@ -251,21 +314,36 @@ def render_report(gate: dict) -> str:
               "Quintiles of the opponent defense's as-of `mx_pass_minus_rush` (+ = pass D weak "
               "relative to run D; edges " + ", ".join(_f(e, '+.3f') for e in mu["edges"])
               + f"; {mu['n_records']} records with a baseline). dev = Σ projection / Σ player "
-              "baseline (mean of his previous 8 played games) − 1.", "",
-              "| group | quintile | n | pred dev v1 | pred dev v2 | actual dev |",
-              "|---|---|---:|---:|---:|---:|"]
+              "baseline (mean of his previous 8 played games) − 1. The check reads each "
+              "quintile RELATIVE TO THE AVERAGE MATCHUP: rel dev = the quintile's dev − the "
+              "group's all-games dev (row `all`), for v1, v2 and the actuals. The raw dev "
+              "carries a population-wide offset (regression to the mean of a projection-gated "
+              "population, in-game exits, season trend) that is the same in every quintile; "
+              "subtracting the group's all-games dev removes it, so the sign rules and the "
+              "correlation test how the projection moves vs an average opponent (ruling I2).", "",
+              "| group | quintile | n | pred dev v1 | pred dev v2 | actual dev | rel v1 | rel v2 "
+              "| rel actual |",
+              "|---|---|---:|---:|---:|---:|---:|---:|---:|"]
+    for grp, a in mu.get("group_all", {}).items():
+        lines.append(f"| {grp} | all | {a['n']} | {_f(a['pred_dev_v1'], '+.3f')} | "
+                     f"{_f(a['pred_dev_v2'], '+.3f')} | {_f(a['act_dev'], '+.3f')} | 0 | 0 | 0 |")
     for t in mu["table"]:
         lines.append(f"| {t['group']} | {t['quintile']} | {t['n']} | "
                      f"{_f(t['pred_dev_v1'], '+.3f')} | {_f(t['pred_dev_v2'], '+.3f')} | "
-                     f"{_f(t['act_dev'], '+.3f')} |")
-    lines += ["", f"- Top quintile (RB down, QB/WR/TE up, signs = actual): "
+                     f"{_f(t['act_dev'], '+.3f')} | {_f(t.get('rel_pred_dev_v1'), '+.3f')} | "
+                     f"{_f(t.get('rel_pred_dev_v2'), '+.3f')} | {_f(t.get('rel_act_dev'), '+.3f')} |")
+    lines += ["", f"- Top quintile (rel dev: RB down, QB/WR/TE up, signs = the actual rel dev): "
               f"{'pass' if mu['pass_top'] else 'FAIL'}; bottom quintile (the reverse): "
               f"{'pass' if mu['pass_bottom'] else 'FAIL'}.",
-              f"- Correlation of pred dev with actual dev over the 20 cells: v1 "
+              f"- Correlation of pred rel dev with actual rel dev over the 20 cells: v1 "
               f"{_f(mu['corr_v1'], '+.3f')}, v2 {_f(mu['corr_v2'], '+.3f')}.",
               f"- Matchup response sub-check: **{'PASS' if mu['pass'] else 'FAIL'}**.", "",
-              "## Spot checks", "",
-              "| check | week | player | market | mean v1 | mean v2 | actual | RPS v1 | RPS v2 |",
+              "## Spot checks", ""]
+    if not any(sc.get("graded") for sc in gate["spot_checks"]):
+        lines += ["The Keenum PHI @ CHI 2026-09-28 check cannot be graded from this gate: its "
+                  "served files cover 2021–2025 only. Check the live run's `matchup:` / "
+                  "`qb-check:` log lines for that game instead (generate-sim-nfl logs).", ""]
+    lines += ["| check | week | player | market | mean v1 | mean v2 | actual | RPS v1 | RPS v2 |",
               "|---|---:|---|---|---:|---:|---:|---:|---:|"]
     for s in gate["spot_checks"]:
         if s.get("graded"):
@@ -291,6 +369,15 @@ def render_report(gate: dict) -> str:
                 f"served `{b['served']}`." for k, b in gate["b_ladders"].items()],
               "- Kept A: v1 " + ", ".join(gate["a_gates"]["v1"]["kept"]) + "; v2 "
               + ", ".join(gate["a_gates"]["v2"]["kept"]) + ".",
+              f"- Selection provenance: A ladder v2 decided on "
+              f"{', '.join(map(str, gate['selection']['a_gate_v2_decide_seasons']))}, both B "
+              f"ladders on {', '.join(map(str, gate['b_ladders']['v2']['decide_seasons']))} "
+              f"(neither holds a verdict season: "
+              f"{', '.join(map(str, gate['selection']['verdict_seasons']))}); a_gate_v2, "
+              f"b_gate_v1cmp, b_gate_v2 and this gate all used the same feature tables (player "
+              f"sha256 {str(gate['selection']['player_features'])[:12]}, team sha256 "
+              f"{str(gate['selection']['team_features'])[:12]}); table build record QB params: "
+              + _build_text(gate["selection"].get("feature_build")) + ".",
               f"- Code: git {ident.get('git_head')}; features: player sha256 "
               f"{ident['player_features']['sha256'][:12]}, team sha256 "
               f"{ident['team_features']['sha256'][:12]}.",
@@ -301,8 +388,21 @@ def render_report(gate: dict) -> str:
               + ", ".join(map(str, gate["b_ladders"]["v2"]["decide_seasons"]))
               + "); blend weights and calibration maps are walk-forward per season.",
               "- The player baseline is the player's own recent actuals, so both versions' "
-              "deviations include regression to the mean; the check compares their SIGNS and "
-              "how well they track the actual deviations, not their level.",
+              "raw deviations include regression to the mean; the matchup check therefore reads "
+              "each quintile relative to the group's all-games deviation (the average matchup) "
+              "and compares SIGNS and how well v1 / v2 track the actual relative deviations, "
+              "not their level.",
+              "- The ladders and this gate ran on feature tables built with the GATE QB-profile "
+              "params (fit on 2021–2023), while the v2 final fit and live serving use the SERVING "
+              "params (fit on 2021 → latest; Ruling S1): blend weights and calibration were chosen "
+              "on gate-param features. The weekly quick gate (fit_props_ml_final.py "
+              "--holdout-weeks 2, on serving-param tables) is the guard against that shift.",
+              "- The QB drive-TD shift (`learned._shift_td`) scales only the offense's TD rate; the "
+              "kernel averages offense with the opponent defense's drives-allowed, so the applied "
+              "shift is effectively (1 + m) / 2 -- a 50 % shrink of the fitted TD elasticity "
+              "(accepted as conservative, ruling I4). This gate measures that served behavior.",
+              "- The Keenum 2026 spot check cannot be graded from the gate's 2021–2025 served "
+              "files; check the live `matchup:` / `qb-check:` logs for that game.",
               "", f"pass = {gate['pass']}", ""]
     return "\n".join(lines)
 
@@ -315,13 +415,24 @@ def run_gate_v2(env: Mapping[str, str], *, bsn, player_tbl: pd.DataFrame,
                 b_gate_v2: Mapping, data_dir: Path = DATA_DIR,
                 gate_path: Path = GATE_PATH, report_dir: Path = REPORT_DIR,
                 log: Callable[[str], None] = print, run_date: str | None = None,
-                served_files: Mapping[str, str] | None = None) -> dict:
+                served_files: Mapping[str, str] | None = None,
+                feature_build: Mapping | None = None) -> dict:
     """Game-level runs (v1 / v2 kept A) + served-composite checks -> verdict;
-    writes the gate json and report; returns the gate dict."""
+    writes the gate json and report; returns the gate dict. Every provenance
+    check (gate names, serving-param tables via ``feature_build`` -- the
+    tables' build record, None = legacy gate build --, B-gate provenance,
+    ``selection_provenance``) runs before any backtest."""
     t0 = time.time()
     check_gate_names(a_gate_v1, a_gate_v2)
+    why = tpm.serving_tables_refusal(feature_build)
+    if why is not None:
+        raise ValueError(f"REFUSED: {why}")
     served_files = dict(served_files or {"v1": SERVED_V1.name, "v2": SERVED_V2.name})
     provenance = b_gate_provenance(b_gate_v1, b_gate_v2, served_files)
+    selection = selection_provenance(a_gate_v2, provenance, identity)
+    qb_build = (feature_build or {}).get("qb_params")
+    selection["feature_build"] = (dict(qb_build) if qb_build
+                                  else {"mode": "none (no build record: legacy gate-mode build)"})
     raw = env.get("PROPS_ML_SEASONS")
     seasons = [int(x) for x in raw.split(",") if x.strip()] if raw else list(VERDICT_SEASONS)
     n_sims = int(env.get("PROPS_ML_N_SIMS") or DEFAULT_N_SIMS)
@@ -376,7 +487,7 @@ def run_gate_v2(env: Mapping[str, str], *, bsn, player_tbl: pd.DataFrame,
 
     gate = {"run_date": run_date, "seasons": seasons, "n_sims": n_sims, "run_tag": tag,
             "refit_weeks": list(refit_weeks), "identity": identity, "a_gates": a_gates,
-            "served_files": served_files, "b_ladders": provenance,
+            "served_files": served_files, "b_ladders": provenance, "selection": selection,
             "n_paired": int(len(paired)), "verdict": verdict, "pass": bool(verdict["pass"]),
             "game": verdict["game"], "game_ci": {"metrics": game_ci["metrics"]},
             "coverage": cov, "qb_change": qb, "matchup": matchup,
@@ -400,6 +511,7 @@ def main() -> None:
     def log(msg: str) -> None:
         print(f"[+{(time.time() - t0) / 60:7.1f} min] {msg}", flush=True)
 
+    feature_build = tpm.require_gate_tables()   # serving-param tables: refused before anything runs
     b_gate_v1 = load_b_gate(B_GATE_V1, V1CMP_NAME)
     b_gate_v2 = load_b_gate(B_GATE_V2, V2_NAME)
     for p in (tpm.PLAYER_PATH, tpm.TEAM_PATH, A_GATE_V1, A_GATE_V2, SERVED_V1, SERVED_V2):
@@ -414,7 +526,7 @@ def main() -> None:
                 a_gate_v1=json.loads(A_GATE_V1.read_text()),
                 a_gate_v2=json.loads(A_GATE_V2.read_text()),
                 served_v1=pd.read_parquet(SERVED_V1), served_v2=pd.read_parquet(SERVED_V2),
-                b_gate_v1=b_gate_v1, b_gate_v2=b_gate_v2, log=log)
+                b_gate_v1=b_gate_v1, b_gate_v2=b_gate_v2, log=log, feature_build=feature_build)
 
 
 if __name__ == "__main__":

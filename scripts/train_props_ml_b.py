@@ -859,6 +859,7 @@ def main() -> None:
     def log(msg: str) -> None:
         print(f"[+{(time.time() - t0) / 60:7.1f} min] {msg}", flush=True)
 
+    tpm.require_gate_tables()   # before anything runs: serving-param tables leak the verdict seasons
     a_path = a_gate_path(tpm.gate_name_from_env(os.environ))  # ValueError on an unknown name
     for p in (tpm.PLAYER_PATH, tpm.TEAM_PATH, a_path):
         if not p.exists():

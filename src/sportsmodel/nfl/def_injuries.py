@@ -1,7 +1,9 @@
 """Opponent defensive injuries by unit (the `di_` features). PURE.
 
 A defender's weight is his recent share of his team's defensive snaps (EWM,
-halflife 4 of his games strictly before the target week, for that team). A
+halflife 4 of his games strictly before the target week; the EWM runs over
+all his games, across a trade, and counts only when his latest earlier game
+was for the reporting team -- see `vacated_by_defense`). A
 defense's `di_vacated_<group>` at (S, w) sums the weights of its Out/Doubtful
 defenders in that group on the (S, w) report. Groups (plan ruling R6):
 coverage, pass rush, run defense; each defender counts in the group of his
@@ -51,6 +53,19 @@ def defender_snaps(snaps: pd.DataFrame, pfr2gsis: dict[str, str]) -> pd.DataFram
 
 def vacated_by_defense(dsnaps: pd.DataFrame, injuries: pd.DataFrame | None,
                        team_weeks: pd.DataFrame) -> pd.DataFrame:
+    """`team_weeks` keys (season, week, team) + `di_vacated_<group>`: per
+    defense, the summed snap-share EWM of its Out/Doubtful defenders on the
+    (season, week) report, by position group.
+
+    - The snap-share EWM is per PLAYER over all his games in `dsnaps`: it
+      does not reset when he changes teams, so a traded defender carries his
+      old team's share history into the new team. A defender counts only when
+      his latest game strictly before the week was for the reporting team.
+    - The "reported" mask is per season-week, not per team: every team of a
+      (season, week) present in `injuries` gets 0.0 when none of its
+      defenders is Out/Doubtful (even if that team filed no rows); NaN only
+      when `injuries` has no row at all for that (season, week).
+    """
     cols = [f"di_vacated_{g}" for g in GROUPS]
     out = team_weeks[_KEYS].copy()
     if injuries is None or not len(injuries):

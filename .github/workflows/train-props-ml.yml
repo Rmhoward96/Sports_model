@@ -14,9 +14,13 @@ name: train-props-ml
 #  0. guards (each prints a ::notice:: and skips the rest -- the job still
 #     succeeds): no committed assets/nfl/props_ml/pipeline$GATE_NAME.json with
 #     final_pass == true (a failed B gate is never fit or published; v2 is
-#     skipped until its pipeline is committed); and, after the feature build,
-#     no labelled week after the published (in $RELEASE) props_ml_config.json's
-#     trained_through (no release -> proceed);
+#     skipped until its pipeline is committed); v2 only: no committed
+#     assets/nfl/props_ml/v2_gate.json with pass == true (pipeline_v2's
+#     final_pass is v2 vs the current sim; v2_gate is v2 vs v1), or no
+#     `serving` block (H, k) in assets/nfl/props_ml/qb_profile_params.json (the
+#     v2 build needs it); and, after the feature build, no labelled week after
+#     the published (in $RELEASE) props_ml_config.json's trained_through (no
+#     release -> proceed);
 #  1. rebuild the feature tables from nflverse (data/props_ml/*.parquet) with
 #     --qb-params $QB_PARAMS (v1 gate, v2 serving: v2 trains on the QB params
 #     it is served with; its fit refuses tables built otherwise);
@@ -106,18 +110,36 @@ jobs:
       - uses: actions/checkout@v5
 
       # Guard 1 (first): only a committed pipeline$GATE_NAME.json whose
-      # final_pass is a JSON true may be retrained / published. Otherwise skip
-      # (the leg succeeds).
+      # final_pass is a JSON true may be retrained / published; the v2 leg
+      # also needs a committed v2_gate.json whose pass is a JSON true (v2 vs
+      # v1) and, as it builds with --qb-params serving, a `serving` block in
+      # qb_profile_params.json. Otherwise skip with a ::notice:: (the leg
+      # succeeds).
       - name: Guard (a passing pipeline.json)
         id: guard
         run: |
-          f="assets/nfl/props_ml/pipeline${GATE_NAME}.json"
-          if [ -f "$f" ] && [ "$(jq -r '.final_pass == true' "$f" 2>/dev/null || true)" = "true" ]; then
-            echo "skip=false" >> "$GITHUB_OUTPUT"
-          else
-            echo "::notice::props-ml: no passing pipeline.json — skipping retrain ($f, $MODEL_VERSION)"
+          skip() {
+            echo "$1"
             echo "skip=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          }
+          f="assets/nfl/props_ml/pipeline${GATE_NAME}.json"
+          if ! { [ -f "$f" ] && [ "$(jq -r '.final_pass == true' "$f" 2>/dev/null || true)" = "true" ]; }; then
+            skip "::notice::props-ml: no passing pipeline.json — skipping retrain ($f, $MODEL_VERSION)"
           fi
+          if [ "$GATE_NAME" = "_v2" ]; then
+            g="assets/nfl/props_ml/v2_gate.json"
+            if ! { [ -f "$g" ] && [ "$(jq -r '.pass == true' "$g" 2>/dev/null || true)" = "true" ]; }; then
+              skip "::notice::props-ml: no passing v2_gate.json (v2 vs v1) — skipping retrain ($g, $MODEL_VERSION)"
+            fi
+          fi
+          if [ "$QB_PARAMS" = "serving" ]; then
+            q="assets/nfl/props_ml/qb_profile_params.json"
+            if ! { [ -f "$q" ] && [ "$(jq -r '(.serving.H | type) == "number" and (.serving.k | type) == "number"' "$q" 2>/dev/null || true)" = "true" ]; }; then
+              skip "::notice::props-ml: no serving block in $q — skipping retrain ($MODEL_VERSION; run tune_qb_profile.py --mode serving)"
+            fi
+          fi
+          echo "skip=false" >> "$GITHUB_OUTPUT"
 
       - name: Install uv
         if: steps.guard.outputs.skip != 'true'

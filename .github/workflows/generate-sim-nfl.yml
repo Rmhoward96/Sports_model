@@ -74,14 +74,19 @@ jobs:
           # own MANIFEST.sha256 (uploaded last by train-props-ml.yml); a missing
           # Release or any verification failure removes THAT version's dir with a
           # ::warning:: (the sim takes its "no artifacts" ML failure path only if
-          # that version is served). Never fails the step.
+          # that version is served). A missing props-ml-v2 Release is only a
+          # ::notice:: (expected until v2 ships; the step cannot read the served
+          # version): if the site serves nfl-sim-ml-v2 the sim step then fails
+          # its ML path with a ::warning::props-ml: (artifacts missing). Never
+          # fails the step.
           fetch_verified() {
             rel="$1"
             dir="data/props_ml/models/$2"
+            missing="${3:-warning}"
             rm -rf "$dir"
             if ! gh release download "$rel" -D "$dir" --clobber; then
               rm -rf "$dir"
-              echo "::warning::props-ml: no $rel release; $2 disabled"
+              echo "::$missing::props-ml: no $rel release; $2 disabled"
               return 0
             fi
             reason=""
@@ -108,7 +113,7 @@ jobs:
             fi
           }
           fetch_verified props-ml-latest nfl-sim-ml-v1
-          fetch_verified props-ml-v2 nfl-sim-ml-v2
+          fetch_verified props-ml-v2 nfl-sim-ml-v2 notice
 
       - name: Generate NFL sim predictions (Monte Carlo + player distributions)
         env:

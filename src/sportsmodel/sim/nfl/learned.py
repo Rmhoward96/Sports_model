@@ -306,6 +306,17 @@ def _shift_td(rates: TeamRates, e: float, ratio: float) -> TeamRates:
     proportion to their current mass, so the outcomes keep their sum; other
     outcomes are untouched. A gain larger than ``fg + punt`` is capped there
     (never a negative probability). Pure: ``rates`` is not mutated.
+
+    Effective size (ruling I4, accepted as-is): only the OFFENSE's
+    ``drive_outcomes["td"]`` is scaled, and the kernel
+    (``kernel.sample_drive``) averages the offense's drive outcomes with the
+    opponent defense's drives-allowed, so the TD rate the sim applies moves by
+    about ``(1 + m) / 2`` -- a 50 % shrink of the fitted elasticity ``e``
+    (``fit_td_elasticity`` fits ``e`` on realized team TDs), and
+    ``TD_MULT_BOUNDS`` act as roughly half as wide. When the opponent has no
+    defense rates the kernel averages with the opponent's OFFENSE rates,
+    which carry that team's own QB shift. Train and serve share this code,
+    and the gates measure the served behavior.
     """
     do = dict(rates.drive_outcomes)
     td, fg, punt = do.get("td", 0.0), do.get("fg", 0.0), do.get("punt", 0.0)
@@ -322,6 +333,10 @@ def _shift_td(rates: TeamRates, e: float, ratio: float) -> TeamRates:
 
 def _team_rates(rates: TeamRates, team: str, models: LearnedModels,
                 team_rows: pd.DataFrame) -> TeamRates:
+    """``rates`` with the learned team pass / rush attempts and, when the
+    models carry a ``td_elasticity`` and the team row a finite QB ratio, the
+    QB drive-TD shift (``_shift_td``: applied to the offense only, so the
+    kernel's offense/defense average halves its effect -- ~(1 + m) / 2)."""
     row = team_rows[team_rows["team"] == team].head(1)
     if row.empty:
         return rates
