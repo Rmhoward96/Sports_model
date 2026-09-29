@@ -81,10 +81,39 @@ def test_ratio_is_one_for_the_usual_starter_and_below_one_for_a_weaker_backup():
 def test_tune_returns_a_grid_point_and_ties_keep_the_first():
     qga = qp.opponent_adjust(qp.qb_games(_weekly()))
     res = qp.tune(qga, [2023, 2024])
-    assert (res["H"], res["k"]) in {(h, k) for h in (1, 2, 3, 4) for k in (100, 200, 400, 800)}
-    assert np.isfinite(res["mse"]) and len(res["grid"]) == 16
-    assert res["mse"] == min(g["mse"] for g in res["grid"])
+    grid_pts = {(h, k) for h in (0.5, 1, 1.5, 2, 3, 4) for k in (25, 50, 100, 200, 400, 800)}
+    assert (res["H"], res["k"]) in grid_pts and len(res["grid"]) == 36
+    assert np.isfinite(res["mse"]) and np.isfinite(res["se"]) and res["rule"] == "1se"
+    assert res["best"]["mse"] == min(g["mse"] for g in res["grid"])
+    assert res["mse"] <= res["best"]["mse"] + res["se"]
+    assert (res["H"], res["k"]) >= (res["best"]["H"], res["best"]["k"])
     # a one-point grid passed twice: identical scores -> the first grid point is kept
     tie = qp.tune(qga, [2024], grid_h=(2.0, 2.0), grid_k=(200.0,))
     assert len(tie["grid"]) == 2 and tie["grid"][0]["mse"] == tie["grid"][1]["mse"]
     assert (tie["H"], tie["k"], tie["mse"]) == (2.0, 200.0, tie["grid"][0]["mse"])
+
+
+def _grid(pts):
+    return [{"H": float(h), "k": float(k), "mse": m} for h, k, m in pts]
+
+
+def test_one_se_rule_prefers_longer_h_within_one_se():
+    grid = _grid([(1, 50, 3.00), (1, 100, 3.02), (2, 50, 3.04), (2, 100, 3.06), (4, 100, 3.20)])
+    best, chosen = qp.select_one_se(grid, se=0.05)
+    assert (best["H"], best["k"]) == (1.0, 50.0)
+    # H=2 points are within best + SE (3.05): the largest H wins, then the largest k within it
+    assert (chosen["H"], chosen["k"]) == (2.0, 50.0)
+    best, chosen = qp.select_one_se(grid, se=0.07)
+    assert (chosen["H"], chosen["k"]) == (2.0, 100.0)
+
+
+def test_one_se_rule_keeps_the_argmin_when_longer_h_is_outside_one_se():
+    grid = _grid([(1, 50, 3.00), (2, 50, 3.10), (4, 50, 3.20)])
+    best, chosen = qp.select_one_se(grid, se=0.05)
+    assert (chosen["H"], chosen["k"]) == (best["H"], best["k"]) == (1.0, 50.0)
+
+
+def test_weighted_se_matches_formula():
+    e, w = np.array([1.0, 2.0, 4.0]), np.array([10.0, 20.0, 30.0])
+    m = np.sum(w * e) / np.sum(w)
+    assert np.isclose(qp.weighted_se(e, w), np.sqrt(np.sum(w ** 2 * (e - m) ** 2)) / np.sum(w))

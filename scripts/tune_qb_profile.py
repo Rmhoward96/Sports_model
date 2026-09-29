@@ -78,10 +78,12 @@ def main(argv: list[str] | None = None) -> int:
              "data_through": {"season": int(last["season"].max()), "week": int(last["week"].max())},
              "created_at": datetime.now(timezone.utc).isoformat(timespec="seconds"), "git": git_head()}
     write_params(args.out, args.mode, block)
-    print(f"{args.mode}: H={res['H']} k={res['k']} mse={res['mse']:.4f} over {res['n_games']} QB-games "
-          f"(load {t_load:.1f}s, total {t_all:.1f}s)")
+    b = res["best"]
+    print(f"{args.mode}: chosen (1-SE rule) H={res['H']} k={res['k']} mse={res['mse']:.5f}; "
+          f"best H={b['H']} k={b['k']} mse={b['mse']:.5f}, SE={res['se']:.5f}; "
+          f"{res['n_games']} QB-games (load {t_load:.1f}s, total {t_all:.1f}s)")
     for g in res["grid"]:
-        print(f"  H={g['H']:.0f} k={g['k']:.0f} mse={g['mse']:.5f}")
+        print(f"  H={g['H']:g} k={g['k']:g} mse={g['mse']:.5f}")
     print(f"wrote {args.out}")
     return 0
 
