@@ -41,10 +41,15 @@ def fit_seasons(mode: str, current: int) -> list[int]:
 
 
 def git_head() -> str:
+    """HEAD sha, suffixed ``-dirty`` when tracked files differ from HEAD (the
+    stamp then does not name the code that ran); ``"unknown"`` on failure."""
     try:
         out = subprocess.run(["git", "rev-parse", "HEAD"], cwd=ROOT, capture_output=True,
                              text=True, check=True, timeout=30)
-        return out.stdout.strip() or "unknown"
+        dirty = subprocess.run(["git", "status", "--porcelain", "--untracked-files=no"], cwd=ROOT,
+                               capture_output=True, text=True, check=True, timeout=30)
+        sha = out.stdout.strip() or "unknown"
+        return sha + ("-dirty" if dirty.stdout.strip() else "")
     except Exception:  # noqa: BLE001 -- identity is best-effort
         return "unknown"
 
