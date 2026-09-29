@@ -30,16 +30,19 @@ CREATE POLICY "public read track_record_start" ON track_record_start FOR SELECT 
 GRANT SELECT ON track_record_start TO anon, authenticated;
 
 -- In the current record? (timestamp form: kickoff; date form: ET game date)
+-- The table is schema-qualified: REFRESH MATERIALIZED VIEW runs functions with
+-- a restricted search_path (pg_catalog, pg_temp) on Postgres 17+, where an
+-- unqualified name fails with "relation does not exist".
 CREATE OR REPLACE FUNCTION in_track_record(p_sport text, p_ts timestamptz)
 RETURNS boolean LANGUAGE sql STABLE AS $$
   SELECT p_ts IS NULL OR NOT EXISTS (
-    SELECT 1 FROM track_record_start s WHERE s.sport = p_sport AND p_ts < s.starts_at)
+    SELECT 1 FROM public.track_record_start s WHERE s.sport = p_sport AND p_ts < s.starts_at)
 $$;
 
 CREATE OR REPLACE FUNCTION in_track_record(p_sport text, p_date date)
 RETURNS boolean LANGUAGE sql STABLE AS $$
   SELECT p_date IS NULL OR NOT EXISTS (
-    SELECT 1 FROM track_record_start s
+    SELECT 1 FROM public.track_record_start s
     WHERE s.sport = p_sport AND p_date < (s.starts_at AT TIME ZONE 'America/New_York')::date)
 $$;
 
