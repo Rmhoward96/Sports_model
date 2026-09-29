@@ -335,43 +335,11 @@ GRID_H = (0.5, 1, 1.5, 2, 3, 4)
 GRID_K = (25, 50, 100, 200, 400, 800)
 
 
-def weighted_se(sq_err: np.ndarray, w: np.ndarray) -> float:
-    """Standard error of the w-weighted mean of `sq_err`:
-    sqrt(sum w_i^2 (e_i - mean)^2) / sum w_i (non-finite errors dropped)."""
-    e, w = np.asarray(sq_err, dtype=float), np.asarray(w, dtype=float)
-    ok = np.isfinite(e) & np.isfinite(w)
-    e, w = e[ok], w[ok]
-    if not len(e) or w.sum() <= 0:
-        return float("nan")
-    m = np.sum(w * e) / np.sum(w)
-    return float(np.sqrt(np.sum(w ** 2 * (e - m) ** 2)) / np.sum(w))
-
-
-def select_one_se(grid: list[dict], se: float) -> tuple[dict, dict]:
-    """(best, chosen): best = the min-mse grid point (ties -> first); chosen =
-    among points with mse <= best.mse + se, the largest H, then the largest k
-    (ties -> first). A non-finite `se` counts as 0."""
-    pts = [g for g in grid if np.isfinite(g["mse"])]
-    if not pts:
-        return grid[0], grid[0]
-    best = pts[0]
-    for g in pts[1:]:
-        if g["mse"] < best["mse"]:
-            best = g
-    tol = best["mse"] + (se if np.isfinite(se) else 0.0)
-    chosen = best
-    for g in pts:
-        if g["mse"] <= tol and (g["H"], g["k"]) > (chosen["H"], chosen["k"]):
-            chosen = g
-    return best, chosen
-
-
 def tune(qga: pd.DataFrame, seasons: list[int], grid_h=GRID_H, grid_k=GRID_K) -> dict:
     """Choose (H, k) by attempt-weighted MSE of each QB-game's `ypa_adj`
     (att >= 10, season in `seasons`) predicted by `profile_asof` at that game
-    (replacement from seasons before the game's season), by the one-standard-
-    error rule: SE = weighted SE of the best point's per-game squared errors;
-    among points with mse <= best + SE, the largest H, then the largest k."""
+    (replacement from seasons before the game's season): the plain argmin
+    over the grid, ties -> first grid point."""
     sc = qga[qga["season"].isin(list(seasons)) & (qga["att"] >= 10) & qga["ypa_adj"].notna()]
     keys = sc[["player_id", "season", "week"]].reset_index(drop=True)
     y = sc["ypa_adj"].to_numpy(dtype=float)
@@ -379,7 +347,6 @@ def tune(qga: pd.DataFrame, seasons: list[int], grid_h=GRID_H, grid_k=GRID_K) ->
     rmap = {int(s): replacement(qga, int(s)) for s in pd.unique(keys["season"])}
     repl = {a: keys["season"].map(lambda s, a=a: rmap[int(s)][a]).astype(float) for a in ADJ}
     grid: list[dict] = []
-    errs: list[np.ndarray] = []
     for H in grid_h:
         ws = _weighted_sums(qga, keys, float(H))
         for k in grid_k:
@@ -388,10 +355,9 @@ def tune(qga: pd.DataFrame, seasons: list[int], grid_h=GRID_H, grid_k=GRID_K) ->
             ok = np.isfinite(e)
             mse = float(np.sum(wt[ok] * e[ok]) / np.sum(wt[ok])) if ok.any() else float("nan")
             grid.append({"H": float(H), "k": float(k), "mse": mse})
-            errs.append(e)
-    best, _ = select_one_se(grid, 0.0)
-    se = weighted_se(errs[next(i for i, g in enumerate(grid) if g is best)], wt)
-    best, chosen = select_one_se(grid, se)
-    return {"H": chosen["H"], "k": chosen["k"], "mse": chosen["mse"],
-            "best": {"H": best["H"], "k": best["k"], "mse": best["mse"]},
-            "se": se, "rule": "1se", "n_games": int(len(keys)), "grid": grid}
+    best = grid[0]
+    for g in grid[1:]:
+        if g["mse"] < best["mse"]:
+            best = g
+    return {"H": best["H"], "k": best["k"], "mse": best["mse"], "n_games": int(len(keys)),
+            "grid": grid}
