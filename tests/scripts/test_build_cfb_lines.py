@@ -85,3 +85,38 @@ def test_coverage_two_season_frame():
     assert cov.loc[2023, "market_spread"] == 0.0
     assert cov.loc[2023, "total_open"] == 1.0
     assert cov.loc[2023, "moneyline"] == 0.0
+
+
+def _ml(*pairs):
+    return bcl.parse_game_lines(_game([_ln(f"P{i}", spread=-3.0, homeMoneyline=h, awayMoneyline=a)
+                                       for i, (h, a) in enumerate(pairs)]))
+
+
+def test_ml_mixed_sign_providers_never_invalid():
+    r = _ml((-105, 105), (105, -105))
+    assert r["ml_home"] == 100 and r["ml_away"] == 100  # decimal median ~2.0012 -> +100
+    assert abs(r["ml_home"]) >= 100 and abs(r["ml_away"]) >= 100
+
+
+def test_ml_straddling_pair_is_valid_price():
+    r = _ml((-150, -150), (110, 110))  # decimals 1.667, 2.1 -> 1.883 -> -113
+    assert r["ml_home"] == -113 and r["ml_away"] == -113
+
+
+def test_ml_malformed_provider_value_ignored():
+    r = _ml((-150, 130), (50, 0), (-150, 130))
+    assert r["ml_home"] == -150 and r["ml_away"] == 130
+    assert bcl.parse_game_lines(_game([_ln("A", homeMoneyline=50, awayMoneyline=-99)])) is None
+
+
+def test_ml_odd_count_is_plain_median():
+    r = _ml((-300, 240), (-280, 230), (-320, 250))
+    assert r["ml_home"] == -300 and r["ml_away"] == 240
+
+
+def test_finalize_frame_dtypes():
+    row = bcl.parse_game_lines(_game([_ln("A", spread=-7.0, homeMoneyline=-280, awayMoneyline=230)]))
+    df = bcl.finalize_frame([row])
+    assert str(df["ml_home"].dtype) == "Int64" and str(df["ml_away"].dtype) == "Int64"
+    for c in ("market_spread", "market_total", "spread_open", "total_open"):
+        assert str(df[c].dtype) == "float64"   # even all-null columns

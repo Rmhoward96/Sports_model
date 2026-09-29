@@ -7,7 +7,7 @@ ONE-TIME historical pull for the P2 game-line backtest; live P3 uses the Odds AP
 Per game we take the MEDIAN across the providers CFBD returns of: closing spread and
 over/under (`market_spread`, `market_total`), opening spread and over/under
 (`spread_open`, `total_open`) and the closing moneylines (`ml_home`, `ml_away`, American,
-rounded to int). CFBD's `spread`/`spreadOpen` are the home spread in book convention
+rounded to int; median taken in decimal-odds space). CFBD's `spread`/`spreadOpen` are the home spread in book convention
 (home favored => negative); we store home-margin convention (home favored => positive)
 = -spread, matching the nfl gameline path. Games where either team can't be matched to
 an FBS ESPN id (FCS opponents, unrecognized names) or that carry no price at all are
@@ -45,9 +45,22 @@ def _neg(v):
     return None if v is None else 0.0 - v
 
 
-def _median_int(vals):
-    m = _median(vals)
-    return None if m is None else int(round(m))
+def _american_to_decimal(ml):
+    return 1.0 + ml / 100.0 if ml > 0 else 1.0 + 100.0 / -ml
+
+
+def _decimal_to_american(d):
+    return int(round((d - 1.0) * 100)) if d >= 2.0 else -int(round(100.0 / (d - 1.0)))
+
+
+def _median_moneyline(vals):
+    """Median American moneyline across providers, taken in decimal-odds space.
+
+    A raw American median can land inside (-100, 100) (e.g. median(-105, +105) = 0), which
+    is not a valid price. Provider values with |ml| < 100 are malformed and ignored.
+    """
+    dec = [_american_to_decimal(v) for v in vals if v is not None and abs(v) >= 100]
+    return _decimal_to_american(statistics.median(dec)) if dec else None
 
 
 def parse_game_lines(game: dict) -> dict | None:
@@ -68,13 +81,24 @@ def parse_game_lines(game: dict) -> dict | None:
         "market_total": _median([ln.get("overUnder") for ln in lines]),
         "spread_open": _neg(_median([ln.get("spreadOpen") for ln in lines])),
         "total_open": _median([ln.get("overUnderOpen") for ln in lines]),
-        "ml_home": _median_int([ln.get("homeMoneyline") for ln in lines]),
-        "ml_away": _median_int([ln.get("awayMoneyline") for ln in lines]),
+        "ml_home": _median_moneyline([ln.get("homeMoneyline") for ln in lines]),
+        "ml_away": _median_moneyline([ln.get("awayMoneyline") for ln in lines]),
         "n_providers": len(lines),
     }
     if all(row[k] is None for k in _PRICE_FIELDS):
         return None
     return row
+
+
+def finalize_frame(rows: list) -> pd.DataFrame:
+    """Rows -> frame with stable dtypes even when a whole column is null."""
+    df = pd.DataFrame(rows)
+    if len(df):
+        for c in ("market_spread", "market_total", "spread_open", "total_open"):
+            df[c] = pd.to_numeric(df[c]).astype("float64")
+        for c in ("ml_home", "ml_away"):
+            df[c] = pd.to_numeric(df[c]).astype("Int64")
+    return df
 
 
 def coverage(df: pd.DataFrame) -> pd.DataFrame:
@@ -131,12 +155,7 @@ def main() -> None:
             rows.append(row)
         print(f"{y}: {len(games)} games", flush=True)
 
-    df = pd.DataFrame(rows)
-    if len(df):  # stable dtypes even when a whole column is null
-        for c in ("market_spread", "market_total", "spread_open", "total_open"):
-            df[c] = pd.to_numeric(df[c]).astype("float64")
-        for c in ("ml_home", "ml_away"):
-            df[c] = pd.to_numeric(df[c]).astype("Int64")
+    df = finalize_frame(rows)
     if len(df):  # CFBD can return a game more than once; keep one row per matchup
         df = df.drop_duplicates(subset=["season", "week", "home_team", "away_team"], keep="first")
     _OUT.parent.mkdir(parents=True, exist_ok=True)
