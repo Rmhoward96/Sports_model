@@ -52,10 +52,10 @@ import time
 
 import pandas as pd
 
-from sportsmodel.nfl.elo import EloConfig, run_elo
-from sportsmodel.nfl.srs import compute_srs
-from sportsmodel.nfl.ratings import BlendConfig, expected_margin
-from sportsmodel.nfl.points import compute_points_ratings, expected_total
+from sportsmodel.cfb.walkforward import (  # noqa: F401 -- re-exported names
+    _DEFAULT_TOTAL_SEED, _clean_market, raw_model_predictions)
+from sportsmodel.nfl.elo import EloConfig
+from sportsmodel.nfl.ratings import BlendConfig
 from sportsmodel.nfl.gameline import GameLineConfig, build_gameline
 from sportsmodel.nfl.shrink import ShrinkParams
 from sportsmodel.model.recalibration import fit_bias, bias_eval
@@ -65,25 +65,6 @@ OOS_SEASONS = {2023, 2024}
 EXCLUDED_SEASONS = {2025}                # current/partial season, no market lines
 CFB_OFFSET = 110                          # CFB margins run much wider than NFL's
 CFB_TOTAL_MAX = 150                       # CFB totals run much higher than NFL's
-_DEFAULT_TOTAL_SEED = 55.0                # ~schedule-wide mean/median total, used only
-                                          # before any points history exists that season
-
-
-def _clean_market(value) -> float | None:
-    """CFBD market_spread/market_total -> float, or None if missing/NaN.
-
-    Same NaN -> None sanitization as backtest_nfl_gameline._clean_market:
-    shrink()/build_gameline only recognize Python `None` as "no market
-    line"; NaN would poison the (1-w)*model + w*market blend.
-    """
-    if value is None:
-        return None
-    try:
-        if pd.isna(value):
-            return None
-    except (TypeError, ValueError):
-        pass
-    return float(value)
 
 
 def load_merged_schedule(schedules_path: str, lines_path: str) -> pd.DataFrame:
@@ -104,64 +85,9 @@ def load_merged_schedule(schedules_path: str, lines_path: str) -> pd.DataFrame:
     return merged
 
 
-def _raw_model_predictions(schedule_df: pd.DataFrame, elo_cfg: EloConfig,
-                           blend_cfg: BlendConfig) -> list[dict]:
-    """Leak-free walk-forward core, WITHOUT any shrink/sigma applied: one
-    entry per scored game with the model's own pre-game margin/total (from
-    pre-game Elo + season-to-date SRS + season-to-date opponent-adjusted
-    points -- refreshed once per completed WEEK, not per game, for CFB-scale
-    tractability -- see module docstring point 3), the game's own market
-    line (already merged in as market_spread/market_total, NaN -> None),
-    and the actuals.
-
-    Mirrors backtest_nfl_gameline._raw_model_predictions's leak-free
-    invariant: appending a later game to schedule_df must never change an
-    earlier game's entry in the returned list. Intended to be called ONCE
-    over the full continuous span; a shrink/sigma search re-scores the
-    cached rows via `_apply_gl` instead of re-running this expensive pass.
-    """
-    df = schedule_df.sort_values(["season", "week"]).reset_index(drop=True)
-    res = run_elo(df, elo_cfg)                    # pre-game elo per game, continuous across seasons
-    games = res.games
-    out = []
-    for season, sdf in games.groupby("season"):
-        sdf = sdf.sort_values("week")
-        counts, srs_cache, pts_cache, lg_cache = {}, {}, {}, 0.0
-        srs_hist = sdf.iloc[0:0]
-        pts_hist = sdf.iloc[0:0]
-        for week, wdf in sdf.groupby("week"):
-            wdf = wdf.dropna(subset=["home_score", "away_score"])
-            if wdf.empty:
-                continue
-            for _, g in wdf.iterrows():
-                h, a = g["home_team"], g["away_team"]
-                gh, ga = counts.get(h, 0), counts.get(a, 0)
-                model_margin = expected_margin(g["elo_home"], g["elo_away"],
-                                               srs_cache.get(h), srs_cache.get(a),
-                                               gh, ga, elo_cfg, blend_cfg)
-                model_total = ((expected_total(pts_cache, lg_cache, h, a) if pts_cache
-                               else 2 * lg_cache) if lg_cache else _DEFAULT_TOTAL_SEED)
-                out.append({
-                    "season": int(season), "week": int(week),
-                    "home_team": h, "away_team": a,
-                    "model_margin": model_margin, "model_total": model_total,
-                    "market_spread": _clean_market(g.get("market_spread")),
-                    "market_total": _clean_market(g.get("market_total")),
-                    "actual_margin": float(g["home_score"] - g["away_score"]),
-                    "actual_total": float(g["home_score"] + g["away_score"]),
-                })
-            # after grading the whole week, it joins the history -> refresh
-            # counts + SRS + points ONCE for next week (season-to-date, never
-            # informed by same-or-future-week results)
-            for _, g in wdf.iterrows():
-                h, a = g["home_team"], g["away_team"]
-                counts[h] = counts.get(h, 0) + 1
-                counts[a] = counts.get(a, 0) + 1
-            srs_hist = pd.concat([srs_hist, wdf], ignore_index=True)
-            pts_hist = pd.concat([pts_hist, wdf], ignore_index=True)
-            srs_cache = compute_srs(srs_hist)
-            pts_cache, lg_cache = compute_points_ratings(pts_hist, k_points=4.0)
-    return out
+# The leak-free walk-forward core moved to sportsmodel.cfb.walkforward (shared
+# with the CFB profit model); this alias keeps the script's name intact.
+_raw_model_predictions = raw_model_predictions
 
 
 def _apply_gl(raw: list[dict], gl_cfg: GameLineConfig) -> list[dict]:
