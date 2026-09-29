@@ -1,9 +1,10 @@
 """Pass / run unit efficiency per team-game, opponent-adjusted and relative to
 league (the `mx_` matchup features). PURE.
 
-Offense metric per team-game from REG play-by-play (pass = dropbacks incl.
-sacks, run = designed runs): pass_epa, nypd (net yards / dropback), sack_rate,
-pass_success, rush_epa, ypc, rush_success, stuff_rate (carries <= 0 yds).
+Offense metric per team-game from REG play-by-play (pass = dropbacks: passes
+incl. sacks, plus QB scrambles; run = designed runs, i.e. non-scramble carries):
+pass_epa, nypd (net yards / dropback), sack_rate, pass_success, rush_epa, ypc,
+rush_success, stuff_rate (carries <= 0 yds).
 A defense's "allowed" value for a game is its opponent offense's value.
 
 Adjustment reuses `efficiency.adjusted_efficiency` per metric (single pass,
@@ -39,8 +40,13 @@ def unit_games(pbp: pd.DataFrame) -> pd.DataFrame:
     p = pbp[pbp["play_type"].isin(["pass", "run"]) & pbp["posteam"].notna() & pbp["defteam"].notna()]
     if "season_type" in p.columns:
         p = p[p["season_type"] == "REG"]
+    if "qb_scramble" in p.columns:
+        scramble = p["qb_scramble"].fillna(0) == 1
+    else:
+        scramble = pd.Series(False, index=p.index)
     p = p.assign(team=p["posteam"].map(_norm), opponent=p["defteam"].map(_norm),
-                 _db=p["play_type"] == "pass", _run=p["play_type"] == "run",
+                 _db=(p["play_type"] == "pass") | scramble,
+                 _run=(p["play_type"] == "run") & ~scramble,
                  _sack=p["sack"].fillna(0) == 1, _yds=p["yards_gained"].fillna(0.0),
                  _succ=p["success"].fillna(0.0), _epa=p["epa"])
     p = p.dropna(subset=["team", "opponent"])

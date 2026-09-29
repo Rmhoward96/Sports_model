@@ -51,7 +51,7 @@ _STUB_COLS = ["player_id", "season", "week", "team", "opponent", "position"]
 # frame small).
 _PBP_COLS = ["season", "week", "season_type", "play_type", "posteam", "defteam", "sack", "qb_hit",
              "wp", "down", "qtr", "yardline_100", "receiver_player_id", "rusher_player_id", "epa",
-             "yards_gained", "success", "pass_touchdown", "rush_touchdown"]
+             "yards_gained", "success", "pass_touchdown", "rush_touchdown", "qb_scramble"]
 
 
 def _norm(code) -> str | None:

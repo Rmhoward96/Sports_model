@@ -64,3 +64,24 @@ def test_prev_uses_last_season_full():
     tw = pd.DataFrame({"season": [2025], "week": [1], "team": ["KC"], "opponent": ["BUF"]})
     f = unit_features(unit_games(pbp), tw).iloc[0]
     assert f.mx_op_ypc_allowed_prev < 0 and np.isnan(f.mx_op_ypc_allowed_adj)
+
+
+def test_qb_scramble_counts_as_dropback_not_designed_run():
+    """A scramble (play_type 'run', qb_scramble == 1) is a dropback: it must
+    move nypd/pass_epa but leave ypc/stuff_rate untouched."""
+    pbp = _pbp()
+    base = unit_games(pbp)
+    kc1_base = base[(base.week == 1) & (base.team == "KC")].iloc[0]
+
+    scramble = _play(2024, 1, "KC", "BUF", "run", 9, 0.3, 1)
+    scramble["qb_scramble"] = 1
+    pbp_with_scramble = pd.concat([pbp, pd.DataFrame([scramble])], ignore_index=True)
+    ug = unit_games(pbp_with_scramble)
+    kc1 = ug[(ug.week == 1) & (ug.team == "KC")].iloc[0]
+
+    # dropbacks go from 11 to 12, gaining the scramble's 9 yards
+    assert np.isclose(kc1.nypd, (12 * 10 - 7 + 9) / 12)
+    assert not np.isclose(kc1.nypd, kc1_base.nypd)
+    # designed-run metrics are unaffected by the scramble
+    assert kc1.ypc == kc1_base.ypc == -1.0
+    assert kc1.stuff_rate == kc1_base.stuff_rate == 1.0

@@ -4,8 +4,9 @@ A defender's weight is his recent share of his team's defensive snaps (EWM,
 halflife 4 of his games strictly before the target week, for that team). A
 defense's `di_vacated_<group>` at (S, w) sums the weights of its Out/Doubtful
 defenders in that group on the (S, w) report. Groups (plan ruling R6):
-coverage, pass rush, run defense; each defender counts in his primary
-(most frequent) snap position's group.
+coverage, pass rush, run defense; each defender counts in the group of his
+position as of his latest game strictly before (S, w) (the same as-of row
+the snap-share EWM is matched from), never a position from a later season.
 """
 from __future__ import annotations
 
@@ -42,9 +43,8 @@ def defender_snaps(snaps: pd.DataFrame, pfr2gsis: dict[str, str]) -> pd.DataFram
     s["team"] = s["team"].map(_norm)
     s = s.dropna(subset=["player_id", "team"])
     share = s["defense_pct"].astype(float)
-    s["share"] = np.where(share.max() > 1.0, share / 100.0, share)
-    primary = s.groupby("player_id")["position"].agg(lambda x: x.value_counts().index[0])
-    s["group"] = s["player_id"].map(primary).map(DEF_GROUPS)
+    s["share"] = np.where(share > 1.0, share / 100.0, share)
+    s["group"] = s["position"].map(DEF_GROUPS)
     return s[["player_id", "season", "week", "team", "group", "share"]].astype(
         {"season": "int64", "week": "int64", "player_id": object})
 
