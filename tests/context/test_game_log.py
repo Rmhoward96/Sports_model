@@ -7,7 +7,8 @@ from sportsmodel.context.game_log import (
 
 COLS = ["sport", "season", "week", "game_key", "kickoff", "date_et", "team",
         "opponent", "venue", "pf", "pa", "margin", "team_line", "total_line",
-        "role", "su", "ats", "ou", "game_pk"]
+        "role", "su", "ats", "ou", "game_pk", "game_type", "is_post",
+        "team_is_fbs", "opp_is_fbs"]
 
 
 def _nfl(**kw):
@@ -43,6 +44,8 @@ def test_nfl_two_rows_columns_and_convention():
     assert log["kickoff"].iloc[0] == pd.Timestamp("2024-09-08 17:00", tz="UTC")
     assert log["date_et"].iloc[0] == "2024-09-08"
     assert (log["sport"] == "nfl").all()
+    assert (log["game_type"] == "REG").all() and not log["is_post"].any()
+    assert log["team_is_fbs"].all() and log["opp_is_fbs"].all()
 
 
 def test_nfl_cover_and_under_and_dog_cover():
@@ -67,6 +70,7 @@ def test_nfl_tie_pick_and_neutral():
     assert r.loc["KC", "su"] == "T" and r.loc["BAL", "su"] == "T"
     assert r.loc["KC", "role"] == "pick" and r.loc["BAL", "role"] == "pick"
     assert r.loc["KC", "ats"] == "P"
+    assert (log["game_type"] == "SB").all() and log["is_post"].all()
 
 
 def test_nfl_missing_line_and_unplayed():
@@ -115,6 +119,8 @@ def test_cfb_log_basic_and_line_convention():
     assert r.loc["333", "ou"] == "P"  # 31 + 17 == 48.0 exactly
     assert (log["game_pk"] == 4001).all() and (log["game_key"] == "4001").all()
     assert (log["sport"] == "cfb").all()
+    assert (log["game_type"] == "REG").all() and not log["is_post"].any()
+    assert log["team_is_fbs"].all() and log["opp_is_fbs"].all()
     # 00:30Z on Sep 1 is Aug 31 evening ET
     assert log["date_et"].iloc[0] == "2024-08-31"
     assert log["kickoff"].iloc[0] == pd.Timestamp("2024-09-01 00:30", tz="UTC")
@@ -185,3 +191,81 @@ def test_live_consensus_empty():
                  "captured_at", "commence_time"]))
     assert list(out.columns) == ["game_pk", "close_spread_home", "close_total"]
     assert out.empty
+
+
+def test_cfb_fbs_flags_for_pooled_fcs_pseudo_team():
+    log = cfb_game_log(_cfb_sched(away_team="FCS"), _cfb_lines(away_team="FCS"),
+                       None)
+    r = _pair(log)
+    assert r.loc["333", "team_is_fbs"] and not r.loc["333", "opp_is_fbs"]
+    assert not r.loc["FCS", "team_is_fbs"] and r.loc["FCS", "opp_is_fbs"]
+
+
+# Exact column set of the nflverse release `schedules` dataset.
+RELEASE_COLS = [
+    "game_id", "season", "game_type", "week", "gameday", "weekday", "gametime",
+    "away_team", "away_score", "home_team", "home_score", "location", "result",
+    "total", "overtime", "old_game_id", "gsis", "nfl_detail_id", "pfr", "pff",
+    "espn", "ftn", "away_rest", "home_rest", "away_moneyline", "home_moneyline",
+    "spread_line", "away_spread_odds", "home_spread_odds", "total_line",
+    "under_odds", "over_odds", "div_game", "roof", "surface", "temp", "wind",
+    "away_qb_id", "home_qb_id", "away_qb_name", "home_qb_name", "away_coach",
+    "home_coach", "referee", "stadium_id", "stadium"]
+
+
+def test_nfl_release_schema_fixture_neutral_and_post():
+    base = {c: None for c in RELEASE_COLS}
+    rows = []
+    for gid, loc, gt in [("2024_22_KC_PHI", "Neutral", "SB"),
+                         ("2024_01_KC_BAL", "Home", "REG")]:
+        rows.append({**base, "game_id": gid, "season": 2024, "week": 22,
+                     "game_type": gt, "gameday": "2025-02-09",
+                     "gametime": "18:30", "home_team": "KC", "away_team": "PHI",
+                     "home_score": 22, "away_score": 40, "location": loc,
+                     "spread_line": -1.5, "total_line": 49.5})
+    log = nfl_game_log(pd.DataFrame(rows, columns=RELEASE_COLS))
+    by = log[log["game_key"] == "2024_22_KC_PHI"]
+    assert set(by["venue"]) == {"neutral"} and by["is_post"].all()
+    assert set(log[log["game_key"] == "2024_01_KC_BAL"]["venue"]) == {"home", "away"}
+
+
+def test_nfl_requires_location_column():
+    df = _nfl().drop(columns=["location"])
+    with pytest.raises(ValueError, match="location"):
+        nfl_game_log(df)
+
+
+def test_nfl_real_release_2024_neutral_games():
+    from sportsmodel.nfl.nflverse import load_release
+    try:
+        sch = load_release("schedules", [2024])
+    except Exception as exc:  # no network
+        pytest.skip(f"nflverse release unavailable: {exc}")
+    log = nfl_game_log(sch)
+    assert len(log) == 2 * len(sch)
+    neutral_games = log[log["venue"] == "neutral"]["game_key"].nunique()
+    assert neutral_games == (sch["location"] == "Neutral").sum() >= 1
+    assert log[log["game_type"] == "SB"]["venue"].eq("neutral").all()
+    assert log["is_post"].sum() == 2 * (sch["game_type"] != "REG").sum()
+
+
+def test_live_consensus_capture_at_kickoff_excluded():
+    rows = [
+        _odds(1, "A", "spread", "home", -3.0, "2024-09-30T23:00:00Z"),
+        _odds(1, "A", "spread", "home", -9.0, "2024-10-01T00:00:00Z"),  # == kickoff
+    ]
+    out = live_closing_consensus(pd.DataFrame(rows)).set_index("game_pk")
+    assert out.loc[1, "close_spread_home"] == 3.0
+    only_boundary = live_closing_consensus(pd.DataFrame(rows[1:]))
+    assert only_boundary.empty
+
+
+def test_live_consensus_book_latest_capture_is_away_only():
+    rows = [
+        _odds(1, "A", "spread", "home", -3.0, "2024-09-30T20:00:00Z"),
+        _odds(1, "A", "spread", "away", 3.0, "2024-09-30T20:00:00Z"),
+        # later capture only has the away side, line moved
+        _odds(1, "A", "spread", "away", 5.5, "2024-09-30T23:00:00Z"),
+    ]
+    out = live_closing_consensus(pd.DataFrame(rows)).set_index("game_pk")
+    assert out.loc[1, "close_spread_home"] == 5.5

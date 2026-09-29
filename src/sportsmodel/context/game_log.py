@@ -18,7 +18,8 @@ from sportsmodel.nfl.teams import normalize_team
 
 COLUMNS = ["sport", "season", "week", "game_key", "kickoff", "date_et", "team",
            "opponent", "venue", "pf", "pa", "margin", "team_line", "total_line",
-           "role", "su", "ats", "ou", "game_pk"]
+           "role", "su", "ats", "ou", "game_pk", "game_type", "is_post",
+           "team_is_fbs", "opp_is_fbs"]
 
 _ET = "America/New_York"
 
@@ -77,6 +78,8 @@ def _side_rows(g: dict) -> list[dict]:
             "pa": pa if played else float("nan"), "margin": margin,
             "team_line": line, "total_line": total, "role": role, "su": su,
             "ats": ats, "ou": ou, "game_pk": g.get("game_pk"),
+            "game_type": g["game_type"], "is_post": g["game_type"] != "REG",
+            "team_is_fbs": g["fbs"](team), "opp_is_fbs": g["fbs"](opp),
         })
     return out
 
@@ -93,7 +96,19 @@ def _finish(rows: list[dict]) -> pd.DataFrame:
 
 
 def nfl_game_log(schedules: pd.DataFrame) -> pd.DataFrame:
-    """Two rows per game from nflverse schedules (REG + postseason)."""
+    """Two rows per game from nflverse schedules (REG + postseason).
+
+    Contract: the nflverse *release* schema (``load_release("schedules", ...)``).
+    ``location`` ("Home"/"Neutral") is REQUIRED -- the committed
+    assets/nfl/schedules.parquet lacks it, so passing that raises rather than
+    silently treating every game (e.g. Super Bowls, intl games) as a home game.
+    ``game_type`` (REG/WC/DIV/CON/SB) drives ``is_post``.
+    """
+    if "location" not in schedules.columns:
+        raise ValueError(
+            "nfl_game_log requires the nflverse release schema with a "
+            "'location' column (use nfl.nflverse.load_release('schedules', ...), "
+            "not assets/nfl/schedules.parquet)")
     rows: list[dict] = []
     for r in schedules.itertuples(index=False):
         gameday = pd.Timestamp(r.gameday)
@@ -108,9 +123,10 @@ def nfl_game_log(schedules: pd.DataFrame) -> pd.DataFrame:
             "home_team": normalize_team(r.home_team),
             "away_team": normalize_team(r.away_team),
             "home_score": r.home_score, "away_score": r.away_score,
-            "neutral": str(getattr(r, "location", "Home")).lower() == "neutral",
+            "neutral": str(r.location).lower() == "neutral",
             "home_line": r.spread_line, "total_line": r.total_line,
-            "game_pk": None,
+            "game_pk": None, "game_type": str(r.game_type),
+            "fbs": lambda _t: True,
         })
     return _finish(rows)
 
@@ -152,7 +168,8 @@ def cfb_game_log(schedules: pd.DataFrame, lines: pd.DataFrame,
             "home_score": r.home_score, "away_score": r.away_score,
             "neutral": bool(r.neutral_site),
             "home_line": r.market_spread, "total_line": r.market_total,
-            "game_pk": r.game_pk,
+            "game_pk": r.game_pk, "game_type": str(getattr(r, "game_type", "REG")),
+            "fbs": lambda t: t != "FCS",
         })
     return _finish(rows)
 
@@ -160,7 +177,7 @@ def cfb_game_log(schedules: pd.DataFrame, lines: pd.DataFrame,
 def live_closing_consensus(odds_rows: pd.DataFrame) -> pd.DataFrame:
     """Per game_pk closing consensus from ``odds_snapshot`` rows.
 
-    Each book's last capture at/before kickoff, converted to a home-margin
+    Each book's last capture strictly before kickoff, converted to a home-margin
     spread (book convention: home -7 means home favored by 7, so
     ``close_spread_home = -home_line``, or ``+away_line`` when only the away
     side was captured), then the median across books. Totals likewise.
@@ -172,13 +189,13 @@ def live_closing_consensus(odds_rows: pd.DataFrame) -> pd.DataFrame:
     d = odds_rows[odds_rows["market"].isin(["spread", "total"])].copy()
     d["captured_at"] = pd.to_datetime(d["captured_at"], utc=True)
     d["commence_time"] = pd.to_datetime(d["commence_time"], utc=True)
-    d = d[(d["captured_at"] <= d["commence_time"]) & d["line"].notna()]
+    d = d[(d["captured_at"] < d["commence_time"]) & d["line"].notna()].copy()
     if d.empty:
         return pd.DataFrame(columns=cols)
     is_spread = d["market"] == "spread"
     line = d["line"].astype(float)
     d["val"] = np.where(is_spread & (d["side"] == "home"), -line, line)
-    d = d[~(is_spread & ~d["side"].isin(["home", "away"]))]
+    d = d[~(is_spread & ~d["side"].isin(["home", "away"]))].copy()
     d["prio"] = d["side"].isin(["home", "over"]).astype(int)
     last = (d.sort_values(["captured_at", "prio"], kind="stable")
               .drop_duplicates(["game_pk", "book", "market"], keep="last"))
