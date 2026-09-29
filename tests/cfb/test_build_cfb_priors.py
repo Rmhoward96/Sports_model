@@ -9,6 +9,9 @@ both live in main(), not here.
 import importlib.util
 import pathlib
 
+import pandas as pd
+import pytest
+
 _p = pathlib.Path(__file__).resolve().parents[2] / "scripts" / "build_cfb_priors.py"
 _spec = importlib.util.spec_from_file_location("build_cfb_priors", _p)
 bcp = importlib.util.module_from_spec(_spec)
@@ -120,9 +123,6 @@ def test_build_priors_rows_passthrough_fields_and_defaults():
 
 # -- backfill tolerance: early seasons where an endpoint returns nothing --------
 
-import pandas as pd
-
-
 def test_build_priors_rows_empty_portal_payload_gives_nan_portal_net():
     """Portal data starts in 2021: for 2016 the endpoint returns nothing, so
     portal_net is unknown (NaN in the parquet), NOT a fabricated 0.0."""
@@ -140,16 +140,49 @@ def test_build_priors_rows_empty_portal_payload_gives_nan_portal_net():
     assert _by_name(rows, "Ames")["sp_rating"] == 20.0
 
 
+def _boom(path, key, params=None):
+    raise RuntimeError("404")
 
-def test_safe_fetch_returns_empty_on_error_and_on_empty(monkeypatch, capsys):
-    def boom(path, key, params=None):
-        raise RuntimeError("404")
-    monkeypatch.setattr(bcp.cfbd, "_get", boom)
-    assert bcp._fetch_parsed(bcp.cfbd.parse_portal, "/player/portal", "k", {"year": 2016}) == {}
+
+def _fetch(path, season, current=2026):
+    parser = bcp.cfbd.parse_portal if path == "/player/portal" else bcp.cfbd.parse_returning
+    return bcp._fetch_parsed(parser, path, "k", {"year": season},
+                             bcp._tolerates_missing(path, season, current))
+
+
+def test_early_season_error_and_empty_are_tolerated(monkeypatch, capsys):
+    monkeypatch.setattr(bcp.cfbd, "_get", _boom)
+    assert _fetch("/player/returning", 2016) == {}
     assert "WARN" in capsys.readouterr().out
-
     monkeypatch.setattr(bcp.cfbd, "_get", lambda path, key, params=None: [])
-    assert bcp._fetch_parsed(bcp.cfbd.parse_portal, "/player/portal", "k", {"year": 2016}) == {}
+    assert _fetch("/player/returning", 2016) == {}
+
+
+def test_current_season_error_and_empty_raise(monkeypatch):
+    monkeypatch.setattr(bcp.cfbd, "_get", _boom)
+    for path in ("/player/returning", "/recruiting/teams", "/player/portal"):
+        with pytest.raises(RuntimeError):
+            _fetch(path, 2026)
+    monkeypatch.setattr(bcp.cfbd, "_get", lambda path, key, params=None: [])
+    with pytest.raises(RuntimeError):
+        _fetch("/player/returning", 2026)
+
+
+def test_portal_empty_pre_2021_tolerated_but_2023_raises(monkeypatch):
+    monkeypatch.setattr(bcp.cfbd, "_get", lambda path, key, params=None: [])
+    assert _fetch("/player/portal", 2020) == {}
+    with pytest.raises(RuntimeError):
+        _fetch("/player/portal", 2023)   # historical but portal data exists
+    monkeypatch.setattr(bcp.cfbd, "_get", _boom)
+    with pytest.raises(RuntimeError):
+        _fetch("/player/portal", 2023)
+    assert _fetch("/player/portal", 2019) == {}
+
+
+def test_tolerates_missing_rule():
+    t = bcp._tolerates_missing
+    assert t("/player/returning", 2025, 2026) and not t("/player/returning", 2026, 2026)
+    assert t("/player/portal", 2020, 2026) and not t("/player/portal", 2021, 2026)
 
 
 def test_safe_fetch_passes_through_data(monkeypatch):

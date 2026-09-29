@@ -1,9 +1,10 @@
 name: build-cfb-priors
 
-# One-time (manual) ingest of historical CFB preseason priors from collegefootballdata.com,
-# committed as assets/cfb/priors.parquet for the backtest (seasons + current season).
-# CFBD_API_KEY is a repo secret; the key is never printed. Dispatch this once after adding
-# the secret to populate the backtest history, then Task 5's backtest can run.
+# Manual ingest of CFB preseason priors from collegefootballdata.com, committed as
+# assets/cfb/priors.parquet. Dispatch with a `seasons` range (default 2015 2026: history
+# for the backtest/gate plus the live season). CFBD_API_KEY is a repo secret; the key is
+# never printed. Early seasons tolerate endpoints with no data (fields stay NaN); the
+# current season and portal 2021+ fail the run on any error/empty response.
 on:
   workflow_dispatch:
     inputs:
