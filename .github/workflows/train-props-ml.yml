@@ -15,12 +15,16 @@ name: train-props-ml
 #     succeeds): no committed assets/nfl/props_ml/pipeline$GATE_NAME.json with
 #     final_pass == true (a failed B gate is never fit or published; v2 is
 #     skipped until its pipeline is committed); v2 only: no committed
-#     assets/nfl/props_ml/v2_gate.json with pass == true (pipeline_v2's
-#     final_pass is v2 vs the current sim; v2_gate is v2 vs v1), or no
-#     `serving` block (H, k) in assets/nfl/props_ml/qb_profile_params.json (the
-#     v2 build needs it); and, after the feature build, no labelled week after
-#     the published (in $RELEASE) props_ml_config.json's trained_through (no
-#     release -> proceed);
+#     assets/nfl/props_ml/v2_gate.json with pass == true, UNLESS that file
+#     also has user_override == true and a non-empty string override_reason --
+#     a recorded decision to ship v2 without the v2-vs-v1 gate passing (or
+#     without it having been run at all). The override never fakes a pass: it
+#     prints its own ::notice:: naming the reason so the run log is honest
+#     about why the leg proceeded. (pipeline_v2's final_pass is v2 vs the
+#     current sim; v2_gate is v2 vs v1); or no `serving` block (H, k) in
+#     assets/nfl/props_ml/qb_profile_params.json (the v2 build needs it); and,
+#     after the feature build, no labelled week after the published (in
+#     $RELEASE) props_ml_config.json's trained_through (no release -> proceed);
 #  1. rebuild the feature tables from nflverse (data/props_ml/*.parquet) with
 #     --qb-params $QB_PARAMS (v1 gate, v2 serving: v2 trains on the QB params
 #     it is served with; its fit refuses tables built otherwise);
@@ -112,9 +116,12 @@ jobs:
       # Guard 1 (first): only a committed pipeline$GATE_NAME.json whose
       # final_pass is a JSON true may be retrained / published; the v2 leg
       # also needs a committed v2_gate.json whose pass is a JSON true (v2 vs
-      # v1) and, as it builds with --qb-params serving, a `serving` block in
-      # qb_profile_params.json. Otherwise skip with a ::notice:: (the leg
-      # succeeds).
+      # v1) -- OR a recorded user override (user_override == true and a
+      # non-empty string override_reason), in which case the leg proceeds on
+      # the override and prints its own ::notice:: naming the reason, never
+      # silently treating the override as a pass -- and, as it builds with
+      # --qb-params serving, a `serving` block in qb_profile_params.json.
+      # Otherwise skip with a ::notice:: (the leg succeeds).
       - name: Guard (a passing pipeline.json)
         id: guard
         run: |
@@ -129,8 +136,21 @@ jobs:
           fi
           if [ "$GATE_NAME" = "_v2" ]; then
             g="assets/nfl/props_ml/v2_gate.json"
-            if ! { [ -f "$g" ] && [ "$(jq -r '.pass == true' "$g" 2>/dev/null || true)" = "true" ]; }; then
+            gate_pass="false"
+            if [ -f "$g" ] && [ "$(jq -r '.pass == true' "$g" 2>/dev/null || true)" = "true" ]; then
+              gate_pass="true"
+            fi
+            override_ok="false"
+            reason=""
+            if [ -f "$g" ] && [ "$(jq -r '(.user_override == true) and ((.override_reason|type) == "string") and ((.override_reason|length) > 0)' "$g" 2>/dev/null || true)" = "true" ]; then
+              override_ok="true"
+              reason="$(jq -r '.override_reason' "$g" 2>/dev/null || true)"
+            fi
+            if [ "$gate_pass" != "true" ] && [ "$override_ok" != "true" ]; then
               skip "::notice::props-ml: no passing v2_gate.json (v2 vs v1) — skipping retrain ($g, $MODEL_VERSION)"
+            fi
+            if [ "$gate_pass" != "true" ]; then
+              echo "::notice::props-ml: v2 retrain on USER OVERRIDE (v2_gate pass=false): $reason"
             fi
           fi
           if [ "$QB_PARAMS" = "serving" ]; then

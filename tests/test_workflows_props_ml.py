@@ -938,6 +938,36 @@ def test_train_guard_v1_leg_ignores_the_v2_only_guards(train_wf, tmp_path):
     assert out == {"skip": "false"} and "::notice::" not in stdout
 
 
+V2_OVERRIDE_NOTICE_PREFIX = "::notice::props-ml: v2 retrain on USER OVERRIDE (v2_gate pass=false): "
+
+
+@needs_jq
+@pytest.mark.parametrize("gate,skip,notice", [
+    ('{"pass": false, "user_override": true, "override_reason": "shipped despite gate"}', "false",
+     V2_OVERRIDE_NOTICE_PREFIX + "shipped despite gate"),
+    ('{"pass": false, "user_override": true, "override_reason": ""}', "true", None),       # empty reason
+    ('{"pass": false, "user_override": true}', "true", None),                              # no reason key
+    ('{"pass": false, "user_override": true, "override_reason": 1}', "true", None),        # not a string
+    ('{"pass": false, "user_override": false, "override_reason": "x"}', "true", None),     # override off
+    ('{"pass": true, "user_override": true, "override_reason": "x"}', "false", None),      # pass alone is enough
+])
+def test_train_guard_v2_leg_user_override(train_wf, tmp_path, gate, skip, notice):
+    """The v2 leg proceeds on pass == true OR (user_override == true AND a non-empty
+    string override_reason). The override path never fakes a pass: it prints its own
+    ::notice:: naming the reason instead of silently proceeding, and only fires when
+    the recorded pass is not already true."""
+    guard = steps_of(train_wf["jobs"]["train"])[1]
+    _v2_guard_files(tmp_path, gate=gate, qb=SERVING_OK)
+    out, stdout = _run_step(guard["run"], tmp_path, leg_env(MATRIX[1]))
+    assert out == {"skip": skip}
+    if notice is not None:
+        assert notice in stdout
+    else:
+        assert "USER OVERRIDE" not in stdout
+    if skip == "true":
+        assert V2_GATE_NOTICE in stdout
+
+
 def _fresh_bins(tmp_path: Path, *, release: bool, new_weeks: str) -> dict:
     """Fake `gh` (download -> a props_ml_config.json, or rc 1 when no release) and
     `uv` (prints the --check-new-weeks verdict and records its argv)."""
