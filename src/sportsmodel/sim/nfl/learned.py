@@ -11,6 +11,14 @@ INPUTS:
 * efficiency (only with the ``"efficiency"`` toggle) -- ``ypr``,
   ``catch_rate``, ``ypc`` (squared-error HGB, touch-weighted) replace the
   player's per-touch means; ``ypt = catch_rate * ypr``. TD shares untouched.
+* QB drive-TD shift (only with the ``"qb_profile"`` toggle) -- a scalar
+  elasticity of team offensive TDs (relative to the team's trailing EWM) to
+  the starting QB's ``qb_ratio_ypa``; ``apply_to_spec`` scales the drive
+  ``td`` probability by it, moving the mass to/from ``fg`` and ``punt``.
+
+The ``matchup`` / ``def_injuries`` / ``qb_profile`` rungs (like ``context`` /
+``market``) only add their feature-column prefixes when toggled; the v1 toggles
+never include them, so v1 fits are unchanged.
 
 Leakage contract
 ----------------
@@ -44,7 +52,13 @@ RUNG_PREFIXES: dict[str, tuple[str, ...]] = {
     "volume": ("p_", "ngs_", "tm_", "op_", "st_"),
     "context": ("cx_",),
     "market": ("mk_",),
+    "matchup": ("mx_",),
+    "def_injuries": ("di_",),
+    "qb_profile": ("qb_",),
 }
+# Rungs that only add feature-column prefixes when toggled, in RUNG_PREFIXES order.
+_OPTIONAL_COL_RUNGS: tuple[str, ...] = ("context", "market", "matchup", "def_injuries",
+                                        "qb_profile")
 
 # Monotonic constraints where the direction is certain (applied only when the
 # column is among the model's fitted features).
@@ -62,17 +76,26 @@ CATCH_RATE_BOUNDS = (0.05, 1.0)
 # and can make the kernel fail (a silently skipped game biases the gate).
 YARDS_PER_TOUCH_FLOOR = 0.5
 
+# QB drive-TD shift ("qb_profile"): trailing-TD EWM halflife (games), minimum
+# fitting rows, and the clip on the td multiplier.
+TD_TRAIL_HALFLIFE = 4.0
+TD_ELASTICITY_MIN_ROWS = 50
+TD_MULT_BOUNDS = (0.7, 1.3)
+QB_RATIO_COL = "qb_ratio_ypa"
+TEAM_TD_LABEL = "y_team_off_tds"
+
 
 def feature_columns(df: pd.DataFrame, toggles: frozenset[str]) -> list[str]:
     """Model feature columns of ``df`` for the given rung toggles, in df order.
 
     ``volume`` prefixes are always included (volume is on whenever any
-    learned model is used); ``context`` adds ``cx_``, ``market`` adds ``mk_``.
-    ``efficiency`` toggles the efficiency MODELS, not columns. Keys, ``y_*``
+    learned model is used); ``context`` adds ``cx_``, ``market`` adds ``mk_``,
+    ``matchup`` adds ``mx_``, ``def_injuries`` adds ``di_``, ``qb_profile``
+    adds ``qb_``. ``efficiency`` toggles the efficiency MODELS, not columns. Keys, ``y_*``
     labels, the ``is_stub`` flag and any non-prefixed column are excluded.
     """
     prefixes = list(RUNG_PREFIXES["volume"])
-    for rung in ("context", "market"):
+    for rung in _OPTIONAL_COL_RUNGS:
         if rung in toggles:
             prefixes.extend(RUNG_PREFIXES[rung])
     pref = tuple(prefixes)
@@ -99,6 +122,8 @@ class LearnedModels:
     ``FittedModel.cols`` is the subset actually used by that fit.
     ``share_fallbacks`` counts sides whose shares ``apply_to_spec`` left
     unchanged because some active player had no feature row.
+    ``td_elasticity`` is the QB drive-TD elasticity (``fit_td_elasticity``);
+    None = no shift (always None unless ``"qb_profile"`` was toggled).
     """
 
     team_pass: FittedModel | None
@@ -109,6 +134,7 @@ class LearnedModels:
     player_cols: list[str]
     team_cols: list[str]
     share_fallbacks: int = field(default=0)
+    td_elasticity: float | None = None
 
 
 def _hgb(loss: str, max_iter: int, monotonic_cst: dict[str, int] | None
@@ -176,6 +202,35 @@ def _fit_eff(df: pd.DataFrame, num: str, den: str, cols: list[str], upto,
     return _fit_one(tr[cols], y, w, loss="squared_error", max_iter=max_iter, mono=None)
 
 
+def fit_td_elasticity(team_df: pd.DataFrame, upto: tuple[int, int]) -> float | None:
+    """No-intercept OLS slope of ``y = y_team_off_tds / trailing - 1`` on
+    ``x = qb_ratio_ypa - 1``.
+
+    ``trailing`` is the team's EWM (halflife ``TD_TRAIL_HALFLIFE`` games) of
+    ``y_team_off_tds`` over its games STRICTLY before the row. Only rows with
+    ``(season, week) < upto`` are used (the EWM is computed on that slice
+    too), with finite x and y and ``trailing > 0``. None when fewer than
+    ``TD_ELASTICITY_MIN_ROWS`` such rows (or the columns are absent).
+    """
+    if TEAM_TD_LABEL not in team_df.columns or QB_RATIO_COL not in team_df.columns:
+        return None
+    df = team_df[_before(team_df, upto)].sort_values(["team", "season", "week"])
+    tds = pd.to_numeric(df[TEAM_TD_LABEL], errors="coerce").astype(float)
+    trailing = tds.groupby(df["team"]).transform(
+        lambda s: s.shift(1).ewm(halflife=TD_TRAIL_HALFLIFE).mean())
+    x = pd.to_numeric(df[QB_RATIO_COL], errors="coerce").astype(float) - 1.0
+    with np.errstate(divide="ignore", invalid="ignore"):
+        y = tds / trailing - 1.0
+    ok = np.isfinite(x) & np.isfinite(y) & (trailing > 0)
+    if int(ok.sum()) < TD_ELASTICITY_MIN_ROWS:
+        return None
+    xv, yv = x[ok].to_numpy(), y[ok].to_numpy()
+    sxx = float(np.dot(xv, xv))
+    if not sxx > 0:
+        return None
+    return float(np.dot(xv, yv) / sxx)
+
+
 def fit_models(player_df: pd.DataFrame, team_df: pd.DataFrame,
                toggles: frozenset[str], *, upto: tuple[int, int],
                test_season: int, decay: float, max_iter: int) -> LearnedModels:
@@ -184,7 +239,8 @@ def fit_models(player_df: pd.DataFrame, team_df: pd.DataFrame,
 
     Sample weight is ``decay ** (test_season - season)`` (times the touch
     count for efficiency models). Efficiency models are fitted only when
-    ``"efficiency" in toggles``.
+    ``"efficiency" in toggles``; the QB drive-TD elasticity only when
+    ``"qb_profile" in toggles`` (``fit_td_elasticity``).
     """
     pcols = feature_columns(player_df, toggles)
     tcols = feature_columns(team_df, toggles)
@@ -199,9 +255,11 @@ def fit_models(player_df: pd.DataFrame, team_df: pd.DataFrame,
     if "efficiency" in toggles:
         eff = {name: _fit_eff(player_df, num, den, pcols, **common)
                for name, (num, den) in _EFF_SPECS.items()}
+    td_elasticity = fit_td_elasticity(team_df, upto) if "qb_profile" in toggles else None
     return LearnedModels(team_pass=team_pass, team_rush=team_rush,
                          targets=targets, carries=carries, eff=eff,
-                         player_cols=pcols, team_cols=tcols)
+                         player_cols=pcols, team_cols=tcols,
+                         td_elasticity=td_elasticity)
 
 
 def tune(player_df: pd.DataFrame, test_season: int, toggles: frozenset[str]
@@ -240,6 +298,28 @@ def tune(player_df: pd.DataFrame, test_season: int, toggles: frozenset[str]
     return best[1], best[2]
 
 
+def _shift_td(rates: TeamRates, e: float, ratio: float) -> TeamRates:
+    """``rates`` with ``drive_outcomes["td"]`` scaled by
+    ``m = clip(1 + e * (ratio - 1), *TD_MULT_BOUNDS)``.
+
+    The td mass change is taken from (or given to) ``fg`` and ``punt`` in
+    proportion to their current mass, so the outcomes keep their sum; other
+    outcomes are untouched. A gain larger than ``fg + punt`` is capped there
+    (never a negative probability). Pure: ``rates`` is not mutated.
+    """
+    do = dict(rates.drive_outcomes)
+    td, fg, punt = do.get("td", 0.0), do.get("fg", 0.0), do.get("punt", 0.0)
+    pool = fg + punt
+    if not pool > 0:
+        return rates
+    m = float(np.clip(1.0 + e * (ratio - 1.0), *TD_MULT_BOUNDS))
+    delta = min(td * (m - 1.0), pool)
+    do["td"] = td + delta
+    do["fg"] = fg - delta * fg / pool
+    do["punt"] = punt - delta * punt / pool
+    return dataclasses.replace(rates, drive_outcomes=do)
+
+
 def _team_rates(rates: TeamRates, team: str, models: LearnedModels,
                 team_rows: pd.DataFrame) -> TeamRates:
     row = team_rows[team_rows["team"] == team].head(1)
@@ -250,7 +330,13 @@ def _team_rates(rates: TeamRates, team: str, models: LearnedModels,
         changes["pass_att_pg"] = float(models.team_pass.predict(row)[0])
     if models.team_rush is not None:
         changes["rush_att_pg"] = float(models.team_rush.predict(row)[0])
-    return dataclasses.replace(rates, **changes) if changes else rates
+    out = dataclasses.replace(rates, **changes) if changes else rates
+    e = getattr(models, "td_elasticity", None)
+    if e is not None and QB_RATIO_COL in row.columns:
+        ratio = float(pd.to_numeric(row[QB_RATIO_COL], errors="coerce").iloc[0])
+        if np.isfinite(ratio):
+            out = _shift_td(out, e, ratio)
+    return out
 
 
 def _side_players(players: list[PlayerInput], models: LearnedModels,
@@ -311,6 +397,9 @@ def apply_to_spec(spec: NflGameSpec, models: LearnedModels,
     questionable players' predicted counts are multiplied by ``q_weight``
     before renormalizing. Efficiency is replaced per player with a row;
     learned ``ypr`` / ``ypc`` are floored at ``YARDS_PER_TOUCH_FLOOR``.
+    When ``models.td_elasticity`` is set and the team row has a finite
+    ``qb_ratio_ypa``, the team's drive ``td`` probability is shifted
+    (``_shift_td``).
     """
     return dataclasses.replace(
         spec,

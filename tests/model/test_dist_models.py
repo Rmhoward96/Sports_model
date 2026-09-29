@@ -435,3 +435,51 @@ def test_fit_market_trains_only_in_role_rows(small_tbl, cols, monkeypatch):
     tr = small_tbl[_train_mask(small_tbl, "y_pass_yds")]
     assert "p5" not in set(tr.player_id) and 1 not in set(tr.week)
     assert set(tr.position) == {"QB"}
+
+
+# ---- stale-QB role (v2 role table) --------------------------------------------------
+
+from sportsmodel.model.props_ml import dist_models  # noqa: E402
+
+
+def test_stale_qb_is_out_of_role():
+    df = pd.DataFrame({"position": ["QB", "QB"], "p_y_pass_att_ewm": [15.7, 30.0],
+                       "p_y_pass_att_r10": [np.nan, 28.0]})
+    assert dist_models.in_role(df, "pass_yds", subsets=dist_models.ROLE_SUBSETS_V2
+                               ).tolist() == [False, True]
+    assert dist_models.in_role(df, "pass_tds", subsets=dist_models.ROLE_SUBSETS_V2
+                               ).tolist() == [False, True]
+
+
+def test_stale_qb_stays_in_role_under_default_v1_table():
+    df = pd.DataFrame({"position": ["QB", "QB"], "p_y_pass_att_ewm": [15.7, 30.0],
+                       "p_y_pass_att_r10": [np.nan, 28.0]})
+    assert dist_models.in_role(df, "pass_yds").tolist() == [True, True]
+    assert dist_models.in_role(df, "pass_yds", subsets=ROLE_SUBSETS).tolist() == [True, True]
+
+
+def test_role_subsets_v2_only_adds_the_recent_attempts_condition():
+    v2 = dist_models.ROLE_SUBSETS_V2
+    assert set(v2) == set(ROLE_SUBSETS)
+    for m in ROLE_SUBSETS:
+        if m not in ("pass_yds", "pass_tds"):
+            assert v2[m] == ROLE_SUBSETS[m]
+    df = pd.DataFrame({"position": ["QB", "QB", "QB", "WR"],
+                       "p_y_pass_att_ewm": [9.0, 12.0, 12.0, 30.0],
+                       "p_y_pass_att_r10": [5.0, 0.0, 1.0, 30.0]})
+    # ewm >= 10 (inclusive) AND r10 > 0 (strict), QB only
+    assert dist_models.in_role(df, "pass_yds", subsets=v2).tolist() == [False, False, True, False]
+    assert dist_models.in_role(df, "pass_yds", subsets=v2).dtype == bool
+
+
+def test_fit_market_threads_role_subsets(small_tbl, cols, monkeypatch):
+    stale = small_tbl.assign(p_y_pass_att_r10=np.where(small_tbl.week % 2 == 0, np.nan, 20.0))
+    calls = _spy_fits(monkeypatch)
+    fit_market(stale, "pass_yds", cols, **FIT)
+    n_v1 = {c["n"] for c in calls}
+    calls.clear()
+    fit_market(stale, "pass_yds", cols, **FIT, subsets=dist_models.ROLE_SUBSETS_V2)
+    n_v2 = {c["n"] for c in calls}
+    want_v2 = _train_mask(stale, "y_pass_yds") & (stale.p_y_pass_att_r10 > 0)
+    assert n_v1 == {int(_train_mask(stale, "y_pass_yds").sum())}
+    assert n_v2 == {int(want_v2.sum())} and int(want_v2.sum()) < min(n_v1)
