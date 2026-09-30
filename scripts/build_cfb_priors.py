@@ -41,6 +41,9 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 import pandas as pd
 
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+
+from build_cfb_schedules import _current_cfb_season  # noqa: E402
 from sportsmodel.cfb import cfbd
 from sportsmodel.cfb.teams import cfbd_to_espn
 
@@ -87,7 +90,8 @@ def build_priors_rows(parsed: dict, season: int) -> list[dict]:
     universe: SP+ rates every FBS team every season). Missing per-team data
     from the other endpoints becomes None (returning/recruiting -- genuinely
     unknown) or a documented default (portal_net 0.0 = no net transfer
-    activity recorded; coach_first_year False = no coaching-change signal).
+    activity recorded -- but None when the whole portal payload is empty, i.e.
+    early seasons the endpoint doesn't cover; coach_first_year False = no coaching-change signal).
     `team_espn_id` is NOT included here -- name -> ESPN-id mapping is main()'s
     job, since it needs the cfb.teams asset (an IO-adjacent lookup), not pure
     parser output.
@@ -117,12 +121,52 @@ def build_priors_rows(parsed: dict, season: int) -> list[dict]:
             "returning_starters": ret.get("returning_starters"),
             "qb_returning": ret.get("qb_returning"),
             "recruiting_points": recruiting.get(team),
-            "portal_net": portal.get(team, {}).get("net", 0.0),
+            # An empty portal payload means the endpoint has no data for the
+            # season (portal data starts 2021): unknown -> None (NaN), not 0.0.
+            # A non-empty payload with the team absent is a real "no net
+            # activity" -> 0.0.
+            "portal_net": (portal.get(team, {}).get("net", 0.0) if portal else None),
             "coach_first_year": coaches.get(team, False),
             "prior_sos": prior_sos,
             "forward_sos_shift": forward_shift,
         })
     return rows
+
+
+PORTAL_FIRST_SEASON = 2021   # CFBD transfer-portal data starts here
+
+
+def _tolerates_missing(path: str, season: int, current_season: int) -> bool:
+    """Whether an error/empty response for `path` in `season` may be tolerated
+    (field left NaN) rather than failing the run. Only historical seasons qualify:
+    the current/live season must always raise (a 401/429/5xx must never silently
+    write NaNs into the committed parquet). Portal is tolerated only before its
+    2021 data start -- an empty portal for 2021+ is a real failure."""
+    if path == "/player/portal":
+        return season < PORTAL_FIRST_SEASON
+    return season < current_season
+
+
+def _fetch_parsed(parser, path: str, api_key: str, params: dict,
+                  tolerate_missing: bool = False) -> dict:
+    """GET + parse one per-team CFBD endpoint. With `tolerate_missing` (early
+    seasons an endpoint doesn't cover), an error (after cfbd._get's retries) or an
+    empty payload yields {} so that field stays NaN for the season; otherwise both
+    raise so the run (and workflow) fails. (SP+ and the game schedule are NOT
+    fetched through this -- they define the team universe and must succeed.)"""
+    try:
+        payload = cfbd._get(path, api_key, params=params)
+    except Exception as exc:  # noqa: BLE001
+        if not tolerate_missing:
+            raise
+        print(f"  WARN: {path} {params} failed ({exc}); leaving that field empty", flush=True)
+        return {}
+    if not payload:
+        if not tolerate_missing:
+            raise RuntimeError(f"CFBD {path} {params} returned an empty payload")
+        print(f"  WARN: {path} {params} returned nothing; leaving that field empty", flush=True)
+        return {}
+    return parser(payload)
 
 
 def main() -> None:
@@ -150,18 +194,17 @@ def main() -> None:
         print(f"  fetched SP+/schedule for {s} ({len(sp_by_season[s])} teams, "
               f"{len(games_by_season[s])} games)", flush=True)
 
+    current_season = _current_cfb_season()
     all_rows: list[dict] = []
     dropped = 0
     for season in range(start, end + 1):
-        returning = cfbd.parse_returning(
-            cfbd._get("/player/returning", api_key, params={"year": season})
-        )
-        recruiting = cfbd.parse_recruiting(
-            cfbd._get("/recruiting/teams", api_key, params={"year": season})
-        )
-        portal = cfbd.parse_portal(
-            cfbd._get("/player/portal", api_key, params={"year": season})
-        )
+        def _fetch(parser, path):
+            return _fetch_parsed(parser, path, api_key, {"year": season},
+                                 _tolerates_missing(path, season, current_season))
+
+        returning = _fetch(cfbd.parse_returning, "/player/returning")
+        recruiting = _fetch(cfbd.parse_recruiting, "/recruiting/teams")
+        portal = _fetch(cfbd.parse_portal, "/player/portal")
         # Fetch each coach's FULL tenure history (not just this year) so
         # parse_coaches can tell whether `season` is their FIRST year at the
         # school. Querying with year=season alone returns a single-season

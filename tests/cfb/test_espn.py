@@ -45,3 +45,38 @@ def test_parse_final_gates_on_status():
     not_final = copy.deepcopy(FIX["events"][0])
     not_final["status"]["type"]["name"] = "STATUS_SCHEDULED"
     assert parse_final(not_final) is None
+
+
+def _ev(**comp_overrides):
+    ev = copy.deepcopy(FIX["events"][0])
+    ev["competitions"][0].update(comp_overrides)
+    return ev
+
+
+def test_parse_schedule_context_columns_present_and_default_when_absent():
+    # Fixture events carry no neutralSite/conferenceCompetition/conferenceId
+    # (neutralSite is False, the rest absent) -> False / False / None.
+    g0 = parse_schedule(FIX)[0]
+    assert g0["start_date"] == "2024-09-14T23:30Z"
+    assert g0["neutral_site"] is False
+    assert g0["conference_game"] is False
+    assert g0["home_conf"] is None and g0["away_conf"] is None
+
+
+def test_parse_schedule_neutral_site_conference_game_and_conf_ids():
+    ev = _ev(neutralSite=True, conferenceCompetition=True)
+    for c in ev["competitions"][0]["competitors"]:
+        c["team"]["conferenceId"] = "8" if c["homeAway"] == "home" else "9"
+    payload = {**FIX, "events": [ev]}
+    g = parse_schedule(payload)[0]
+    assert g["neutral_site"] is True
+    assert g["conference_game"] is True
+    assert g["home_conf"] == "8" and g["away_conf"] == "9"
+    assert g["game_pk"] == 401628354 and isinstance(g["game_pk"], int)
+    # existing keys unchanged
+    assert g["home_team"] == "96" and g["home_score"] == 12 and g["week"] == 3
+
+
+def test_parse_schedule_conference_game_false_when_flag_false():
+    g = parse_schedule({**FIX, "events": [_ev(conferenceCompetition=False)]})[0]
+    assert g["conference_game"] is False

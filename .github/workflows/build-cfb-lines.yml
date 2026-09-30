@@ -1,10 +1,15 @@
 name: build-cfb-lines
 
-# One-time (manual) pull of historical CFB betting lines from collegefootballdata.com,
-# committed as assets/cfb/lines.parquet for the P2 game-line backtest. CFBD_API_KEY is a
-# repo secret; the key is never printed. Dispatch this once after adding the secret.
+# Manual pull of historical CFB betting lines (openers, closes, moneylines) from
+# collegefootballdata.com, committed as assets/cfb/lines.parquet to the dispatched ref.
+# CFBD_API_KEY is a repo secret; the key is never printed.
 on:
-  workflow_dispatch: {}
+  workflow_dispatch:
+    inputs:
+      seasons:
+        description: "Space-separated seasons to pull"
+        required: false
+        default: "2015 2016 2017 2018 2019 2020 2021 2022 2023 2024 2025"
 
 permissions:
   contents: write
@@ -22,11 +27,12 @@ jobs:
       - name: Pull CFB historical lines
         env:
           CFBD_API_KEY: ${{ secrets.CFBD_API_KEY }}
-        run: uv run python scripts/build_cfb_lines.py
+          SEASONS: ${{ inputs.seasons }}
+        run: uv run python scripts/build_cfb_lines.py --seasons ${SEASONS:-2015 2016 2017 2018 2019 2020 2021 2022 2023 2024 2025}
       - name: Commit lines asset
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
           git add assets/cfb/lines.parquet
-          git diff --staged --quiet || git commit -m "data(cfb): historical betting lines from CFBD (build-cfb-lines)"
+          git diff --staged --quiet || git commit -m "data(cfb): CFBD openers, closes and moneylines (build-cfb-lines)"
           git push

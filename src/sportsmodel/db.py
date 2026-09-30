@@ -991,3 +991,63 @@ def upsert_injury_snapshots(rows: list[dict]) -> int:
         cur.executemany(sql, vals)
         conn.commit()
     return len(vals)
+
+
+# ---------------------------------------------------------------- team context
+# db/migration_team_context.sql -- written by scripts/build_team_context.py.
+TEAM_CONTEXT_COLUMNS: dict[str, list[str]] = {
+    "team_game_log": [
+        "sport", "season", "week", "game_key", "game_pk", "kickoff", "date_et", "team",
+        "opponent", "venue", "pf", "pa", "margin", "team_line", "total_line", "role",
+        "su", "ats", "ou", "game_type", "is_post", "team_is_fbs", "opp_is_fbs"],
+    "team_history": [
+        "sport", "game_pk", "side", "team", "opponent", "season", "week", "kickoff",
+        "windows", "streaks", "splits"],
+    "matchup_grades": [
+        "sport", "game_pk", "side", "team", "opponent", "season", "week", "kickoff",
+        "overall", "pass", "run", "overall_score", "pass_score", "run_score",
+        "overall_pct", "pass_pct", "run_pct", "early", "units"],
+    "power_rankings": [
+        "sport", "season", "week", "team", "rank", "rating", "prev_rank", "move", "units",
+        "sos", "su", "ats", "games", "conf"],
+}
+TEAM_CONTEXT_KEYS: dict[str, tuple[str, ...]] = {
+    "team_game_log": ("sport", "game_key", "team"),
+    "team_history": ("sport", "game_pk", "side"),
+    "matchup_grades": ("sport", "game_pk", "side"),
+    "power_rankings": ("sport", "season", "week", "team"),
+}
+_TEAM_CONTEXT_JSON = frozenset({"windows", "streaks", "splits", "units"})
+
+
+def _team_context_sql(table: str) -> str:
+    cols, key = TEAM_CONTEXT_COLUMNS[table], TEAM_CONTEXT_KEYS[table]
+    updates = ", ".join(f"{c} = EXCLUDED.{c}" for c in cols if c not in key)
+    return (f"INSERT INTO {table} ({', '.join(cols)}) "
+            f"VALUES ({', '.join(['%s'] * len(cols))}) "
+            f"ON CONFLICT ({', '.join(key)}) DO UPDATE SET {updates}, computed_at = now()")
+
+
+def upsert_team_context(tables: dict[str, list[dict]]) -> dict[str, int]:
+    """Upsert the team-context tables (``TEAM_CONTEXT_COLUMNS``) in ONE transaction.
+
+    ``tables`` maps a table name to its rows (dicts of python scalars; jsonb
+    columns as dicts/lists, JSON-encoded here -- None stays SQL NULL).
+    Idempotent on each table's primary key (``TEAM_CONTEXT_KEYS``);
+    ``computed_at`` is bumped to now() on update. Nothing to write -> no
+    connection. Returns {table: rows written}.
+    """
+    counts = {t: len(rows) for t, rows in tables.items()}
+    if not any(counts.values()):
+        return counts
+    with get_postgres() as conn, conn.cursor() as cur:
+        for table, rows in tables.items():
+            if not rows:
+                continue
+            cols = TEAM_CONTEXT_COLUMNS[table]
+            vals = [tuple((None if r.get(c) is None else json.dumps(r[c]))
+                          if c in _TEAM_CONTEXT_JSON else r.get(c) for c in cols)
+                    for r in rows]
+            cur.executemany(_team_context_sql(table), vals)
+        conn.commit()
+    return counts

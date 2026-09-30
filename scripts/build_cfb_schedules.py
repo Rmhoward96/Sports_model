@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import argparse
 import sys
+import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timezone
 from pathlib import Path
@@ -37,14 +38,23 @@ def _current_cfb_season(now: datetime | None = None) -> int:
 DEFAULT_SEASONS = list(range(2015, _current_cfb_season() + 1))
 DEFAULT_WEEKS = list(range(1, 17))
 
+# Original rating columns first, then the schedule-context columns.
+SCHEDULE_COLUMNS = [
+    "season", "week", "home_team", "away_team", "home_score", "away_score", "game_type",
+    "game_pk", "start_date", "neutral_site", "conference_game", "home_conf", "away_conf",
+]
+
 OUT_PATH = Path(__file__).resolve().parents[1] / "assets" / "cfb" / "schedules.parquet"
 
 
-def _fetch_week(season: int, week: int, retries: int = 3) -> list[dict]:
+def _fetch_week(season: int, week: int, retries: int = 3, sleep: float = 0.0) -> list[dict]:
     last_exc = None
     for attempt in range(retries):
         try:
-            return espn.fetch_schedule(season, week)
+            rows = espn.fetch_schedule(season, week)
+            if sleep:
+                time.sleep(sleep)
+            return rows
         except Exception as exc:  # noqa: BLE001 - retry any transient failure
             last_exc = exc
     print(f"  WARN: season {season} week {week} failed after {retries} attempts: {last_exc}")
@@ -55,7 +65,9 @@ def main() -> None:
     parser = argparse.ArgumentParser(description="Build CFB schedules parquet from ESPN.")
     parser.add_argument("--seasons", type=int, nargs="+", default=DEFAULT_SEASONS)
     parser.add_argument("--weeks", type=int, nargs="+", default=DEFAULT_WEEKS)
-    parser.add_argument("--workers", type=int, default=8)
+    parser.add_argument("--workers", type=int, default=4)
+    parser.add_argument("--sleep", type=float, default=0.25,
+                        help="Seconds each worker sleeps after a scoreboard call (politeness).")
     parser.add_argument("--merge", action="store_true",
                         help="Merge into the existing parquet: replace only the "
                              "fetched seasons' rows, keep all other seasons. Use "
@@ -67,7 +79,7 @@ def main() -> None:
 
     rows: list[dict] = []
     with ThreadPoolExecutor(max_workers=args.workers) as pool:
-        futures = {pool.submit(_fetch_week, s, w): (s, w) for s, w in pairs}
+        futures = {pool.submit(_fetch_week, s, w, 3, args.sleep): (s, w) for s, w in pairs}
         for fut in as_completed(futures):
             rows.extend(fut.result())
 
@@ -81,9 +93,7 @@ def main() -> None:
     ].copy()
 
     final["game_type"] = "REG"
-    final = final[
-        ["season", "week", "home_team", "away_team", "home_score", "away_score", "game_type"]
-    ]
+    final = final[SCHEDULE_COLUMNS]
     final = final.drop_duplicates(subset=["season", "week", "home_team", "away_team"])
 
     if args.merge and OUT_PATH.exists():
@@ -114,6 +124,11 @@ def main() -> None:
     print("Games per season:")
     print(final.groupby("season").size().to_string())
     print(f"Distinct teams (incl. FCS pseudo-team): {n_teams}")
+    if "neutral_site" in final:
+        ctx = final.dropna(subset=["neutral_site"])
+        print(f"Share neutral-site: {ctx['neutral_site'].astype(bool).mean():.1%}; "
+              f"conference games: {ctx['conference_game'].astype(bool).mean():.1%} "
+              f"({len(ctx)}/{n_games} rows carry context)")
     print(f"Share of games involving FCS: {fcs_share:.1%}")
 
 

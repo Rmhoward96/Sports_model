@@ -1,0 +1,62 @@
+name: build-cfb-advanced
+
+# CFBD advanced per-game team stats (PPA, success rate, explosiveness, pass/rush splits),
+# committed as assets/cfb/advanced_games.parquet to the dispatched ref. Manual dispatch pulls
+# the given seasons; the weekly cron (Mon 12:00 UTC) refreshes the current season. Always
+# --merge: only the pulled seasons are replaced, the rest of the parquet is kept.
+# CFBD_API_KEY is a repo secret; the key is never printed.
+on:
+  workflow_dispatch:
+    inputs:
+      seasons:
+        description: "Space-separated seasons to pull (blank = the current season only)"
+        required: false
+        default: "2015 2016 2017 2018 2019 2020 2021 2022 2023 2024 2025"
+  schedule:
+    - cron: "0 12 * * 1"
+
+permissions:
+  contents: write
+
+# a dispatch overlapping the Monday cron must not race on the committed parquet
+concurrency:
+  group: build-cfb-advanced
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v5
+      - name: Install uv
+        uses: astral-sh/setup-uv@v10.0.1
+      - name: Sync deps
+        run: uv sync
+      - name: Pull CFB advanced game stats
+        env:
+          CFBD_API_KEY: ${{ secrets.CFBD_API_KEY }}
+          SEASONS: ${{ inputs.seasons }}
+        run: |
+          # cron runs have no inputs -> current season only
+          uv run python scripts/build_cfb_advanced.py --merge --seasons ${SEASONS:-$(date +%Y)}
+      - name: Commit advanced asset
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add assets/cfb/advanced_games.parquet
+          if git diff --staged --quiet; then
+            echo "no change"
+            exit 0
+          fi
+          git commit -m "data(cfb): CFBD advanced game stats (build-cfb-advanced) [skip ci]"
+          # other data workflows push to the same branch: rebase onto theirs and retry
+          for attempt in 1 2 3; do
+            if git push; then
+              exit 0
+            fi
+            echo "push rejected (attempt $attempt)"
+            [ "$attempt" -lt 3 ] && git pull --rebase
+          done
+          echo "push failed after 3 attempts" >&2
+          exit 1
