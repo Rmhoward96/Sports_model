@@ -53,27 +53,21 @@ from sportsmodel.cfb.priors import (
     blend_rating,
     load_decay_config,
     load_weights,
-    preseason_rating,
-    season_features_z,
+    season_priors,
 )
 from sportsmodel.cfb.teams import FCS
+from sportsmodel.cfb.walkforward import SeasonState, live_week_state, model_margin_total
 from sportsmodel.db import upsert_game_predictions
-from sportsmodel.nfl.elo import EloConfig, run_elo
+from sportsmodel.nfl.elo import EloConfig
 from sportsmodel.nfl.gameline import GameLineConfig, build_gameline
-from sportsmodel.nfl.points import compute_points_ratings, expected_total
-from sportsmodel.nfl.ratings import BlendConfig, expected_margin
+from sportsmodel.nfl.ratings import BlendConfig
 from sportsmodel.nfl.shrink import ShrinkParams
-from sportsmodel.nfl.srs import compute_srs
 
-GAME_MODEL_VERSION = "cfb-ratings-v1"
+# v2 (fix/cfb-live-ratings): walk-forward season-to-date state + leak-free prior.
+# The upsert key is (game_pk, model_version), so v1 rows stay alongside.
+GAME_MODEL_VERSION = "cfb-ratings-v2"
 
 _ASSETS = Path(__file__).resolve().parents[1] / "assets" / "cfb"
-
-# Schedule-wide mean/median total, used only as a fallback before any
-# points-ratings history exists (mirrors backtest_cfb_gameline.py's
-# _DEFAULT_TOTAL_SEED); in practice `played` always has prior-season history
-# so this branch is not expected to trigger in the live producer.
-_DEFAULT_TOTAL_SEED = 55.0
 
 
 def _load_committed(name: str) -> pd.DataFrame:
@@ -96,26 +90,70 @@ def load_gameline() -> GameLineConfig:
                           bias_margin=j.get("bias_margin", 0.0), bias_total=j.get("bias_total", 0.0))
 
 
-def load_priors_for_season(season: int, weights: PriorWeights) -> dict[str, float]:
-    """{team_espn_id: R_pre} for `season`, from `assets/cfb/priors.parquet`.
+def load_priors_for_season(season: int, weights: PriorWeights,
+                           path: Path | None = None) -> dict[str, float]:
+    """{team_espn_id: R_pre} for `season` from `assets/cfb/priors.parquet`,
+    via the LEAK-FREE `priors.season_priors`: previous season's final SP+
+    (season-1 rows) + z-scored preseason features of the season's rows. The
+    season's own sp_rating (end-of-season SP+), coach_first_year and
+    forward_sos_shift are never read.
 
-    GRACEFUL FALLBACK: `assets/cfb/priors.parquet` is produced later by the
-    CFBD-backed ingest workflow (Task 7) and does not exist in every
-    environment yet. If the file is missing, or has no rows for `season`,
-    this returns {} -- `build_game_rows` treats an absent team-id in this
-    dict as prior_weight=0 (today's in-season-only behavior, unchanged). No
-    odds/market data is ever read here (market-independent).
+    GRACEFUL FALLBACK: missing file, or no rows for `season` -> {} (every team
+    then gets prior weight 0 in `build_game_rows`). No odds/market data is
+    ever read here (market-independent).
     """
-    path = _ASSETS / "priors.parquet"
+    path = path or (_ASSETS / "priors.parquet")
     if not path.exists():
         return {}
     df = pd.read_parquet(path)
-    season_rows = df[df["season"] == season].to_dict("records")
-    if not season_rows:
+    df = df[df["season"].isin([season - 1, season])]
+    rows_by_season = {int(s): sdf.to_dict("records") for s, sdf in df.groupby("season")}
+    if season not in rows_by_season:
         return {}
-    z = season_features_z(season_rows)
-    return {row["team_espn_id"]: preseason_rating(row, z[row["team_espn_id"]], weights)
-            for row in season_rows}
+    return season_priors(rows_by_season, season, weights)
+
+
+_REQUIRED_WEIGHT_KEYS = frozenset(PriorWeights.__dataclass_fields__)
+
+
+def load_live_prior_weights(weights_path: Path | None = None,
+                            priors_path: Path | None = None) -> PriorWeights:
+    """PriorWeights for the live producer -- STRICT whenever a prior will be
+    served (priors.parquet exists): the weights file must exist and carry
+    every leak-free key. `PriorWeights()` defaults (sp_scale=1: one SP+ point
+    = one Elo point = 0.04 margin points) are the wrong unit and would
+    collapse week-1 margins to home-field, so they are never a silent
+    fallback. Without a priors asset no prior is served and defaults are
+    harmless."""
+    weights_path = weights_path or (_ASSETS / "priors_weights.json")
+    priors_path = priors_path or (_ASSETS / "priors.parquet")
+    if not priors_path.exists():
+        return PriorWeights()
+    if not weights_path.exists():
+        raise FileNotFoundError(
+            f"{weights_path} (priors_weights.json) is missing but {priors_path.name} exists; "
+            "run scripts/backtest_cfb_priors.py to fit the leak-free prior weights")
+    missing = _REQUIRED_WEIGHT_KEYS - set(json.loads(weights_path.read_text()))
+    if missing:
+        raise ValueError(
+            f"{weights_path} lacks leak-free prior weight(s) {sorted(missing)} (pre-fix "
+            "file?); refit with scripts/backtest_cfb_priors.py")
+    return load_weights(weights_path)
+
+
+def state_week(sched: pd.DataFrame, season: int, week: int, season_type: int) -> int:
+    """The walk-forward week whose entering state serves ESPN's (season,
+    week, season_type). Regular season: the ESPN week. Postseason (season_type
+    3 -- ESPN numbers bowls from week 1): max REG week of `season` + 1, so
+    bowls get the full regular-season state rather than week 1's empty
+    season-to-date state (which would serve pure preseason priors). Falls
+    back to the ESPN week if the schedule has no REG games for `season`."""
+    if season_type != 3:
+        return week
+    reg = sched[sched["season"] == season]
+    if "game_type" in reg.columns:
+        reg = reg[reg["game_type"] == "REG"]
+    return int(reg["week"].max()) + 1 if len(reg) else week
 
 
 def _game_date_from_commence(commence_iso: str) -> str:
@@ -174,12 +212,13 @@ def build_game_rows(games: list[dict], ratings: dict, week: int,
 
     `ratings` = {"elo_final", "srs_now", "points_ratings", "lg_avg",
     "games_played", "elo_cfg", "blend_cfg", "r_pre", "decay_cfg"} -- the
-    season-to-date state `main()` computes once (via
-    run_elo/compute_srs/compute_points_ratings over
-    `assets/cfb/schedules.parquet`, plus `load_priors_for_season`) before
-    this is called.
+    walk-forward state `main()` computes once via `_season_to_date_ratings`
+    (continuous Elo; season-to-date SRS/points/games_played) plus
+    `load_priors_for_season`. Margin/total (incl. the week-1 total seed) come
+    from the shared `walkforward.model_margin_total`, so a served row equals
+    the backtest's row for the same game when no prior is blended.
 
-    Forward-looking priors (Task 6): for each side with a `team_espn_id` key
+    Preseason priors: for each side with a `team_espn_id` key
     in `r_pre` (empty dict if `assets/cfb/priors.parquet` is missing or has
     no row for that team -- see `load_priors_for_season`'s graceful
     fallback), the team's pre-game Elo rating is blended with its R_pre via
@@ -192,17 +231,18 @@ def build_game_rows(games: list[dict], ratings: dict, week: int,
     like it would a normal in-season Elo value. At games_played=0 the decay
     weight is 1.0, so the blended rating equals R_pre outright, which is
     the intended "prior dominates preseason" behavior; as games_played
-    grows the weight decays toward `decay_cfg.prior_floor`, converging back
-    to plain in-season Elo -- today's behavior. `srs_now`/`points_ratings`
+    grows the weight decays toward `decay_cfg.prior_floor` and stays there:
+    with a non-zero floor (the committed fit keeps a permanent share of R_pre
+    all season -- see assets/cfb/priors_decay.json) the rating never fully
+    returns to plain in-season Elo. `srs_now`/`points_ratings`
     (and thus `model_total`) are untouched by the prior, mirroring
     backtest_cfb_priors.py's design decision that priors.parquet carries no
     points-scale signal.
     """
     elo_final = ratings["elo_final"]
-    srs_now = ratings["srs_now"]
-    points_ratings = ratings["points_ratings"]
-    lg_avg = ratings["lg_avg"]
     games_played = ratings["games_played"]
+    state = SeasonState(counts=games_played, srs=ratings["srs_now"],
+                        pts=ratings["points_ratings"], lg=ratings["lg_avg"])
     elo_cfg = ratings["elo_cfg"]
     blend_cfg = ratings["blend_cfg"]
     r_pre = ratings.get("r_pre") or {}
@@ -219,49 +259,41 @@ def build_game_rows(games: list[dict], ratings: dict, week: int,
             elo_h = blend_rating(r_pre[h], elo_h, games_played.get(h, 0), decay_cfg)
         if a in r_pre:
             elo_a = blend_rating(r_pre[a], elo_a, games_played.get(a, 0), decay_cfg)
-        model_margin = expected_margin(
-            elo_h, elo_a, srs_now.get(h), srs_now.get(a),
-            games_played.get(h, 0), games_played.get(a, 0), elo_cfg, blend_cfg)
-        model_total = expected_total(points_ratings, lg_avg, h, a)
+        model_margin, model_total = model_margin_total(h, a, elo_h, elo_a, state,
+                                                       elo_cfg, blend_cfg)
         ctx = {"model_margin": model_margin, "model_total": model_total, "week": week}
         rows.append(build_game_row(g, ctx, gl_cfg))
     return rows
 
 
 def _season_to_date_ratings(sched: pd.DataFrame, season: int, week: int,
-                            elo_cfg: EloConfig, blend_cfg: BlendConfig) -> dict:
-    """Leak-free ratings state as of (season, week): historical prior-season
-    games + this season's already-completed games, exactly the same
-    (run_elo/compute_srs/compute_points_ratings) engine calls
-    backtest_cfb_gameline.py's walk-forward core fits assets/cfb/*.json
-    against -- but as a single as-of snapshot (the live producer only ever
-    needs ratings for the ONE upcoming week, not a per-week backtest replay).
+                            elo_cfg: EloConfig, blend_cfg: BlendConfig,
+                            games: list[dict]) -> dict:
+    """Ratings state for the live week (season, week) -- EXACTLY the state the
+    backtested walk-forward (walkforward.raw_model_predictions, which
+    backtest_cfb_gameline.py fits assets/cfb/*.json against) has entering that
+    week, via the shared `walkforward.live_week_state`:
 
-    Rows with `home_team == away_team` (a handful of CFBD aggregation
-    artifacts where two different unmatched/FCS opponents both collapse to
-    the "FCS" pseudo-team on both sides) are dropped first, same as
-    `backtest_cfb_gameline.load_merged_schedule` -- left in, the "FCS" team
-    would face itself and corrupt every real FBS team's SRS/points rating
-    via its games against "FCS".
+      - Elo: run_elo over every played game before (season, week), continuous
+        across seasons (incl. the season-start carryover), as each of this
+        week's `games`' pre-game rating;
+      - SRS, opponent-adjusted points and games_played: SEASON-TO-DATE only
+        (this season's completed weeks < `week`).
+
+    Nothing at or after (season, week) is used, even if `sched` already holds
+    those results. (The pre-fix version pooled SRS/points/games_played over
+    every season since 2015 -- games_played ~140 decayed the preseason prior
+    to nothing and always opened the SRS gate.)
+
+    Rows with `home_team == away_team` (CFBD aggregation artifacts where two
+    unmatched/FCS opponents both collapse to the "FCS" pseudo-team) are
+    dropped first, same as `backtest_cfb_gameline.load_merged_schedule`.
     """
     reg = sched[sched["game_type"] == "REG"] if "game_type" in sched.columns else sched
-    reg = reg[reg["home_team"] != reg["away_team"]].copy()
-    played = reg[(reg["season"] < season) | ((reg["season"] == season) & (reg["week"] < week))].copy()
-    played = played.dropna(subset=["home_score", "away_score"])
-
-    elo_final = run_elo(played, elo_cfg).final if len(played) else {}
-    srs_now = compute_srs(played) if len(played) else {}
-    if len(played):
-        points_ratings, lg_avg = compute_points_ratings(played)
-    else:
-        points_ratings, lg_avg = {}, _DEFAULT_TOTAL_SEED
-    games_played: dict[str, int] = {}
-    for _, g in played.iterrows():
-        games_played[g["home_team"]] = games_played.get(g["home_team"], 0) + 1
-        games_played[g["away_team"]] = games_played.get(g["away_team"], 0) + 1
-
-    return {"elo_final": elo_final, "srs_now": srs_now, "points_ratings": points_ratings,
-            "lg_avg": lg_avg, "games_played": games_played, "elo_cfg": elo_cfg,
+    reg = reg[reg["home_team"] != reg["away_team"]]
+    elo, state = live_week_state(reg, season, week, games, elo_cfg)
+    return {"elo_final": elo, "srs_now": state.srs, "points_ratings": state.pts,
+            "lg_avg": state.lg, "games_played": state.counts, "elo_cfg": elo_cfg,
             "blend_cfg": blend_cfg}
 
 
@@ -271,19 +303,20 @@ def main() -> None:
 
     elo_cfg, blend_cfg = load_rating()
     gl_cfg = load_gameline()
-    prior_weights = load_weights(_ASSETS / "priors_weights.json")
+    prior_weights = load_live_prior_weights()
     decay_cfg = load_decay_config()
 
     sched = _load_committed("schedules.parquet")
-    ratings = _season_to_date_ratings(sched, season, week, elo_cfg, blend_cfg)
-    ratings["r_pre"] = load_priors_for_season(season, prior_weights)
-    ratings["decay_cfg"] = decay_cfg
-
     espn_games = espn.fetch_schedule(season, week, season_type=season_type)
     games_for_rows = [{**g, "game_date": _game_date_from_commence(g["commence_time"])}
                       for g in espn_games]
 
-    game_rows_raw = build_game_rows(games_for_rows, ratings, week, gl_cfg)
+    s_week = state_week(sched, season, week, season_type)
+    ratings = _season_to_date_ratings(sched, season, s_week, elo_cfg, blend_cfg, games_for_rows)
+    ratings["r_pre"] = load_priors_for_season(season, prior_weights)
+    ratings["decay_cfg"] = decay_cfg
+
+    game_rows_raw = build_game_rows(games_for_rows, ratings, s_week, gl_cfg)
     game_rows = [{**row, "margin_dist": json.dumps(row["margin_dist"]),
                  "total_dist": json.dumps(row["total_dist"])} for row in game_rows_raw]
 
