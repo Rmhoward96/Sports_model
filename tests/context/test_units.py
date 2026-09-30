@@ -215,3 +215,15 @@ def test_nfl_unit_games_without_game_id_and_unknown_team():
     ug = nfl_unit_games(pbp)
     assert set(ug["team"]) == {"KC", "BAL"}
     assert set(ug["game_id"]) == {"2024_01_BAL_KC"}
+
+
+@pytest.mark.parametrize("week,games,w", [(2, 1, 0.5), (4, 3, 0.75), (10, 9, 0.9)])
+def test_power_blend_k_weights_this_season(week, games, w):
+    from sportsmodel.context.units import POWER_BLEND_K
+    assert POWER_BLEND_K == 1.0
+    ug = league([2023, 2024], n_weeks=12, profile={"A": {"pass_o": 3}}, seed=3)
+    r = unit_ratings_asof(ug, 2024, week, blend_k=POWER_BLEND_K).set_index("team")
+    assert (r["games"] == games).all()
+    assert r["weight"].to_numpy() == pytest.approx(np.full(8, w))
+    default = unit_ratings_asof(ug, 2024, week).set_index("team")
+    assert default["weight"].to_numpy() == pytest.approx(np.full(8, games / (games + 3)))

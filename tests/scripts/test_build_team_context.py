@@ -464,3 +464,33 @@ def test_load_cfb_odds_closing_consensus(monkeypatch, capsys):
     assert params == ([1, 2],)
     r = lc.set_index("game_pk").loc[1]
     assert r["close_spread_home"] == 6.5 and r["close_total"] == 51.5
+
+
+def test_cfb_rankings_use_the_season_weighted_rating():
+    from sportsmodel.context.power import cfb_power_current
+    src = cfb_sources()
+    teams = _cfb_teams()
+    priors = {t: 1500.0 + 40.0 * i for i, t in enumerate(teams)}
+    out = btc.build_cfb(**src, now=NOW, priors=priors)
+    rk = out["power_rankings"].set_index("team")
+    s, w = int(rk["season"].iloc[0]), int(rk["week"].iloc[0])
+    elo_cfg, blend_cfg = btc.load_rating()
+    exp = cfb_power_current(src["schedules"], elo_cfg, blend_cfg, (s, w), priors=priors,
+                            fbs=set(teams)).set_index("team")
+    for t in teams:
+        assert rk.loc[t, "rating"] == pytest.approx(exp.loc[t, "rating"])
+    assert (exp.loc[teams, "weight"] > 0.5).all()
+
+
+def test_nfl_rankings_use_the_power_blend():
+    from sportsmodel.context.units import POWER_BLEND_K
+    src = nfl_sources()
+    out = btc.build_nfl(**src, now=NOW)
+    rk = out["power_rankings"].set_index("team")
+    s, w = int(rk["season"].iloc[0]), int(rk["week"].iloc[0])
+    ug = src["unit_games"]
+    scale = btc.nfl_market_scale(ug, src["schedules"], s, blend_k=POWER_BLEND_K)
+    exp = btc.nfl_power(btc.unit_ratings_asof(ug, s, w, blend_k=POWER_BLEND_K), ug,
+                        scale).set_index("team")
+    for t in rk.index:
+        assert rk.loc[t, "rating"] == pytest.approx(exp.loc[t, "rating"])

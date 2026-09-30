@@ -51,6 +51,8 @@ PLAY_COLS: tuple[str, ...] = ("pass_plays", "run_plays")
 UNIT_GAME_COLUMNS = ["season", "week", "game_id", "team", "opponent",
                      *PLAY_COLS, "pass_rate", *METRICS]
 BLEND_K = 3.0
+# power rankings weight this season harder: games / (games + 1) (user, 2026-09-30)
+POWER_BLEND_K = 1.0
 CFB_DEFAULT_PASS_RATE = 0.5
 NFL_PASS_EXPLOSIVE_YDS = 20
 NFL_RUN_EXPLOSIVE_YDS = 10
@@ -209,11 +211,11 @@ def window_ratings(unit_games: pd.DataFrame, season: int, upto_week: int) -> pd.
     return out[_RATING_COLS + ["games"]]
 
 
-def _blend(cur: pd.DataFrame, prev: pd.DataFrame) -> pd.DataFrame:
+def _blend(cur: pd.DataFrame, prev: pd.DataFrame, k: float = BLEND_K) -> pd.DataFrame:
     teams = cur.index.union(prev.index)
     c, p = cur.reindex(teams), prev.reindex(teams)
     games = c["games"].fillna(0).astype("int64")
-    w = games / (games + BLEND_K)
+    w = games / (games + k)
     out = pd.DataFrame(index=teams)
     for col in _RATING_COLS:
         cv, pv = c[col].astype(float), p[col].astype(float)
@@ -225,8 +227,12 @@ def _blend(cur: pd.DataFrame, prev: pd.DataFrame) -> pd.DataFrame:
 
 
 def unit_ratings_asof(unit_games: pd.DataFrame, season: int, week: int,
-                      prev: pd.DataFrame | None = None) -> pd.DataFrame:
+                      prev: pd.DataFrame | None = None,
+                      blend_k: float = BLEND_K) -> pd.DataFrame:
     """Blended ratings per team as of (season, week) -- see module doc.
+
+    ``blend_k``: current-season weight = games / (games + blend_k); ``BLEND_K`` for
+    matchup grades, ``POWER_BLEND_K`` for power rankings.
 
     ``prev`` optionally supplies ``window_ratings(unit_games, season - 1, 99)`` (cache).
     ``weight`` = weight actually on the current season (1.0 when there is no previous
@@ -235,7 +241,7 @@ def unit_ratings_asof(unit_games: pd.DataFrame, season: int, week: int,
     cur = window_ratings(unit_games, season, week)
     if prev is None:
         prev = window_ratings(unit_games, season - 1, 99)
-    out = _blend(cur, prev)
+    out = _blend(cur, prev, blend_k)
     out.index.name = "team"
     out = out.reset_index()
     out.insert(0, "week", int(week))
