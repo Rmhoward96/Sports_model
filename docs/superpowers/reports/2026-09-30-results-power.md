@@ -62,3 +62,13 @@ the other parameters are the best fit at that weight (`assets/context/results_po
 CFB 13.088 vs 13.461 (−0.373, 95% CI [−0.629, −0.125], n=1760 — better); NFL 10.408 vs
 10.322 (+0.086, 95% CI [−0.137, +0.304], n=544 — within noise, slightly behind the EPA
 rating).
+
+## Update — win bonus lightened 33% (user, 2026-09-30)
+
+Win credit 4 → **2.67** points; cap / home edge / shrink refit at that weight
+(`fit_results_power.py --beta 2.67`). Holdout 2024–25 vs today's rankings rating:
+
+| | Served (2.67) | Today's rating | Diff (95% CI) |
+|---|---|---|---|
+| CFB (cap 35, hfa 2.5, rho 0.8) | 13.075 | 13.461 | −0.386 [−0.642, −0.136] |
+| NFL (cap 14, hfa 1.5, rho 0.75) | 10.369 | 10.322 | +0.047 [−0.163, +0.248] |

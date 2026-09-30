@@ -100,9 +100,9 @@ def evaluate(games, p, spec, preseason, members, seasons):
     return predict_errors(games, walks, p, seasons), walks
 
 
-def fit(sport: str, games, preseason, members, quick: bool):
+def fit(sport: str, games, preseason, members, quick: bool, beta: float | None = None):
     spec = SPEC[sport]
-    grid = spec["grid"]
+    grid = spec["grid"] if beta is None else {**spec["grid"], "beta": [beta]}
     if quick:
         grid = {k: v[:: max(1, len(v) // 2)] for k, v in grid.items()}
     best, tried, by_beta = None, 0, {}
@@ -204,7 +204,7 @@ def closing(sport: str, games, sched, holdout) -> pd.DataFrame:
 
 
 # --------------------------------------------------------------------------- main
-def run(sport: str, quick: bool) -> dict:
+def run(sport: str, quick: bool, beta: float | None = None) -> dict:
     spec = SPEC[sport]
     if sport == "cfb":
         games, sched = cfb_data()
@@ -213,7 +213,7 @@ def run(sport: str, quick: bool) -> dict:
     else:
         games, sched = nfl_data(spec["chain"])
         preseason, members = None, None
-    (fit_mae, p), by_beta = fit(sport, games, preseason, members, quick)
+    (fit_mae, p), by_beta = fit(sport, games, preseason, members, quick, beta)
     beta_curve = []
     for b, (m, pb) in sorted(by_beta.items()):
         hb, _ = evaluate(games, pb, spec, preseason, members, spec["holdout"])
@@ -284,14 +284,25 @@ def main() -> None:
     ap.add_argument("--sport", choices=["cfb", "nfl", "all"], default="all")
     ap.add_argument("--quick", action="store_true", help="coarse grid (smoke test)")
     ap.add_argument("--no-write", action="store_true")
+    ap.add_argument("--beta", type=float, default=None,
+                    help="serve this win-credit weight (other params refit at it); keeps "
+                         "the free fit's record and adds it under fit.served")
+    ap.add_argument("--why", default="", help="reason recorded with --beta")
     args = ap.parse_args()
     sports = ["cfb", "nfl"] if args.sport == "all" else [args.sport]
-    results = {s: run(s, args.quick) for s in sports}
+    results = {s: run(s, args.quick, args.beta) for s in sports}
     if not args.no_write:
         PARAMS_PATH.parent.mkdir(parents=True, exist_ok=True)
         existing = json.loads(PARAMS_PATH.read_text()) if PARAMS_PATH.exists() else {}
         for s, r in results.items():
-            existing[s] = {**r["params"], "fit": {k: v for k, v in r.items() if k != "params"}}
+            if args.beta is None or s not in existing:
+                existing[s] = {**r["params"], "fit": {k: v for k, v in r.items() if k != "params"}}
+                continue
+            existing[s].update(r["params"])
+            existing[s]["fit"]["served"] = {
+                **{k: r["params"][k] for k in ("beta", "cap", "hfa", "rho")},
+                "fit_mae": r["fit_mae"], "holdout_mae": r["holdout_mae"],
+                "vs_today": r["vs_today"], "vs_close": r["vs_close"], "why": args.why}
         PARAMS_PATH.write_text(json.dumps(existing, indent=2) + "\n")
         print(f"wrote {PARAMS_PATH.relative_to(ROOT)}")
     print(report(results))
