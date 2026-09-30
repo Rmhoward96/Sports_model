@@ -69,7 +69,8 @@ highest is 1; defense: lowest allowed is 1) among the ranked teams; SOS = mean
 current rating of the opponents already played this season (games of weeks <
 the ranking week; unrated opponents skipped); SU / ATS season records from the
 game log, same format as ``context.history`` (SU "W-L[-T]", ATS "W-L-P", ATS
-only over lined games). SOS / SU / ATS use REGULAR-SEASON games only (log rows
+only over lined games). SOV = mean current rating of the teams beaten; home / road W-L[-T] (neutral in
+neither). SOS / SOV / SU / ATS / home / road use REGULAR-SEASON games only (log rows
 with ``is_post`` True are dropped) to match the ratings' basis (CFB state is
 REG-only; the NFL market scale is fit on REG games).
 """
@@ -82,6 +83,7 @@ import pandas as pd
 
 from sportsmodel.cfb.teams import load_fbs_ids
 from sportsmodel.context.history import _ats, _su
+from sportsmodel.context.results_power import strength_of_victory, venue_records
 from sportsmodel.context.units import (BLEND_K, POWER_BLEND_K, unit_ratings_asof,
                                       window_ratings)
 from sportsmodel.nfl.elo import EloConfig, _carryover, elo_expected_margin, run_elo
@@ -355,6 +357,7 @@ def rankings(power_df: pd.DataFrame, prev_power_df: pd.DataFrame | None,
         out["units"] = None
 
     out["sos"], out["su"], out["ats"] = np.nan, None, None
+    out["sov"], out["home_record"], out["road_record"] = np.nan, None, None
     if log is not None and not log.empty and len(out):
         season, week = int(out["season"].iloc[0]), int(out["week"].iloc[0])
         d = log[(log["season"] == season) & (log["week"] < week) & log["su"].notna()]
@@ -370,6 +373,13 @@ def rankings(power_df: pd.DataFrame, prev_power_df: pd.DataFrame | None,
             su.append(_su(g))
             ats.append(_ats(g))
         out["sos"], out["su"], out["ats"] = sos, su, ats
+        teams = out["team"].astype(str)
+        out["sov"] = teams.map(strength_of_victory(d, opp_rating.rename(index=str))).to_numpy()
+        if "venue" in d.columns:
+            rec = venue_records(d)
+            for c in ("home_record", "road_record"):
+                col = rec[c] if c in rec else pd.Series(dtype=object)
+                out[c] = teams.map(col).where(teams.isin(col.index), "0-0").to_numpy()
     out["su"] = out["su"].astype(object)
     out["ats"] = out["ats"].astype(object)
     return out

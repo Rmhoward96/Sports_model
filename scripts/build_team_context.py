@@ -49,8 +49,10 @@ from sportsmodel.context.game_log import (  # noqa: E402
 from sportsmodel.context.history import history_for_games  # noqa: E402
 from sportsmodel.context.matchup import cutoffs_for_season, grades_for_games  # noqa: E402
 from sportsmodel.cfb.priors import load_weights, season_priors  # noqa: E402
-from sportsmodel.context.power import (  # noqa: E402
-    cfb_power_current, nfl_market_scale, nfl_power, rankings)
+from sportsmodel.cfb.teams import load_fbs_ids  # noqa: E402
+from sportsmodel.context.power import rankings  # noqa: E402
+from sportsmodel.context.results_power import (  # noqa: E402
+    ResultsParams, load_params, played_games, power_asof)
 from sportsmodel.context.units import (  # noqa: E402
     BLEND_K, POWER_BLEND_K, cfb_unit_games, nfl_unit_games, unit_ratings_asof,
     window_ratings)
@@ -192,6 +194,14 @@ def load_nfl_sources(now: pd.Timestamp) -> dict:
     return {"schedules": sched, "unit_games": pd.concat(frames, ignore_index=True)}
 
 
+def nfl_results_games(schedules: pd.DataFrame) -> pd.DataFrame:
+    """nflverse schedule -> REG played games for the results rating."""
+    s = schedules[schedules["game_type"] == "REG"]
+    return played_games(s.assign(
+        home_team=s["home_team"].map(normalize_team), away_team=s["away_team"].map(normalize_team),
+        neutral=s["location"].astype(str).str.lower().eq("neutral")))
+
+
 def _nfl_games(schedules: pd.DataFrame, log: pd.DataFrame) -> pd.DataFrame:
     g = pd.DataFrame({
         "game_key": schedules["game_id"].astype(str),
@@ -207,7 +217,7 @@ def _nfl_games(schedules: pd.DataFrame, log: pd.DataFrame) -> pd.DataFrame:
 
 
 def build_nfl(schedules: pd.DataFrame, unit_games: pd.DataFrame,
-              now: pd.Timestamp) -> dict[str, pd.DataFrame]:
+              now: pd.Timestamp, rp: ResultsParams | None = None) -> dict[str, pd.DataFrame]:
     now = _utc(now)
     full = nfl_game_log(schedules)
     season = current_season(full, now)
@@ -229,13 +239,10 @@ def build_nfl(schedules: pd.DataFrame, unit_games: pd.DataFrame,
     nxt = _next_unplayed(log, now)
     if nxt is not None:
         s, w = int(nxt["season"]), int(nxt["week"])
-        # rankings weight this season harder than the grades (POWER_BLEND_K)
-        pcache = _Ratings(unit_games, POWER_BLEND_K)
-        scale = nfl_market_scale(unit_games, schedules, s,   # once per season, both weeks
-                                 blend_k=POWER_BLEND_K)
-        ur = pcache.asof(s, w)
-        power = nfl_power(ur, unit_games, scale)
-        prev = nfl_power(pcache.asof(s, w - 1), unit_games, scale) if w > 1 else None
+        # results-based rating (results_power); unit ranks from the season-weighted
+        # unit ratings (POWER_BLEND_K) are shown alongside, not rated
+        power, prev = power_asof(nfl_results_games(schedules), rp or load_params("nfl"), s, w)
+        ur = _Ratings(unit_games, POWER_BLEND_K).asof(s, w)
         rk = _rank_frame(rankings(power, prev, ur, log), "nfl")
     return {"team_game_log": _log_frame(log), "team_history": hist,
             "matchup_grades": grades, "power_rankings": rk}
@@ -358,6 +365,25 @@ def load_cfb_priors(season: int) -> dict:
     return season_priors(rows, season, load_weights(wpath))
 
 
+def _points_from_elo_scale(pri: dict, members) -> dict[str, float]:
+    """Elo-scale preseason ratings -> points vs the FBS average (/ 25)."""
+    fb = [v for t, v in pri.items() if str(t) in members]
+    mu = float(np.mean(fb)) if fb else 0.0
+    return {str(t): (float(v) - mu) / 25.0 for t, v in pri.items()}
+
+
+def cfb_prior_points(season: int, members) -> dict[str, float]:
+    """The v2 preseason prior for ``season`` in points vs the FBS average."""
+    return _points_from_elo_scale(load_cfb_priors(season), members)
+
+
+def cfb_results_games(schedules: pd.DataFrame) -> pd.DataFrame:
+    s = schedules
+    if "game_type" in s.columns:
+        s = s[s["game_type"] == "REG"]
+    return played_games(s.assign(neutral=s["neutral_site"].fillna(False).astype(bool)))
+
+
 def load_cfb_sources(now: pd.Timestamp) -> dict:
     asset = pd.read_parquet(CFB_ASSETS / "schedules.parquet")
     espn_games, st = _espn_games(now)
@@ -390,10 +416,9 @@ def _cfb_conf(sched: pd.DataFrame) -> dict:
 
 def build_cfb(schedules: pd.DataFrame, lines: pd.DataFrame, live_close: pd.DataFrame | None,
               advanced: pd.DataFrame | None, now: pd.Timestamp,
-              rating_cfg: tuple[EloConfig, BlendConfig] | None = None,
-              fbs=None, priors: dict | None = None) -> dict[str, pd.DataFrame]:
+              fbs=None, priors: dict | None = None,
+              rp: ResultsParams | None = None) -> dict[str, pd.DataFrame]:
     now = _utc(now)
-    elo_cfg, blend_cfg = rating_cfg or load_rating()
     season = _cfb_season(schedules, now)
     sched = schedules[schedules["season"] >= season - LOG_PRIOR_SEASONS]
     log = cfb_game_log(sched, lines, live_close)
@@ -423,10 +448,12 @@ def build_cfb(schedules: pd.DataFrame, lines: pd.DataFrame, live_close: pd.DataF
     nxt = _next_unplayed(log, now)
     if nxt is not None:
         s, w = int(nxt["season"]), int(nxt["week"])
-        pri = load_cfb_priors(s) if priors is None else priors
-        power = cfb_power_current(schedules, elo_cfg, blend_cfg, (s, w), priors=pri, fbs=fbs)
-        prev = (cfb_power_current(schedules, elo_cfg, blend_cfg, (s, w - 1), priors=pri, fbs=fbs)
-                if w > 1 else None)
+        members = {str(t) for t in (fbs if fbs is not None else load_fbs_ids())}
+        pre = {y: cfb_prior_points(y, members) for y in range(s - 3, s)}
+        pre[s] = (cfb_prior_points(s, members) if priors is None
+                  else _points_from_elo_scale(priors, members))
+        power, prev = power_asof(cfb_results_games(schedules), rp or load_params("cfb"), s, w,
+                                 preseason=pre, members=members)
         ur = unit_ratings_asof(ug, s, w, blend_k=POWER_BLEND_K) if ug is not None else None
         rk = _rank_frame(rankings(power, prev, ur, log), "cfb", _cfb_conf(sched))
     return {"team_game_log": _log_frame(log), "team_history": hist,

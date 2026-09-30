@@ -173,7 +173,7 @@ def test_nfl_build_produces_all_four_frames():
     assert set(rk["week"]) == {4} and set(rk["season"]) == {CUR}
     assert sorted(rk["rank"]) == list(range(1, 9))
     assert rk["prev_rank"].notna().all()
-    assert rk.iloc[0]["team"] == "KC"          # the strong synthetic offense
+    assert rk.iloc[0]["rating"] == rk["rating"].max()
     assert rk["units"].map(lambda u: isinstance(u, dict)).all()
 
 
@@ -391,12 +391,16 @@ def test_main_without_database_url_refuses_to_write(monkeypatch):
 # ------------------------------------------------------------------ migration
 def test_migration_matches_db_columns_and_keys():
     import re
-    sql = (pathlib.Path(__file__).resolve().parents[2] / "db" / "migration_team_context.sql").read_text()
+    dbdir = pathlib.Path(__file__).resolve().parents[2] / "db"
+    sql = (dbdir / "migration_team_context.sql").read_text()
+    later = (dbdir / "migration_power_results.sql").read_text()   # ALTER ... ADD COLUMN
     for t, cols in db.TEAM_CONTEXT_COLUMNS.items():
         body = re.search(rf"CREATE TABLE IF NOT EXISTS {t} \((.*?)\n\);", sql, re.S).group(1)
         names = [ln.split()[0] for ln in body.splitlines()
                  if ln.strip() and not ln.strip().startswith(("PRIMARY", "--"))]
-        assert names == cols + ["computed_at"], t
+        added = re.findall(rf"ALTER TABLE {t} ADD COLUMN IF NOT EXISTS (\w+)", later)
+        assert names[-1] == "computed_at", t
+        assert names[:-1] + added == cols, t
         assert f"PRIMARY KEY ({', '.join(TABLE_KEYS[t])})" in body, t
         assert db.TEAM_CONTEXT_KEYS[t] == TABLE_KEYS[t]
         assert f'CREATE POLICY "public read {t}" ON {t} FOR SELECT USING (true)' in sql
@@ -466,31 +470,47 @@ def test_load_cfb_odds_closing_consensus(monkeypatch, capsys):
     assert r["close_spread_home"] == 6.5 and r["close_total"] == 51.5
 
 
-def test_cfb_rankings_use_the_season_weighted_rating():
-    from sportsmodel.context.power import cfb_power_current
+
+
+def _rp():
+    from sportsmodel.context.results_power import ResultsParams
+    return ResultsParams(cap=28.0, hfa=2.5, beta=3.0, sigma=15.0, rho=0.6)
+
+
+def test_cfb_rankings_use_the_results_rating_with_sov_and_venue_records():
+    from sportsmodel.context.results_power import power_asof
     src = cfb_sources()
     teams = _cfb_teams()
     priors = {t: 1500.0 + 40.0 * i for i, t in enumerate(teams)}
-    out = btc.build_cfb(**src, now=NOW, priors=priors)
+    out = btc.build_cfb(**src, now=NOW, priors=priors, rp=_rp(), fbs=set(teams))
     rk = out["power_rankings"].set_index("team")
     s, w = int(rk["season"].iloc[0]), int(rk["week"].iloc[0])
-    elo_cfg, blend_cfg = btc.load_rating()
-    exp = cfb_power_current(src["schedules"], elo_cfg, blend_cfg, (s, w), priors=priors,
-                            fbs=set(teams)).set_index("team")
+    members = set(teams)
+    pre = {y: btc.cfb_prior_points(y, members) for y in range(s - 3, s)}
+    pre[s] = btc._points_from_elo_scale(priors, members)
+    exp, _ = power_asof(btc.cfb_results_games(src["schedules"]), _rp(), s, w,
+                        preseason=pre, members=members)
+    exp = exp.set_index("team")
     for t in teams:
         assert rk.loc[t, "rating"] == pytest.approx(exp.loc[t, "rating"])
-    assert (exp.loc[teams, "weight"] > 0.5).all()
+    assert rk["home_record"].notna().all() and rk["road_record"].notna().all()
+    assert rk["sov"].notna().any()
+    for c in ("sov", "home_record", "road_record"):
+        assert c in btc.TABLE_COLUMNS["power_rankings"]
 
 
-def test_nfl_rankings_use_the_power_blend():
-    from sportsmodel.context.units import POWER_BLEND_K
+def test_nfl_rankings_use_the_results_rating():
+    from sportsmodel.context.results_power import power_asof
     src = nfl_sources()
-    out = btc.build_nfl(**src, now=NOW)
+    out = btc.build_nfl(**src, now=NOW, rp=_rp())
     rk = out["power_rankings"].set_index("team")
     s, w = int(rk["season"].iloc[0]), int(rk["week"].iloc[0])
-    ug = src["unit_games"]
-    scale = btc.nfl_market_scale(ug, src["schedules"], s, blend_k=POWER_BLEND_K)
-    exp = btc.nfl_power(btc.unit_ratings_asof(ug, s, w, blend_k=POWER_BLEND_K), ug,
-                        scale).set_index("team")
+    exp, prev = power_asof(btc.nfl_results_games(src["schedules"]), _rp(), s, w)
+    exp = exp.set_index("team")
     for t in rk.index:
         assert rk.loc[t, "rating"] == pytest.approx(exp.loc[t, "rating"])
+    assert rk["prev_rank"].notna().all()
+    wins = rk["su"].str.split("-").str[0].astype(int)
+    home_w = rk["home_record"].str.split("-").str[0].astype(int)
+    road_w = rk["road_record"].str.split("-").str[0].astype(int)
+    assert (home_w + road_w == wins).all()      # fixtures have no neutral games
