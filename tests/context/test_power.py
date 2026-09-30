@@ -2,11 +2,12 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from sportsmodel.context.power import cfb_power, nfl_power, rankings
+from sportsmodel.cfb.teams import load_fbs_ids
+from sportsmodel.context.power import cfb_power, nfl_market_scale, nfl_power, rankings
 from sportsmodel.context.units import unit_ratings_asof
 from sportsmodel.nfl.elo import EloConfig
 from sportsmodel.nfl.ratings import BlendConfig, expected_margin
-from tests.context.synth import league, round_robin
+from tests.context.synth import TEAMS, league, round_robin
 
 ELO = EloConfig(k=40, hfa_elo=70, carryover=0.9, base=1500.0)
 BLEND = BlendConfig(w_sos=0.45, srs_min_games=3)
@@ -296,3 +297,92 @@ def test_rankings_leak_free_log():
     later.loc[later["week"] >= 5, ["su", "ats"]] = "L"
     later = pd.concat([later, pd.DataFrame([_log_row("A", "D", 7, 50, 1)])])
     pd.testing.assert_frame_equal(base, rankings(cur, None, None, later))
+
+
+def test_cfb_default_fbs_membership_from_asset():
+    ids = sorted(load_fbs_ids())[:4]
+    rows = []
+    for w, (h, a) in enumerate([(ids[0], ids[1]), (ids[2], ids[3]), (ids[0], "FCS"),
+                                (ids[1], ids[2]), (ids[3], ids[0])], start=1):
+        rows.append(dict(season=2024, week=w, home_team=h, away_team=a, home_score=28.0,
+                         away_score=20.0, game_type="REG"))
+    p = cfb_power(pd.DataFrame(rows), ELO, BLEND, (2024, 9)).set_index("team")
+    assert p.loc[ids, "is_fbs"].all() and not p.loc["FCS", "is_fbs"]
+    assert np.isfinite(p["rating"]).all()
+
+
+# ------------------------------------------------------- NFL market scale (P3)
+def _raw_diffs(ug, season, week):
+    raw = nfl_power(unit_ratings_asof(ug, season, week), ug)
+    return raw.set_index("team")["raw_rating"] if len(raw) else None
+
+
+def _market_schedule(ug, seasons, slope=0.5, hfa=2.0, n_weeks=14):
+    """Each week every round-robin pair plays twice (home and away swapped) plus
+    one neutral game; spread_line = slope * raw_diff (+ hfa when not neutral)."""
+    rr = round_robin(TEAMS)
+    rows = []
+    for s in seasons:
+        for w in range(1, n_weeks + 1):
+            r = _raw_diffs(ug, s, w)
+            if r is None:
+                continue
+            pairs = rr[(w - 1) % len(rr)]
+            for h, a in pairs:
+                for hh, aa in ((h, a), (a, h)):
+                    rows.append(dict(season=s, week=w, game_type="REG", home_team=hh,
+                                     away_team=aa, location="Home",
+                                     spread_line=slope * (r[hh] - r[aa]) + hfa))
+            h, a = pairs[0]
+            rows.append(dict(season=s, week=w, game_type="REG", home_team=h, away_team=a,
+                             location="Neutral", spread_line=slope * (r[h] - r[a])))
+            rows.append(dict(season=s, week=w, game_type="WC", home_team=h, away_team=a,
+                             location="Home", spread_line=99.0))       # POST: ignored
+    return pd.DataFrame(rows)
+
+
+def test_nfl_market_scale_recovers_slope_and_hfa():
+    ug = league([2020, 2021, 2022, 2023], n_weeks=10, noise=0.6, seed=11)
+    sched = _market_schedule(ug, [2020, 2021, 2022], n_weeks=10)
+    sc = nfl_market_scale(ug, sched, 2023)
+    assert sc["seasons"] == [2020, 2021, 2022] and sc["n"] > 100
+    assert sc["slope"] == pytest.approx(0.5, abs=1e-9)
+    assert sc["hfa"] == pytest.approx(2.0, abs=1e-9)
+
+
+def test_nfl_market_scale_never_reads_season_s():
+    ug = league([2020, 2021, 2022, 2023], n_weeks=10, noise=0.6, seed=11)
+    sched = _market_schedule(ug, [2020, 2021, 2022], n_weeks=10)
+    base = nfl_market_scale(ug, sched, 2023)
+    ug2 = ug.copy()
+    ug2.loc[ug2["season"] >= 2023, ["pass_epa", "run_epa"]] += 3.0
+    extra = sched[sched["season"] == 2022].assign(season=2023, spread_line=-50.0)
+    assert nfl_market_scale(ug2, pd.concat([sched, extra]), 2023) == base
+    # ...but it does read S-1 (the test has teeth)
+    moved = sched.copy()
+    moved.loc[moved["season"] == 2022, "spread_line"] *= 2
+    assert nfl_market_scale(ug, moved, 2023)["slope"] != base["slope"]
+
+
+def test_nfl_power_applies_scale_and_stores_it():
+    ur = _ratings_frame(list("ABCD"), A=dict(off_pass_epa=0.1, off_run_epa=0.06,
+                                             def_pass_epa=-0.1, def_run_epa=-0.06))
+    sc = {"season": 2024, "slope": 0.5, "hfa": 1.8, "n": 800, "seasons": [2021, 2022, 2023]}
+    p = nfl_power(ur, scale=sc)
+    a = p.set_index("team").loc["A"]
+    assert a["raw_rating"] == pytest.approx(10.0) and a["rating"] == pytest.approx(5.0)
+    assert a["off_rating"] == pytest.approx(2.5) and a["def_rating"] == pytest.approx(2.5)
+    assert (p["scale"] == 0.5).all() and (p["hfa"] == 1.8).all()
+    assert p.attrs["market_scale"]["slope"] == 0.5 and p.attrs["market_scale"]["hfa"] == 1.8
+    raw = nfl_power(ur)
+    assert (raw["scale"] == 1.0).all() and raw["hfa"].isna().all()
+
+
+def test_rankings_records_and_sos_are_regular_season_only():
+    cur = _power({"A": 6.0, "B": 2.0, "C": -1.0, "D": -7.0}, week=20)
+    rows = [_log_row("A", "B", 1, 7, 3), _log_row("A", "D", 19, -10, 3)]
+    log = pd.DataFrame(rows).assign(is_post=[False, True])
+    r = rankings(cur, None, None, log).set_index("team")
+    assert r.loc["A", "su"] == "1-0" and r.loc["A", "ats"] == "1-0-0"
+    assert r.loc["A", "sos"] == pytest.approx(2.0)
+    assert r.loc["D", "su"] == "0-0"
