@@ -6,7 +6,7 @@ _s = importlib.util.spec_from_file_location("generate_cfb", _p)
 gc = importlib.util.module_from_spec(_s)
 _s.loader.exec_module(gc)
 
-from sportsmodel.cfb.priors import DecayConfig, PriorWeights, preseason_rating, season_features_z
+from sportsmodel.cfb.priors import DecayConfig, PriorWeights, season_priors
 from sportsmodel.nfl.elo import EloConfig
 from sportsmodel.nfl.gameline import GameLineConfig
 from sportsmodel.nfl.ratings import BlendConfig
@@ -118,12 +118,22 @@ def test_build_game_rows_defaults_missing_ratings_to_base_elo():
 # blend at the Elo level, feed the blended value into expected_margin).
 # --------------------------------------------------------------------------
 
-_PRIOR_WEIGHTS = PriorWeights()  # identity default: R_pre = 1500 + sp_rating
-_PRIORS_ROW_H = {"team_espn_id": "H", "sp_rating": 250.0, "coach_first_year": False,
-                 "qb_returning": True, "portal_net": 0.0, "returning_starters": 0.0,
-                 "prior_sos": 0.0, "forward_sos_shift": 0.0}
-_Z = season_features_z([_PRIORS_ROW_H])
-_R_PRE_H = preseason_rating(_PRIORS_ROW_H, _Z["H"], _PRIOR_WEIGHTS)  # 1500 + 250 = 1750
+_PRIOR_WEIGHTS = PriorWeights(sp_scale=25.0)   # R_pre = 1500 + 25 * prev_sp
+_NAN = float("nan")
+
+
+def _prior_row(team, season, sp, **kw):
+    return {"season": season, "team_espn_id": team, "team_name": team, "sp_rating": sp,
+            "returning_pct": 0.5, "returning_starters": 0.5, "qb_returning": True,
+            "recruiting_points": 200.0, "portal_net": _NAN, "coach_first_year": False,
+            "prior_sos": 0.0, "forward_sos_shift": 0.0, **kw}
+
+
+# H: previous-season SP+ +10 -> R_pre = 1500 + 25*10 = 1750 (the only team
+# with a row in 2026, so every z-score is 0)
+_R_PRE_H = season_priors({2025: [_prior_row("H", 2025, 10.0)],
+                          2026: [_prior_row("H", 2026, -3.0)]}, 2026, _PRIOR_WEIGHTS)["H"]
+assert _R_PRE_H == 1750.0
 
 
 def _games_h_vs_a():
@@ -323,3 +333,22 @@ def test_live_parity_with_walkforward_real_history(week):
             assert t == pytest.approx(bt[pk][1], abs=1e-6)
             checked += 1
     assert checked > 40
+
+
+def test_load_priors_for_season_is_leak_free(tmp_path):
+    """Live R_pre uses the PREVIOUS season's final SP+; planting a same-season
+    SP+ / new-coach flag / forward-SoS (post-season info) changes nothing."""
+    prev = [_prior_row("A", 2025, 10.0), _prior_row("B", 2025, -10.0)]
+    cur = [_prior_row("A", 2026, 0.0, returning_pct=0.8), _prior_row("B", 2026, 0.0)]
+    w = PriorWeights(sp_scale=20.0, w_returning=10.0)
+    path = tmp_path / "priors.parquet"
+    pd.DataFrame(prev + cur).to_parquet(path)
+    clean = gc.load_priors_for_season(2026, w, path)
+    assert clean["A"] == pytest.approx(1500.0 + 200.0 + 10.0)
+    assert clean["B"] == pytest.approx(1500.0 - 200.0 - 10.0)
+    planted = [{**r, "sp_rating": 99.0, "coach_first_year": True, "forward_sos_shift": 9.0}
+               for r in cur]
+    pd.DataFrame(prev + planted).to_parquet(path)
+    assert gc.load_priors_for_season(2026, w, path) == clean
+    assert gc.load_priors_for_season(2030, w, path) == {}
+    assert gc.load_priors_for_season(2026, w, tmp_path / "missing.parquet") == {}

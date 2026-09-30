@@ -8,6 +8,8 @@ assets/cfb/priors.parquet (it doesn't exist yet in this environment); that
 constraint is exercised implicitly by this file collecting/running at all.
 """
 import importlib.util
+
+import pytest
 from pathlib import Path
 
 _SCRIPT_PATH = Path(__file__).resolve().parents[2] / "scripts" / "backtest_cfb_priors.py"
@@ -125,3 +127,35 @@ def test_clv_proxy_is_outcome_based_and_differs_from_gap():
     assert losing["gap"] == 15
     assert losing["clv_proxy"] == -10  # threshold - actual_margin = 10 - 20
     assert losing["ats"] == "loss"
+
+
+def test_backtest_r_pre_table_ignores_planted_same_season_sp_and_coach_flag():
+    # The fit must never see same-season (end-of-season) SP+, the coach flag
+    # or forward SoS: planting absurd values changes nothing.
+    from sportsmodel.cfb.priors import PriorWeights
+    nan = float("nan")
+
+    def row(team, season, sp):
+        return {"season": season, "team_espn_id": team, "sp_rating": sp,
+                "returning_pct": 0.5 + 0.1 * int(team), "recruiting_points": 150.0 * int(team),
+                "portal_net": nan, "prior_sos": float(team), "qb_returning": True,
+                "coach_first_year": False, "returning_starters": 0.5, "forward_sos_shift": 0.0}
+
+    prev = [row("1", 2022, 5.0), row("2", 2022, -5.0), row("3", 2022, 0.0)]
+    cur = [row("1", 2023, 1.0), row("2", 2023, 2.0), row("3", 2023, 3.0)]
+    w = PriorWeights(sp_scale=20.0, w_returning=7.0, w_recruiting=3.0, w_sos_prior=2.0, w_qb=5.0)
+    by_season = {2022: prev, 2023: cur}
+    clean = backtest_cfb_priors.r_pre_table(backtest_cfb_priors.prior_inputs_by_season(by_season), w)
+    planted = {2022: prev, 2023: [{**r, "sp_rating": 500.0, "coach_first_year": True,
+                                   "forward_sos_shift": 40.0} for r in cur]}
+    dirty = backtest_cfb_priors.r_pre_table(backtest_cfb_priors.prior_inputs_by_season(planted), w)
+    assert dirty == clean
+    inputs = backtest_cfb_priors.prior_inputs_by_season(by_season)
+    assert inputs[2023]["1"]["prev_sp"] == 5.0          # season-1 final SP+
+    from sportsmodel.cfb.priors import preseason_rating
+    assert clean[(2023, "1")] == preseason_rating(inputs[2023]["1"], w)
+
+
+def test_backtest_split_is_train_2016_2022_holdout_2023_2025():
+    assert backtest_cfb_priors.TRAIN_SEASONS == set(range(2016, 2023))
+    assert backtest_cfb_priors.HOLDOUT_SEASONS == {2023, 2024, 2025}

@@ -53,8 +53,7 @@ from sportsmodel.cfb.priors import (
     blend_rating,
     load_decay_config,
     load_weights,
-    preseason_rating,
-    season_features_z,
+    season_priors,
 )
 from sportsmodel.cfb.teams import FCS
 from sportsmodel.cfb.walkforward import SeasonState, live_week_state, model_margin_total
@@ -88,26 +87,27 @@ def load_gameline() -> GameLineConfig:
                           bias_margin=j.get("bias_margin", 0.0), bias_total=j.get("bias_total", 0.0))
 
 
-def load_priors_for_season(season: int, weights: PriorWeights) -> dict[str, float]:
-    """{team_espn_id: R_pre} for `season`, from `assets/cfb/priors.parquet`.
+def load_priors_for_season(season: int, weights: PriorWeights,
+                           path: Path | None = None) -> dict[str, float]:
+    """{team_espn_id: R_pre} for `season` from `assets/cfb/priors.parquet`,
+    via the LEAK-FREE `priors.season_priors`: previous season's final SP+
+    (season-1 rows) + z-scored preseason features of the season's rows. The
+    season's own sp_rating (end-of-season SP+), coach_first_year and
+    forward_sos_shift are never read.
 
-    GRACEFUL FALLBACK: `assets/cfb/priors.parquet` is produced later by the
-    CFBD-backed ingest workflow (Task 7) and does not exist in every
-    environment yet. If the file is missing, or has no rows for `season`,
-    this returns {} -- `build_game_rows` treats an absent team-id in this
-    dict as prior_weight=0 (today's in-season-only behavior, unchanged). No
-    odds/market data is ever read here (market-independent).
+    GRACEFUL FALLBACK: missing file, or no rows for `season` -> {} (every team
+    then gets prior weight 0 in `build_game_rows`). No odds/market data is
+    ever read here (market-independent).
     """
-    path = _ASSETS / "priors.parquet"
+    path = path or (_ASSETS / "priors.parquet")
     if not path.exists():
         return {}
     df = pd.read_parquet(path)
-    season_rows = df[df["season"] == season].to_dict("records")
-    if not season_rows:
+    df = df[df["season"].isin([season - 1, season])]
+    rows_by_season = {int(s): sdf.to_dict("records") for s, sdf in df.groupby("season")}
+    if season not in rows_by_season:
         return {}
-    z = season_features_z(season_rows)
-    return {row["team_espn_id"]: preseason_rating(row, z[row["team_espn_id"]], weights)
-            for row in season_rows}
+    return season_priors(rows_by_season, season, weights)
 
 
 def _game_date_from_commence(commence_iso: str) -> str:

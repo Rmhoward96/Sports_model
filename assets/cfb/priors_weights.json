@@ -1,10 +1,9 @@
 {
-  "sp_scale": 1.0,
+  "sp_scale": 17.5,
   "sp_offset": 1500.0,
-  "w_portal": 0.0,
-  "w_coach": 0.0,
+  "w_returning": 50.0,
+  "w_recruiting": 80.0,
+  "w_portal": 50.0,
   "w_qb": 0.0,
-  "w_starters": 0.0,
-  "w_sos_prior": 0.0,
-  "w_sos_shift": 0.0
+  "w_sos_prior": 50.0
 }
