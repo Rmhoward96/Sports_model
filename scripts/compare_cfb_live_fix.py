@@ -111,10 +111,12 @@ def score(rows: list[dict], key: str) -> dict:
     def mae(rs, k, a):
         return sum(abs(r[k] - r[a]) for r in rs) / len(rs) if rs else float("nan")
     early = [r for r in rows if r["week"] in EARLY_WEEKS]
+    late = [r for r in rows if r["week"] not in EARLY_WEEKS]
     graded = [bcp.grade_vs_market(r[f"{key}_margin"], r["market_spread"], r["actual_margin"])
               ["ats"] for r in rows]
     wins, losses = graded.count("win"), graded.count("loss")
-    return {"n": len(rows), "n_early": len(early),
+    return {"n": len(rows), "n_early": len(early), "n_late": len(late),
+            "margin_mae_wk6p": mae(late, f"{key}_margin", "actual_margin"),
             "margin_mae": mae(rows, f"{key}_margin", "actual_margin"),
             "margin_mae_wk1_5": mae(early, f"{key}_margin", "actual_margin"),
             "total_mae": mae(rows, f"{key}_total", "actual_total"),
@@ -196,20 +198,22 @@ def build_rows(seasons=HOLDOUT_SEASONS, verbose: bool = True) -> list[dict]:
 
 def _fmt(s: dict) -> str:
     return (f"| {s['n']} | {s['margin_mae']:.3f} | {s['margin_mae_wk1_5']:.3f} (n={s['n_early']}) "
+            f"| {s['margin_mae_wk6p']:.3f} (n={s['n_late']}) "
             f"| {s['total_mae']:.3f} | {s['total_mae_wk1_5']:.3f} "
             f"| {100 * s['ats_pct']:.1f}% ({s['ats_w']}-{s['ats_l']}-{s['ats_push']}) |")
 
 
 def report(rows: list[dict]) -> str:
-    head = ("| method | n | margin MAE (all) | margin MAE wk 1-5 | total MAE (all) "
-            "| total MAE wk 1-5 | ATS vs close (W-L-P) |\n|---|---|---|---|---|---|---|")
+    head = ("| method | n | margin MAE (all) | margin MAE wk 1-5 | margin MAE wk 6+ "
+            "| total MAE (all) | total MAE wk 1-5 | ATS vs close (W-L-P) |\n"
+            "|---|---|---|---|---|---|---|---|")
     lines = ["### All held-out seasons", "", head]
     for key, label in (("today", "today (pooled + same-season SP+ prior)"),
                        ("fixed", "fixed (walk-forward state + leak-free prior)")):
         lines.append(f"| {label} " + _fmt(score(rows, key)))
     m = score([{**r, "market_total": r["market_total"]} for r in rows], "market")
     lines.append(f"| closing spread (reference) | {m['n']} | {m['margin_mae']:.3f} "
-                 f"| {m['margin_mae_wk1_5']:.3f} | - | - | - |")
+                 f"| {m['margin_mae_wk1_5']:.3f} | {m['margin_mae_wk6p']:.3f} | - | - | - |")
     for tgt in ("margin", "total"):
         d, se = paired_diff(rows, "fixed", "today", tgt)
         lines.append("")
@@ -217,6 +221,9 @@ def report(rows: list[dict]) -> str:
     early = [r for r in rows if r["week"] in EARLY_WEEKS]
     d, se = paired_diff(early, "fixed", "today", "margin")
     lines.append(f"Paired margin difference, weeks 1-5 only: {d:+.3f} ± {se:.3f} (SE)")
+    late = [r for r in rows if r["week"] not in EARLY_WEEKS]
+    d, se = paired_diff(late, "fixed", "today", "margin")
+    lines.append(f"Paired margin difference, weeks 6+ only: {d:+.3f} ± {se:.3f} (SE)")
     lines += ["", "### By season", "", head.replace("| method |", "| season / method |")]
     for season in sorted({r["season"] for r in rows}):
         sr = [r for r in rows if r["season"] == season]

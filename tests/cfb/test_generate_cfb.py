@@ -41,7 +41,7 @@ def test_build_game_row_is_serving_shaped():
     row = gc.build_game_row(game, ctx, GL_CFG)
     assert row["market_spread"] == -3.5 and row["market_total"] == 55.5  # Vegas line for the lean
     assert row["sport"] == "cfb"
-    assert row["model_version"] == "cfb-ratings-v1"
+    assert row["model_version"] == "cfb-ratings-v2"   # v2: walk-forward state + leak-free prior
     assert row["game_pk"] == 401628354
     assert row["game_date"] == "2026-09-05"
     assert row["commence_time"] == "2026-09-05T23:30Z"  # kickoff carried through for time sort
@@ -352,3 +352,50 @@ def test_load_priors_for_season_is_leak_free(tmp_path):
     assert gc.load_priors_for_season(2026, w, path) == clean
     assert gc.load_priors_for_season(2030, w, path) == {}
     assert gc.load_priors_for_season(2026, w, tmp_path / "missing.parquet") == {}
+
+
+# --------------------------------------------------------------------------
+# Fix round 1: postseason state week (R2) + strict prior weights (R4)
+# --------------------------------------------------------------------------
+
+def test_state_week_regular_season_is_the_espn_week():
+    sched = _synthetic_schedule()
+    assert gc.state_week(sched, 2022, 4, season_type=2) == 4
+
+
+def test_state_week_postseason_uses_the_full_regular_season():
+    # ESPN reports bowls as season_type 3, week 1: the state must be the
+    # whole REG season (max REG week + 1), not week 1's empty season-to-date.
+    sched = _synthetic_schedule()                       # 2022 REG weeks 1-6
+    assert gc.state_week(sched, 2022, 1, season_type=3) == 7
+    games = _games_of_week(sched, 2022, 6)
+    st = gc._season_to_date_ratings(sched, 2022, gc.state_week(sched, 2022, 1, 3),
+                                    _WF_ELO, _WF_BLEND, games)
+    assert max(st["games_played"].values()) == 6 and st["srs_now"] and st["lg_avg"] > 0
+    # season absent from the schedule -> fall back to the ESPN week
+    assert gc.state_week(sched, 2030, 1, season_type=3) == 1
+
+
+def _write_json(path, data):
+    path.write_text(__import__("json").dumps(data))
+    return path
+
+
+def test_live_prior_weights_strict_when_priors_exist(tmp_path):
+    priors = tmp_path / "priors.parquet"
+    pd.DataFrame([_prior_row("A", 2026, 1.0)]).to_parquet(priors)
+    full = {"sp_scale": 17.5, "sp_offset": 1500.0, "w_returning": 50.0, "w_recruiting": 80.0,
+            "w_portal": 50.0, "w_qb": 0.0, "w_sos_prior": 50.0}
+    ok = _write_json(tmp_path / "w.json", full)
+    assert gc.load_live_prior_weights(ok, priors) == PriorWeights(**full)
+    with pytest.raises(FileNotFoundError, match="priors_weights"):
+        gc.load_live_prior_weights(tmp_path / "missing.json", priors)
+    old = _write_json(tmp_path / "old.json", {"sp_scale": 1.0, "sp_offset": 1500.0,
+                                              "w_portal": 0.0, "w_coach": 0.0, "w_qb": 0.0,
+                                              "w_starters": 0.0, "w_sos_prior": 0.0,
+                                              "w_sos_shift": 0.0})
+    with pytest.raises(ValueError, match="w_recruiting"):
+        gc.load_live_prior_weights(old, priors)
+    # no priors asset -> no prior is served, so no weights are required
+    assert gc.load_live_prior_weights(tmp_path / "missing.json",
+                                      tmp_path / "no_priors.parquet") == PriorWeights()

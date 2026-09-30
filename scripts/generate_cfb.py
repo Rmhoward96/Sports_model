@@ -63,9 +63,12 @@ from sportsmodel.nfl.gameline import GameLineConfig, build_gameline
 from sportsmodel.nfl.ratings import BlendConfig
 from sportsmodel.nfl.shrink import ShrinkParams
 
-GAME_MODEL_VERSION = "cfb-ratings-v1"
+# v2 (fix/cfb-live-ratings): walk-forward season-to-date state + leak-free prior.
+# The upsert key is (game_pk, model_version), so v1 rows stay alongside.
+GAME_MODEL_VERSION = "cfb-ratings-v2"
 
 _ASSETS = Path(__file__).resolve().parents[1] / "assets" / "cfb"
+
 
 def _load_committed(name: str) -> pd.DataFrame:
     return pd.read_parquet(_ASSETS / name)
@@ -108,6 +111,49 @@ def load_priors_for_season(season: int, weights: PriorWeights,
     if season not in rows_by_season:
         return {}
     return season_priors(rows_by_season, season, weights)
+
+
+_REQUIRED_WEIGHT_KEYS = frozenset(PriorWeights.__dataclass_fields__)
+
+
+def load_live_prior_weights(weights_path: Path | None = None,
+                            priors_path: Path | None = None) -> PriorWeights:
+    """PriorWeights for the live producer -- STRICT whenever a prior will be
+    served (priors.parquet exists): the weights file must exist and carry
+    every leak-free key. `PriorWeights()` defaults (sp_scale=1: one SP+ point
+    = one Elo point = 0.04 margin points) are the wrong unit and would
+    collapse week-1 margins to home-field, so they are never a silent
+    fallback. Without a priors asset no prior is served and defaults are
+    harmless."""
+    weights_path = weights_path or (_ASSETS / "priors_weights.json")
+    priors_path = priors_path or (_ASSETS / "priors.parquet")
+    if not priors_path.exists():
+        return PriorWeights()
+    if not weights_path.exists():
+        raise FileNotFoundError(
+            f"{weights_path} (priors_weights.json) is missing but {priors_path.name} exists; "
+            "run scripts/backtest_cfb_priors.py to fit the leak-free prior weights")
+    missing = _REQUIRED_WEIGHT_KEYS - set(json.loads(weights_path.read_text()))
+    if missing:
+        raise ValueError(
+            f"{weights_path} lacks leak-free prior weight(s) {sorted(missing)} (pre-fix "
+            "file?); refit with scripts/backtest_cfb_priors.py")
+    return load_weights(weights_path)
+
+
+def state_week(sched: pd.DataFrame, season: int, week: int, season_type: int) -> int:
+    """The walk-forward week whose entering state serves ESPN's (season,
+    week, season_type). Regular season: the ESPN week. Postseason (season_type
+    3 -- ESPN numbers bowls from week 1): max REG week of `season` + 1, so
+    bowls get the full regular-season state rather than week 1's empty
+    season-to-date state (which would serve pure preseason priors). Falls
+    back to the ESPN week if the schedule has no REG games for `season`."""
+    if season_type != 3:
+        return week
+    reg = sched[sched["season"] == season]
+    if "game_type" in reg.columns:
+        reg = reg[reg["game_type"] == "REG"]
+    return int(reg["week"].max()) + 1 if len(reg) else week
 
 
 def _game_date_from_commence(commence_iso: str) -> str:
@@ -172,7 +218,7 @@ def build_game_rows(games: list[dict], ratings: dict, week: int,
     from the shared `walkforward.model_margin_total`, so a served row equals
     the backtest's row for the same game when no prior is blended.
 
-    Forward-looking priors (Task 6): for each side with a `team_espn_id` key
+    Preseason priors: for each side with a `team_espn_id` key
     in `r_pre` (empty dict if `assets/cfb/priors.parquet` is missing or has
     no row for that team -- see `load_priors_for_season`'s graceful
     fallback), the team's pre-game Elo rating is blended with its R_pre via
@@ -185,8 +231,10 @@ def build_game_rows(games: list[dict], ratings: dict, week: int,
     like it would a normal in-season Elo value. At games_played=0 the decay
     weight is 1.0, so the blended rating equals R_pre outright, which is
     the intended "prior dominates preseason" behavior; as games_played
-    grows the weight decays toward `decay_cfg.prior_floor`, converging back
-    to plain in-season Elo -- today's behavior. `srs_now`/`points_ratings`
+    grows the weight decays toward `decay_cfg.prior_floor` and stays there:
+    with a non-zero floor (the committed fit keeps a permanent share of R_pre
+    all season -- see assets/cfb/priors_decay.json) the rating never fully
+    returns to plain in-season Elo. `srs_now`/`points_ratings`
     (and thus `model_total`) are untouched by the prior, mirroring
     backtest_cfb_priors.py's design decision that priors.parquet carries no
     points-scale signal.
@@ -255,7 +303,7 @@ def main() -> None:
 
     elo_cfg, blend_cfg = load_rating()
     gl_cfg = load_gameline()
-    prior_weights = load_weights(_ASSETS / "priors_weights.json")
+    prior_weights = load_live_prior_weights()
     decay_cfg = load_decay_config()
 
     sched = _load_committed("schedules.parquet")
@@ -263,11 +311,12 @@ def main() -> None:
     games_for_rows = [{**g, "game_date": _game_date_from_commence(g["commence_time"])}
                       for g in espn_games]
 
-    ratings = _season_to_date_ratings(sched, season, week, elo_cfg, blend_cfg, games_for_rows)
+    s_week = state_week(sched, season, week, season_type)
+    ratings = _season_to_date_ratings(sched, season, s_week, elo_cfg, blend_cfg, games_for_rows)
     ratings["r_pre"] = load_priors_for_season(season, prior_weights)
     ratings["decay_cfg"] = decay_cfg
 
-    game_rows_raw = build_game_rows(games_for_rows, ratings, week, gl_cfg)
+    game_rows_raw = build_game_rows(games_for_rows, ratings, s_week, gl_cfg)
     game_rows = [{**row, "margin_dist": json.dumps(row["margin_dist"]),
                  "total_dist": json.dumps(row["total_dist"])} for row in game_rows_raw]
 

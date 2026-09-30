@@ -163,7 +163,15 @@ def test_load_weights_rejects_nonzero_leaky_legacy_weights(tmp_path):
         load_weights(p)
 
 
-def test_committed_weights_load_and_are_leak_free():
+def test_committed_weights_equal_the_file_and_carry_no_leaky_key():
+    import json
+
     from sportsmodel import config
-    w = load_weights(config.PROJECT_ROOT / "assets" / "cfb" / "priors_weights.json")
-    assert isinstance(w, PriorWeights) and math.isfinite(w.sp_scale)
+    from sportsmodel.cfb.priors import LEGACY_LEAKY_WEIGHTS
+    path = config.PROJECT_ROOT / "assets" / "cfb" / "priors_weights.json"
+    data = json.loads(path.read_text())
+    assert not set(data) & set(LEGACY_LEAKY_WEIGHTS)           # no coach/starters/fwd-SoS
+    assert not set(data) & {"sp_rating", "coach_first_year", "forward_sos_shift"}
+    assert set(data) == set(PriorWeights.__dataclass_fields__)  # every new key present
+    assert load_weights(path) == PriorWeights(**data)
+    assert all(math.isfinite(v) for v in data.values())

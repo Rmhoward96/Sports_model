@@ -55,6 +55,7 @@ def test_score_and_paired_diff():
     assert s["ats_pct"] == 1.0
     assert s["margin_mae"] == pytest.approx((1 + 1 + 5) / 3)
     assert s["margin_mae_wk1_5"] == pytest.approx(1.0)
+    assert s["n_late"] == 2 and s["margin_mae_wk6p"] == pytest.approx(3.0)
     assert s["total_mae"] == pytest.approx((2 + 4 + 4) / 3)
     pr = [{**r, "a_margin": r["m_margin"], "b_margin": r["m_margin"] + 1} for r in rows]
     d, se = cmp.paired_diff(pr, "a", "b")

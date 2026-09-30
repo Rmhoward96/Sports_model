@@ -20,7 +20,8 @@ Rewritten for fix/cfb-live-ratings (part B). What changed and why:
    asset, so it only warms up Elo), HOLDOUT = 2023-2025, reported only --
    nothing is selected on it (the old leave-one-out ablation used the holdout
    to drop factors; it is now informational only).
-4. **Objective.** Weeks 1-5 margin MAE on TRAIN, FBS-vs-FBS games only (the
+4. **Objective.** Weeks 1-5 margin MAE on TRAIN (stage 1; stage 2 re-fits the
+   decay on all TRAIN weeks, see 5), FBS-vs-FBS games only (the
    live producer never serves a game against the "FCS" pseudo-team). Raw
    model margin (the gameline bias is a constant applied downstream).
 5. **Blend (unchanged design).** R_pre lives on the Elo scale and is blended
@@ -29,7 +30,10 @@ Rewritten for fix/cfb-live-ratings (part B). What changed and why:
    `expected_margin` (SRS/HFA untouched). Totals are not touched by the
    prior. Coordinate search (one parameter at a time over a grid, a few
    passes, select by TRAIN metric) over sp_scale, sp_offset, the five
-   feature weights, half_life_games and prior_floor.
+   feature weights, half_life_games and prior_floor (stage 1, weeks 1-5);
+   then (stage 2, fix round 1) the decay -- half_life_games, prior_floor --
+   is re-chosen with the weights fixed on ALL TRAIN weeks, because the floor
+   governs the whole season.
 6. **Market lines are benchmark-only** (edge table after the fit); the
    closing spread is in HOME-MARGIN convention (see `grade_vs_market`).
    "CLV" is a realized-cover proxy, not line movement (only closing lines
@@ -245,7 +249,7 @@ _GRID = {
     "sp_offset": [1400.0 + 25.0 * i for i in range(0, 13)],          # 1400 .. 1700
     "w_returning": _W, "w_recruiting": _W, "w_portal": _W, "w_qb": _W, "w_sos_prior": _W,
     "half_life_games": [0.5, 1.0, 1.5, 2.0, 2.5, 3.0, 4.0, 5.0, 6.0, 8.0, 10.0, 12.0, 16.0],
-    "prior_floor": [0.05 * i for i in range(0, 19)],                  # 0 .. 0.9
+    "prior_floor": [round(0.05 * i, 2) for i in range(0, 19)],               # 0 .. 0.9
 }
 _START = {"sp_scale": 20.0, "sp_offset": 1500.0, "w_returning": 0.0, "w_recruiting": 0.0,
           "w_portal": 0.0, "w_qb": 0.0, "w_sos_prior": 0.0, "half_life_games": 4.0,
@@ -292,6 +296,51 @@ def fit_prior_weights(raw_rows: list[dict], inputs: dict, elo_cfg: EloConfig,
             break
     w, d = _configs(current)
     return w, d, _eval(current)
+
+
+_DECAY_ORDER = ["half_life_games", "prior_floor"]
+
+
+def fit_decay_all_weeks(raw_rows: list[dict], inputs: dict, weights: PriorWeights,
+                        elo_cfg: EloConfig, blend_cfg: BlendConfig,
+                        train_seasons: set[int] = TRAIN_SEASONS, grid: dict = _GRID,
+                        start: DecayConfig | None = None,
+                        n_passes: int = 10) -> tuple[DecayConfig, float]:
+    """Stage 2 (fix round 1): with the feature weights FIXED (fit on TRAIN
+    weeks 1-5), re-choose the decay (half_life_games, prior_floor) by
+    coordinate search on ALL TRAIN weeks (full-season FBS margin MAE).
+    The floor controls the whole season (half-life 3 hits a 0.65 floor after
+    2 games), so a weeks-1-5 objective must not choose it."""
+    rows = _scored(raw_rows, train_seasons)
+    r_pre = r_pre_table(inputs, weights)
+    cache: dict = {}
+
+    def _eval(params: dict) -> float:
+        key = (params["half_life_games"], params["prior_floor"])
+        if key not in cache:
+            d = DecayConfig(half_life_games=key[0], prior_floor=key[1])
+            cache[key] = sum(abs(prior_seeded_margin(r, r_pre, d, elo_cfg, blend_cfg)
+                                 - r["actual_margin"]) for r in rows) / len(rows)
+        return cache[key]
+
+    start = start or DecayConfig(half_life_games=_START["half_life_games"],
+                                 prior_floor=_START["prior_floor"])
+    current = {"half_life_games": start.half_life_games, "prior_floor": start.prior_floor}
+    for _ in range(n_passes):
+        improved = False
+        for p in _DECAY_ORDER:
+            best_val, best_mae = current[p], _eval(current)
+            for v in grid[p]:
+                mae = _eval({**current, p: v})
+                if mae < best_mae - 1e-12:
+                    best_val, best_mae = v, mae
+            if best_val != current[p]:
+                improved = True
+                current[p] = best_val
+        if not improved:
+            break
+    return (DecayConfig(half_life_games=current["half_life_games"],
+                        prior_floor=current["prior_floor"]), _eval(current))
 
 
 def ablate_factors(raw_rows: list[dict], inputs: dict, weights: PriorWeights,
@@ -424,20 +473,27 @@ def main(argv=None) -> None:
     raw = raw_walk_forward(span, elo_cfg, blend_cfg)
     t_walk = time.time() - t0
     print(f"TRAIN seasons: {sorted(TRAIN_SEASONS)}   HOLDOUT seasons: {sorted(HOLDOUT_SEASONS)}")
-    print("objective: Weeks 1-5 margin MAE, FBS-vs-FBS, TRAIN only")
+    print("objective: stage 1 weights+decay on TRAIN wk1-5; stage 2 decay on ALL TRAIN weeks "
+          "(FBS-vs-FBS margin MAE)")
 
     t_fit0 = time.time()
-    weights, decay, train_mae = fit_prior_weights(raw, inputs, elo_cfg, blend_cfg)
+    weights, decay_early, train_mae = fit_prior_weights(raw, inputs, elo_cfg, blend_cfg)
+    print(f"stage 1 (TRAIN wk1-5): {weights}  {decay_early}  train wk1-5 MAE={train_mae:.4f}")
+    decay, train_all_mae = fit_decay_all_weeks(raw, inputs, weights, elo_cfg, blend_cfg,
+                                               start=decay_early)
     t_fit = time.time() - t_fit0
-    print(f"fitted: {weights}  {decay}  train wk1-5 MAE={train_mae:.4f}")
+    print(f"stage 2 (decay on ALL TRAIN weeks, weights fixed): {decay}  "
+          f"train all-weeks MAE={train_all_mae:.4f}")
 
+    late_weeks = set(range(6, 30))
     for label, seasons in (("TRAIN", TRAIN_SEASONS), ("HOLDOUT", HOLDOUT_SEASONS)):
-        early = _scored(raw, seasons, EARLY_WEEKS)
-        no_prior = (sum(abs(current_model_margin(r, elo_cfg, blend_cfg) - r["actual_margin"])
-                        for r in early) / len(early)) if early else 0.0
-        with_prior = _mae(early, inputs, weights, decay, elo_cfg, blend_cfg)
-        print(f"{label} wk1-5 FBS margin MAE (n={len(early)}): no prior={no_prior:.4f}  "
-              f"prior={with_prior:.4f}")
+        for scope, weeks in (("wk1-5", EARLY_WEEKS), ("wk6+", late_weeks), ("all", None)):
+            sub = _scored(raw, seasons, weeks)
+            no_prior = (sum(abs(current_model_margin(r, elo_cfg, blend_cfg) - r["actual_margin"])
+                            for r in sub) / len(sub)) if sub else 0.0
+            with_prior = _mae(sub, inputs, weights, decay, elo_cfg, blend_cfg)
+            print(f"{label} {scope} FBS margin MAE (n={len(sub)}): no prior={no_prior:.4f}  "
+                  f"prior={with_prior:.4f}")
 
     print("\n=== ABLATION (informational; HOLDOUT wk1-5 MAE with one weight zeroed) ===")
     for f, res in ablate_factors(raw, inputs, weights, decay, elo_cfg, blend_cfg,
