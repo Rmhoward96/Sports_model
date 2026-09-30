@@ -5,8 +5,9 @@ Reads CFBD_API_KEY from the environment (never hardcoded, never logged). Source 
 team-game: {gameId, season, week, team, opponent, offense{...}, defense{...}} where each
 unit carries plays / ppa / successRate / explosiveness plus `passingPlays` and
 `rushingPlays` sub-objects ({ppa, totalPPA, successRate, explosiveness}). Missing
-sub-objects become NaN (never 0). Pass/rush play counts are only filled when CFBD supplies
-a `plays` field on the split (it does not always); downstream derives shares elsewhere.
+sub-objects become NaN (never 0). CFBD's splits carry no play count, so pass/rush plays =
+`plays` when present, else totalPPA / ppa when that ratio is a whole non-negative count
+(ppa is full precision); otherwise NaN.
 
 `team`/`opponent` are mapped to ESPN ids via `cfbd_to_espn`; rows where either side does
 not map to an FBS id (FCS opponents, unrecognized names) are dropped and counted
@@ -20,6 +21,7 @@ from __future__ import annotations
 
 import argparse
 import datetime as dt
+import math
 import os
 import sys
 import time
@@ -75,10 +77,23 @@ def _dig(obj, path):
     return float(obj)
 
 
+def _split_plays(unit, path) -> float:
+    """Play count on a split: its `plays`, else totalPPA / ppa if that is a whole count."""
+    n = _dig(unit, path)
+    if not math.isnan(n):
+        return n
+    split = path[:-1]
+    total, ppa = _dig(unit, (*split, "totalPPA")), _dig(unit, (*split, "ppa"))
+    if math.isnan(total) or math.isnan(ppa) or abs(ppa) < 1e-9:
+        return float("nan")
+    n = total / ppa
+    return float(round(n)) if n >= 0 and abs(n - round(n)) < 0.01 else float("nan")
+
+
 def _unit_row(prefix: str, unit) -> dict:
     row = {f"{prefix}_{s}": _dig(unit, p) for s, p in _METRICS}
     if prefix == "off":
-        row.update({f"{prefix}_{s}": _dig(unit, p) for s, p in _SPLIT_PLAYS})
+        row.update({f"{prefix}_{s}": _split_plays(unit, p) for s, p in _SPLIT_PLAYS})
     return row
 
 
@@ -173,7 +188,9 @@ def main() -> None:
         payload = fetch_year(y, key)
         df = parse_advanced(payload)
         dropped += df.attrs["dropped"]
-        print(f"{y}: {len(payload)} team-games, {len(df)} kept", flush=True)
+        print(f"{y}: {len(payload)} team-games, {len(df)} kept, "
+              f"{df['off_pass_plays'].notna().mean() if len(df) else 0:.0%} with pass/rush counts",
+              flush=True)
         if df.empty and existing is not None and (existing["season"] == y).any():
             # an empty pull must not wipe a season that is already committed
             print(f"::warning::build-cfb-advanced: {y} returned no usable rows; "

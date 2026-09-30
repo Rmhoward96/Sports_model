@@ -149,3 +149,26 @@ def test_merge_all_empty_keeps_file_and_nonempty_still_replaces(monkeypatch, tmp
 def test_empty_payload_without_existing_rows_is_not_an_error(monkeypatch, tmp_path):
     got = _run_main(monkeypatch, tmp_path, {2024: []}, None, ["--merge", "--seasons", "2024"])
     assert len(got) == 0
+
+
+def _real_split(ppa, n, sr=0.45, ex=1.2):
+    # CFBD's real split shape: no `plays`, count only implied by totalPPA / ppa
+    return {"ppa": ppa, "totalPPA": ppa * n, "successRate": sr, "explosiveness": ex}
+
+
+def test_split_plays_derived_from_total_ppa_when_count_missing():
+    g = {"gameId": 404, "season": 2023, "week": 5, "team": "Alabama", "opponent": "Georgia",
+         "offense": _unit(0.2, 0.45, 1.2, pass_=_real_split(0.417316, 31),
+                          rush=_real_split(-0.354743, 38))}
+    r = bca.parse_advanced([g]).iloc[0]
+    assert r["off_pass_plays"] == 31 and r["off_rush_plays"] == 38
+
+
+def test_split_plays_nan_when_ratio_not_a_whole_count():
+    for ppa, total in ((0.0, 0.0), (0.3, 7.45), (0.3, -3.0)):
+        g = {"gameId": 405, "season": 2023, "week": 5, "team": "Alabama", "opponent": "Georgia",
+             "offense": _unit(0.2, 0.45, 1.2, pass_={"ppa": ppa, "totalPPA": total},
+                              rush=_real_split(0.1, 30))}
+        r = bca.parse_advanced([g]).iloc[0]
+        assert math.isnan(r["off_pass_plays"]), (ppa, total)
+        assert r["off_rush_plays"] == 30
