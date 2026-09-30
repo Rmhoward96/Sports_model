@@ -57,6 +57,12 @@ and ``nfl_power(..., scale=...)`` reports ``rating = slope * raw_rating`` (likew
 ``hfa`` as columns and in ``df.attrs["market_scale"]``. The fit is frozen per
 season (a pure function of prior seasons). No scale -> slope 1 (raw points).
 
+Season weighting (user, 2026-09-30): the RANKINGS weight this season by
+``w = games / (games + 1)`` (``POWER_BLEND_K``) -- 50% after 1 game, 75% after 3, ~90%
+by week 9. CFB: ``cfb_power_current`` (this-season SRS vs the preseason prior). NFL:
+``nfl_power`` over ``unit_ratings_asof(..., blend_k=POWER_BLEND_K)`` with the market
+scale fit on the same blend. Matchup grades and the betting models keep their blends.
+
 Rankings (``rankings``): rank 1 = highest rating (ties share the better rank);
 ``move`` = prev_rank - rank (+ = moved up); unit ranks by EPA/play adj (offense:
 highest is 1; defense: lowest allowed is 1) among the ranked teams; SOS = mean
@@ -76,8 +82,9 @@ import pandas as pd
 
 from sportsmodel.cfb.teams import load_fbs_ids
 from sportsmodel.context.history import _ats, _su
-from sportsmodel.context.units import unit_ratings_asof, window_ratings
-from sportsmodel.nfl.elo import EloConfig, _carryover, run_elo
+from sportsmodel.context.units import (BLEND_K, POWER_BLEND_K, unit_ratings_asof,
+                                      window_ratings)
+from sportsmodel.nfl.elo import EloConfig, _carryover, elo_expected_margin, run_elo
 from sportsmodel.nfl.ratings import BlendConfig, expected_margin
 from sportsmodel.nfl.srs import compute_srs
 from sportsmodel.nfl.teams import normalize_team
@@ -139,6 +146,51 @@ def cfb_power(schedule_df: pd.DataFrame, elo_cfg: EloConfig, blend_cfg: BlendCon
                      "elo": float(elo[t]), "srs": float(srs[t]) if t in srs else np.nan,
                      "games": g, "is_fbs": is_fbs[t]})
     return _sorted(pd.DataFrame(rows, columns=CFB_POWER_COLUMNS))
+
+
+CFB_CURRENT_COLUMNS = CFB_POWER_COLUMNS + ["prior", "weight"]
+
+
+def cfb_power_current(schedule_df: pd.DataFrame, elo_cfg: EloConfig, blend_cfg: BlendConfig,
+                      asof: tuple[int, int], *, priors: dict | None = None,
+                      blend_k: float = POWER_BLEND_K, fbs=None) -> pd.DataFrame:
+    """Power rating weighted to THIS season (the rankings' rating; module doc).
+
+    ``rating = w * current + (1 - w) * prior``, ``w = games / (games + blend_k)``:
+
+    * current = this season's SRS (opponent-adjusted margin, games of weeks < week)
+      minus the FBS-average SRS -- points vs an average FBS team;
+    * prior = the preseason rating ``priors[team]`` (Elo scale, the leak-free
+      ``cfb.priors.season_priors``) minus the FBS-average prior, / 25 -> points;
+      a team without a prior falls back to its carried-over Elo vs the FBS-average
+      Elo, / 25;
+    * games = this season's games before ``week``; no SRS yet -> the prior only.
+
+    Same state (and columns) as ``cfb_power`` plus ``prior`` and ``weight``.
+    """
+    base = cfb_power(schedule_df, elo_cfg, blend_cfg, asof, fbs=fbs)
+    if base.empty:
+        return pd.DataFrame(columns=CFB_CURRENT_COLUMNS)
+    priors = {str(k): float(v) for k, v in (priors or {}).items()}
+    fb = base[base["is_fbs"].astype(bool)]
+    avg_elo = float(fb["elo"].mean()) if len(fb) else elo_cfg.base
+    fbs_srs = fb["srs"].dropna()
+    avg_srs = float(fbs_srs.mean()) if len(fbs_srs) else 0.0
+    fbs_pre = [priors[str(t)] for t in fb["team"] if str(t) in priors]
+    avg_pre = float(np.mean(fbs_pre)) if fbs_pre else 0.0
+    neutral = dataclasses.replace(elo_cfg, hfa_elo=0.0)
+    pre, cur, w = [], [], []
+    for t, e, srs, g in base[["team", "elo", "srs", "games"]].itertuples(index=False):
+        pre.append((priors[str(t)] - avg_pre) / 25.0 if str(t) in priors
+                   else elo_expected_margin(e, avg_elo, neutral))
+        has = g > 0 and np.isfinite(srs)
+        cur.append(srs - avg_srs if has else 0.0)
+        w.append(g / (g + blend_k) if has else 0.0)
+    pre, cur, w = np.array(pre), np.array(cur), np.array(w)
+    out = base.copy()
+    out["rating"] = w * cur + (1 - w) * pre
+    out["prior"], out["weight"] = pre, w
+    return _sorted(out[CFB_CURRENT_COLUMNS])
 
 
 # ------------------------------------------------------------------------ NFL
@@ -205,14 +257,15 @@ def _norm(code) -> str:
 
 
 def nfl_market_scale(unit_games: pd.DataFrame, schedules: pd.DataFrame, season: int,
-                     n_seasons: int = MARKET_SCALE_SEASONS) -> dict:
+                     n_seasons: int = MARKET_SCALE_SEASONS, blend_k: float = BLEND_K) -> dict:
     """Fit (slope, hfa) for ``season`` from REG games of the ``n_seasons`` before it.
 
     ``schedules``: nflverse schedule rows (season, week, home_team, away_team,
     spread_line; ``game_type`` and ``location`` used when present -- without
     ``location`` every game counts as a home game). Raw ratings are
     ``nfl_power(unit_ratings_asof(unit_games, s, week), unit_games)`` per game
-    week. Only rows of seasons < ``season`` are read. Returns ``{"season",
+    week, blended with ``blend_k`` (fit with the same blend the ratings are served
+    with). Only rows of seasons < ``season`` are read. Returns ``{"season",
     "slope", "hfa", "n", "seasons"}``; slope/hfa None when no usable game.
     """
     seasons = list(range(season - n_seasons, season))
@@ -225,7 +278,8 @@ def nfl_market_scale(unit_games: pd.DataFrame, schedules: pd.DataFrame, season: 
     for s in sorted(sc["season"].unique()):
         prev = window_ratings(ug, int(s) - 1, 99)
         for wk, g in sc[sc["season"] == s].groupby("week"):
-            raw = nfl_power(unit_ratings_asof(ug, int(s), int(wk), prev=prev), ug)
+            raw = nfl_power(unit_ratings_asof(ug, int(s), int(wk), prev=prev,
+                                               blend_k=blend_k), ug)
             r = raw.set_index("team")["raw_rating"] if len(raw) else pd.Series(dtype=float)
             for x in g.itertuples(index=False):
                 h, a = _norm(x.home_team), _norm(x.away_team)

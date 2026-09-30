@@ -386,3 +386,54 @@ def test_rankings_records_and_sos_are_regular_season_only():
     assert r.loc["A", "su"] == "1-0" and r.loc["A", "ats"] == "1-0-0"
     assert r.loc["A", "sos"] == pytest.approx(2.0)
     assert r.loc["D", "su"] == "0-0"
+
+
+# ------------------------------------------------- season-weighted CFB power
+from sportsmodel.context.power import cfb_power_current  # noqa: E402
+
+
+def test_cfb_power_current_weights_this_season_by_games_over_games_plus_one():
+    sched = _cfb_schedule(seasons=(2023, 2024), n_weeks=12, strong="T00", edge=10.0)
+    base = cfb_power(sched, ELO, BLEND, (2024, 5), fbs=FBS).set_index("team")
+    priors = {t: 1500.0 for t in CFB_TEAMS}
+    priors["T05"] = 1500.0 + 25 * 16          # preseason says T05 is +16 better
+    p = cfb_power_current(sched, ELO, BLEND, (2024, 5), priors=priors, fbs=FBS).set_index("team")
+    g = int(p.loc["T00", "games"])
+    assert g == 4
+    w = g / (g + 1)
+    assert p.loc["T00", "weight"] == pytest.approx(w)
+    fbs_srs = base.loc[CFB_TEAMS, "srs"]
+    pre_mean = np.mean(list(priors.values()))
+    for t in ("T00", "T05", "T09"):
+        cur = base.loc[t, "srs"] - fbs_srs.mean()
+        pre = (priors[t] - pre_mean) / 25.0
+        assert p.loc[t, "rating"] == pytest.approx(w * cur + (1 - w) * pre)
+        assert p.loc[t, "prior"] == pytest.approx(pre)
+    assert p.index[0] == "T00"
+
+
+def test_cfb_power_current_falls_back_to_elo_without_a_prior_and_uses_prior_before_games():
+    sched = _cfb_schedule(seasons=(2023, 2024), n_weeks=12, strong="T00", edge=10.0)
+    base = cfb_power(sched, ELO, BLEND, (2024, 1), fbs=FBS).set_index("team")
+    p = cfb_power_current(sched, ELO, BLEND, (2024, 1), priors={}, fbs=FBS).set_index("team")
+    avg_elo = base.loc[CFB_TEAMS, "elo"].mean()
+    for t in ("T00", "T07"):
+        assert p.loc[t, "weight"] == 0.0
+        assert p.loc[t, "rating"] == pytest.approx((base.loc[t, "elo"] - avg_elo) / 25.0)
+
+
+def test_cfb_power_current_leak_free():
+    sched = _cfb_schedule(seasons=(2023, 2024), n_weeks=12, noise=6.0)
+    a = cfb_power_current(sched, ELO, BLEND, (2024, 6), priors={}, fbs=FBS)
+    later = sched.copy()
+    later.loc[(later["season"] == 2024) & (later["week"] >= 6), "home_score"] += 40
+    b = cfb_power_current(later, ELO, BLEND, (2024, 6), priors={}, fbs=FBS)
+    pd.testing.assert_frame_equal(a, b)
+
+
+def test_nfl_market_scale_accepts_blend_k():
+    ug = league([2020, 2021, 2022, 2023], n_weeks=10, noise=0.6, seed=11)
+    sched = _market_schedule(ug, [2020, 2021, 2022], n_weeks=10)
+    a = nfl_market_scale(ug, sched, 2023)
+    b = nfl_market_scale(ug, sched, 2023, blend_k=1.0)
+    assert a["n"] == b["n"] and b["slope"] is not None and b["slope"] != a["slope"]

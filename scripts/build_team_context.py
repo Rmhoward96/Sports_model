@@ -48,10 +48,12 @@ from sportsmodel.context.game_log import (  # noqa: E402
     cfb_game_log, live_closing_consensus, nfl_game_log)
 from sportsmodel.context.history import history_for_games  # noqa: E402
 from sportsmodel.context.matchup import cutoffs_for_season, grades_for_games  # noqa: E402
+from sportsmodel.cfb.priors import load_weights, season_priors  # noqa: E402
 from sportsmodel.context.power import (  # noqa: E402
-    cfb_power, nfl_market_scale, nfl_power, rankings)
+    cfb_power_current, nfl_market_scale, nfl_power, rankings)
 from sportsmodel.context.units import (  # noqa: E402
-    cfb_unit_games, nfl_unit_games, unit_ratings_asof, window_ratings)
+    BLEND_K, POWER_BLEND_K, cfb_unit_games, nfl_unit_games, unit_ratings_asof,
+    window_ratings)
 from sportsmodel.nfl.elo import EloConfig  # noqa: E402
 from sportsmodel.nfl.ratings import BlendConfig  # noqa: E402
 from sportsmodel.nfl.teams import normalize_team  # noqa: E402
@@ -82,8 +84,9 @@ def _empty(table: str) -> pd.DataFrame:
 class _Ratings:
     """Per-run caches: previous-season ratings, as-of ratings and grade cutoffs."""
 
-    def __init__(self, unit_games: pd.DataFrame | None):
+    def __init__(self, unit_games: pd.DataFrame | None, blend_k: float = BLEND_K):
         self.ug = unit_games
+        self.blend_k = blend_k
         self._prev: dict[int, pd.DataFrame] = {}
         self._asof: dict[tuple[int, int], pd.DataFrame] = {}
         self._cut: dict[int, dict | None] = {}
@@ -93,7 +96,8 @@ class _Ratings:
         if k not in self._asof:
             if k[0] not in self._prev:
                 self._prev[k[0]] = window_ratings(self.ug, k[0] - 1, 99)
-            self._asof[k] = unit_ratings_asof(self.ug, k[0], k[1], prev=self._prev[k[0]])
+            self._asof[k] = unit_ratings_asof(self.ug, k[0], k[1], prev=self._prev[k[0]],
+                                              blend_k=self.blend_k)
         return self._asof[k]
 
     def cutoffs(self, season: int) -> dict | None:
@@ -225,10 +229,13 @@ def build_nfl(schedules: pd.DataFrame, unit_games: pd.DataFrame,
     nxt = _next_unplayed(log, now)
     if nxt is not None:
         s, w = int(nxt["season"]), int(nxt["week"])
-        scale = nfl_market_scale(unit_games, schedules, s)   # once per season, both weeks
-        ur = cache.asof(s, w)
+        # rankings weight this season harder than the grades (POWER_BLEND_K)
+        pcache = _Ratings(unit_games, POWER_BLEND_K)
+        scale = nfl_market_scale(unit_games, schedules, s,   # once per season, both weeks
+                                 blend_k=POWER_BLEND_K)
+        ur = pcache.asof(s, w)
         power = nfl_power(ur, unit_games, scale)
-        prev = nfl_power(cache.asof(s, w - 1), unit_games, scale) if w > 1 else None
+        prev = nfl_power(pcache.asof(s, w - 1), unit_games, scale) if w > 1 else None
         rk = _rank_frame(rankings(power, prev, ur, log), "nfl")
     return {"team_game_log": _log_frame(log), "team_history": hist,
             "matchup_grades": grades, "power_rankings": rk}
@@ -333,6 +340,24 @@ def load_rating() -> tuple[EloConfig, BlendConfig]:
             BlendConfig(w_sos=j["w_sos"], srs_min_games=j["srs_min_games"]))
 
 
+def load_cfb_priors(season: int) -> dict:
+    """{team: preseason rating (Elo scale)} for ``season`` -- the leak-free v2 prior
+    (``cfb.priors.season_priors``: previous-season SP+ + returning / recruiting /
+    portal / prior SOS). {} when the priors asset or the season's rows are missing
+    (rankings then fall back to carried-over Elo)."""
+    path = CFB_ASSETS / "priors.parquet"
+    wpath = CFB_ASSETS / "priors_weights.json"
+    if not path.exists() or not wpath.exists():
+        warn(f"cfb: {path.name} / {wpath.name} missing -- rankings use Elo as the prior")
+        return {}
+    df = pd.read_parquet(path)
+    df = df[df["season"].isin([season - 1, season])]
+    rows = {int(y): g.to_dict("records") for y, g in df.groupby("season")}
+    if season not in rows:
+        return {}
+    return season_priors(rows, season, load_weights(wpath))
+
+
 def load_cfb_sources(now: pd.Timestamp) -> dict:
     asset = pd.read_parquet(CFB_ASSETS / "schedules.parquet")
     espn_games, st = _espn_games(now)
@@ -366,7 +391,7 @@ def _cfb_conf(sched: pd.DataFrame) -> dict:
 def build_cfb(schedules: pd.DataFrame, lines: pd.DataFrame, live_close: pd.DataFrame | None,
               advanced: pd.DataFrame | None, now: pd.Timestamp,
               rating_cfg: tuple[EloConfig, BlendConfig] | None = None,
-              fbs=None) -> dict[str, pd.DataFrame]:
+              fbs=None, priors: dict | None = None) -> dict[str, pd.DataFrame]:
     now = _utc(now)
     elo_cfg, blend_cfg = rating_cfg or load_rating()
     season = _cfb_season(schedules, now)
@@ -398,9 +423,11 @@ def build_cfb(schedules: pd.DataFrame, lines: pd.DataFrame, live_close: pd.DataF
     nxt = _next_unplayed(log, now)
     if nxt is not None:
         s, w = int(nxt["season"]), int(nxt["week"])
-        power = cfb_power(schedules, elo_cfg, blend_cfg, (s, w), fbs=fbs)
-        prev = cfb_power(schedules, elo_cfg, blend_cfg, (s, w - 1), fbs=fbs) if w > 1 else None
-        ur = unit_ratings_asof(ug, s, w) if ug is not None else None
+        pri = load_cfb_priors(s) if priors is None else priors
+        power = cfb_power_current(schedules, elo_cfg, blend_cfg, (s, w), priors=pri, fbs=fbs)
+        prev = (cfb_power_current(schedules, elo_cfg, blend_cfg, (s, w - 1), priors=pri, fbs=fbs)
+                if w > 1 else None)
+        ur = unit_ratings_asof(ug, s, w, blend_k=POWER_BLEND_K) if ug is not None else None
         rk = _rank_frame(rankings(power, prev, ur, log), "cfb", _cfb_conf(sched))
     return {"team_game_log": _log_frame(log), "team_history": hist,
             "matchup_grades": grades, "power_rankings": rk}
