@@ -171,3 +171,155 @@ def test_build_game_rows_missing_priors_falls_back_to_todays_behavior():
     assert len(rows) == 1
     assert rows[0]["pred_margin"] > 0
     assert rows[0]["home_win_prob"] > 0.5
+
+
+# --------------------------------------------------------------------------
+# Live state == backtested walk-forward state (fix/cfb-live-ratings, part A).
+#
+# The live producer must serve exactly what backtest_cfb_gameline.py /
+# walkforward.raw_model_predictions scored: Elo continuous across seasons,
+# SRS / points ratings / games_played SEASON-TO-DATE (current season, weeks
+# < W), and the same total seed/fallback. The old `_season_to_date_ratings`
+# pooled SRS/points/counts over every season since 2015 (games_played ~140,
+# so the preseason prior decayed to 0 and the SRS gate was always open).
+# --------------------------------------------------------------------------
+import numpy as np
+import pandas as pd
+import pytest
+
+from sportsmodel.cfb import walkforward
+
+_WF_ELO = EloConfig(k=40, hfa_elo=70, carryover=0.9, base=1500.0)
+_WF_BLEND = BlendConfig(w_sos=0.45, srs_min_games=3)
+_TEAMS = [str(t) for t in range(1, 11)]
+
+
+def _synthetic_schedule(seasons=(2021, 2022), weeks=6, seed=11) -> pd.DataFrame:
+    rng = np.random.default_rng(seed)
+    rows, pk = [], 5000
+    for season in seasons:
+        for week in range(1, weeks + 1):
+            order = list(rng.permutation(_TEAMS))
+            for i in range(0, len(order), 2):
+                pk += 1
+                rows.append({"season": season, "week": week, "game_type": "REG",
+                             "home_team": order[i], "away_team": order[i + 1],
+                             "home_score": int(rng.integers(0, 56)),
+                             "away_score": int(rng.integers(0, 56)), "game_pk": pk})
+    return pd.DataFrame(rows)
+
+
+def _games_of_week(sched, season, week):
+    wk = sched[(sched["season"] == season) & (sched["week"] == week)]
+    return [{"game_pk": int(g.game_pk), "home_team": g.home_team, "away_team": g.away_team,
+             "home_name": g.home_team, "away_name": g.away_team, "game_date": "2000-01-01"}
+            for g in wk.itertuples()]
+
+
+def _live_preds(sched, season, week, elo_cfg=_WF_ELO, blend_cfg=_WF_BLEND):
+    """generate_cfb's model margin/total for (season, week), prior disabled.
+    `sched` is passed WHOLE (incl. week W's own results and later weeks) --
+    the live state must ignore everything at or after (season, week)."""
+    games = _games_of_week(sched, season, week)
+    ratings = gc._season_to_date_ratings(sched, season, week, elo_cfg, blend_cfg, games)
+    ratings["r_pre"] = {}                      # prior blend disabled
+    rows = gc.build_game_rows(games, ratings, week, GameLineConfig())  # bias 0 -> pred == model
+    return {r["game_pk"]: (r["pred_margin"], r["pred_total"]) for r in rows}
+
+
+def _wf_upcoming_preds(sched, season, week, elo_cfg=_WF_ELO, blend_cfg=_WF_BLEND):
+    """walkforward rows for week W when week W is the live, unplayed week:
+    history through (season, week) with week W's scores blanked."""
+    frame = sched[(sched["season"] < season)
+                  | ((sched["season"] == season) & (sched["week"] <= week))].copy()
+    frame["home_score"] = frame["home_score"].astype("Float64")
+    frame["away_score"] = frame["away_score"].astype("Float64")
+    wk = (frame["season"] == season) & (frame["week"] == week)
+    frame.loc[wk, ["home_score", "away_score"]] = pd.NA
+    rows = walkforward.raw_model_predictions(frame, elo_cfg, blend_cfg, include_unscored=True)
+    return {r["game_pk"]: (r["model_margin"], r["model_total"])
+            for r in rows if r["season"] == season and r["week"] == week}
+
+
+def _wf_backtest_preds(sched, season, week, elo_cfg=_WF_ELO, blend_cfg=_WF_BLEND):
+    """walkforward rows exactly as the backtest scored them (full schedule)."""
+    rows = walkforward.raw_model_predictions(sched, elo_cfg, blend_cfg)
+    return {r["game_pk"]: (r["model_margin"], r["model_total"])
+            for r in rows if r["season"] == season and r["week"] == week}
+
+
+@pytest.mark.parametrize("season,week", [(2022, 1), (2022, 2), (2022, 4), (2022, 6)])
+def test_live_parity_with_walkforward_synthetic(season, week):
+    sched = _synthetic_schedule()
+    live = _live_preds(sched, season, week)
+    assert live and live == _wf_upcoming_preds(sched, season, week)
+    # no team plays twice in a synthetic week -> also equal to the backtest rows
+    bt = _wf_backtest_preds(sched, season, week)
+    assert set(live) == set(bt)
+    for pk, (m, t) in live.items():
+        assert m == pytest.approx(bt[pk][0], abs=1e-9)
+        assert t == pytest.approx(bt[pk][1], abs=1e-9)
+
+
+def test_live_state_is_season_to_date_not_pooled():
+    sched = _synthetic_schedule()
+    games = _games_of_week(sched, 2022, 1)
+    st = gc._season_to_date_ratings(sched, 2022, 1, _WF_ELO, _WF_BLEND, games)
+    # week 1: a whole prior season of history exists, but none of it this season
+    assert st["games_played"] == {} and st["srs_now"] == {} and st["points_ratings"] == {}
+    rows = gc.build_game_rows(games, {**st, "r_pre": {}}, 1, GameLineConfig())
+    assert all(r["pred_total"] == walkforward._DEFAULT_TOTAL_SEED for r in rows)
+    st4 = gc._season_to_date_ratings(sched, 2022, 4, _WF_ELO, _WF_BLEND,
+                                     _games_of_week(sched, 2022, 4))
+    assert max(st4["games_played"].values()) == 3          # weeks 1-3 of 2022 only
+    # Elo, by contrast, is continuous: week-1 ratings carry 2021 in (with carryover)
+    assert st["elo_final"] and any(v != _WF_ELO.base for v in st["elo_final"].values())
+
+
+def test_live_state_ignores_results_at_or_after_the_week():
+    sched = _synthetic_schedule()
+    base = _live_preds(sched, 2022, 3)
+    later = sched.copy()
+    later.loc[(later.season == 2022) & (later.week >= 3), "home_score"] += 30
+    assert _live_preds(later, 2022, 3) == base
+
+
+def _real_merged():
+    import importlib.util as _ilu
+    p = pathlib.Path(__file__).resolve().parents[2] / "scripts" / "backtest_cfb_gameline.py"
+    spec = _ilu.spec_from_file_location("backtest_cfb_gameline_parity", p)
+    bt = _ilu.module_from_spec(spec)
+    spec.loader.exec_module(bt)
+    root = p.parents[1]
+    return bt.load_merged_schedule(str(root / "assets/cfb/schedules.parquet"),
+                                   str(root / "assets/cfb/lines.parquet"))
+
+
+@pytest.mark.parametrize("week", [1, 6])
+def test_live_parity_with_walkforward_real_history(week):
+    """Real CFBD history (2021-2023), committed rating.json config: the live
+    state for a historical 2023 week reproduces the walk-forward rows."""
+    elo_cfg, blend_cfg = gc.load_rating()
+    merged = _real_merged()
+    sched = merged[merged["season"].between(2021, 2023)].reset_index(drop=True)
+    live = _live_preds(sched, 2023, week, elo_cfg, blend_cfg)
+    up = _wf_upcoming_preds(sched, 2023, week, elo_cfg, blend_cfg)
+    assert len(live) > 40
+    assert live == {pk: up[pk] for pk in live}           # exact, same engine
+    # vs the backtest's scored rows: equal except a team's 2nd game in the
+    # same CFBD week (week 0 is folded into week 1), whose pre-game Elo in
+    # the backtest already includes that week's first game.
+    wk = sched[(sched.season == 2023) & (sched.week == week)]
+    seen, single = set(), set()
+    for g in wk.sort_values(["season", "week"], kind="stable").itertuples():
+        if g.home_team not in seen and g.away_team not in seen:
+            single.add(int(g.game_pk))
+        seen.update({g.home_team, g.away_team})
+    bt = _wf_backtest_preds(sched, 2023, week, elo_cfg, blend_cfg)
+    checked = 0
+    for pk, (m, t) in live.items():
+        if pk in single:
+            assert m == pytest.approx(bt[pk][0], abs=1e-6)
+            assert t == pytest.approx(bt[pk][1], abs=1e-6)
+            checked += 1
+    assert checked > 40
