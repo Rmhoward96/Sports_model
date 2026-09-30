@@ -107,3 +107,45 @@ def test_coverage_share_of_fbs_games_with_both_sides():
     # FBS-vs-FBS games: 1, 2, 4 (3 has FCS). Game 1 has both sides; 2 only one; 4 none.
     assert math.isclose(cov.loc[2023, "both_sides"], 1 / 3)
     assert cov.loc[2023, "fbs_games"] == 3
+
+
+def _run_main(monkeypatch, tmp_path, payloads, existing, argv):
+    """Run bca.main() with fetch_year stubbed and _OUT redirected to tmp_path."""
+    out = tmp_path / "advanced_games.parquet"
+    if existing is not None:
+        existing.to_parquet(out)
+    monkeypatch.setattr(bca, "_OUT", out)
+    monkeypatch.setattr(bca, "_SCHEDULES", tmp_path / "missing.parquet")
+    monkeypatch.setattr(bca, "ROOT", tmp_path)
+    monkeypatch.setattr(bca, "fetch_year", lambda y, key: payloads[y])
+    monkeypatch.setenv("CFBD_API_KEY", "test-key")
+    monkeypatch.setattr("sys.argv", ["build_cfb_advanced.py", *argv])
+    bca.main()
+    return pd.read_parquet(out)
+
+
+def test_merge_empty_payload_keeps_existing_season(monkeypatch, tmp_path, capsys):
+    old = bca.parse_advanced(PAYLOAD)                 # season 2023
+    old22 = old.assign(season=2022, game_id=old["game_id"] + 1000)
+    existing = pd.concat([old, old22], ignore_index=True)
+    got = _run_main(monkeypatch, tmp_path, {2023: [], 2022: [dict(PAYLOAD[0], season=2022, gameId=1401)]}, existing,
+                    ["--merge", "--seasons", "2023", "2022"])
+    msg = capsys.readouterr().out
+    assert "::warning::" in msg and "KEEPING" in msg and "2023" in msg
+    assert set(got["season"]) == {2022, 2023}
+    assert len(got[got.season == 2023]) == len(old)   # not wiped
+    assert (got[got.season == 2023]["game_id"].isin(old["game_id"])).all()
+
+
+def test_merge_all_empty_keeps_file_and_nonempty_still_replaces(monkeypatch, tmp_path):
+    old = bca.parse_advanced(PAYLOAD)
+    got = _run_main(monkeypatch, tmp_path, {2023: []}, old, ["--merge", "--seasons", "2023"])
+    assert len(got) == len(old)
+    fresh = [dict(PAYLOAD[0], gameId=999)]
+    got = _run_main(monkeypatch, tmp_path, {2023: fresh}, old, ["--merge", "--seasons", "2023"])
+    assert set(got["game_id"]) == {999}               # a real payload still replaces the season
+
+
+def test_empty_payload_without_existing_rows_is_not_an_error(monkeypatch, tmp_path):
+    got = _run_main(monkeypatch, tmp_path, {2024: []}, None, ["--merge", "--seasons", "2024"])
+    assert len(got) == 0

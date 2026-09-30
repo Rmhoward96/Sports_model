@@ -49,7 +49,7 @@ def choose_side(
 
 
 def stake_fraction(p: float, d: float, kelly_frac: float, cap: float = 0.03) -> float:
-    if d <= 1.0:
+    if not (math.isfinite(p) and math.isfinite(d)) or d <= 1.0:
         return 0.0
     return min(cap, kelly_frac * max(0.0, p * d - 1.0) / (d - 1.0))
 

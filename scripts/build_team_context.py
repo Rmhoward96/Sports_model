@@ -23,7 +23,8 @@ Per sport:
 * rankings: (S, W) = the next unplayed game's season/week; previous week's table for
   the move. NFL uses the market scale fitted once for S (``nfl_market_scale``) for both.
 * writes: ``db.upsert_team_context`` (one transaction per sport); ``--dry-run`` prints
-  counts, the runtime and a sample instead and never opens a DB connection.
+  counts, the runtime and a sample instead and performs no DB writes (it may
+  read ``odds_snapshot`` for CFB closing lines when DATABASE_URL is set).
 
 Usage:
     uv run python scripts/build_team_context.py --sport all [--dry-run] [--now ISO]
@@ -145,6 +146,9 @@ def _grades(up: pd.DataFrame, games: pd.DataFrame, cache: _Ratings, sport: str):
                 "season", "week", "kickoff"]
         frames.append(grades_for_games(gw[cols], cache.asof(season, week),
                                        cache.cutoffs(int(season))))
+    if not frames:
+        warn(f"{sport}: no upcoming games with ids to grade; matchup_grades empty")
+        return _empty("matchup_grades")
     gr = pd.concat(frames, ignore_index=True)
     gr["sport"] = sport
     return gr[TABLE_COLUMNS["matchup_grades"]].reset_index(drop=True)

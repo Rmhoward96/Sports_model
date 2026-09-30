@@ -218,6 +218,19 @@ def test_no_upcoming_games_gives_empty_history_and_rankings():
     assert not out["team_game_log"].empty
 
 
+def test_grades_with_no_gradeable_games_returns_empty_with_warning(capsys):
+    """Every upcoming game lacking an ESPN id leaves `games` without matches: the
+    concat over zero frames used to raise ValueError and fail the whole sport run."""
+    up = pd.DataFrame({"game_key": ["nope"]})
+    games = pd.DataFrame({"game_key": ["other"], "game_pk": [1], "home_team": ["KC"],
+                          "away_team": ["BUF"], "home_is_fbs": [True], "away_is_fbs": [True],
+                          "season": [CUR], "week": [4],
+                          "kickoff": [pd.Timestamp("2026-09-28T17:00:00Z")]})
+    out = btc._grades(up, games, btc._Ratings(None), "nfl")
+    assert out.empty and list(out.columns) == btc.TABLE_COLUMNS["matchup_grades"]
+    assert "::warning::" in capsys.readouterr().out
+
+
 # ------------------------------------------------------------------ records
 def test_records_are_db_ready():
     out = btc.build_nfl(**nfl_sources(), now=NOW)

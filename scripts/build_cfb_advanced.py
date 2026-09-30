@@ -167,17 +167,25 @@ def main() -> None:
     if not key:
         sys.exit("CFBD_API_KEY not set in environment (add it as a secret / export it).")
 
-    frames, dropped = [], 0
+    existing = pd.read_parquet(_OUT) if args.merge and _OUT.exists() else None
+    frames, dropped, replace = [], 0, []
     for y in args.seasons:
         payload = fetch_year(y, key)
         df = parse_advanced(payload)
         dropped += df.attrs["dropped"]
-        frames.append(df)
         print(f"{y}: {len(payload)} team-games, {len(df)} kept", flush=True)
+        if df.empty and existing is not None and (existing["season"] == y).any():
+            # an empty pull must not wipe a season that is already committed
+            print(f"::warning::build-cfb-advanced: {y} returned no usable rows; "
+                  f"KEEPING the {int((existing['season'] == y).sum())} existing {y} rows",
+                  flush=True)
+            continue
+        frames.append(df)
+        replace.append(y)
     new = pd.concat(frames, ignore_index=True) if frames else parse_advanced([])
 
-    if args.merge and _OUT.exists():
-        out = merge_frames(pd.read_parquet(_OUT), new, args.seasons)
+    if existing is not None:
+        out = merge_frames(existing, new, replace)
     else:
         out = merge_frames(None, new, args.seasons)
     _OUT.parent.mkdir(parents=True, exist_ok=True)

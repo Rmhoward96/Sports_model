@@ -9,7 +9,7 @@ on:
   workflow_dispatch:
     inputs:
       seasons:
-        description: "Space-separated seasons to pull (blank = 2015 through the current season)"
+        description: "Space-separated seasons to pull (blank = the current season only)"
         required: false
         default: "2015 2016 2017 2018 2019 2020 2021 2022 2023 2024 2025"
   schedule:
@@ -17,6 +17,11 @@ on:
 
 permissions:
   contents: write
+
+# a dispatch overlapping the Monday cron must not race on the committed parquet
+concurrency:
+  group: build-cfb-advanced
+  cancel-in-progress: false
 
 jobs:
   build:

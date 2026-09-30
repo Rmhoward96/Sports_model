@@ -213,3 +213,13 @@ def test_roi_ci_clusters_by_season_week():
     lo, hi = roi_ci(bets, n_boot=2000, seed=0)
     assert lo == pytest.approx(-1.0)
     assert hi == pytest.approx(1.0)
+
+
+def test_stake_fraction_non_finite_or_no_odds_is_zero():
+    nan, inf = float("nan"), float("inf")
+    assert stake_fraction(0.55, nan, 0.25) == 0.0
+    assert stake_fraction(nan, 1.909, 0.25) == 0.0
+    assert stake_fraction(0.55, inf, 0.25) == 0.0
+    assert stake_fraction(inf, 1.909, 0.25) == 0.0
+    assert stake_fraction(0.9, 1.0, 0.25) == 0.0
+    assert stake_fraction(0.9, 0.5, 0.25) == 0.0
