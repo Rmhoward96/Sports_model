@@ -1,0 +1,50 @@
+name: build-team-context
+
+# Team context for the site (descriptive, not picks): team game log, history and
+# matchup grades for the next 8 days of games, and power rankings for the upcoming
+# week, NFL + CFB (scripts/build_team_context.py -> team_game_log, team_history,
+# matchup_grades, power_rankings; db/migration_team_context.sql).
+# Daily 13:00 UTC: after the data refreshes that land on the default branch before
+# it (generate-nfl / generate-cfb 12:00, refresh-cfb-schedules Sun 12:00,
+# build-cfb-advanced Mon 12:00), so checkout sees the refreshed assets. NFL
+# schedules/pbp come from nflverse; CFB current-season closing lines from
+# odds_snapshot. Idempotent upserts: a late or duplicate run rewrites the same rows.
+# Only DATABASE_URL is needed; the CFBD key belongs to build-cfb-advanced.yml.
+on:
+  schedule:
+    - cron: "0 13 * * *"
+  workflow_dispatch:
+    inputs:
+      sport:
+        description: "Sport to build"
+        type: choice
+        options:
+          - all
+          - nfl
+          - cfb
+        default: all
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    concurrency:
+      group: build-team-context
+      cancel-in-progress: false
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v10.0.1
+
+      - name: Set up Python + sync deps
+        run: uv sync
+
+      - name: Build team context (game log, history, matchup grades, power rankings)
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+          SPORT: ${{ inputs.sport || 'all' }}
+        run: uv run python scripts/build_team_context.py --sport "$SPORT"
