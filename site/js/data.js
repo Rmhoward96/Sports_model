@@ -84,3 +84,94 @@ async function loadEvHistory(days) {
     market: r.market, side: r.side, player_id: r.player_id ?? null, player_name: r.player_name ?? null, at: r.created_at }))
     .filter((r) => r.date >= oldest);
 }
+
+/* ── Shared page helpers (used by more than one page) ─────────────────────
+   Depend on app.js (etDateStr, inTrackRecord, bpKick, logoImg, CFB_2W_MASCOTS, ctxEsc), metrics.js and ui.js. */
+const SPORT_NAME = { nfl: "NFL", cfb: "CFB", mlb: "MLB", nba: "NBA" };
+const LEAGUE_LOGO = { nfl: "teamlogos/leagues/500/nfl", cfb: "espn/misc_logos/500/ncaa_football", mlb: "teamlogos/leagues/500/mlb", nba: "teamlogos/leagues/500/nba" };
+const addDays = (d, n) => new Date(Date.parse(`${d}T12:00:00Z`) + n * 864e5).toISOString().slice(0, 10);
+const timeMs = (iso) => (iso ? Date.parse(iso) : NaN);
+const matchupSides = (matchup) => { const [a = "", h = ""] = String(matchup || "").split(" @ "); return [a, h]; };
+const lineStr = (x) => (x === 0 ? "PK" : x > 0 ? `+${x}` : `${x}`);
+const signedStr = (x, d = 1, unit = "") => `${x > 0 ? "+" : x < 0 ? "−" : ""}${Math.abs(x).toFixed(d)}${unit}`;
+const signCls = (x) => (x > 0 ? "pos" : x < 0 ? "neg" : "");
+const emptyMsg = (msg) => `<p class="ca-empty">${ctxEsc(msg)}</p>`;
+const leagueLogo = (s) => (LEAGUE_LOGO[s] ? `<img class="ca-league" src="https://a.espncdn.com/i/${LEAGUE_LOGO[s]}.png" alt="" loading="lazy" onerror="this.style.visibility='hidden'">` : "");
+const gameHref = (sport, gamePk) => `game.html?sport=${encodeURIComponent(sport)}&game=${encodeURIComponent(gamePk)}`;
+const goLink = (sport, gamePk) => `<a class="ca-go" href="${gameHref(sport, gamePk)}" aria-label="Open game">→</a>`;
+const kickLabel = (iso) => (iso ? bpKick(iso).replace(/ ET$/, "") : "");
+
+// Display name as the mockups show it: NFL nickname ("Lions"), CFB school ("Ohio State"), else as-is.
+function shortTeam(name, sport) {
+  const n = String(name || "").trim();
+  if (!n) return "";
+  const w = n.split(/\s+/);
+  if (sport === "nfl") return w[w.length - 1];
+  if (sport === "cfb" && w.length > 1) {
+    const last2 = w.slice(-2).join(" ").toLowerCase().replace(/[^a-z ]/g, "");
+    return w.slice(0, Math.max(1, w.length - (CFB_2W_MASCOTS.has(last2) ? 2 : 1))).join(" ");
+  }
+  return n;
+}
+const shortMatchup = (away, home, sport) => `${shortTeam(away, sport)} @ ${shortTeam(home, sport)}`;
+
+// The bet as placed: "Lions ML", "Chiefs -6.5", "Over 56.5", "Under 64.5 Rec Yds".
+// Spread/total numbers come from the best book's line (ev_best_lines); none known -> no number.
+function pickLabel(o, lineBy) {
+  const ou = o.side === "under" ? "Under" : "Over";
+  if (o.kind === "prop") return `${ou}${o.line != null ? ` ${o.line}` : ""} ${o.marketLabel || o.market}`;
+  const l = lineBy && lineBy.get(`${o.game_pk}|${o.market}|${o.side}`);
+  if (o.market === "total") return `${ou} ${l != null ? l : "total"}`;
+  const [away, home] = matchupSides(o.matchup);
+  const team = shortTeam(o.side === "home" ? home : away, o.sport);
+  if (o.market === "moneyline") return `${team} ML`;
+  return `${team} ${l != null ? lineStr(l) : "spread"}`;
+}
+// Logo of the team a game-line opportunity is on ("" for props and totals).
+const oppLogo = (o) => {
+  if (o.kind === "prop" || o.market === "total") return "";
+  const [away, home] = matchupSides(o.matchup);
+  return logoImg(o.side === "home" ? home : away, o.sport);
+};
+
+// One throwing card must not blank the page: it renders a small placeholder and logs the error.
+function safeCard(name, fn, D, cls = "ca-card", id = "") {
+  try { return fn(D); }
+  catch (e) {
+    console.error(`card "${name}" failed to render`, e);
+    return `<section class="${cls}"${id ? ` id="${id}"` : ""}><p class="ca-empty">This panel couldn't load.</p></section>`;
+  }
+}
+
+// Graded game-line +EV picks inside the track record: won, flagged price, implied prob, edge (pp),
+// profit in units at the flagged price (win: decimal - 1, loss: -1) and CLV.
+function gradedLinePicks(results, picks, starts) {
+  const key = (r) => `${r.sport}|${r.game_pk}|${r.market}|${r.side}`;
+  const by = new Map();   // latest rebuild of each pick (max created_at) sets the price
+  for (const p of picks || []) { const prev = by.get(key(p)); if (!prev || String(p.created_at || "") >= String(prev.created_at || "")) by.set(key(p), p); }
+  const out = [];
+  for (const r of results || []) {
+    if (!r || (r.won !== true && r.won !== false)) continue;
+    const p = by.get(key(r));
+    if (!p || !p.commence_time || !inTrackRecord(starts, r.sport, p.commence_time)) continue;
+    const imp = americanToProb(p.best_price), implied = Number.isFinite(imp) ? imp : null;
+    out.push({ sport: r.sport, game_pk: r.game_pk, market: r.market, won: r.won, implied,
+      edgePp: implied != null && finite(p.true_prob) ? (+p.true_prob - implied) * 100 : null, date: etDateStr(p.commence_time),
+      profitUnits: r.won ? (implied != null ? 1 / implied - 1 : null) : -1, clv: finite(r.clv) ? +r.clv : null });
+  }
+  return out;
+}
+
+// One population for every performance number: graded +EV picks (ev_pnl_daily, all markets) in [from, to].
+// Hit rate = wins / (wins + losses). vs-market and avg edge use the graded game-line picks with a known flagged price.
+function perfWindow(evRows, graded, from, to) {
+  const rows = (evRows || []).filter((r) => r && r.game_date >= from && r.game_date <= to);
+  const a = aggPnl(rows), decidedN = a.w + a.l;
+  const g = (graded || []).filter((r) => r.date >= from && r.date <= to);
+  const edges = g.map((r) => r.edgePp).filter((x) => x != null);
+  const priced = g.filter((r) => r.implied != null);
+  return { rows, n: a.n, units: a.units, roiPct: a.roiPct, wins: a.w, losses: a.l,
+    hitRate: decidedN ? a.w / decidedN : null,
+    vsMarket: hitRateVsMarket(priced), pricedN: priced.length,
+    avgEdge: edges.length ? edges.reduce((s, x) => s + x, 0) / edges.length : null, edgeN: edges.length };
+}

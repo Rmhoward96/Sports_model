@@ -53,28 +53,28 @@ test("exposure: window cut, prediction rows count, market types, P&L units besid
 });
 
 test("short team names: NFL nickname, CFB school, others unchanged", () => {
-  assert.equal(g.dashTeam("Detroit Lions", "nfl"), "Lions");
-  assert.equal(g.dashTeam("San Francisco 49ers", "nfl"), "49ers");
-  assert.equal(g.dashTeam("Alabama Crimson Tide", "cfb"), "Alabama");
-  assert.equal(g.dashTeam("Oregon", "cfb"), "Oregon");
-  assert.equal(g.dashTeam("Boston Red Sox", "mlb"), "Boston Red Sox");
-  assert.equal(g.dashTeam("", "nfl"), "");
+  assert.equal(g.shortTeam("Detroit Lions", "nfl"), "Lions");
+  assert.equal(g.shortTeam("San Francisco 49ers", "nfl"), "49ers");
+  assert.equal(g.shortTeam("Alabama Crimson Tide", "cfb"), "Alabama");
+  assert.equal(g.shortTeam("Oregon", "cfb"), "Oregon");
+  assert.equal(g.shortTeam("Boston Red Sox", "mlb"), "Boston Red Sox");
+  assert.equal(g.shortTeam("", "nfl"), "");
 });
 
 test("pick labels: ML, spread with the best book's line, total, prop", () => {
   const lineBy = new Map([["1|spread|home", -6.5], ["1|total|over", 56.5]]);
   const base = { kind: "line", sport: "nfl", game_pk: 1, matchup: "Detroit Lions @ Kansas City Chiefs" };
-  assert.equal(g.dashPick({ ...base, market: "moneyline", side: "away" }, lineBy), "Lions ML");
-  assert.equal(g.dashPick({ ...base, market: "spread", side: "home" }, lineBy), "Chiefs -6.5");
-  assert.equal(g.dashPick({ ...base, market: "spread", side: "away" }, lineBy), "Lions spread");   // no line known -> no number invented
-  assert.equal(g.dashPick({ ...base, market: "total", side: "over" }, lineBy), "Over 56.5");
-  assert.equal(g.dashPick({ ...base, kind: "prop", market: "rec_yds", marketLabel: "Rec Yds", side: "under", line: 64.5, playerName: "X" }, lineBy), "Under 64.5 Rec Yds");
-  assert.equal(g.dashPick({ ...base, market: "spread", side: "home" }, new Map([["1|spread|home", 3]])), "Chiefs +3");
+  assert.equal(g.pickLabel({ ...base, market: "moneyline", side: "away" }, lineBy), "Lions ML");
+  assert.equal(g.pickLabel({ ...base, market: "spread", side: "home" }, lineBy), "Chiefs -6.5");
+  assert.equal(g.pickLabel({ ...base, market: "spread", side: "away" }, lineBy), "Lions spread");   // no line known -> no number invented
+  assert.equal(g.pickLabel({ ...base, market: "total", side: "over" }, lineBy), "Over 56.5");
+  assert.equal(g.pickLabel({ ...base, kind: "prop", market: "rec_yds", marketLabel: "Rec Yds", side: "under", line: 64.5, playerName: "X" }, lineBy), "Under 64.5 Rec Yds");
+  assert.equal(g.pickLabel({ ...base, market: "spread", side: "home" }, new Map([["1|spread|home", 3]])), "Chiefs +3");
 });
 
 test("date helpers: add days across month ends; cumulative daily units fill gaps", () => {
-  assert.equal(g.dashAddDays("2026-10-01", -1), "2026-09-30");
-  assert.equal(g.dashAddDays("2026-12-31", 1), "2027-01-01");
+  assert.equal(g.addDays("2026-10-01", -1), "2026-09-30");
+  assert.equal(g.addDays("2026-12-31", 1), "2027-01-01");
   const rows = [{ game_date: "2026-09-20", n: 1, wins: 1, losses: 0, pushes: 0, pnl: 10 },
                 { game_date: "2026-09-22", n: 2, wins: 0, losses: 2, pushes: 0, pnl: -20 },
                 { game_date: "2026-09-25", n: 1, wins: 1, losses: 0, pushes: 0, pnl: 5 }];   // after `to`
@@ -93,7 +93,7 @@ test("graded +EV picks: record cut, implied from the best price, edge in points"
                  { sport: "nfl", game_pk: 2, market: "moneyline", side: "home", true_prob: 0.6, best_price: 100, commence_time: "2026-09-20T17:00:00Z" },
                  { sport: "cfb", game_pk: 3, market: "spread", side: "away", true_prob: 0.6, best_price: 100, commence_time: "2026-09-20T17:00:00Z" },
                  { sport: "cfb", game_pk: 4, market: "spread", side: "away", true_prob: 0.55, best_price: null, commence_time: "2026-09-20T17:00:00Z" }];
-  const rows = g.dashGraded(results, picks, starts);
+  const rows = g.gradedLinePicks(results, picks, starts);
   assert.deepEqual(rows.map((r) => r.game_pk), [1, 4]);
   assert.equal(rows[0].implied, 0.5); assert.ok(Math.abs(rows[0].edgePp - 10) < 1e-9); assert.equal(rows[0].date, "2026-10-04");
   assert.equal(rows[1].implied, null); assert.equal(rows[1].edgePp, null);
@@ -160,13 +160,13 @@ test("perf: one population (ev_pnl_daily), hit rate = wins/(wins+losses), vs-mar
               { game_date: "2026-08-01", sport: "cfb", market: "spread", n: 9, wins: 9, losses: 0, pushes: 0, pnl: 90 }];   // outside range
   const graded = [{ date: "2026-09-20", won: true, implied: 0.5, edgePp: 10 }, { date: "2026-09-20", won: false, implied: 0.5, edgePp: 6 },
                   { date: "2026-09-20", won: true, implied: null, edgePp: null }];
-  const p = g.dashPerf(ev, graded, "2026-09-01", "2026-09-30");
+  const p = g.perfWindow(ev, graded, "2026-09-01", "2026-09-30");
   assert.equal(p.n, 12); assert.equal(p.wins, 7); assert.equal(p.losses, 4);
   assert.ok(Math.abs(p.hitRate - 7 / 11) < 1e-12);
   assert.equal(p.units, 5); assert.ok(Math.abs(p.roiPct - 5 / 12 * 100) < 1e-9);
   assert.equal(p.pricedN, 2); assert.equal(p.vsMarket, 0);   // 1 of 2 won vs 50% implied
   assert.equal(p.avgEdge, 8); assert.equal(p.edgeN, 2);
-  const none = g.dashPerf([], [], "2026-09-01", "2026-09-30");
+  const none = g.perfWindow([], [], "2026-09-01", "2026-09-30");
   assert.equal(none.hitRate, null); assert.equal(none.avgEdge, null); assert.equal(none.n, 0);
 });
 
@@ -204,22 +204,22 @@ test("evGradedPicks keeps the LATEST rebuild per pick, asks for created_at order
   assert.equal(q.logs.warn.length, 1); assert.match(q.logs.warn[0], /4000/);
 });
 
-test("dashGraded: the latest-created pick row sets the price whatever the input order", () => {
+test("gradedLinePicks: the latest-created pick row sets the price whatever the input order", () => {
   const results = [{ sport: "nfl", game_pk: 1, market: "moneyline", side: "home", won: true }];
   const mk = (price, at) => ({ sport: "nfl", game_pk: 1, market: "moneyline", side: "home", true_prob: 0.6, best_price: price, created_at: at, commence_time: "2026-10-04T17:00:00Z" });
   for (const picks of [[mk(100, "2026-09-30T08:00:00Z"), mk(200, "2026-09-30T12:00:00Z")], [mk(200, "2026-09-30T12:00:00Z"), mk(100, "2026-09-30T08:00:00Z")]]) {
-    assert.ok(Math.abs(g.dashGraded(results, picks, new Map())[0].implied - 1 / 3) < 1e-9);
+    assert.ok(Math.abs(g.gradedLinePicks(results, picks, new Map())[0].implied - 1 / 3) < 1e-9);
   }
 });
 
 // ---- card isolation --------------------------------------------------------------------------
-test("dashSafe: a throwing card renders a placeholder and logs, it does not throw", () => {
+test("safeCard: a throwing card renders a placeholder and logs, it does not throw", () => {
   const q = quiet();
   const D = loadScripts(FILES, { globals: { console: q.console } });
-  const html = D.dashSafe("Boom", () => { throw new Error("kaput"); }, {}, "ca-card ca-dash-card", "dash-x");
+  const html = D.safeCard("Boom", () => { throw new Error("kaput"); }, {}, "ca-card ca-dash-card", "dash-x");
   assert.match(html, /id="dash-x"/); assert.ok(html.includes("This panel couldn't load.")); assert.match(html, /ca-empty/);
   assert.equal(q.logs.error.length, 1); assert.match(q.logs.error[0], /Boom/);
-  assert.equal(D.dashSafe("Fine", () => "<p>ok</p>", {}), "<p>ok</p>");
+  assert.equal(D.safeCard("Fine", () => "<p>ok</p>", {}), "<p>ok</p>");
 });
 
 // ---- populated render ------------------------------------------------------------------------
