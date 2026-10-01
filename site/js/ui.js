@@ -9,7 +9,8 @@ const uiClean = (t) => (/^-0(\.0+)?$/.test(t) ? t.slice(1) : t);
 const uiFmt = (v) => uiClean(String(+(+v).toFixed(Math.abs(v) >= 100 ? 0 : 1)));
 const uiTicks = (lo, hi, n) => {
   const count = Math.max(2, n | 0), step = (hi - lo) / (count - 1) || 1;
-  const dec = step >= 1 ? 0 : step >= 0.1 ? 1 : 2;
+  let dec = 0;
+  while (dec < (step >= 1 ? 1 : 2) && Math.abs(step * 10 ** dec - Math.round(step * 10 ** dec)) > 1e-6) dec++;   // enough decimals that every tick label is exact
   return Array.from({ length: count }, (_, i) => { const v = lo + step * i; return { v, text: uiClean(v.toFixed(dec)) }; });
 };
 // vertical bar from baseline `base`, value height `hgt` (signed: +up / -down), rounded on the free end
@@ -54,11 +55,11 @@ function sparkline(values, { w = 120, h = 36, color = "var(--green)" } = {}) {
 function miniBars(values, { w = 70, h = 40, color = "var(--green)" } = {}) {
   const v = uiNums(values);
   if (!v.length) return "";
-  const lo = Math.min(0, ...v), hi = Math.max(0, ...v), r = hi - lo || 1, gap = 3;
-  const bw = Math.max(1, (w - gap * (v.length - 1)) / v.length), base = hi / r * h;
+  const lo = Math.min(0, ...v), hi = Math.max(0, ...v), r = hi - lo || 1;
+  const slot = w / v.length, gap = Math.min(3, slot * 0.3), bw = slot - gap, base = hi / r * h;   // n bars always fit in w
   const rects = v.map((x, i) => {
     const bh = Math.max(1, Math.abs(x) / r * h), y = x >= 0 ? base - bh : base;
-    return `<rect x="${(i * (bw + gap)).toFixed(1)}" y="${y.toFixed(1)}" width="${bw.toFixed(1)}" height="${bh.toFixed(1)}" rx="2" fill="${ctxEsc(color)}"/>`;
+    return `<rect x="${(i * slot).toFixed(1)}" y="${y.toFixed(1)}" width="${bw.toFixed(1)}" height="${bh.toFixed(1)}" rx="${Math.min(2, bw / 2).toFixed(1)}" fill="${ctxEsc(color)}"/>`;
   }).join("");
   return `<svg class="ca-minibars" viewBox="0 0 ${w} ${h}" width="${w}" height="${h}">${rects}</svg>`;
 }
@@ -70,17 +71,59 @@ function donut(f, { size = 78, stroke = 10, color = "var(--navy)" } = {}) {
   return `<svg class="ca-donut" viewBox="0 0 ${size} ${size}" width="${size}" height="${size}"><circle cx="${c}" cy="${c}" r="${r}" fill="none" stroke="#E9E5DB" stroke-width="${stroke}"/>${arc}</svg>`;
 }
 
-function areaChart(points, { w = 1000, h = 260, yTicks = 5, color = "var(--green)", unit = "u" } = {}) {
-  const pts = Array.isArray(points) ? points.filter((p) => p && uiFin(p.y)) : [];
-  if (pts.length < 2) return "";
-  const ys = pts.map((p) => +p.y), lo = Math.min(0, ...ys), hi = Math.max(0, ...ys), r = hi - lo || 1, n = pts.length;
-  const pad = 36, right = 8, col = ctxEsc(color);
-  const X = (i) => pad + i / (n - 1) * (w - pad - right), Y = (v) => 8 + (hi - v) / r * (h - 32);
-  const line = pts.map((p, i) => `${i ? "L" : "M"}${X(i).toFixed(1)} ${Y(+p.y).toFixed(1)}`).join(" ");
-  const tickSvg = uiTicks(lo, hi, yTicks).map((t) => `<line x1="${pad}" x2="${w}" y1="${Y(t.v).toFixed(1)}" y2="${Y(t.v).toFixed(1)}" class="ca-grid-line"/><text x="0" y="${(Y(t.v) + 4).toFixed(1)}" class="ca-axis">${t.text}${ctxEsc(unit)}</text>`).join("");
-  const xEvery = Math.max(1, Math.ceil(n / 7));
-  const xs = pts.map((p, i) => (i % xEvery === 0 || i === n - 1 ? `<text x="${X(i).toFixed(1)}" y="${h - 4}" text-anchor="${i === n - 1 ? "end" : "middle"}" class="ca-axis">${ctxEsc(p.x)}</text>` : "")).join("");
-  return `<svg class="ca-area" viewBox="0 0 ${w} ${h}" preserveAspectRatio="none">${tickSvg}<path d="${line} L${X(n - 1).toFixed(1)} ${Y(lo).toFixed(1)} L${X(0).toFixed(1)} ${Y(lo).toFixed(1)}Z" fill="${col}" opacity=".12"/><path d="${line}" fill="none" stroke="${col}" stroke-width="2.5" vector-effect="non-scaling-stroke"/><circle cx="${X(n - 1).toFixed(1)}" cy="${Y(ys[n - 1]).toFixed(1)}" r="5" fill="${col}"/>${xs}</svg>`;
+// Shared axis scaffold for areaChart / lineChart. The SVG (grid, fill, lines) is stretched with
+// preserveAspectRatio="none"; every piece of text and every dot is an HTML element positioned by
+// percentage inside .ca-plot, so it renders at its CSS size at any container width.
+// Flat data (all values equal, incl. zero) gets a symmetric pad so the line sits mid-chart, and ticks
+// are generated from the same lo/hi the Y scale uses (they never leave [lo, hi]).
+function uiChartFrame(vals, { h, yTicks, unit, includeZero, xLabels, n }) {
+  let lo = Math.min(...vals), hi = Math.max(...vals);
+  if (hi === lo) { const pad = lo ? Math.abs(lo) * 0.1 : 1; lo -= pad; hi += pad; }
+  else if (includeZero) { lo = Math.min(lo, 0); hi = Math.max(hi, 0); }
+  const r = hi - lo;
+  const Y = (v) => (hi - v) / r * 100, X = (i) => (n > 1 ? i / (n - 1) * 100 : 0);   // percentages of the plot box
+  const ticks = uiTicks(lo, hi, yTicks);
+  const grid = ticks.map((t) => `<line x1="0" x2="1000" y1="${Y(t.v).toFixed(2)}" y2="${Y(t.v).toFixed(2)}" class="ca-grid-line"/>`).join("");
+  const yl = ticks.map((t) => `<span class="ca-yl" style="top:${Y(t.v).toFixed(2)}%">${t.text}${ctxEsc(unit)}</span>`).join("");
+  const labels = Array.isArray(xLabels) ? xLabels : [], every = Math.max(1, Math.ceil(n / 7));
+  const shown = labels.map((l, i) => i).filter((i) => labels[i] != null && (i % every === 0 || i === n - 1));
+  const step = Math.max(1, Math.ceil(shown.length / 4)), last = shown.length - 1;   // <= 4 labels on narrow screens
+  const xl = shown.map((i, k) => {
+    const cls = `ca-xl${i === shown[0] && i === 0 ? " ca-xl-start" : ""}${i === n - 1 ? " ca-xl-end" : ""}${k === last || (k % step === 0 && last - k >= step) ? "" : " ca-xl-opt"}`;
+    return `<span class="${cls}" style="left:${X(i).toFixed(2)}%">${ctxEsc(labels[i])}</span>`;
+  }).join("");
+  const dot = (i, v, color, small) => `<span class="ca-dot${small ? " ca-dot-sm" : ""}" style="left:${X(i).toFixed(2)}%;top:${Y(v).toFixed(2)}%;background:${ctxEsc(color)}"></span>`;
+  const render = (svgBody, overlay = "") => `<div class="ca-chart" style="position:relative;height:${h}px"><div class="ca-plot"><svg viewBox="0 0 1000 100" preserveAspectRatio="none">${grid}${svgBody}</svg>${yl}${xl}${overlay}</div></div>`;
+  return { X, Y, dot, render };
+}
+// Contiguous runs of finite values: nulls break a line instead of being interpolated or drawn as 0.
+function uiSegments(values) {
+  const segs = [];
+  let cur = null;
+  values.forEach((v, i) => { if (!uiFin(v)) { cur = null; return; } if (!cur) segs.push(cur = []); cur.push({ i, v: +v }); });
+  return segs;
+}
+const uiSegPath = (segs, F) => segs.map((sg) => sg.map((p, k) => `${k ? "L" : "M"}${(F.X(p.i) * 10).toFixed(1)} ${F.Y(p.v).toFixed(2)}`).join(" ")).join(" ");
+
+function areaChart(points, { w, h = 260, yTicks = 5, color = "var(--green)", unit = "u" } = {}) {
+  const pts = Array.isArray(points) ? points : [];
+  const ys = pts.map((p) => (p && uiFin(p.y) ? +p.y : null));
+  const finite = ys.filter((v) => v != null);
+  if (finite.length < 2) return "";
+  const n = pts.length, col = ctxEsc(color), segs = uiSegments(ys);
+  const F = uiChartFrame(finite, { h, yTicks, unit, includeZero: true, xLabels: pts.map((p) => p && p.x), n });
+  const runs = segs.filter((sg) => sg.length > 1);
+  const fill = runs.map((sg) => `${uiSegPath([sg], F)} L${(F.X(sg[sg.length - 1].i) * 10).toFixed(1)} 100 L${(F.X(sg[0].i) * 10).toFixed(1)} 100Z`).join(" ");
+  const endI = ys.length - 1 - [...ys].reverse().findIndex((v) => v != null);
+  const isolated = segs.filter((sg) => sg.length === 1 && sg[0].i !== endI).map((sg) => F.dot(sg[0].i, sg[0].v, color, true)).join("");
+  const body = (fill ? `<path d="${fill}" fill="${col}" opacity=".12"/>` : "") + `<path d="${uiSegPath(segs, F)}" fill="none" stroke="${col}" stroke-width="2.5" vector-effect="non-scaling-stroke" stroke-linecap="round" stroke-linejoin="round"/>`;
+  return F.render(body, isolated + F.dot(endI, ys[endI], color, false));
+}
+
+// Bar + value label, shared by groupedBars and histogramChart. hgt is signed (+up / -down from base).
+function uiBar(x, base, hgt, bw, color, text) {
+  const ly = hgt >= 0 ? base - hgt - 5 : base - hgt + 13;
+  return `<path class="ca-bar" d="${uiBarPath(x, base, hgt, bw)}" fill="${ctxEsc(color || "var(--green)")}"/><text class="ca-bar-val" x="${(x + bw / 2).toFixed(1)}" y="${ly.toFixed(1)}" text-anchor="middle">${ctxEsc(text)}</text>`;
 }
 
 function groupedBars(groups, { h = 180 } = {}) {
@@ -91,15 +134,11 @@ function groupedBars(groups, { h = 180 } = {}) {
   const top = 20, bottom = lo < 0 ? 42 : 26, plot = h - top - bottom, base = top + hi / r * plot;
   const bw = 26, bgap = 6, ggap = 30;
   let x = ggap / 2, out = "";
-  const widths = gs.map((g) => g.bars.length * bw + (g.bars.length - 1) * bgap);
-  for (const [gi, g] of gs.entries()) {
-    g.bars.forEach((b, i) => {
-      const bx = x + i * (bw + bgap), hgt = +b.value / r * plot, text = b.label != null && b.label !== "" ? b.label : uiFmt(b.value);
-      const ly = hgt >= 0 ? base - hgt - 5 : base - hgt + 13;
-      out += `<path class="ca-bar" d="${uiBarPath(bx, base, hgt, bw)}" fill="${ctxEsc(b.color || "var(--green)")}"/><text class="ca-bar-val" x="${(bx + bw / 2).toFixed(1)}" y="${ly.toFixed(1)}" text-anchor="middle">${ctxEsc(text)}</text>`;
-    });
-    if (g.label != null) out += `<text class="ca-axis" x="${(x + widths[gi] / 2).toFixed(1)}" y="${h - 8}" text-anchor="middle">${ctxEsc(g.label)}</text>`;
-    x += widths[gi] + ggap;
+  for (const g of gs) {
+    const gw = g.bars.length * bw + (g.bars.length - 1) * bgap;
+    g.bars.forEach((b, i) => { out += uiBar(x + i * (bw + bgap), base, +b.value / r * plot, bw, b.color, b.label != null && b.label !== "" ? b.label : uiFmt(b.value)); });
+    if (g.label != null) out += `<text class="ca-axis" x="${(x + gw / 2).toFixed(1)}" y="${h - 8}" text-anchor="middle">${ctxEsc(g.label)}</text>`;
+    x += gw + ggap;
   }
   const W = Math.round(x - ggap / 2);
   return `<svg class="ca-bars" viewBox="0 0 ${W} ${h}" width="${W}" height="${h}"><line x1="0" x2="${W}" y1="${base.toFixed(1)}" y2="${base.toFixed(1)}" class="ca-grid-line"/>${out}</svg>`;
@@ -112,32 +151,24 @@ function histogramChart(bins, { w = 520, h = 180 } = {}) {
   const top = 20, bottom = 24, plot = h - top - bottom, base = top + plot, slot = w / bs.length, bw = Math.min(44, slot * 0.72);
   const every = Math.max(1, Math.ceil(bs.length / 12));
   const out = bs.map((b, i) => {
-    const x = i * slot + (slot - bw) / 2, hgt = +b.n / max * plot;
-    return `<path class="ca-bar" d="${uiBarPath(x, base, hgt, bw)}" fill="${ctxEsc(b.color || "var(--green)")}"/><text class="ca-bar-val" x="${(x + bw / 2).toFixed(1)}" y="${(base - hgt - 5).toFixed(1)}" text-anchor="middle">${uiFmt(b.n)}</text>`
+    const x = i * slot + (slot - bw) / 2;
+    return uiBar(x, base, +b.n / max * plot, bw, b.color, uiFmt(b.n))
       + (i % every === 0 ? `<text class="ca-axis" x="${(x + bw / 2).toFixed(1)}" y="${h - 6}" text-anchor="middle">${ctxEsc(b.label)}</text>` : "");
   }).join("");
   return `<svg class="ca-hist" viewBox="0 0 ${w} ${h}" width="${w}" height="${h}"><line x1="0" x2="${w}" y1="${base}" y2="${base}" class="ca-grid-line"/>${out}</svg>`;
 }
 
-function lineChart(series, xLabels, { w = 1000, h = 260, yTicks = 5, unit = "" } = {}) {
+function lineChart(series, xLabels, { w, h = 260, yTicks = 5, unit = "" } = {}) {
   const PALETTE = ["var(--green)", "var(--navy)", "var(--blue)", "var(--red)"];
   const ss = (Array.isArray(series) ? series : []).map((s, si) => ({ label: s && s.label, color: (s && s.color) || PALETTE[si % PALETTE.length], values: (s && Array.isArray(s.values)) ? s.values : [] }))
     .filter((s) => s.values.filter(uiFin).length >= 2);
   if (!ss.length) return "";
-  const all = ss.flatMap((s) => uiNums(s.values)), lo = Math.min(...all), hi = Math.max(...all), r = hi - lo || 1;
   const n = Math.max(Array.isArray(xLabels) ? xLabels.length : 0, ...ss.map((s) => s.values.length));
-  const pad = 36, right = 8;
-  const X = (i) => pad + (n > 1 ? i / (n - 1) : 0) * (w - pad - right), Y = (v) => 8 + (hi - v) / r * (h - 32);
-  const grid = uiTicks(lo, hi, yTicks).map((t) => `<line x1="${pad}" x2="${w}" y1="${Y(t.v).toFixed(1)}" y2="${Y(t.v).toFixed(1)}" class="ca-grid-line"/><text x="0" y="${(Y(t.v) + 4).toFixed(1)}" class="ca-axis">${t.text}${ctxEsc(unit)}</text>`).join("");
-  const lines = ss.map((s) => {
-    let d = "", pen = false;
-    s.values.forEach((v, i) => { if (!uiFin(v)) { pen = false; return; } d += `${pen ? "L" : "M"}${X(i).toFixed(1)} ${Y(+v).toFixed(1)} `; pen = true; });
-    return `<path d="${d.trim()}" fill="none" stroke="${ctxEsc(s.color)}" stroke-width="2.5" vector-effect="non-scaling-stroke" stroke-linecap="round" stroke-linejoin="round"/>`;
-  }).join("");
-  const xEvery = Math.max(1, Math.ceil(n / 7));
-  const xs = (Array.isArray(xLabels) ? xLabels : []).map((l, i) => (l != null && (i % xEvery === 0 || i === n - 1) ? `<text x="${X(i).toFixed(1)}" y="${h - 4}" text-anchor="${i === n - 1 ? "end" : i === 0 ? "start" : "middle"}" class="ca-axis">${ctxEsc(l)}</text>` : "")).join("");
+  const F = uiChartFrame(ss.flatMap((s) => uiNums(s.values)), { h, yTicks, unit, includeZero: false, xLabels, n });
+  const lines = ss.map((s) => `<path d="${uiSegPath(uiSegments(s.values), F)}" fill="none" stroke="${ctxEsc(s.color)}" stroke-width="2.5" vector-effect="non-scaling-stroke" stroke-linecap="round" stroke-linejoin="round"/>`).join("");
+  const isolated = ss.map((s) => uiSegments(s.values).filter((sg) => sg.length === 1).map((sg) => F.dot(sg[0].i, sg[0].v, s.color, true)).join("")).join("");
   const legend = ss.filter((s) => s.label != null).map((s) => `<span class="ca-legend-item"><i style="background:${ctxEsc(s.color)}"></i>${ctxEsc(s.label)}</span>`).join("");
-  return `<div class="ca-linechart"><svg class="ca-area" viewBox="0 0 ${w} ${h}" preserveAspectRatio="none">${grid}${lines}${xs}</svg>${legend ? `<div class="ca-legend">${legend}</div>` : ""}</div>`;
+  return `<div class="ca-linechart">${F.render(lines, isolated)}${legend ? `<div class="ca-legend">${legend}</div>` : ""}</div>`;
 }
 
 function donutLegend(rows) {

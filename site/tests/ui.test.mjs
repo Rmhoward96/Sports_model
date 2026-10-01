@@ -37,16 +37,18 @@ test("area chart renders one path per series and y ticks", () => {
   const svg = g.areaChart([{ x: "a", y: -10 }, { x: "b", y: 0 }, { x: "c", y: 30 }], { yTicks: 5 });
   assert.equal(count(svg, /<path /g), 2);   // fill + line
   assert.match(svg, />30u?</);
-  assert.match(svg, /<circle /);            // end dot
-  assert.match(svg, />c</);                 // x label
+  assert.match(svg, /class="ca-dot"/);      // end dot (HTML, crisp at any width)
+  assert.match(svg, /<span class="ca-xl[^"]*" style="left:100\.00%">c</);   // x label
 });
-test("area chart: too-short or null data renders nothing; nulls are skipped", () => {
+test("area chart: too-short data renders nothing; nulls break the line (no interpolation, no zeros)", () => {
   assert.equal(g.areaChart([]), "");
   assert.equal(g.areaChart(null), "");
   assert.equal(g.areaChart([{ x: "a", y: 1 }, { x: "b", y: null }]), "");
-  const svg = g.areaChart([{ x: "a", y: 0 }, { x: "b", y: null }, { x: "c", y: 10 }]);
+  const svg = g.areaChart([{ x: "a", y: 0 }, { x: "b", y: 5 }, { x: "c", y: null }, { x: "d", y: 10 }, { x: "e", y: 12 }]);
   assert.equal(count(svg, /<path /g), 2);
-  assert.doesNotMatch(svg, />b</);
+  const line = svg.match(/<path d="([^"]*)" fill="none"/)[1];
+  assert.equal(count(line, /M/g), 2);       // two segments: a-b and d-e
+  assert.equal(count(svg, /class="ca-dot"/g), 1);
 });
 test("miniBars: one rect per finite value, empty input renders nothing", () => {
   const svg = g.miniBars([1, 2, 3, null, 4], { w: 70, h: 40 });
@@ -118,4 +120,70 @@ test("statCard, pills, bookBadge, teamCell", () => {
   assert.match(g.bookBadge("weird<book>"), /title="weird&lt;book&gt;"/);
   assert.match(g.teamCell("Kansas City Chiefs", "nfl"), /class="ca-team">.*Kansas City Chiefs</);
   assert.match(g.teamCell("A<B", "nfl"), /A&lt;B/);
+});
+
+const pct = (svg, cls) => [...svg.matchAll(new RegExp(`class="${cls}[^"]*" style="[^"]*?(?:top|left):(-?[\\d.]+)%`, "g"))].map((m) => +m[1]);
+const lineYs = (svg) => [...svg.matchAll(/[ML][\d.]+ ([\d.]+)/g)].map((m) => +m[1]);
+
+test("area/line charts: HTML text overlay, SVG only draws strokes/fill, no <text>", () => {
+  const a = g.areaChart([{ x: "a", y: 1 }, { x: "b", y: 3 }]);
+  assert.match(a, /^<div class="ca-chart" style="position:relative;height:260px">/);
+  assert.match(a, /<svg viewBox="0 0 1000 100" preserveAspectRatio="none">/);
+  assert.doesNotMatch(a, /<text/);
+  assert.match(g.lineChart([{ label: "A", values: [1, 2] }], ["x", "y"]), /class="ca-chart"/);
+});
+test("flat data: ticks stay inside the chart and the line sits mid-height", () => {
+  const a = g.areaChart([{ x: "a", y: 0 }, { x: "b", y: 0 }]);
+  const ay = pct(a, "ca-yl");
+  assert.equal(ay.length, 5);
+  assert.ok(ay.every((p) => p >= 0 && p <= 100), `ticks ${ay}`);
+  assert.deepEqual([...new Set(lineYs(a.match(/<path d="([^"]*)" fill="none"/)[1]))], [50]);
+  assert.equal(+a.match(/class="ca-dot" style="left:[\d.]+%;top:([\d.]+)%/)[1], 50);
+  const l = g.lineChart([{ label: "S", values: [5, 5, 5] }], ["a", "b", "c"]);
+  const ly = pct(l, "ca-yl");
+  assert.ok(ly.every((p) => p >= 0 && p <= 100), `ticks ${ly}`);
+  assert.deepEqual([...new Set(lineYs(l.match(/<path d="([^"]*)" fill="none"/)[1]))], [50]);
+  assert.match(l, />4\.75</); assert.match(l, />5\.00</);   // exact tick labels, flat value is a tick
+  // non-flat data: first/last ticks are exactly the data range
+  const m = pct(g.lineChart([{ values: [1, 3] }], ["a", "b"]), "ca-yl");
+  assert.equal(Math.min(...m), 0); assert.equal(Math.max(...m), 100);
+});
+test("x labels thin out on busy axes and escape markup", () => {
+  const pts = Array.from({ length: 30 }, (_, i) => ({ x: i === 3 ? "<b>" : `d${i}`, y: i }));
+  const svg = g.areaChart(pts);
+  assert.ok(count(svg, /class="ca-xl/g) <= 8);
+  assert.ok(count(svg, /ca-xl-opt/g) >= count(svg, /class="ca-xl/g) - 4);   // at most 4 survive on narrow screens
+  const svg2 = g.areaChart([{ x: "<img src=x>", y: 1 }, { x: "b", y: 2 }]);
+  assert.match(svg2, /&lt;img src=x&gt;/); assert.doesNotMatch(svg2, /<img/);
+});
+test("series colors and labels are escaped in line charts", () => {
+  const bad = 'red;" onclick="alert(1)';
+  const svg = g.lineChart([{ label: "<i>x</i>", color: bad, values: [1, 2, 3] }], ["a", "b", "c"]);
+  assert.doesNotMatch(svg, /" onclick="/);
+  assert.match(svg, /&quot; onclick=&quot;/);
+  assert.match(svg, /&lt;i&gt;x&lt;\/i&gt;/);
+  const area = g.areaChart([{ x: "a", y: 1 }, { x: "b", y: 2 }], { color: bad });
+  assert.doesNotMatch(area, /" onclick="/);
+});
+test("miniBars: n bars always fit inside w", () => {
+  for (const n of [1, 5, 30, 90]) {
+    const svg = g.miniBars(Array.from({ length: n }, (_, i) => i + 1), { w: 70 });
+    const rects = [...svg.matchAll(/<rect x="([\d.]+)" y="[\d.]+" width="([\d.]+)"/g)].map((m) => [+m[1], +m[2]]);
+    assert.equal(rects.length, n);
+    const [x, w] = rects.at(-1);
+    assert.ok(x + w <= 70.05, `n=${n}: last bar ends at ${x + w}`);
+    assert.ok(rects.every(([, bw]) => bw > 0));
+  }
+});
+test("groupedBars: negative bars extend below the baseline and labels do not collide", () => {
+  const svg = g.groupedBars([{ label: "Group", bars: [{ value: 10, color: "#1E8E4E" }, { value: -8, color: "#C8372D" }] }], { h: 180 });
+  const base = +svg.match(/<line [^>]*y1="([\d.]+)"/)[1];
+  const [up, down] = [...svg.matchAll(/<path class="ca-bar" d="([^"]*)"/g)].map((m) => m[1].replace(/[A-Z]/g, " ").trim().split(/\s+/).map(Number).filter((_, i) => i % 2));   // y coords only
+  assert.ok(Math.min(...up) < base - 1 && Math.max(...up) <= base + 0.05);       // positive: above
+  assert.ok(Math.max(...down) > base + 1 && Math.min(...down) >= base - 0.05);   // negative: below
+  const vals = [...svg.matchAll(/class="ca-bar-val" x="[\d.]+" y="([\d.]+)"/g)].map((m) => +m[1]);
+  const groupY = +svg.match(/class="ca-axis" x="[\d.]+" y="([\d.]+)"/)[1];
+  assert.ok(vals[1] > base);                                  // negative label sits below its bar start
+  assert.ok(vals[1] <= groupY - 12, `neg label ${vals[1]} vs group label ${groupY}`);
+  assert.ok(Math.max(...down) < 180 && vals[0] > 0);          // everything stays inside the viewBox
 });
