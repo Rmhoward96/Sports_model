@@ -66,3 +66,18 @@ a{color:inherit}
   .ca-title h1{font-size:32px}
   .ca-stats{grid-template-columns:1fr}
 }
+/* UI components + charts (js/ui.js) */
+.ca-book{display:inline-grid;place-items:center;width:26px;height:26px;border-radius:6px;color:#fff;font:700 9px var(--sans)}
+.ca-stat-body{display:flex;align-items:flex-end;justify-content:space-between;gap:10px}
+.ca-axis{font:12px var(--sans);fill:var(--muted)}
+.ca-grid-line{stroke:#ECE8DF;stroke-width:1;vector-effect:non-scaling-stroke}
+.ca-area{width:100%;height:260px;display:block}
+.ca-bars,.ca-hist{max-width:100%;height:auto}
+.ca-bar-val{font:600 12px var(--sans);fill:var(--ink)}
+.ca-legend{display:flex;gap:16px;flex-wrap:wrap;margin-top:8px;font-size:13px;color:var(--muted)}
+.ca-legend-item i,.ca-dl-dot{display:inline-block;width:10px;height:10px;border-radius:50%;margin-right:6px}
+.ca-donut-legend{display:grid;gap:8px;font-size:14px}
+.ca-dl-row{display:flex;align-items:center;gap:8px}
+.ca-dl-label{flex:1}
+.ca-dl-pct,.ca-dl-val{font-variant-numeric:tabular-nums;font-weight:600}
+.ca-dl-pct{color:var(--muted);min-width:40px;text-align:right}
