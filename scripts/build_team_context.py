@@ -6,8 +6,8 @@ Per sport:
 
 * sources
     NFL: nflverse release schedules (``location`` / ``espn`` included) and pbp for
-         seasons S-4..S (the grade cutoffs and the market scale read S-3..S-1, whose
-         early-season blend needs S-4).
+         seasons S-4..S (the grade cutoffs read S-3..S-1, whose early-season blend
+         needs S-4).
     CFB: assets/cfb/schedules.parquet + the ESPN live schedule (previous, current and
          next week of ESPN's current week: games the asset lacks are appended --
          upcoming ones unplayed, finished ones with their score), assets/cfb/lines.parquet,
@@ -21,7 +21,10 @@ Per sport:
   matchup grades (per offense side; ratings as of the game's week, cutoffs frozen per
   season -- computed once per season per run).
 * rankings: (S, W) = the next unplayed game's season/week; previous week's table for
-  the move. NFL uses the market scale fitted once for S (``nfl_market_scale``) for both.
+  the move. Rating = ``context.results_power`` (results-based: capped home/road-adjusted
+  margin + win credit, opponent-adjusted, preseason prior as one pseudo-game; params in
+  assets/context/results_power.json). Unit ranks (shown, not rated) come from the unit
+  ratings blended with ``POWER_BLEND_K``. Adds SOS, SOV and home/road records.
 * writes: ``db.upsert_team_context`` (one transaction per sport); ``--dry-run`` prints
   counts, the runtime and a sample instead and performs no DB writes (it may
   read ``odds_snapshot`` for CFB closing lines when DATABASE_URL is set).
