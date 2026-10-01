@@ -52,4 +52,10 @@ test("edge buckets, histogram, daily counts, odds", () => {
   assert.ok(Math.abs(g.americanToProb(-110) - 110 / 210) < 1e-12);
   assert.equal(g.probToAmerican(0.6), -150);
   assert.equal(g.probToAmerican(0.4), 150);
+  // Null-safety: null/undefined inputs must not fabricate numbers
+  assert.ok(Number.isNaN(g.americanToProb(null)));
+  assert.ok(Number.isNaN(g.americanToProb(undefined)));
+  assert.equal(g.lineMoveScore({market:"moneyline", open_price:-110, cur_price:null}), null);
+  assert.equal(g.lineMoveScore({market:"spread", open_line:-2.5, cur_line:-4}), 1.5);
+  assert.deepEqual(g.histogram([null, 1, undefined, NaN], [0, 5]).map((b) => b.n), [1]);
 });

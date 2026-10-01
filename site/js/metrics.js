@@ -61,7 +61,7 @@ function edgeBuckets(rows, edges) {
 }
 function histogram(values, edges) {
   return edges.slice(0, -1).map((lo, i) => ({ lo, hi: edges[i + 1],
-    n: (values || []).filter((v) => v >= lo && (i === edges.length - 2 ? v <= edges[i + 1] : v < edges[i + 1])).length }));
+    n: (values || []).filter((v) => Number.isFinite(v) && (v >= lo && (i === edges.length - 2 ? v <= edges[i + 1] : v < edges[i + 1]))).length }));
 }
 function dailyCounts(rows, dateOf, days, today) {
   const counts = new Map();
@@ -73,9 +73,22 @@ function dailyCounts(rows, dateOf, days, today) {
   }
   return out;
 }
-const americanToProb = (o) => (+o > 0 ? 100 / (+o + 100) : -o / (-o + 100));
+const americanToProb = (o) => {
+  if (o == null || o === "") return NaN;
+  const n = +o;
+  if (!Number.isFinite(n)) return NaN;
+  return n > 0 ? 100 / (n + 100) : -n / (-n + 100);
+};
 const probToAmerican = (p) => (p >= 0.5 ? -Math.round(p / (1 - p) * 100) : Math.round((1 - p) / p * 100));
 function lineMoveScore(m) {
-  if (m.market === "moneyline") return Math.abs(americanToProb(m.cur_price) - americanToProb(m.open_price)) * 100 / 2.5;
-  return Math.abs(+m.cur_line - +m.open_line);
+  if (m.market === "moneyline") {
+    if (m.open_price == null || m.cur_price == null) return null;
+    const open = +m.open_price, cur = +m.cur_price;
+    if (!Number.isFinite(open) || !Number.isFinite(cur)) return null;
+    return Math.abs(americanToProb(cur) - americanToProb(open)) * 100 / 2.5;
+  }
+  if (m.open_line == null || m.cur_line == null) return null;
+  const open = +m.open_line, cur = +m.cur_line;
+  if (!Number.isFinite(open) || !Number.isFinite(cur)) return null;
+  return Math.abs(cur - open);
 }

@@ -17,15 +17,18 @@ function fakeDom(page) {
   };
 }
 
-// Copy values from vm realm into host realm, preserving non-cloneable types.
+// Copy objects from vm realm into host realm; non-cloneable values (functions, DOM stand-ins) returned raw.
 function toHost(v) {
-  if (typeof v !== 'object' || v === null || typeof v === 'string') {
+  if (typeof v !== "object" || v === null) {
     return v;  // primitives and strings
   }
   try {
     return structuredClone(v);
-  } catch {
-    return v;  // non-cloneable values like functions or DOM-like objects
+  } catch (e) {
+    if (e?.name === "DataCloneError") {
+      return v;
+    }
+    throw e;
   }
 }
 
@@ -45,21 +48,29 @@ export function loadScripts(files, { page = "dashboard", storage = new Map() } =
   const src = files.map((f) => fs.readFileSync(path.join(SITE, f), "utf8")).join("\n;\n");
   vm.runInContext(src + "\n;globalThis.__exports = { " + exportNames(src) + " };", ctx, { filename: files.join("+") });
 
-  // Wrap exported functions to return values in host realm; clone non-function exports.
+  // Wrap plain function exports (not classes) to return values in host realm; keep non-function exports raw (live references).
   const exports = {};
   for (const [key, value] of Object.entries(ctx.__exports)) {
-    if (typeof value === 'function') {
-      exports[key] = (...args) => {
-        const result = value(...args);
-        // Handle both async and sync functions: if result is thenable, chain toHost.
-        if (result && typeof result.then === 'function') {
-          return result.then(toHost);
-        }
-        return toHost(result);
-      };
+    if (typeof value === "function") {
+      // Check if it's a class (not a plain function)
+      const isClass = /^class\b/.test(Function.prototype.toString.call(value));
+      if (isClass) {
+        // Leave classes raw
+        exports[key] = value;
+      } else {
+        // Wrap plain functions to return values in host realm
+        exports[key] = (...args) => {
+          const result = value(...args);
+          // Handle both async and sync functions: if result is thenable, chain toHost.
+          if (result && typeof result.then === "function") {
+            return result.then(toHost);
+          }
+          return toHost(result);
+        };
+      }
     } else {
-      // Non-function exports: clone them into host realm.
-      exports[key] = toHost(value);
+      // Non-function exports: keep raw (live references).
+      exports[key] = value;
     }
   }
 
