@@ -2621,7 +2621,7 @@ async function render() {
     else if (page === "settings") body = buildSettings();
     else if (page === "rankings") body = await buildRankings();
     else body = await buildLeague(page); // cfb / nfl
-    shell.innerHTML = nav() + body + footer();
+    shell.innerHTML = siteHeader(page === "rankings" || page === "settings" ? "" : page) + `<div class="ca-page">${body}</div>` + footer(); wireShell();
     if (page === "game") wireGameSim();
     if (page === "track") { wireTrack(selTrackLeague, selTrackWeek); wirePropGames(); wirePnl(); }
     if (page === "ev") wireEvPage();
@@ -2735,7 +2735,7 @@ async function render() {
     }
     window.scrollTo(0, scrollY);
   } catch (e) {
-    shell.innerHTML = nav() + `<main><section class="section"><div class="section-title"><h2>Couldn’t load data</h2></div><p style="opacity:.7">${e.message}</p></section></main>` + footer();
+    shell.innerHTML = siteHeader("") + `<div class="ca-page"><main><section class="section"><div class="section-title"><h2>Couldn’t load data</h2></div><p style="opacity:.7">${e.message}</p></section></main></div>` + footer(); wireShell();
     console.error(e);
   }
 }
@@ -2776,6 +2776,7 @@ const BG_COLORS = ["#1e63d6", "#2f7bf0", "#0a1b3f", "#000000"];
 const BG_BASE = "#03060d";
 
 function mountGradientBackground({ bg = BG_BASE, colors = BG_COLORS, speed = 1.4, grain = 0.25 } = {}) {
+  return; // dark gradient retired by the light redesign (code below kept until Task 3 cleanup)
   if (document.getElementById("ca-bg")) return;
   const hexToRgb = (hex) => {
     const h = hex.replace("#", "");
