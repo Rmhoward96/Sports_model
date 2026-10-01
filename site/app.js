@@ -333,7 +333,7 @@ const CFB_TEAM_COLORS = {
   "Western Michigan Broncos": { p: "#532E1F", a: "#F1C500" }, "Wisconsin Badgers": { p: "#A00000", a: "#FFFFFF" },
   "Wyoming Cowboys": { p: "#492F24", a: "#FFC425" },
 };
-const DEFAULT_ACCENT = "#59a2ff";
+const DEFAULT_ACCENT = "#2563EB";   // = --blue (hex: team-color math needs it)
 function relLum(hex) {
   const n = String(hex || "").replace("#", "");
   if (n.length < 6) return 0.5;
@@ -354,19 +354,20 @@ function hslToHex(h, s, l) {
   const [r, g, b] = h < 60 ? [c, x, 0] : h < 120 ? [x, c, 0] : h < 180 ? [0, c, x] : h < 240 ? [0, x, c] : h < 300 ? [x, 0, c] : [c, 0, x];
   return "#" + [r, g, b].map((v) => Math.round((v + m) * 255).toString(16).padStart(2, "0")).join("");
 }
-// One team color made readable on the dark page: a too-dark but COLORED hex
-// (Rams navy, Packers green) is brightened in its own hue; a colorless one
-// (black/gray, e.g. Steelers, Raiders) or near-white returns null so the caller
-// falls back to the team's alternate.
+// One team color made readable on the light page: a too-light but COLORED hex
+// (Steelers gold, Cardinals yellow) is darkened in its own hue until it holds
+// contrast on white; dark colored hexes (navy, maroon) read fine as-is. A
+// colorless one (black/gray, e.g. Raiders) or near-white returns null so the
+// caller falls back to the team's alternate.
 function readableTeamColor(hex) {
   if (!hex || String(hex).replace("#", "").length < 6) return null;
   const lum = relLum(hex);
-  if (lum > 0.92) return null;
-  if (lum >= 0.25) return hex;
+  if (lum > 0.97) return null;
   const [h, s, l] = hexToHsl(hex);
-  if (s < 0.2) return null;
+  if (s < 0.2 && (lum < 0.25 || lum > 0.8)) return null;
+  if (lum <= 0.5) return hex;
   let out = hex;
-  for (let L = l; L < 0.75 && relLum(out) < 0.3; L += 0.03) out = hslToHex(h, Math.max(s, 0.55), L);
+  for (let L = l; L > 0.25 && relLum(out) > 0.5; L -= 0.03) out = hslToHex(h, Math.max(s, 0.55), L);
   return out;
 }
 function teamAccent(name, sport, useAlt = false) {
@@ -375,8 +376,8 @@ function teamAccent(name, sport, useAlt = false) {
   const [first, second] = useAlt ? [m.a, m.p] : [m.p, m.a];
   return readableTeamColor(first) || readableTeamColor(second) || DEFAULT_ACCENT;
 }
-// Both teams' game-page colors: each team's PRIMARY (brightened if too dark to
-// read on the dark bg; the alternate only when the primary is black/gray/white).
+// Both teams' game-page colors: each team's PRIMARY (darkened if too light to
+// read on the light bg; the alternate only when the primary is black/gray/white).
 // When the two land too close to tell apart (e.g. two royal blues), the AWAY
 // team switches to its alternate.
 function gameTeamColors(awayName, homeName, sport) {
@@ -993,11 +994,11 @@ function pnlChart(profit, wagered) {
   const path = (vals) => "M" + vals.map((v, i) => `${x(i).toFixed(0)} ${y(v).toFixed(1)}`).join(" L");
   const y0 = y(0), id = `pnlg${++pnlChartSeq}`, off = (y0 / 260 * 100).toFixed(2);
   const last = profit.at(-1);
-  return `<defs><linearGradient id="${id}" gradientUnits="userSpaceOnUse" x1="0" y1="0" x2="0" y2="260"><stop offset="${off}%" stop-color="#48d69a"/><stop offset="${off}%" stop-color="#ff6b6b"/></linearGradient></defs>`
-    + `<line x1="0" x2="1000" y1="${y0.toFixed(1)}" y2="${y0.toFixed(1)}" stroke="#3a4757" stroke-width="1" stroke-dasharray="6 6" vector-effect="non-scaling-stroke"/>`
-    + `<path d="${path(wagered)}" fill="none" stroke="#4d99ff" stroke-width="3" stroke-linecap="round" stroke-linejoin="round" vector-effect="non-scaling-stroke"/>`
+  return `<defs><linearGradient id="${id}" gradientUnits="userSpaceOnUse" x1="0" y1="0" x2="0" y2="260"><stop offset="${off}%" stop-color="var(--green)"/><stop offset="${off}%" stop-color="var(--red)"/></linearGradient></defs>`
+    + `<line x1="0" x2="1000" y1="${y0.toFixed(1)}" y2="${y0.toFixed(1)}" stroke="var(--muted)" stroke-width="1" stroke-dasharray="6 6" vector-effect="non-scaling-stroke"/>`
+    + `<path d="${path(wagered)}" fill="none" stroke="var(--blue)" stroke-width="3" stroke-linecap="round" stroke-linejoin="round" vector-effect="non-scaling-stroke"/>`
     + `<path d="${path(profit)}" fill="none" stroke="url(#${id})" stroke-width="4" stroke-linecap="round" stroke-linejoin="round" vector-effect="non-scaling-stroke"/>`
-    + `<circle cx="1000" cy="${y(last).toFixed(1)}" r="6" fill="${last >= 0 ? "#48d69a" : "#ff6b6b"}"/>`;
+    + `<circle cx="1000" cy="${y(last).toFixed(1)}" r="6" fill="${last >= 0 ? "var(--green)" : "var(--red)"}"/>`;
 }
 // markets: [[marketKey, label], ...]; an "All" card is appended.
 // Cards + chart for one P&L section, filtered to `sport` ("all" | "nfl" | "cfb").
@@ -1206,7 +1207,7 @@ function distBins(dist, targetBars = 26) {
 }
 function histogramSVG(dist, opts = {}) {
   const { line = null, height = 150 } = opts;
-  const accent = opts.accent || "#59a2ff";
+  const accent = opts.accent || DEFAULT_ACCENT;
   const colorFn = opts.colorFn || (() => accent);
   const bins = distBins(dist);
   if (!bins.length) return `<div class="ev-empty" style="padding:16px">No distribution for this selection.</div>`;
@@ -1226,14 +1227,14 @@ function histogramSVG(dist, opts = {}) {
   for (let k = 0; k < nLab; k++) {
     const i = Math.round(k * (bins.length - 1) / (nLab - 1 || 1));
     const x = padL + i * bw + bw / 2;
-    labs.push(`<text x="${x.toFixed(1)}" y="${H - 7}" text-anchor="middle" font-size="10" fill="#8b96a3">${bins[i].label}</text>`);
+    labs.push(`<text x="${x.toFixed(1)}" y="${H - 7}" text-anchor="middle" font-size="10" fill="var(--muted)">${bins[i].label}</text>`);
   }
   let marker = "";
   if (line != null) {
     const lo = bins[0].lo, hi = bins[bins.length - 1].hi + 1;
     const frac = Math.max(0, Math.min(1, (line - lo) / (hi - lo || 1)));
     const x = padL + frac * (W - padL - padR);
-    marker = `<line x1="${x.toFixed(1)}" x2="${x.toFixed(1)}" y1="4" y2="${H - padB}" stroke="#f4d03f" stroke-width="2" stroke-dasharray="4 3"></line><text x="${x.toFixed(1)}" y="14" text-anchor="middle" font-size="10" fill="#f4d03f">Line ${+line}</text>`;
+    marker = `<line x1="${x.toFixed(1)}" x2="${x.toFixed(1)}" y1="4" y2="${H - padB}" stroke="var(--amber)" stroke-width="2" stroke-dasharray="4 3"></line><text x="${x.toFixed(1)}" y="14" text-anchor="middle" font-size="10" fill="var(--amber)">Line ${+line}</text>`;
   }
   return `<svg class="hist" viewBox="0 0 ${W} ${H}" preserveAspectRatio="none" style="width:100%;height:${H}px">${bars}${marker}${labs.join("")}</svg>`;
 }
@@ -1546,7 +1547,7 @@ function splitsSection(splits, r, awayCol, homeCol) {
     <style>
       .splits-wrap .split-row{margin:14px 0}
       .splits-wrap .split-mkt{font-weight:600;font-size:.82rem;letter-spacing:.02em;opacity:.85;margin-bottom:5px}
-      .splits-wrap .split-bar{display:flex;height:12px;border-radius:6px;overflow:hidden;background:#1a2230}
+      .splits-wrap .split-bar{display:flex;height:12px;border-radius:6px;overflow:hidden;background:var(--line)}
       .splits-wrap .split-bar span{display:block;height:100%}
       .splits-wrap .split-legend{display:flex;justify-content:space-between;font-size:.82rem;opacity:.9;margin-top:5px}
     </style>
@@ -2169,7 +2170,7 @@ function chartPath(vals) {
   const pts = vals.map((v, i) => [i / (vals.length - 1) * 1000, 250 - ((v - min) / range) * 240]);
   const line = "M" + pts.map((p) => `${p[0].toFixed(0)} ${p[1].toFixed(0)}`).join(" L");
   const [endX, endY] = pts.at(-1);
-  return `<path d="${line}" fill="none" stroke="#59a2ff" stroke-width="4" stroke-linecap="round" stroke-linejoin="round" vector-effect="non-scaling-stroke"/><circle cx="${endX.toFixed(0)}" cy="${endY.toFixed(0)}" r="6" fill="#59a2ff"/>`;
+  return `<path d="${line}" fill="none" stroke="var(--blue)" stroke-width="4" stroke-linecap="round" stroke-linejoin="round" vector-effect="non-scaling-stroke"/><circle cx="${endX.toFixed(0)}" cy="${endY.toFixed(0)}" r="6" fill="var(--blue)"/>`;
 }
 
 const spreadFromMargin = (m) => { if (m == null) return "—"; const v = r05(m); return v > 0 ? `-${v}` : v < 0 ? `+${-v}` : "PK"; };
@@ -2335,7 +2336,7 @@ async function buildTrack() {
   const gradedTable = dec.length
     ? `<div class="track-league-filter">${leagueBtns}</div><div class="track-week-filter"></div><div class="track-week-body"></div>`
     : `<p style="opacity:.6">No graded predictions yet — accuracy posts after games settle.</p>`;
-  return `<main><section class="page-heading"><div><p class="eyebrow">PREDICTION ACCURACY</p><h1>Accuracy record</h1><p>Every model prediction is graded against the final — moneyline (winner), spread (did the model's pick cover the closing line), and total (did the model's over/under lean beat the closing line).</p><div class="ev-settings-note">${restartNote}</div></div><div class="page-head-stat"><span>MONEYLINE ACCURACY</span><strong class="blue">${all.acc}</strong><small>${all.n} graded games</small></div></section><div class="ev-toggle"><button data-view="predictions" class="selected">Predictions accuracy</button><button data-view="ev">+EV picks</button></div><div data-evview="predictions"><section class="compact-stats">${stat('MONEYLINE (WINNER)', all.acc, `${all.record} · ${all.n} games`)}${stat('SPREAD (ATS)', spreadPct, 'model pick vs the line', 'blue')}${stat('TOTAL (O/U)', totalPct, `model lean vs the line · ±${totMaeStr} pts`, 'cyan')}${stat('AVG MARGIN ERROR', all.mae, 'points off the result')}</section>${pnlSection(`Profit tracker <span style="font-size:.6em;opacity:.6">${U} per bet</span>`, `What ${U} on every model pick would have made — moneyline (predicted winner), spread &amp; total picks — at the closing price (median across books). Spread/total with no captured price assume −110.`, predPnl, [["moneyline", "MONEYLINE"], ["spread", "SPREAD"], ["total", "TOTAL"]], s)}<section class="section chart-card"><div class="section-title"><div><h2>Moneyline accuracy</h2><p>Cumulative · all games</p></div><div class="chart-legend"><span></span>Accuracy %</div></div><div class="chart"><svg viewBox="0 0 1000 260" preserveAspectRatio="none"><defs><linearGradient id="fill" x1="0" x2="0" y1="0" y2="1"><stop stop-color="#4d99ff" stop-opacity=".34"/><stop offset="1" stop-color="#4d99ff" stop-opacity="0"/></linearGradient></defs>${chart}</svg>${chart ? "" : '<p style="opacity:.6;padding:20px">Chart fills in once graded results accumulate.</p>'}</div></section><section class="record-grid section"><article><h2>Accuracy by confidence</h2><div class="league-performance">${tierRows}</div></article></section><section class="section"><div class="section-title"><div><h2>Graded games by week</h2><p>Pick a league, then a week — moneyline vs the final, spread & total vs the closing line.</p></div></div>${gradedTable}</section></div><div data-evview="ev" hidden>${pnlSection(`+EV profit tracker <span style="font-size:.6em;opacity:.6">${U} per bet</span>`, `What ${U} on every graded +EV pick would have made, at the price it was flagged at · a parlay is one ${U} ticket.`, evPnl, [["moneyline", "+EV MONEYLINE"], ["spread", "+EV SPREAD"], ["prop", "+EV PROPS"], ["parlay", "+EV PARLAYS"]], s)}${gradedParlaysSection(parlayRes, s)}${evTrackSection(evRes, evPk)}${propAccuracySection(propGradeRows)}${propGamesSection(propGames, s)}${propTrackSection(propRes)}</div></main>`;
+  return `<main><section class="page-heading"><div><p class="eyebrow">PREDICTION ACCURACY</p><h1>Accuracy record</h1><p>Every model prediction is graded against the final — moneyline (winner), spread (did the model's pick cover the closing line), and total (did the model's over/under lean beat the closing line).</p><div class="ev-settings-note">${restartNote}</div></div><div class="page-head-stat"><span>MONEYLINE ACCURACY</span><strong class="blue">${all.acc}</strong><small>${all.n} graded games</small></div></section><div class="ev-toggle"><button data-view="predictions" class="selected">Predictions accuracy</button><button data-view="ev">+EV picks</button></div><div data-evview="predictions"><section class="compact-stats">${stat('MONEYLINE (WINNER)', all.acc, `${all.record} · ${all.n} games`)}${stat('SPREAD (ATS)', spreadPct, 'model pick vs the line', 'blue')}${stat('TOTAL (O/U)', totalPct, `model lean vs the line · ±${totMaeStr} pts`, 'cyan')}${stat('AVG MARGIN ERROR', all.mae, 'points off the result')}</section>${pnlSection(`Profit tracker <span style="font-size:.6em;opacity:.6">${U} per bet</span>`, `What ${U} on every model pick would have made — moneyline (predicted winner), spread &amp; total picks — at the closing price (median across books). Spread/total with no captured price assume −110.`, predPnl, [["moneyline", "MONEYLINE"], ["spread", "SPREAD"], ["total", "TOTAL"]], s)}<section class="section chart-card"><div class="section-title"><div><h2>Moneyline accuracy</h2><p>Cumulative · all games</p></div><div class="chart-legend"><span></span>Accuracy %</div></div><div class="chart"><svg viewBox="0 0 1000 260" preserveAspectRatio="none"><defs><linearGradient id="fill" x1="0" x2="0" y1="0" y2="1"><stop stop-color="var(--blue)" stop-opacity=".22"/><stop offset="1" stop-color="var(--blue)" stop-opacity="0"/></linearGradient></defs>${chart}</svg>${chart ? "" : '<p style="opacity:.6;padding:20px">Chart fills in once graded results accumulate.</p>'}</div></section><section class="record-grid section"><article><h2>Accuracy by confidence</h2><div class="league-performance">${tierRows}</div></article></section><section class="section"><div class="section-title"><div><h2>Graded games by week</h2><p>Pick a league, then a week — moneyline vs the final, spread & total vs the closing line.</p></div></div>${gradedTable}</section></div><div data-evview="ev" hidden>${pnlSection(`+EV profit tracker <span style="font-size:.6em;opacity:.6">${U} per bet</span>`, `What ${U} on every graded +EV pick would have made, at the price it was flagged at · a parlay is one ${U} ticket.`, evPnl, [["moneyline", "+EV MONEYLINE"], ["spread", "+EV SPREAD"], ["prop", "+EV PROPS"], ["parlay", "+EV PARLAYS"]], s)}${gradedParlaysSection(parlayRes, s)}${evTrackSection(evRes, evPk)}${propAccuracySection(propGradeRows)}${propGamesSection(propGames, s)}${propTrackSection(propRes)}</div></main>`;
 }
 
 /* ── Render ───────────────────────────────────────────────────────────── */
@@ -2344,181 +2345,245 @@ const REFRESH_MS = 5 * 60 * 1000;  // auto-pull fresh Supabase data every 5 minu
 function injectStylesOnce() {  // one-time; re-renders must not keep appending <style> blocks
   if (document.getElementById("ca-styles")) return;
   document.head.insertAdjacentHTML("beforeend", `<style id="ca-styles">
-    /* Animated WebGL gradient sits behind everything; body goes transparent so
-       it shows through, with a dark solid fallback on <html> if WebGL is off. */
-    html{background:#03060d}
-    body{background:transparent!important}
-    #ca-bg{position:fixed;inset:0;width:100vw;height:100vh;z-index:-1;pointer-events:none;display:block}
+    html,body{background:var(--bg)}
     .page-shell{position:relative;z-index:1}
+    /* Legacy section base, ported from the retired styles.css onto the light tokens. */
+    .blue{color:var(--blue)}.cyan{color:var(--blue)}
+    .eyebrow{font-size:11px;letter-spacing:.14em;font-weight:700;color:var(--blue);margin:0 0 10px}
+    .section{margin-top:28px}
+    .section h2{font:700 24px/1.2 var(--serif);margin:0}
+    .section-title{display:flex;align-items:end;justify-content:space-between;gap:16px;margin-bottom:14px}
+    .section-title>a{font-size:12px;font-weight:600;color:var(--blue);text-decoration:none}
+    .section-title p{font-size:13px;color:var(--muted);margin:5px 0 0}
+    .stat-grid,.compact-stats{display:grid;grid-template-columns:repeat(4,1fr);gap:14px;margin-top:14px}
+    .stat-grid article,.compact-stats article,.edge-card,.chart-card,.record-grid article{background:var(--card);border:1px solid var(--line);border-radius:var(--radius);box-shadow:var(--shadow);padding:18px 20px;color:var(--ink)}
+    .stat-grid span,.compact-stats span,.page-head-stat span{display:block;color:var(--muted);font-size:11px;font-weight:600;letter-spacing:.04em}
+    .stat-grid strong,.compact-stats strong{display:block;font:700 24px var(--sans);margin-top:8px;color:var(--ink)}
+    .stat-grid small,.compact-stats small,.page-head-stat small{display:block;font-size:11px;color:var(--muted);margin-top:5px}
+    .edge-grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:14px}
+    .matchup{display:flex;justify-content:space-between;gap:8px;border-bottom:1px solid var(--line);padding-bottom:13px}
+    .matchup h3{font-size:15px;margin:0 0 3px}
+    .matchup p{font-size:11px;color:var(--muted);margin:0}
+    .matchup>span,.ev{align-self:start;background:var(--blue-tint);color:var(--blue);border-radius:4px;padding:4px 7px;font-size:11px;font-weight:600;white-space:nowrap}
+    .market{position:relative;padding:14px 64px 3px 0;display:grid;grid-template-columns:74px 1fr;grid-template-rows:16px 18px 12px}
+    .market small{font-size:10px;color:var(--muted)}
+    .market b{font-size:12px}
+    .market strong{position:absolute;right:0;top:13px;font-size:12px;font-weight:700}
+    .market i{display:block;grid-column:1 / span 2;height:4px;background:var(--blue);border-radius:2px;align-self:end}
+    .market p{position:absolute;right:64px;bottom:-1px;margin:0;color:var(--ink);font-size:10px}
+    .market p span{color:var(--muted)}
+    .market em{position:absolute;right:0;bottom:-2px;font-size:10px;color:var(--muted);text-align:right;font-style:normal}
+    .market u{color:var(--blue);text-decoration:none}
+    .table-wrap{border:1px solid var(--line);border-radius:var(--radius);overflow:auto;background:var(--card)}
+    .table-wrap table{border-collapse:collapse;width:100%;min-width:800px}
+    .table-wrap th{text-align:left;font-size:11px;font-weight:600;color:var(--muted);padding:12px 16px;border-bottom:1px solid var(--line);background:#FBFAF6}
+    .table-wrap td{padding:11px 16px;font-size:12px;color:var(--ink);border-bottom:1px solid #F0ECE3}
+    .table-wrap tbody tr:last-child td{border:0}
+    .table-wrap tbody tr:hover{background:var(--bg)}
+    .table-wrap td b{font-size:12px;color:var(--ink)}
+    .table-wrap td small{display:block;margin-top:4px;font-size:10px;color:var(--muted)}
+    .pick{color:var(--blue);font-weight:600}
+    .win{background:var(--green-tint);color:var(--green)}
+    .loss{background:var(--red-tint);color:var(--red)}
+    .page-heading{display:flex;align-items:center;justify-content:space-between;gap:24px;border-bottom:1px solid var(--line);padding:20px 0 24px}
+    .page-heading h1{font:700 40px/1.1 var(--serif);margin:0;letter-spacing:-.5px}
+    .page-heading p:not(.eyebrow){color:var(--muted);line-height:1.6;font-size:15px;max-width:610px;margin:13px 0 0}
+    .page-head-stat{text-align:right;padding:12px 0 12px 28px;border-left:1px solid var(--line);min-width:190px}
+    .page-head-stat strong{display:block;font:700 30px var(--sans);margin-top:8px}
+    .filter-bar{display:flex;gap:6px;flex-wrap:wrap}
+    .filter-bar button{border:1px solid var(--line);background:var(--card);color:var(--muted);border-radius:6px;padding:7px 12px;font-size:12px;font-weight:600;cursor:pointer}
+    .filter-bar button:hover,.filter-bar button.selected{border-color:var(--blue);background:var(--blue-tint);color:var(--blue)}
+    .chart-legend{font-size:11px;color:var(--muted)}
+    .chart-legend span{display:inline-block;width:20px;height:3px;background:var(--blue);vertical-align:middle;margin-right:6px}
+    .chart{height:300px;position:relative;padding:15px 0 28px 50px;background:repeating-linear-gradient(to bottom,transparent 0,transparent 61px,var(--line) 62px)}
+    .chart svg{height:100%;width:100%}
+    .axis{position:absolute;left:0;top:10px;bottom:31px;display:flex;flex-direction:column;justify-content:space-between}
+    .axis i,.months{font-size:10px;color:var(--muted);font-style:normal}
+    .months{display:flex;justify-content:space-between;position:absolute;left:50px;right:0;bottom:3px}
+    .record-grid{display:grid;grid-template-columns:1.2fr .8fr;gap:14px}
+    .league-performance{margin-top:14px}
+    .league-performance>div{display:grid;grid-template-columns:70px 1fr 100px 90px;padding:14px 0;border-bottom:1px solid var(--line);font-size:12px;align-items:center}
+    .league-performance>div:last-child{border:0}
+    .league-performance span{color:var(--muted)}
+    .league-performance strong{color:var(--ink)}
+    .league-performance em{color:var(--blue);font-style:normal;text-align:right}
+    .recent-grades{margin-top:10px}
+    .recent-grades p{margin:0;padding:12px 0;border-bottom:1px solid var(--line);font-size:12px}
+    .recent-grades p:last-child{border:0}
+    .recent-grades span{display:inline-block;border-radius:4px;padding:3px 6px;margin-right:8px;font-size:10px;font-weight:700}
+    .recent-grades b{float:right;color:var(--blue)}
+    @media(max-width:900px){.edge-grid,.record-grid{grid-template-columns:1fr}.stat-grid,.compact-stats{grid-template-columns:repeat(2,1fr)}.page-heading{align-items:flex-start;flex-direction:column}.page-head-stat{border-left:0;border-top:1px solid var(--line);padding:16px 0 0;text-align:left;width:100%}}
+    @media(max-width:620px){.stat-grid,.compact-stats{grid-template-columns:1fr}.section-title{align-items:flex-start;flex-direction:column}.filter-bar{width:100%}.page-heading h1{font-size:32px}.chart{height:230px;padding-left:38px}.months{left:38px}.league-performance>div{grid-template-columns:50px 1fr;gap:7px}.league-performance strong,.league-performance em{text-align:left}}
     .tlogo{height:18px!important;width:18px!important;max-width:18px;max-height:18px;vertical-align:middle;margin-right:5px;object-fit:contain;display:inline-block;flex:none}
     td.pick .tlogo,.pick .tlogo{height:16px!important;width:16px!important;margin-right:4px}
     .edge-card h3 .tlogo{height:20px!important;width:20px!important}
     td.proj{white-space:nowrap}
     td.proj .tlogo{height:20px!important;width:20px!important;max-width:20px;max-height:20px;margin:0 6px}
     .market-filters.filter-bar{display:flex;gap:14px;align-items:center;overflow-x:auto;padding:26px 4px 8px;scrollbar-width:thin}
-    .market-filters.filter-bar button{flex:0 0 auto;border:2px solid #263341;background:transparent;color:#96a1ae;border-radius:999px;padding:12px 24px;font-size:16px;font-weight:600;line-height:1.75;cursor:pointer;transition:.15s}
-    .market-filters.filter-bar button:hover,.market-filters.filter-bar button.selected{border-color:#278ef6;background:#12335c;color:#48a4ff}
-    .market-filters.filter-bar button.selected{box-shadow:inset 0 0 0 1px rgba(93,174,255,.15)}
+    .market-filters.filter-bar button{flex:0 0 auto;border:2px solid var(--line);background:transparent;color:var(--muted);border-radius:999px;padding:12px 24px;font-size:16px;font-weight:600;line-height:1.75;cursor:pointer;transition:.15s}
+    .market-filters.filter-bar button:hover,.market-filters.filter-bar button.selected{border-color:var(--blue);background:var(--blue-tint);color:var(--blue)}
+    .market-filters.filter-bar button.selected{box-shadow:inset 0 0 0 1px rgba(37,99,235,.18)}
     @media(max-width:620px){.market-filters.filter-bar{gap:9px;padding-top:20px}.market-filters.filter-bar button{padding:8px 17px;font-size:14px}}
     .league-filter{display:flex;gap:10px;padding:8px 4px 18px;flex-wrap:wrap}
-    .league-filter button{border:2px solid #263341;background:transparent;color:#96a1ae;border-radius:999px;padding:8px 18px;font-weight:600;cursor:pointer;transition:.15s}
-    .league-filter button:hover,.league-filter button.selected{border-color:#278ef6;background:#12335c;color:#48a4ff}
+    .league-filter button{border:2px solid var(--line);background:transparent;color:var(--muted);border-radius:999px;padding:8px 18px;font-weight:600;cursor:pointer;transition:.15s}
+    .league-filter button:hover,.league-filter button.selected{border-color:var(--blue);background:var(--blue-tint);color:var(--blue)}
     .track-league-filter{display:flex;gap:10px;padding:4px 0 12px;flex-wrap:wrap}
-    .track-league-filter button{border:2px solid #263341;background:transparent;color:#96a1ae;border-radius:999px;padding:8px 22px;font-weight:700;cursor:pointer;transition:.15s}
-    .track-league-filter button:hover,.track-league-filter button.selected{border-color:#278ef6;background:#12335c;color:#48a4ff}
+    .track-league-filter button{border:2px solid var(--line);background:transparent;color:var(--muted);border-radius:999px;padding:8px 22px;font-weight:700;cursor:pointer;transition:.15s}
+    .track-league-filter button:hover,.track-league-filter button.selected{border-color:var(--blue);background:var(--blue-tint);color:var(--blue)}
     .track-week-filter,.pg-weeks{display:flex;gap:7px;padding:2px 0 14px;flex-wrap:wrap}
-    .track-week-filter button,.pg-weeks button{border:1px solid #26303a;background:#0f1620;color:#c2ccd6;border-radius:8px;padding:6px 13px;font-size:13px;font-weight:600;cursor:pointer;transition:.15s}
-    .track-week-filter button:hover,.pg-weeks button:hover{border-color:#3d82d0}
-    .track-week-filter button.selected,.pg-weeks button.selected{background:#16324e;border-color:#3d82d0;color:#eaf3ff}
-    .week-record{margin:2px 0 12px;color:#c2ccd6;font-size:13px}.week-record b{color:#e9eef3}
+    .track-week-filter button,.pg-weeks button{border:1px solid var(--line);background:var(--card);color:var(--ink);border-radius:8px;padding:6px 13px;font-size:13px;font-weight:600;cursor:pointer;transition:.15s}
+    .track-week-filter button:hover,.pg-weeks button:hover{border-color:var(--blue)}
+    .track-week-filter button.selected,.pg-weeks button.selected{background:var(--blue-tint);border-color:var(--blue);color:var(--ink)}
+    .week-record{margin:2px 0 12px;color:var(--ink);font-size:13px}.week-record b{color:var(--ink)}
     .ev-toggle{display:flex;gap:8px;padding:6px 4px 4px}
-    .ev-toggle button{border:2px solid #263341;background:transparent;color:#96a1ae;border-radius:999px;padding:8px 22px;font-weight:700;cursor:pointer;transition:.15s}
-    .ev-toggle button:hover,.ev-toggle button.selected{border-color:#278ef6;background:#12335c;color:#48a4ff}
+    .ev-toggle button{border:2px solid var(--line);background:transparent;color:var(--muted);border-radius:999px;padding:8px 22px;font-weight:700;cursor:pointer;transition:.15s}
+    .ev-toggle button:hover,.ev-toggle button.selected{border-color:var(--blue);background:var(--blue-tint);color:var(--blue)}
     .ev-table td small{display:block;opacity:.55;font-size:11px}
-    .ev-good{color:#3ddc84;font-weight:700}
-    .ev-bad{color:#ff6b6b;font-weight:700}
-    .ev-book{color:#48a4ff;font-size:12px}
-    .sim-note{margin-top:10px;color:#96a1ae;font-size:12px}
-    .model-tag{margin-left:6px;padding:2px 7px;border:1px solid #2a3a4d;border-radius:999px;color:#83bbff;opacity:1;white-space:nowrap}
-    .pred-block .compact-stats .pred-actual{color:#c2ccd6}
-    .pred-block .pred-actual b{color:#e9eef3}
-    .pred-block .pred-actual .call-ok{color:#48d69a;font-weight:700}
-    .pred-block .pred-actual .call-miss{color:#ff8a8a;font-weight:700}
-    .final-line{margin-top:8px;font-size:14px;color:#e9eef3;font-weight:600}
-    .final-line b{color:#fff}
-    .final-line .call-ok{color:#48d69a;font-weight:700}
-    .final-line .call-miss{color:#ff8a8a;font-weight:700}
-    .pnl-pos{color:#48d69a!important}.pnl-neg{color:#ff8a8a!important}
+    .ev-good{color:var(--green);font-weight:700}
+    .ev-bad{color:var(--red);font-weight:700}
+    .ev-book{color:var(--blue);font-size:12px}
+    .sim-note{margin-top:10px;color:var(--muted);font-size:12px}
+    .model-tag{margin-left:6px;padding:2px 7px;border:1px solid var(--line);border-radius:999px;color:var(--blue);opacity:1;white-space:nowrap}
+    .pred-block .compact-stats .pred-actual{color:var(--ink)}
+    .pred-block .pred-actual b{color:var(--ink)}
+    .pred-block .pred-actual .call-ok{color:var(--green);font-weight:700}
+    .pred-block .pred-actual .call-miss{color:var(--red);font-weight:700}
+    .final-line{margin-top:8px;font-size:14px;color:var(--ink);font-weight:600}
+    .final-line b{color:var(--ink)}
+    .final-line .call-ok{color:var(--green);font-weight:700}
+    .final-line .call-miss{color:var(--red);font-weight:700}
+    .pnl-pos{color:var(--green)!important}.pnl-neg{color:var(--red)!important}
     .pnl-chart{position:relative;height:180px;margin-top:14px}
     .pnl-chart svg{width:100%;height:150px;display:block}
     .pnl-chart small{display:block;opacity:.75;font-size:12px;margin-top:6px}
     .pnl-key{display:inline-block;width:14px;height:3px;border-radius:2px;vertical-align:middle;margin-right:6px}
-    .pnl-key.wag{background:#4d99ff}.pnl-key.up{background:#48d69a}.pnl-key.down{background:#ff6b6b}
-    .pg-game{border:1px solid #1f2a36;border-radius:12px;margin-bottom:8px;background:rgba(10,16,24,.6)}
+    .pnl-key.wag{background:var(--blue)}.pnl-key.up{background:var(--green)}.pnl-key.down{background:var(--red)}
+    .pg-game{border:1px solid var(--line);border-radius:12px;margin-bottom:8px;background:var(--card)}
     .pg-head{all:unset;box-sizing:border-box;display:flex;width:100%;justify-content:space-between;align-items:center;gap:12px;padding:12px 16px;cursor:pointer}
     .pg-head span{display:flex;flex-direction:column;gap:3px}
     .pg-head small{opacity:.65;font-size:12px}
     .pg-head strong{font-size:16px;white-space:nowrap}
-    .pg-game.open .pg-head{border-bottom:1px solid #1f2a36}
+    .pg-game.open .pg-head{border-bottom:1px solid var(--line)}
     .pg-detail{padding:4px 8px 10px}
     .prop-group{margin-top:16px}.prop-group:first-of-type{margin-top:4px}
-    .prop-group h3{font-size:15px;margin:0 0 8px;color:#cfe3ff;letter-spacing:.2px}
+    .prop-group h3{font-size:15px;margin:0 0 8px;color:var(--ink);letter-spacing:.2px}
     .prop-group h3 small{opacity:.5;font-weight:600;font-size:12px;margin-left:8px}
-    .ev-settings-note{margin-top:12px;font-size:12px;color:#96a1ae}
-    .ev-settings-note a{color:#6eaaff;text-decoration:none}
+    .ev-settings-note{margin-top:12px;font-size:12px;color:var(--muted)}
+    .ev-settings-note a{color:var(--blue);text-decoration:none}
     .ev-settings-note a:hover{text-decoration:underline}
     .ev-toolbar{display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap}
     .ev-filters{display:flex;flex-direction:column}
     .ev-filters .ev-filter{padding:2px 0 10px}
     .ev-filters [data-evgroup="market"] button{padding:6px 16px;font-size:13px}
-    .ev-sort{display:flex;align-items:center;gap:8px;color:#96a1ae;font-size:13px;font-weight:600;padding:4px 0 12px}
-    .ev-sort select{background:#0f1620;color:#e6edf4;border:1px solid #26303a;border-radius:8px;padding:7px 10px;font:inherit;font-weight:600;cursor:pointer}
-    .ev-sort select:hover,.ev-sort select:focus{border-color:#3d82d0;outline:none}
+    .ev-sort{display:flex;align-items:center;gap:8px;color:var(--muted);font-size:13px;font-weight:600;padding:4px 0 12px}
+    .ev-sort select{background:var(--card);color:var(--ink);border:1px solid var(--line);border-radius:8px;padding:7px 10px;font:inherit;font-weight:600;cursor:pointer}
+    .ev-sort select:hover,.ev-sort select:focus{border-color:var(--blue);outline:none}
     .prop-proj .prop-actual{display:block;font-size:11px;font-weight:700;margin-top:2px}
-    .prop-proj .prop-actual.hit{color:#48d69a}.prop-proj .prop-actual.miss{color:#ff8a8a}
+    .prop-proj .prop-actual.hit{color:var(--green)}.prop-proj .prop-actual.miss{color:var(--red)}
     .prop-proj .prop-line{display:block;font-size:10.5px;opacity:.7;margin-top:2px}
-    .prop-proj .prop-line b{opacity:1;color:#8fc1ff}
+    .prop-proj .prop-line b{opacity:1;color:var(--blue)}
     .team-totals{display:flex;align-items:center;justify-content:center;gap:22px;margin:6px 0 16px}
     .team-totals .tt{display:flex;align-items:center;gap:12px}
-    .team-totals .tt-name{color:#c2ccd6;font-weight:600;font-size:14px;max-width:130px}
+    .team-totals .tt-name{color:var(--ink);font-weight:600;font-size:14px;max-width:130px}
     .team-totals .tt-score{font-size:40px;font-weight:800;line-height:1}
-    .team-totals .tt-vs{color:#7c8896;font-size:10px;text-transform:uppercase;letter-spacing:.08em}
+    .team-totals .tt-vs{color:var(--muted);font-size:10px;text-transform:uppercase;letter-spacing:.08em}
     .sim-tabs{display:flex;flex-wrap:wrap;gap:6px;margin-bottom:12px}
-    .sim-tab{padding:7px 13px;border:1px solid #26303a;border-radius:8px;background:#0f1620;color:#c2ccd6;font-size:12px;font-weight:600;cursor:pointer}
-    .sim-tab.active{background:#16324e;border-color:#3d82d0;color:#eaf3ff}
-    .sim-controls{display:flex;align-items:center;gap:8px;color:#96a1ae;font-size:12px;margin-bottom:10px}
-    .sim-controls input,.sim-controls select{background:#0b1119;border:1px solid #2a333d;border-radius:6px;color:#e9eef3;padding:6px 8px;font-size:13px;min-width:74px}
-    .hist{display:block;background:#0b1119;border:1px solid #1c242e;border-radius:8px;padding:4px}
-    .prob-line{margin-top:10px;color:#c2ccd6;font-size:13px}
-    .prob-line .under{color:#7fd1ff}.prob-line .at{color:#f4d03f}.prob-line .over{color:#ff9a6a}
+    .sim-tab{padding:7px 13px;border:1px solid var(--line);border-radius:8px;background:var(--card);color:var(--ink);font-size:12px;font-weight:600;cursor:pointer}
+    .sim-tab.active{background:var(--blue-tint);border-color:var(--blue);color:var(--ink)}
+    .sim-controls{display:flex;align-items:center;gap:8px;color:var(--muted);font-size:12px;margin-bottom:10px}
+    .sim-controls input,.sim-controls select{background:var(--card);border:1px solid var(--line);border-radius:6px;color:var(--ink);padding:6px 8px;font-size:13px;min-width:74px}
+    .hist{display:block;background:var(--card);border:1px solid var(--line);border-radius:8px;padding:4px}
+    .prob-line{margin-top:10px;color:var(--ink);font-size:13px}
+    .prob-line .under{color:var(--blue)}.prob-line .at{color:var(--amber)}.prob-line .over{color:var(--red)}
     .box-grid{display:grid;grid-template-columns:1fr 1fr;gap:16px}
-    .box-col h3{margin:0 0 8px;font-size:14px;color:#e9eef3}
+    .box-col h3{margin:0 0 8px;font-size:14px;color:var(--ink)}
     .ev-table.box{margin-bottom:12px}
     .ev-table.box th,.ev-table.box td{padding:6px 8px;font-size:12px}
-    .box-row{cursor:pointer}.box-row:hover{background:#121b26}
+    .box-row{cursor:pointer}.box-row:hover{background:var(--bg)}
     #player-dist:empty{display:none}
-    .player-dist-inner{margin-top:14px;padding-top:12px;border-top:1px solid #1c242e}
-    .pd-close{margin-left:auto;background:#141d28;border:1px solid #2a333d;border-radius:6px;color:#c2ccd6;padding:5px 12px;font-size:12px;cursor:pointer}
+    .player-dist-inner{margin-top:14px;padding-top:12px;border-top:1px solid var(--line)}
+    .pd-close{margin-left:auto;background:var(--card);border:1px solid var(--line);border-radius:6px;color:var(--ink);padding:5px 12px;font-size:12px;cursor:pointer}
     @media (max-width:640px){.box-grid{grid-template-columns:1fr}.team-totals .tt-score{font-size:32px}.team-totals{gap:12px}}
-    .ev-empty{background:#0e1620;border:1px solid #1e2a38;border-radius:14px;padding:26px 22px;color:#9aa6b2}
-    .ev-empty b{color:#e6edf3;font-size:16px;display:block;margin-bottom:6px}
-    table td .win{color:#3ddc84;font-weight:700}table td .loss{color:#ff6b6b;font-weight:700}
-    .edge-grid.edge-carousel{display:flex;grid-template-columns:none;gap:14px;overflow-x:auto;overflow-y:hidden;padding:2px 1px 14px;scroll-snap-type:x mandatory;scrollbar-color:#34485c transparent}
+    .ev-empty{background:var(--card);border:1px solid var(--line);border-radius:14px;padding:26px 22px;color:var(--muted)}
+    .ev-empty b{color:var(--ink);font-size:16px;display:block;margin-bottom:6px}
+    table td .win{color:var(--green);font-weight:700}table td .loss{color:var(--red);font-weight:700}
+    .edge-grid.edge-carousel{display:flex;grid-template-columns:none;gap:14px;overflow-x:auto;overflow-y:hidden;padding:2px 1px 14px;scroll-snap-type:x mandatory;scrollbar-color:var(--line) transparent}
     .edge-grid.edge-carousel .edge-card{flex:0 0 calc((100% - 28px) / 3);min-width:0;scroll-snap-align:start}
     @media(max-width:900px){.edge-grid.edge-carousel .edge-card{flex-basis:calc((100% - 14px) / 2)}}
     @media(max-width:620px){.edge-grid.edge-carousel .edge-card{flex-basis:86%}}
     .parlay-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(280px,1fr));gap:14px}
-    .parlay-card{border:1px solid #1f2a36;border-radius:12px;background:rgba(10,16,24,.6);overflow:hidden}
-    .pc-head{display:flex;justify-content:space-between;align-items:center;gap:12px;padding:12px 16px;border-bottom:1px solid #1f2a36}
+    .parlay-card{border:1px solid var(--line);border-radius:12px;background:var(--card);overflow:hidden}
+    .pc-head{display:flex;justify-content:space-between;align-items:center;gap:12px;padding:12px 16px;border-bottom:1px solid var(--line)}
     .pc-head>span,.pc-leg>span{display:flex;flex-direction:column;gap:3px;min-width:0}
-    .pc-head b{color:#e9f3ff;font-size:15px}
+    .pc-head b{color:var(--ink);font-size:15px}
     .pc-head small,.pc-leg small{opacity:.65;font-size:12px}
     .pc-head strong{font-size:16px;white-space:nowrap}
-    .pc-kelly{padding:8px 16px;border-bottom:1px solid #1f2a36;font-size:12px;font-weight:600;color:#96a1ae}
+    .pc-kelly{padding:8px 16px;border-bottom:1px solid var(--line);font-size:12px;font-weight:600;color:var(--muted)}
     .pc-legs{list-style:none;margin:0;padding:2px 16px 8px}
-    .pc-leg{display:flex;justify-content:space-between;align-items:center;gap:10px;padding:9px 0;border-bottom:1px solid #1a2430}
+    .pc-leg{display:flex;justify-content:space-between;align-items:center;gap:10px;padding:9px 0;border-bottom:1px solid var(--line)}
     .pc-leg:last-child{border-bottom:0}
-    .pc-leg b{color:#e9eef3;font-size:13px}
+    .pc-leg b{color:var(--ink);font-size:13px}
     .pc-leg .pc-odds{align-items:flex-end;text-align:right;flex:none}
-    .pc-mark{display:inline-block;width:14px;margin-right:6px;font-weight:700;color:#96a1ae}
-    .pc-mark.win{color:#3ddc84;background:none}.pc-mark.loss{color:#ff6b6b;background:none}
-    .pc-res{display:inline-block;margin-left:6px;font-size:10px;font-weight:700;letter-spacing:.04em;padding:2px 7px;border-radius:999px;vertical-align:middle;background:#1a2430;color:#96a1ae}
-    .pc-res.win{background:#123a2a;color:#48d69a}.pc-res.loss{background:#3a1616;color:#ff8a8a}
-    @media(min-width:901px){.pnl-body>.compact-stats.pnl-stats{grid-template-columns:repeat(auto-fit,minmax(180px,1fr))}}  /* 5 cards with +EV PARLAYS; styles.css breakpoints apply below */
+    .pc-mark{display:inline-block;width:14px;margin-right:6px;font-weight:700;color:var(--muted)}
+    .pc-mark.win{color:var(--green);background:none}.pc-mark.loss{color:var(--red);background:none}
+    .pc-res{display:inline-block;margin-left:6px;font-size:10px;font-weight:700;letter-spacing:.04em;padding:2px 7px;border-radius:999px;vertical-align:middle;background:var(--line);color:var(--muted)}
+    .pc-res.win{background:var(--green-tint);color:var(--green)}.pc-res.loss{background:var(--red-tint);color:var(--red)}
+    @media(min-width:901px){.pnl-body>.compact-stats.pnl-stats{grid-template-columns:repeat(auto-fit,minmax(180px,1fr))}}  /* 5 cards with +EV PARLAYS */
     .parlay-head{display:flex;justify-content:space-between;align-items:baseline;margin-bottom:10px}
-    .parlay-head b{color:#e9f3ff;font-size:14px}
-    .parlay-price{color:#3ddc84;font-weight:700;font-size:16px}
-    .parlay-price small{color:#48a4ff;font-weight:700;font-size:11px;margin-left:4px}
+    .parlay-head b{color:var(--ink);font-size:14px}
+    .parlay-price{color:var(--green);font-weight:700;font-size:16px}
+    .parlay-price small{color:var(--blue);font-weight:700;font-size:11px;margin-left:4px}
     .parlay-legs{list-style:none;margin:0;padding:0;display:flex;flex-direction:column;gap:7px}
-    .parlay-legs li{display:flex;justify-content:space-between;align-items:center;font-size:13px;color:#c2ccd6;border-bottom:1px solid #1a2430;padding-bottom:6px}
+    .parlay-legs li{display:flex;justify-content:space-between;align-items:center;font-size:13px;color:var(--ink);border-bottom:1px solid var(--line);padding-bottom:6px}
     .parlay-legs li:last-child{border-bottom:0;padding-bottom:0}
-    .ev-leg-price{color:#96a1ae;font-weight:600}
-    .parlay-foot{display:flex;justify-content:space-between;align-items:baseline;margin-top:12px;padding-top:10px;border-top:1px solid #1e2833}
-    .parlay-foot small{color:#6c7a89;font-size:11px}
+    .ev-leg-price{color:var(--muted);font-weight:600}
+    .parlay-foot{display:flex;justify-content:space-between;align-items:baseline;margin-top:12px;padding-top:10px;border-top:1px solid var(--line)}
+    .parlay-foot small{color:var(--muted);font-size:11px}
     .game-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(184px,1fr));gap:10px;margin-top:6px}
-    .game-card{display:flex;flex-direction:column;gap:9px;padding:14px 15px;border:1px solid #263341;border-radius:14px;background:#0e1620;color:#e9f3ff;text-decoration:none;transition:.15s}
-    .game-card:hover{border-color:#278ef6;background:#12335c}
+    .game-card{display:flex;flex-direction:column;gap:9px;padding:14px 15px;border:1px solid var(--line);border-radius:14px;background:var(--card);color:var(--ink);text-decoration:none;transition:.15s}
+    .game-card:hover{border-color:var(--blue);background:var(--blue-tint)}
     .game-card .gc-row{display:flex;align-items:center;justify-content:space-between;gap:8px}
     .game-card .gc-team{display:flex;align-items:center;gap:7px;min-width:0}
     .game-card .gc-team b{font-weight:700;font-size:14px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
     .game-card .gc-team .tlogo{width:21px;height:21px;flex:none;object-fit:contain}
-    .game-card .gc-ml{display:flex;align-items:center;gap:6px;color:#c2ccd6;font-weight:600;font-size:13px;white-space:nowrap;font-variant-numeric:tabular-nums;flex:none}
+    .game-card .gc-ml{display:flex;align-items:center;gap:6px;color:var(--ink);font-weight:600;font-size:13px;white-space:nowrap;font-variant-numeric:tabular-nums;flex:none}
     .game-card .bk-logo{width:16px;height:16px;border-radius:4px;flex:none;background:#fff}
-    .game-card .bk-txt{font-size:9px;font-weight:800;letter-spacing:.02em;padding:2px 4px;border-radius:4px;background:#1a2430;color:#9fb0c2;flex:none}
-    .game-card .gc-model{color:#6f7c8b}
+    .game-card .bk-txt{font-size:9px;font-weight:800;letter-spacing:.02em;padding:2px 4px;border-radius:4px;background:var(--line);color:var(--muted);flex:none}
+    .game-card .gc-model{color:var(--muted)}
     .game-card .gc-model small{font-size:9px;font-weight:700;text-transform:uppercase;letter-spacing:.04em;opacity:.8}
-    .game-card .gc-time{color:#8894a2;font-size:12px;margin-top:1px;padding-top:8px;border-top:1px solid #1a2430}
+    .game-card .gc-time{color:var(--muted);font-size:12px;margin-top:1px;padding-top:8px;border-top:1px solid var(--line)}
     @media(max-width:620px){.game-grid{grid-template-columns:repeat(auto-fill,minmax(158px,1fr));gap:8px}.game-card{padding:12px 13px}.game-card .gc-team b{font-size:13px}}
-    .back-link{display:inline-block;margin-bottom:14px;color:#59a2ff;text-decoration:none;font-size:13px;font-weight:600}
+    .back-link{display:inline-block;margin-bottom:14px;color:var(--blue);text-decoration:none;font-size:13px;font-weight:600}
     .back-link:hover{text-decoration:underline}
     .game-hero{padding:24px 4px 8px}
     .game-hero h1{margin:6px 0 4px;font-size:26px}
-    .game-hero .game-score{font-size:34px;font-weight:800;color:#e9f3ff;display:flex;align-items:center;gap:6px}
+    .game-hero .game-score{font-size:34px;font-weight:800;color:var(--ink);display:flex;align-items:center;gap:6px}
     .game-hero .game-score .tlogo{height:30px!important;width:30px!important;max-width:30px;max-height:30px}
-    .game-hero .game-winner{color:#96a1ae;font-size:14px}
+    .game-hero .game-winner{color:var(--muted);font-size:14px}
     .prop-proj td small{display:block;opacity:.55;font-size:11px}
-    .prop-ev{display:inline-block;margin-left:4px;font-size:10px;font-weight:700;padding:1px 6px;border-radius:999px;background:#123a2a;color:#48d69a;vertical-align:middle}
+    .prop-ev{display:inline-block;margin-left:4px;font-size:10px;font-weight:700;padding:1px 6px;border-radius:999px;background:var(--green-tint);color:var(--green);vertical-align:middle}
     .sim-tag{font-size:.6em;opacity:.6;font-weight:600}
+    .sim-tag.model-tag{opacity:1}
     .trends-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:14px}
-    .trend-col{background:var(--panel);border:1px solid var(--line);border-top:3px solid var(--tc,#59a2ff);border-radius:8px;padding:14px 16px}
-    .trend-col h3{display:flex;align-items:center;margin:0 0 10px;font-size:15px;color:var(--tc,#e9f3ff)}
+    .trend-col{background:var(--card);border:1px solid var(--line);border-top:3px solid var(--tc,var(--blue));border-radius:8px;padding:14px 16px}
+    .trend-col h3{display:flex;align-items:center;margin:0 0 10px;font-size:15px;color:var(--tc,var(--ink))}
     .trend-list,.trend-sits{list-style:none;margin:0;padding:0}
-    .trend-row{display:flex;justify-content:space-between;gap:10px;padding:7px 0;border-bottom:1px solid #1a2430;font-size:13px}
+    .trend-row{display:flex;justify-content:space-between;gap:10px;padding:7px 0;border-bottom:1px solid var(--line);font-size:13px}
     .trend-row:last-child{border-bottom:0}
-    .trend-row>span{color:#96a1ae}
-    .trend-row b{color:#e9eef3;font-weight:600;font-variant-numeric:tabular-nums;white-space:nowrap}
+    .trend-row>span{color:var(--muted)}
+    .trend-row b{color:var(--ink);font-weight:600;font-variant-numeric:tabular-nums;white-space:nowrap}
     .trend-sits{display:flex;flex-direction:column;gap:6px}
-    .trend-list+.trend-sits{margin-top:10px;padding-top:8px;border-top:1px solid #263341}
-    .trend-sit{font-size:12px;color:#c2ccd6;line-height:1.45}
-    .trend-hot{background:rgba(245,185,66,.08);box-shadow:inset 3px 0 0 #f5b942;padding-left:8px;border-radius:4px}
-    .trend-hot b,.trend-sit.trend-hot{color:#f5b942}
-    .trend-pos{color:#3ddc84}.trend-neg{color:#ff6b6b}
+    .trend-list+.trend-sits{margin-top:10px;padding-top:8px;border-top:1px solid var(--line)}
+    .trend-sit{font-size:12px;color:var(--ink);line-height:1.45}
+    .trend-hot{background:var(--amber-tint);box-shadow:inset 3px 0 0 var(--amber);padding-left:8px;border-radius:4px}
+    .trend-hot b,.trend-sit.trend-hot{color:var(--amber)}
+    .trend-pos{color:var(--green)}.trend-neg{color:var(--red)}
     .trend-none,.trend-empty{opacity:.6;margin:0}
-    .trend-foot{margin:12px 0 0;font-size:11px;color:#7f8c9a}
+    .trend-foot{margin:12px 0 0;font-size:11px;color:var(--muted)}
     @media(max-width:620px){.trends-grid{grid-template-columns:1fr}}
     /* Team context: matchup grades, history, power rankings (descriptive — not a pick) */
-    .ctx-np{font-style:normal;color:#f5b942;white-space:nowrap}
-    .ctx-early{display:inline-block;margin-left:8px;padding:2px 7px;border-radius:999px;background:#2a2410;border:1px solid #5a4a1a;color:#f5b942;font-size:10px;font-weight:700;letter-spacing:.04em;text-transform:uppercase;vertical-align:middle}
+    .ctx-np{font-style:normal;color:var(--amber);white-space:nowrap}
+    .ctx-early{display:inline-block;margin-left:8px;padding:2px 7px;border-radius:999px;background:var(--amber-tint);border:1px solid var(--amber);color:var(--amber);font-size:10px;font-weight:700;letter-spacing:.04em;text-transform:uppercase;vertical-align:middle}
     .grade-chip{display:inline-flex;align-items:center;justify-content:center;width:24px;height:24px;border-radius:6px;font-size:13px;font-weight:800;line-height:1;text-align:center;flex:none}
     .grade-chip.big{width:44px;height:44px;border-radius:10px;font-size:24px}
     /* A green · B yellow · C orange · D/F red */
@@ -2526,74 +2591,74 @@ function injectStylesOnce() {  // one-time; re-renders must not keep appending <
     .grade-chip.g-B,.mu-bar i.g-B{background:#e8c22e;color:#1c1602}
     .grade-chip.g-C,.mu-bar i.g-C{background:#ec8a2c;color:#1f0e01}
     .grade-chip.g-D,.mu-bar i.g-D,.grade-chip.g-F,.mu-bar i.g-F{background:#d9423f;color:#fff}
-    .grade-chip.g-na,.mu-bar i.g-na{background:#1a2430;color:#7f8c9a}
+    .grade-chip.g-na,.mu-bar i.g-na{background:var(--line);color:var(--muted)}
     .mu-card h3{flex-wrap:wrap}
-    .mu-vs{margin:-6px 0 12px;font-size:12px;color:#7f8c9a}
-    .mu-overall{display:flex;align-items:center;gap:12px;padding-bottom:10px;margin-bottom:6px;border-bottom:1px solid #1a2430}
-    .mu-overall div b{display:block;color:#e9eef3;font-size:14px}.mu-overall small{display:block;color:#96a1ae;font-size:12px;margin-top:2px}
+    .mu-vs{margin:-6px 0 12px;font-size:12px;color:var(--muted)}
+    .mu-overall{display:flex;align-items:center;gap:12px;padding-bottom:10px;margin-bottom:6px;border-bottom:1px solid var(--line)}
+    .mu-overall div b{display:block;color:var(--ink);font-size:14px}.mu-overall small{display:block;color:var(--muted);font-size:12px;margin-top:2px}
     .mu-unit{display:grid;grid-template-columns:44px 24px 1fr 76px;align-items:center;gap:10px;padding:7px 0;font-size:13px}
-    .mu-unit>span{color:#96a1ae}.mu-unit small{color:#96a1ae;font-size:12px;text-align:right;font-variant-numeric:tabular-nums}
-    .mu-bar{height:8px;border-radius:4px;background:#1a2430;overflow:hidden}.mu-bar i{display:block;height:100%;border-radius:4px}
-    .ctx-power{display:block;margin:-4px 0 10px;font-size:12px;color:#c2ccd6}
+    .mu-unit>span{color:var(--muted)}.mu-unit small{color:var(--muted);font-size:12px;text-align:right;font-variant-numeric:tabular-nums}
+    .mu-bar{height:8px;border-radius:4px;background:var(--line);overflow:hidden}.mu-bar i{display:block;height:100%;border-radius:4px}
+    .ctx-power{display:block;margin:-4px 0 10px;font-size:12px;color:var(--ink)}
     .hist-wrap{border:0;border-radius:0;background:none;margin:0 0 10px;-webkit-overflow-scrolling:touch}
     .hist-tbl{min-width:0!important;width:100%;margin:0}
     .hist-tbl th{padding:6px 8px;font-size:10px}.hist-tbl th:first-child,.hist-tbl td:first-child{padding-left:0}
     .hist-tbl td{padding:7px 8px;font-size:12px;font-variant-numeric:tabular-nums;white-space:nowrap}
-    .hist-tbl td small{display:inline;margin:0 0 0 6px;color:#7f8d9a}
-    .hist-tbl td.hist-na{color:#7f8d9a}
+    .hist-tbl td small{display:inline;margin:0 0 0 6px;color:var(--muted)}
+    .hist-tbl td.hist-na{color:var(--muted)}
     .ctx-chips{display:flex;flex-wrap:wrap;align-items:center;gap:6px;margin:4px 0 10px}
-    .ctx-chips>small,.hist-lbl{display:block;color:#7f8c9a;font-size:10px;font-weight:600;letter-spacing:.08em;margin-right:4px}
+    .ctx-chips>small,.hist-lbl{display:block;color:var(--muted);font-size:10px;font-weight:600;letter-spacing:.08em;margin-right:4px}
     .hist-lbl{margin:8px 0 2px}
-    .ctx-chip{padding:3px 9px;border-radius:999px;border:1px solid #263341;background:#0f1620;color:#c2ccd6;font-size:12px;font-weight:600;font-variant-numeric:tabular-nums}
-    .ctx-chip.hot{border-color:#5a4a1a;background:#2a2410;color:#f5b942}
-    .rk-up{color:#3ddc84;font-weight:700}.rk-down{color:#ff6b6b;font-weight:700}.rk-flat{color:#7f8c9a}
-    .rk-new{display:inline-block;padding:1px 6px;border-radius:4px;background:#16324e;color:#69a8ff;font-size:10px;font-weight:800;letter-spacing:.04em}
+    .ctx-chip{padding:3px 9px;border-radius:999px;border:1px solid var(--line);background:var(--card);color:var(--ink);font-size:12px;font-weight:600;font-variant-numeric:tabular-nums}
+    .ctx-chip.hot{border-color:var(--amber);background:var(--amber-tint);color:var(--amber)}
+    .rk-up{color:var(--green);font-weight:700}.rk-down{color:var(--red);font-weight:700}.rk-flat{color:var(--muted)}
+    .rk-new{display:inline-block;padding:1px 6px;border-radius:4px;background:var(--blue-tint);color:var(--blue);font-size:10px;font-weight:800;letter-spacing:.04em}
     .rk-bar{display:flex;flex-wrap:wrap;align-items:center;justify-content:space-between;gap:12px;padding:22px 0 14px}
     .rk-sport{display:flex;gap:10px}
-    .rk-sport a{border:2px solid #263341;color:#96a1ae;border-radius:999px;padding:8px 22px;font-weight:700;text-decoration:none;transition:.15s}
-    .rk-sport a:hover,.rk-sport a.selected{border-color:#278ef6;background:#12335c;color:#48a4ff}
-    .rk-conf{display:flex;align-items:center;gap:8px;color:#96a1ae;font-size:13px;font-weight:600}
-    .rk-conf select{background:#0f1620;color:#e9eef3;border:1px solid #26303a;border-radius:8px;padding:8px 10px;font-size:13px}
+    .rk-sport a{border:2px solid var(--line);color:var(--muted);border-radius:999px;padding:8px 22px;font-weight:700;text-decoration:none;transition:.15s}
+    .rk-sport a:hover,.rk-sport a.selected{border-color:var(--blue);background:var(--blue-tint);color:var(--blue)}
+    .rk-conf{display:flex;align-items:center;gap:8px;color:var(--muted);font-size:13px;font-weight:600}
+    .rk-conf select{background:var(--card);color:var(--ink);border:1px solid var(--line);border-radius:8px;padding:8px 10px;font-size:13px}
     .rk-table th.rk-th{cursor:pointer;user-select:none;white-space:nowrap}
-    .rk-table th.rk-th:hover,.rk-table th.sorted{color:#69a8ff}
+    .rk-table th.rk-th:hover,.rk-table th.sorted{color:var(--blue)}
     .rk-table td{white-space:nowrap;font-variant-numeric:tabular-nums}
     .rk-team{display:inline-flex;align-items:center}
-    .rk-empty{text-align:center;color:#7f8c9a;padding:24px}
+    .rk-empty{text-align:center;color:var(--muted);padding:24px}
     @media(max-width:620px){.mu-unit{grid-template-columns:40px 24px 1fr 64px;gap:8px}.rk-bar{flex-direction:column;align-items:stretch}.rk-conf select{flex:1}}
-    .set-warn{margin:22px 0 0;padding:11px 15px;border:1px solid #3a2a12;border-left:3px solid #f0b354;border-radius:8px;background:#160f04;color:#e6cfa0;font-size:13px}
-    .set-card{background:var(--panel);border:1px solid var(--line);border-radius:8px;padding:20px 22px}
+    .set-warn{margin:22px 0 0;padding:11px 15px;border:1px solid var(--line);border-left:3px solid var(--amber);border-radius:8px;background:var(--amber-tint);color:var(--ink);font-size:13px}
+    .set-card{background:var(--card);border:1px solid var(--line);border-radius:8px;padding:20px 22px}
     .set-card .section-title{margin-bottom:16px}
-    .set-note{margin:14px 0 0;color:#8290a0;font-size:12px;line-height:1.55;max-width:640px}
-    .set-note.set-books-min{color:#f0b354;font-weight:600}
+    .set-note{margin:14px 0 0;color:var(--muted);font-size:12px;line-height:1.55;max-width:640px}
+    .set-note.set-books-min{color:var(--amber);font-weight:600}
     .set-actions,.set-chips{display:flex;gap:8px;flex-wrap:wrap}
-    .set-actions button,.set-chips button,.set-seg button,.set-reset{border:1px solid #26303a;background:#0f1620;color:#c2ccd6;border-radius:8px;padding:8px 14px;font-size:13px;font-weight:600;cursor:pointer;transition:.15s}
-    .set-actions button:hover,.set-chips button:hover,.set-seg button:hover{border-color:#3d82d0;color:#eaf3ff}
-    .set-chips button.selected,.set-seg button.selected{background:#16324e;border-color:#3d82d0;color:#eaf3ff}
+    .set-actions button,.set-chips button,.set-seg button,.set-reset{border:1px solid var(--line);background:var(--card);color:var(--ink);border-radius:8px;padding:8px 14px;font-size:13px;font-weight:600;cursor:pointer;transition:.15s}
+    .set-actions button:hover,.set-chips button:hover,.set-seg button:hover{border-color:var(--blue);color:var(--ink)}
+    .set-chips button.selected,.set-seg button.selected{background:var(--blue-tint);border-color:var(--blue);color:var(--ink)}
     .set-books{display:grid;grid-template-columns:repeat(auto-fill,minmax(150px,1fr));gap:10px}
-    .set-book{position:relative;display:flex;align-items:center;gap:10px;min-width:0;padding:12px 14px;border:1px solid #263341;border-radius:10px;background:#0e1620;color:#96a1ae;font-size:14px;font-weight:600;text-align:left;cursor:pointer;transition:.15s}
-    .set-book:hover{border-color:#3d82d0}
-    .set-book.selected{border-color:#3d82d0;background:#12233a;color:#eaf3ff;box-shadow:inset 0 0 0 1px #3d82d0}
+    .set-book{position:relative;display:flex;align-items:center;gap:10px;min-width:0;padding:12px 14px;border:1px solid var(--line);border-radius:10px;background:var(--card);color:var(--muted);font-size:14px;font-weight:600;text-align:left;cursor:pointer;transition:.15s}
+    .set-book:hover{border-color:var(--blue)}
+    .set-book.selected{border-color:var(--blue);background:var(--blue-tint);color:var(--ink);box-shadow:inset 0 0 0 1px var(--blue)}
     .set-book span{min-width:0;line-height:1.25;padding-right:16px}
     .set-book .bk-logo{width:28px;height:28px;border-radius:6px;background:#fff;flex:none;opacity:.55;transition:.15s}
-    .set-book .bk-txt{display:inline-flex;align-items:center;justify-content:center;width:28px;height:28px;border-radius:6px;background:#1a2430;color:#9fb0c2;font-size:9px;font-weight:800;flex:none}
+    .set-book .bk-txt{display:inline-flex;align-items:center;justify-content:center;width:28px;height:28px;border-radius:6px;background:var(--line);color:var(--muted);font-size:9px;font-weight:800;flex:none}
     .set-book.selected .bk-logo{opacity:1}
-    .set-book i{position:absolute;top:7px;right:8px;display:flex;align-items:center;justify-content:center;width:17px;height:17px;border-radius:50%;background:#3d82d0;color:#fff;font-size:10px;font-style:normal;font-weight:800;opacity:0;transition:.15s}
+    .set-book i{position:absolute;top:7px;right:8px;display:flex;align-items:center;justify-content:center;width:17px;height:17px;border-radius:50%;background:var(--blue);color:#fff;font-size:10px;font-style:normal;font-weight:800;opacity:0;transition:.15s}
     .set-book.selected i{opacity:1}
     .set-row{display:flex;gap:16px 28px;align-items:flex-end;flex-wrap:wrap}
     .set-field{display:flex;flex-direction:column;gap:7px}
-    .set-field>small{color:#7f8c9a;font-size:10px;font-weight:600;letter-spacing:.08em}
-    .set-money{display:inline-flex;align-items:center;border:1px solid #2a333d;border-radius:8px;background:#0b1119;padding:0 12px;transition:.15s}
-    .set-money:focus-within{border-color:#3d82d0}
-    .set-money>span{color:#7f8c9a;font-weight:700;margin-right:4px}
-    .set-money input{width:120px;background:transparent;border:0;outline:none;color:#e9eef3;font-size:16px;font-weight:700;padding:10px 0;font-variant-numeric:tabular-nums}
-    .set-seg{display:inline-flex;border:1px solid #26303a;border-radius:8px;overflow:hidden}
-    .set-seg button{border:0;border-radius:0;border-right:1px solid #26303a;background:#0f1620}
+    .set-field>small{color:var(--muted);font-size:10px;font-weight:600;letter-spacing:.08em}
+    .set-money{display:inline-flex;align-items:center;border:1px solid var(--line);border-radius:8px;background:var(--card);padding:0 12px;transition:.15s}
+    .set-money:focus-within{border-color:var(--blue)}
+    .set-money>span{color:var(--muted);font-weight:700;margin-right:4px}
+    .set-money input{width:120px;background:transparent;border:0;outline:none;color:var(--ink);font-size:16px;font-weight:700;padding:10px 0;font-variant-numeric:tabular-nums}
+    .set-seg{display:inline-flex;border:1px solid var(--line);border-radius:8px;overflow:hidden}
+    .set-seg button{border:0;border-radius:0;border-right:1px solid var(--line);background:var(--card)}
     .set-seg button:last-child{border-right:0}
     .set-range{display:flex;align-items:center;gap:18px;max-width:560px}
-    .set-range input{flex:1;min-width:0;accent-color:#3d82d0;cursor:pointer}
-    .set-range output{min-width:64px;text-align:right;font-size:22px;font-weight:800;color:#69a8ff;font-variant-numeric:tabular-nums}
-    .set-reset:hover{border-color:#ff8a8a;color:#ff8a8a}
-    .set-saved{position:fixed;right:20px;bottom:20px;z-index:5;padding:9px 15px;border:1px solid #1f5a3d;border-radius:8px;background:#0e2419;color:#48d69a;font-size:13px;font-weight:700;opacity:0;transform:translateY(6px);transition:.2s;pointer-events:none}
+    .set-range input{flex:1;min-width:0;accent-color:var(--blue);cursor:pointer}
+    .set-range output{min-width:64px;text-align:right;font-size:22px;font-weight:800;color:var(--blue);font-variant-numeric:tabular-nums}
+    .set-reset:hover{border-color:var(--red);color:var(--red)}
+    .set-saved{position:fixed;right:20px;bottom:20px;z-index:5;padding:9px 15px;border:1px solid var(--green);border-radius:8px;background:var(--green-tint);color:var(--green);font-size:13px;font-weight:700;opacity:0;transform:translateY(6px);transition:.2s;pointer-events:none}
     .set-saved.show{opacity:1;transform:none}
     @media(max-width:620px){.set-card{padding:16px}.set-books{gap:8px}.set-book{gap:8px;padding:11px 10px;font-size:13px}.set-row{flex-direction:column;align-items:stretch}.set-money input{width:100%}.set-seg{display:flex}.set-seg button{flex:1;padding:8px 6px}.set-range{gap:12px}}
   </style>`);
@@ -2638,8 +2703,8 @@ async function render() {
         Object.entries(attrs).forEach(([key, value]) => node.setAttribute(key, value));
         return node;
       };
-      const guide = svgNode("line", { x1: 0, x2: 0, y1: 0, y2: 260, stroke: "#83bbff", "stroke-width": 1, "stroke-dasharray": "4 4", visibility: "hidden" });
-      const marker = svgNode("circle", { cx: 0, cy: 0, r: 6, fill: "#59a2ff", stroke: "#d9ecff", "stroke-width": 2, visibility: "hidden" });
+      const guide = svgNode("line", { x1: 0, x2: 0, y1: 0, y2: 260, stroke: "#2563EB", "stroke-width": 1, "stroke-dasharray": "4 4", visibility: "hidden" });
+      const marker = svgNode("circle", { cx: 0, cy: 0, r: 6, fill: "#2563EB", stroke: "#fff", "stroke-width": 2, visibility: "hidden" });
       chartSvg.append(guide, marker);
       const tooltip = document.createElement("div");
       tooltip.className = "chart-tooltip";
