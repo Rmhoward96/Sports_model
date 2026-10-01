@@ -32,7 +32,7 @@ function toHost(v) {
   }
 }
 
-export function loadScripts(files, { page = "dashboard", storage = new Map() } = {}) {
+export function loadScripts(files, { page = "dashboard", storage = new Map(), globals = {} } = {}) {
   const localStorage = {
     getItem: (k) => (storage.has(k) ? storage.get(k) : null),
     setItem: (k, v) => storage.set(k, String(v)), removeItem: (k) => storage.delete(k),
@@ -40,6 +40,7 @@ export function loadScripts(files, { page = "dashboard", storage = new Map() } =
   const ctx = { console, URL, URLSearchParams, Intl, Date, Math, JSON, setTimeout, clearTimeout,
     setInterval: () => 0, fetch: async () => { throw new Error("no network in tests"); },
     localStorage, location: { search: "", href: "http://localhost/" }, history: { replaceState() {} } };
+  Object.assign(ctx, globals);       // test stubs (e.g. fetch) override the defaults
   ctx.window = ctx;
   ctx.__CA_TEST__ = true;            // js/boot.js skips boot() in tests
   ctx.document = fakeDom(page);

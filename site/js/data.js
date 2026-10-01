@@ -40,7 +40,7 @@ async function loadOpportunities() {
   const segs = segmentRecords(evPnl);
   const out = [];
   LIVE_SPORTS.forEach((s, i) => {
-    for (const r of per[2 * i] || []) { const o = toOpportunity(r, "line", segs.get(segmentKey(s, "line", r.market))); if (o) out.push(o); }
+    for (const r of per[2 * i] || []) { if (r.is_pick !== true) continue; const o = toOpportunity(r, "line", segs.get(segmentKey(s, "line", r.market))); if (o) out.push(o); }
     for (const r of per[2 * i + 1] || []) { const o = toOpportunity(r, "prop", segs.get(segmentKey(s, "prop", r.market))); if (o) out.push(o); }
   });
   return out.sort((a, b) => b.alpha - a.alpha || b.evPct - a.evPct);
@@ -65,10 +65,12 @@ async function loadSplits() {
 }
 
 async function loadEvHistory(days) {
-  const since = new Date(Date.now() - days * 864e5).toISOString();
+  // Look back `days + 14` so a pick first flagged before the window but rebuilt inside it is not counted as new.
+  const since = new Date(Date.now() - (days + 14) * 864e5).toISOString();
+  const q = "&order=created_at.asc&limit=10000";
   const [lines, props] = await Promise.all([
-    sb(`ev_picks?is_pick=eq.true&created_at=gte.${since}&select=sport,game_pk,market,side,created_at`).catch(() => []),
-    sb(`ev_prop_picks?is_pick=eq.true&created_at=gte.${since}&select=sport,game_pk,player_id,market,side,created_at`).catch(() => []),
+    sb(`ev_picks?is_pick=eq.true&created_at=gte.${since}&select=sport,game_pk,market,side,created_at${q}`).catch(() => []),
+    sb(`ev_prop_picks?is_pick=eq.true&created_at=gte.${since}&select=sport,game_pk,player_id,market,side,created_at${q}`).catch(() => []),
   ]);
   const first = new Map();
   const add = (r, kind) => {
@@ -76,5 +78,7 @@ async function loadEvHistory(days) {
     if (!first.has(k) || r.created_at < first.get(k).created_at) first.set(k, { ...r, kind });
   };
   (lines || []).forEach((r) => add(r, "line")); (props || []).forEach((r) => add(r, "prop"));
-  return [...first.values()].map((r) => ({ date: etDateStr(r.created_at), kind: r.kind, sport: r.sport }));
+  const oldest = etDateStr(new Date(Date.now() - (days - 1) * 864e5).toISOString());  // today inclusive
+  return [...first.values()].map((r) => ({ date: etDateStr(r.created_at), kind: r.kind, sport: r.sport }))
+    .filter((r) => r.date >= oldest);
 }

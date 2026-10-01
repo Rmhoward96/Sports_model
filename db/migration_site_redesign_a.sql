@@ -2,7 +2,9 @@
 -- for the dashboard's Market Movers and the +EV Market Pulse. Run before deploying the site.
 CREATE INDEX IF NOT EXISTS idx_odds_snapshot_book_commence ON odds_snapshot (book, commence_time);
 
-CREATE OR REPLACE VIEW line_moves_current WITH (security_invoker = true) AS
+-- Owner-rights view (no security_invoker): odds_snapshot has RLS with no read policy, so an
+-- invoker view would return 0 rows to the site's anon key; matches the existing ev_current views.
+CREATE OR REPLACE VIEW line_moves_current AS
 WITH s AS (
   SELECT game_pk, market, side, line, price, captured_at, commence_time
   FROM odds_snapshot
