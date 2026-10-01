@@ -70,7 +70,7 @@ async function loadEvHistory(days) {
   const q = "&order=created_at.asc&limit=10000";
   const [lines, props] = await Promise.all([
     sb(`ev_picks?is_pick=eq.true&created_at=gte.${since}&select=sport,game_pk,market,side,created_at${q}`).catch(() => []),
-    sb(`ev_prop_picks?is_pick=eq.true&created_at=gte.${since}&select=sport,game_pk,player_id,market,side,created_at${q}`).catch(() => []),
+    sb(`ev_prop_picks?is_pick=eq.true&created_at=gte.${since}&select=sport,game_pk,player_id,player_name,market,side,created_at${q}`).catch(() => []),
   ]);
   const first = new Map();
   const add = (r, kind) => {
@@ -79,6 +79,8 @@ async function loadEvHistory(days) {
   };
   (lines || []).forEach((r) => add(r, "line")); (props || []).forEach((r) => add(r, "prop"));
   const oldest = etDateStr(new Date(Date.now() - (days - 1) * 864e5).toISOString());  // today inclusive
-  return [...first.values()].map((r) => ({ date: etDateStr(r.created_at), kind: r.kind, sport: r.sport }))
+  // date = ET day first flagged; the pick's identity + first-flag time ride along (dashboard New Signals).
+  return [...first.values()].map((r) => ({ date: etDateStr(r.created_at), kind: r.kind, sport: r.sport, game_pk: r.game_pk,
+    market: r.market, side: r.side, player_id: r.player_id ?? null, player_name: r.player_name ?? null, at: r.created_at }))
     .filter((r) => r.date >= oldest);
 }

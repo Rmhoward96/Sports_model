@@ -2688,7 +2688,7 @@ async function render() {
       throw new Error("Set CONFIG.SUPABASE_URL and CONFIG.SUPABASE_ANON_KEY at the top of app.js.");
     }
     let body;
-    if (page === "dashboard") body = await buildDash();
+    if (page === "dashboard") body = await buildDashboard();
     else if (page === "track") body = await buildTrack();
     else if (page === "game") body = await buildGame();
     else if (page === "ev") body = await buildEv();
@@ -2696,6 +2696,7 @@ async function render() {
     else if (page === "rankings") body = await buildRankings();
     else body = await buildLeague(page); // cfb / nfl
     shell.innerHTML = siteHeader(page === "rankings" || page === "settings" ? "" : page) + `<div class="ca-page">${body}</div>` + footer(); wireShell();
+    if (page === "dashboard") wireDashboard();
     if (page === "game") wireGameSim();
     if (page === "track") { wireTrack(selTrackLeague, selTrackWeek); wirePropGames(); wirePnl(); }
     if (page === "ev") wireEvPage();
