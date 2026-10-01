@@ -46,18 +46,36 @@ function watchlistToggle(kind, id) {
   watchlistSave(w);
   return i < 0;
 }
+function starAttrs(on, label) {
+  return { cls: `ca-star${on ? " on" : ""}`, text: on ? "★" : "☆", label: `${on ? "Remove" : "Add"} ${label} ${on ? "from" : "to"} watchlist` };
+}
 function starButton(kind, id, label) {
-  const on = watchlistHas(kind, id);
-  return `<button class="ca-star${on ? " on" : ""}" data-star-kind="${kind}" data-star-id="${ctxEsc(id)}" aria-pressed="${on}" aria-label="${on ? "Remove" : "Add"} ${ctxEsc(label)} ${on ? "from" : "to"} watchlist">${on ? "★" : "☆"}</button>`;
+  const on = watchlistHas(kind, id), a = starAttrs(on, ctxEsc(label));
+  return `<button class="${a.cls}" data-star-kind="${kind}" data-star-id="${ctxEsc(id)}" data-star-label="${ctxEsc(label)}" aria-pressed="${on}" aria-label="${a.label}">${a.text}</button>`;
 }
-function wireStars(root = document) {
-  root.querySelectorAll("[data-star-kind]").forEach((b) => b.addEventListener("click", (e) => {
-    e.preventDefault(); e.stopPropagation();
-    const on = watchlistToggle(b.dataset.starKind, b.dataset.starId);
+// Toggle one star in the watchlist, then sync EVERY button for that kind+id in the document
+// (a game can be starred in the Slate and the Watchlist at once). Returns the new state.
+function starToggle(kind, id, doc = document) {
+  const on = watchlistToggle(kind, id);
+  doc.querySelectorAll("[data-star-kind][data-star-id]").forEach((b) => {
+    if (b.dataset.starKind !== kind || b.dataset.starId !== String(id)) return;
     b.classList.toggle("on", on); b.textContent = on ? "★" : "☆"; b.setAttribute("aria-pressed", String(on));
-  }));
+    b.setAttribute("aria-label", starAttrs(on, b.dataset.starLabel || String(id)).label);
+  });
+  if (typeof CustomEvent === "function") doc.dispatchEvent(new CustomEvent("ca-watchlist-change", { detail: { kind, id: String(id), on } }));
+  return on;
 }
-let shellDocBound = false;
+// The one delegated click handler (capture phase on the document): a star never triggers a row / link handler.
+function starDelegate(e, doc = document) {
+  const b = e.target && e.target.closest ? e.target.closest("[data-star-kind][data-star-id]") : null;
+  if (!b) return false;
+  e.preventDefault(); e.stopPropagation();
+  starToggle(b.dataset.starKind, b.dataset.starId, doc);
+  return true;
+}
+// Kept for compatibility: stars are handled by the one delegated listener bound in wireShell.
+function wireStars() {}
+let shellDocBound = false, shellStarsBound = false;
 function wireShell() {
   const av = document.querySelector("[data-avatar]"), menu = document.querySelector(".ca-menu");
   if (av && menu) {
@@ -71,5 +89,8 @@ function wireShell() {
       if (a) a.setAttribute("aria-expanded", "false");
     });
   }
-  wireStars(document);
+  if (!shellStarsBound) {  // one delegated listener for every star on every page, present or future markup
+    shellStarsBound = true;
+    document.addEventListener("click", starDelegate, true);
+  }
 }

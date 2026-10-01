@@ -165,7 +165,11 @@ a{color:inherit}
 .ca-dash-slate th{position:sticky;top:0;z-index:1}
 .ca-dash-pair .tlogo+.tlogo{margin-left:-2px!important}
 .ca-dash-dot{display:inline-block;width:8px;height:8px;border-radius:50%;margin-right:8px;vertical-align:1px}
-.ca-dash-dot.live{background:var(--red)}.ca-dash-dot.soon{background:var(--navy)}.ca-dash-dot.later{background:#E0A526}
+.ca-dash-dot.live{background:var(--red)}.ca-dash-dot.soon{background:var(--navy)}.ca-dash-dot.later{background:#E0A526}.ca-dash-dot.final{background:#B9B3A5}
+.ca-dash-cap{margin:0 0 10px;font-size:12px;line-height:1.4;color:var(--muted)}
+.ca-dash-gtime{white-space:nowrap;color:var(--muted)}
+.ca-dash-opps th{white-space:normal;line-height:1.2;vertical-align:bottom}
+.ca-dash-opps .ca-dash-mkt{max-width:112px}
 .ca-dash-actions{display:flex;align-items:center;gap:4px;justify-content:flex-end}
 .ca-dash-actions .ca-star{padding:0 2px}
 .ca-dash-minis{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:10px;margin-bottom:12px}

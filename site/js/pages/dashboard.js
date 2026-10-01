@@ -2,15 +2,24 @@
    Real data only: every card has an empty state and the mockup's numbers are never rendered.
    Every "today" panel reads the selected ET date (?date=YYYY-MM-DD, default today); the 30D /
    7D / Season windows end on that date. Phase B panels (Recent Model Updates) are omitted.
+   Performance numbers (Units, ROI, Hit Rate, Snapshot, Exposure) all come from ONE population: graded +EV
+   picks in ev_pnl_daily (every market). "Best Opportunities Right Now" is the one undated panel: on today's
+   date it lists the whole upcoming 7-day board.
    Depends on app.js (sb, predictions, gameMoneylines, evBestLines, evResultsRows, evGradedPicks,
    trackRecordStarts, inTrackRecord, etDateStr, timeET, bpKick, logoImg, teamShort, ctxEsc,
-   getSettings, tileBest, r05, CFB_2W_MASCOTS, GAME_MARKETS, uStr, pStr, pct1, render),
+   getSettings, tileBest, r05, CFB_2W_MASCOTS, uStr, pStr, pct1, render),
    metrics.js, ui.js, shell.js and data.js. */
 const DASH_SPORT = { nfl: "NFL", cfb: "CFB", mlb: "MLB", nba: "NBA" };
 const DASH_COLOR = { nfl: "var(--navy)", cfb: "var(--red)", mlb: "var(--blue)", nba: "var(--amber)" };
-const DASH_MKT_COLOR = ["var(--navy)", "var(--blue)", "var(--amber)"];
+const DASH_MKT_COLOR = ["var(--navy)", "var(--blue)", "var(--amber)", "var(--muted)"];
 const DASH_LEAGUE = { nfl: "teamlogos/leagues/500/nfl", cfb: "espn/misc_logos/500/ncaa_football", mlb: "teamlogos/leagues/500/mlb", nba: "teamlogos/leagues/500/nba" };
-const DASH_MKT_TYPES = [["Game Lines", (m) => m === "moneyline" || m === "spread"], ["Player Props", (m) => !GAME_MARKETS.has(m)], ["Totals", (m) => m === "total"]];
+// Explicit market classes: anything not listed here is ignored (and warned about), never defaulted into Player Props.
+const DASH_MKT_TYPES = [["Game Lines", (m) => m === "moneyline" || m === "spread"],
+  ["Player Props", (m) => m === "prop" || Object.prototype.hasOwnProperty.call(PROP_LABEL, m)],
+  ["Totals", (m) => m === "total"],
+  ["Parlays", (m) => m === "parlay"]];
+const dashMktType = (m) => { const t = DASH_MKT_TYPES.find(([, f]) => f(m)); return t ? t[0] : null; };
+const dashWarned = new Set();
 // UI state that survives the 5-minute re-render (the date lives in the URL).
 const dashState = window.__caDash || (window.__caDash = { op: "all", kind: "all", slate: "all", perf: "30d", movers: "moves", expo: "sport", watch: "games" });
 
@@ -70,13 +79,21 @@ function dashSlate(predRows, opps) {
 }
 
 // Exposure over graded bets since `sinceDate`: shares = bets staked (graded count n), units = P&L.
+// Rows whose market is not explicitly classified are left out (console.warn once per market).
+// Game Lines / Player Props / Totals always list; Parlays only when present.
 function dashExposure(evPnlRows, predPnlRows, sinceDate) {
-  const rows = [...(evPnlRows || []), ...(predPnlRows || [])].filter((r) => r && r.game_date >= sinceDate && dashFin(r.n) && +r.n > 0);
+  const all = [...(evPnlRows || []), ...(predPnlRows || [])].filter((r) => r && r.game_date >= sinceDate && dashFin(r.n) && +r.n > 0);
+  const rows = all.filter((r) => {
+    if (dashMktType(r.market)) return true;
+    if (!dashWarned.has(r.market)) { dashWarned.add(r.market); console.warn(`dashboard: ignoring unclassified market "${r.market}" in exposure`); }
+    return false;
+  });
   const staked = rows.reduce((s, r) => s + +r.n, 0);
   const slice = (rs) => { const a = aggPnl(rs); return { staked: a.n, units: a.units, pct: staked ? a.n * 100 / staked : 0 }; };
   const bySport = [...new Set(rows.map((r) => r.sport))].map((sport) => ({ sport, ...slice(rows.filter((r) => r.sport === sport)) }))
     .sort((a, b) => b.staked - a.staked || String(a.sport).localeCompare(String(b.sport)));
-  const byMarket = DASH_MKT_TYPES.map(([label, f]) => ({ label, ...slice(rows.filter((r) => f(r.market))) }));
+  const byMarket = DASH_MKT_TYPES.map(([label]) => ({ label, ...slice(rows.filter((r) => dashMktType(r.market) === label)) }))
+    .filter((x) => x.label !== "Parlays" || x.staked > 0);
   return { staked, totalUnits: aggPnl(rows).units, bySport, byMarket };
 }
 
@@ -96,7 +113,8 @@ function dashCumUnits(rows, from, to) {
 // Graded game-line +EV picks inside the track record: won, implied prob of the best price, edge (pp).
 function dashGraded(results, picks, starts) {
   const key = (r) => `${r.sport}|${r.game_pk}|${r.market}|${r.side}`;
-  const by = new Map((picks || []).map((p) => [key(p), p]));
+  const by = new Map();   // latest rebuild of each pick (max created_at) sets the price
+  for (const p of picks || []) { const prev = by.get(key(p)); if (!prev || String(p.created_at || "") >= String(prev.created_at || "")) by.set(key(p), p); }
   const out = [];
   for (const r of results || []) {
     if (!r || (r.won !== true && r.won !== false)) continue;
@@ -107,6 +125,29 @@ function dashGraded(results, picks, starts) {
       edgePp: implied != null && dashFin(p.true_prob) ? (+p.true_prob - implied) * 100 : null, date: etDateStr(p.commence_time) });
   }
   return out;
+}
+
+// One population for every performance number: graded +EV picks (ev_pnl_daily, all markets) in [from, to].
+// Hit rate = wins / (wins + losses). vs-market and avg edge use the graded game-line picks with a known flagged price.
+function dashPerf(evRows, graded, from, to) {
+  const rows = (evRows || []).filter((r) => r && r.game_date >= from && r.game_date <= to);
+  const a = aggPnl(rows), decidedN = a.w + a.l;
+  const g = (graded || []).filter((r) => r.date >= from && r.date <= to);
+  const edges = g.map((r) => r.edgePp).filter((x) => x != null);
+  const priced = g.filter((r) => r.implied != null);
+  return { rows, n: a.n, units: a.units, roiPct: a.roiPct, wins: a.w, losses: a.l,
+    hitRate: decidedN ? a.w / decidedN : null,
+    vsMarket: hitRateVsMarket(priced), pricedN: priced.length,
+    avgEdge: edges.length ? edges.reduce((s, x) => s + x, 0) / edges.length : null, edgeN: edges.length };
+}
+
+// Opportunities for "Best Opportunities Right Now": on today's date the whole upcoming board (kickoff in
+// [now, now + 7d]); on any other date just that date's games. Sorted by EV desc.
+function dashBoardOpps(tiered, date, nowMs, isToday) {
+  const rows = isToday
+    ? (tiered || []).filter((o) => { const t = dashTime(o.commence); return Number.isFinite(t) && t >= nowMs && t <= nowMs + 7 * 864e5; })
+    : (tiered || []).filter((o) => o.commence && etDateStr(o.commence) === date);
+  return rows.sort((a, b) => b.evPct - a.evPct);
 }
 
 // Model line vs market line per game (spread on the home side, total), biggest gap first.
@@ -178,17 +219,16 @@ function dashDate() {
 }
 
 async function dashLoad(date) {
-  const nowMs = Date.now();
+  const nowMs = Date.now(), isToday = date === etDateStr(new Date(nowMs).toISOString());
   // History reaches back far enough that the 7 days ending on `date` are covered (>= 8 days).
   const histDays = Math.max(8, Math.ceil((nowMs - Date.parse(`${date}T12:00:00Z`)) / 864e5) + 8);
-  const [predsBy, oppsAll, lineBy, mls, hist, evPnl, predPnl, results, picks, starts, moves, splits, pickRows] = await Promise.all([
+  const [predsBy, oppsAll, lineBy, mls, hist, evPnl, results, picks, starts, moves, splits, pickRows] = await Promise.all([
     Promise.all(SPORTS.map((s) => predictions(s).catch(() => []))),
     loadOpportunities().catch(() => []),
     evBestLines().catch(() => new Map()),
     gameMoneylines().catch(() => new Map()),
     loadEvHistory(histDays).catch(() => []),
     sb("ev_pnl_daily?select=*").catch(() => []),
-    sb("prediction_pnl_daily?select=*").catch(() => []),
     evResultsRows().catch(() => []),
     evGradedPicks().catch(() => []),
     trackRecordStarts().catch(() => new Map()),
@@ -199,15 +239,16 @@ async function dashLoad(date) {
   const preds = predsBy.flat();
   const onDate = (iso) => !!iso && etDateStr(iso) === date;
   const tiered = (oppsAll || []).filter((o) => o.tier);
-  const opps = tiered.filter((o) => onDate(o.commence));
+  const opps = tiered.filter((o) => onDate(o.commence));     // date-scoped: Live +EV count, Best Edge, Signals, Slate
   const upToDate = (r) => r && r.game_date <= date;
-  const pnl = [...(evPnl || []), ...(predPnl || [])].filter(upToDate);
+  const pnl = (evPnl || []).filter(upToDate);                // the one performance population: graded +EV picks
   return {
-    date, nowMs, preds, lineBy, mls, splits, hist: hist || [],
+    date, nowMs, isToday, preds, lineBy, mls, splits, hist: hist || [],
     datePreds: preds.filter((r) => dashGameDate(r) === date),
     opps, tiered, allOpps: oppsAll || [],
+    boardOpps: dashBoardOpps(tiered, date, nowMs, isToday),  // separate list for the Best Opportunities card
     counts7: dailyCounts(hist || [], (r) => r.date, 7, date),
-    pnl, expo: dashExposure((evPnl || []).filter(upToDate), (predPnl || []).filter(upToDate), dashAddDays(date, -29)),
+    pnl, expo: dashExposure(pnl, [], dashAddDays(date, -29)),
     graded: dashGraded(results, picks, starts).filter((r) => r.date <= date),
     moves: (moves || []).filter((m) => onDate(m.commence_time)),
     gaps: (pickRows || []).filter((r) => onDate(r.commence_time) && dashFin(r.soft_vs_sharp_gap) && +r.soft_vs_sharp_gap > 0)
@@ -216,47 +257,64 @@ async function dashLoad(date) {
 }
 
 /* ── stat cards ───────────────────────────────────────────────────────── */
-function dashStatCards(D) {
+function dashStatGames(D) {
   const per = SPORTS.map((s) => [s, D.datePreds.filter((r) => r.sport === s).length]);
-  const games = `<div class="ca-card ca-stat ca-dash-stat"><div class="ca-stat-label">Games Tracked</div><div class="ca-stat-value">${per.reduce((t, [, n]) => t + n, 0)}</div>
+  return `<div class="ca-card ca-stat ca-dash-stat"><div class="ca-stat-label">Games Tracked</div><div class="ca-stat-value">${per.reduce((t, [, n]) => t + n, 0)}</div>
     <div class="ca-dash-gt">${per.map(([s, n]) => `<div class="ca-dash-gt-item"${!n && SPORT_STATUS[s] ? ` title="${ctxEsc(SPORT_STATUS[s])}"` : ""}>${dashLeagueLogo(s)}<div><span>${DASH_SPORT[s]}</span><b>${n}</b></div></div>`).join("")}</div></div>`;
-
-  const c = D.counts7, diff = c.length >= 2 ? c[c.length - 1].n - c[c.length - 2].n : 0;
-  const vsY = `<span title="New +EV picks first flagged on this date vs. the day before">${diff > 0 ? `<span class="pos">↑ ${diff}</span>` : diff < 0 ? `<span class="neg">↓ ${-diff}</span>` : "<span>0</span>"} vs. yesterday</span>`;
-  const live = statCard({ label: "Live +EV Opportunities", value: String(D.opps.length), valueClass: D.opps.length ? "pos" : "", sub: vsY,
-    visual: c.some((x) => x.n > 0) ? miniBars(c.map((x) => x.n), { w: 56, h: 46 }) : "" });
-
+}
+function dashStatLive(D) {
+  // R14: "N new today" = picks first flagged on this ET date; the bars are new picks per day, last 7 days.
+  const c = D.counts7, newToday = c.length ? c[c.length - 1].n : 0;
+  const sub = `<span title="Picks first flagged on this date (all sports, game lines and props)"><span class="${newToday ? "pos" : ""}">${newToday} new ${D.isToday ? "today" : "that day"}</span></span>`;
+  return statCard({ label: "Live +EV Opportunities", value: String(D.opps.length), valueClass: D.opps.length ? "pos" : "", sub,
+    visual: c.some((x) => x.n > 0) ? `<span title="New picks per day, last 7 days">${miniBars(c.map((x) => x.n), { w: 56, h: 46 })}</span>` : "" });
+}
+function dashStatBest(D) {
   const best = [...D.opps].sort((a, b) => b.evPct - a.evPct)[0];
-  let bestCard;
-  if (best) {
-    const [away, home] = dashSides(best.matchup);
-    const txt = best.kind === "prop" ? `${ctxEsc(best.playerName || "")}<br>${ctxEsc(dashPick(best, D.lineBy))}` : `${ctxEsc(dashPick(best, D.lineBy))}<br>${ctxEsc(dashMatchup(away, home, best.sport))}`;
-    bestCard = statCard({ label: "Best Current Edge", value: pStr(best.evPct), valueClass: "pos",
-      sub: `<a class="ca-dash-be" href="${dashHref(best.sport, best.game_pk)}">${logoImg(away, best.sport)}<span>${txt}</span><i>at</i>${logoImg(home, best.sport)}</a>` });
-  } else bestCard = statCard({ label: "Best Current Edge", value: "—", sub: "No +EV opportunities on this date." });
-
-  const g30 = D.graded.filter((r) => r.date >= dashAddDays(D.date, -29));
-  const hr = hitRate(g30), vm = hitRateVsMarket(g30.filter((r) => r.implied != null));
-  const hit = statCard({ label: "Model Hit Rate", labelNote: "(30D)", value: hr == null ? "—" : `${(hr * 100).toFixed(1)}%`,
-    sub: hr == null ? "No graded +EV picks in 30 days." : vm == null ? "" : `<span class="${dashCls(vm)}">${pStr(vm)}</span> vs. market`,
+  if (!best) return statCard({ label: "Best Current Edge", value: "—", sub: "No +EV opportunities on this date." });
+  const [away, home] = dashSides(best.matchup);
+  const txt = best.kind === "prop" ? `${ctxEsc(best.playerName || "")}<br>${ctxEsc(dashPick(best, D.lineBy))}` : `${ctxEsc(dashPick(best, D.lineBy))}<br>${ctxEsc(dashMatchup(away, home, best.sport))}`;
+  return statCard({ label: "Best Current Edge", value: pStr(best.evPct), valueClass: "pos",
+    sub: `<a class="ca-dash-be" href="${dashHref(best.sport, best.game_pk)}">${logoImg(away, best.sport)}<span>${txt}</span><i>at</i>${logoImg(home, best.sport)}</a>` });
+}
+const dashRecord = (p) => `${p.wins}-${p.losses}`;
+function dashStatHit(D) {
+  const p = dashPerf(D.pnl, D.graded, dashAddDays(D.date, -29), D.date), hr = p.hitRate;
+  const vs = p.vsMarket == null ? "" : `<span class="${dashCls(p.vsMarket)}">${pStr(p.vsMarket)}</span> vs. market <span class="muted">(game lines)</span><br>`;
+  return statCard({ label: "Model Hit Rate", labelNote: "(30D)", value: hr == null ? "—" : `${(hr * 100).toFixed(1)}%`,
+    sub: hr == null ? "No graded +EV picks in 30 days." : `${vs}<span class="muted">${dashRecord(p)} · ${p.n} graded +EV picks</span>`,
     visual: hr == null ? "" : donut(hr, { size: 66, stroke: 10 }) });
-
-  const rows30 = D.pnl.filter((r) => r.game_date >= dashAddDays(D.date, -29)), a = aggPnl(rows30);
-  const units = statCard({ label: "Units", labelNote: "(30D)", value: a.n ? uStr(a.units) : "—", valueClass: dashCls(a.units),
-    sub: a.n ? `<span class="${dashCls(a.roiPct)}">${pStr(a.roiPct)} ROI</span>` : "No graded bets in 30 days.",
-    visual: sparkline(dashCumUnits(rows30, dashAddDays(D.date, -29), D.date).map((p) => p.units), { w: 72, h: 44 }) });
-
+}
+function dashStatUnits(D) {
+  const from = dashAddDays(D.date, -29), p = dashPerf(D.pnl, D.graded, from, D.date);
+  return statCard({ label: "Units", labelNote: "(30D)", value: p.n ? uStr(p.units) : "—", valueClass: dashCls(p.units),
+    sub: p.n ? `<span class="${dashCls(p.roiPct)}">${pStr(p.roiPct)} ROI</span><br><span class="muted">${p.n} graded +EV picks</span>` : "No graded +EV picks in 30 days.",
+    visual: sparkline(dashCumUnits(p.rows, from, D.date).map((x) => x.units), { w: 72, h: 44 }) });
+}
+function dashStatSignals(D) {
   const tiers = [["HIGH", "High Conviction", "var(--green)"], ["STRONG", "Strong Value", "var(--blue)"], ["MEDIUM", "Medium Value", "var(--amber)"]];
-  const signals = `<div class="ca-card ca-stat ca-dash-stat"><div class="ca-stat-label">Active Signals</div><div class="ca-dash-sig">${tiers.map(([t, l, col]) =>
+  return `<div class="ca-card ca-stat ca-dash-stat"><div class="ca-stat-label">Active Signals</div><div class="ca-dash-sig">${tiers.map(([t, l, col]) =>
     `<div class="ca-dash-sig-row"><i style="border-color:${col}"></i><b>${D.opps.filter((o) => o.tier === t).length}</b><span>${l}</span></div>`).join("")}</div></div>`;
-  return `<div class="ca-stats ca-dash-stats">${games}${live}${bestCard}${hit}${units}${signals}</div>`;
+}
+const DASH_STATS = [["Games Tracked", dashStatGames], ["Live +EV Opportunities", dashStatLive], ["Best Current Edge", dashStatBest],
+  ["Model Hit Rate", dashStatHit], ["Units", dashStatUnits], ["Active Signals", dashStatSignals]];
+function dashStatCards(D) {
+  return `<div class="ca-stats ca-dash-stats">${DASH_STATS.map(([name, fn]) => dashSafe(name, fn, D, "ca-card ca-stat ca-dash-stat")).join("")}</div>`;
+}
+
+// One throwing card must not blank the page: it renders a small placeholder and logs the error.
+function dashSafe(name, fn, D, cls = "ca-card ca-dash-card", id = "") {
+  try { return fn(D); }
+  catch (e) {
+    console.error(`dashboard: "${name}" failed to render`, e);
+    return `<section class="${cls}"${id ? ` id="${id}"` : ""}><p class="ca-empty">This panel couldn't load.</p></section>`;
+  }
 }
 
 /* ── Best Opportunities Right Now ─────────────────────────────────────── */
 function dashOppsCard(D) {
   const st = dashState;
-  const list = D.opps.filter((o) => (st.op === "all" || o.sport === st.op) && (st.kind === "all" || o.kind === st.kind))
-    .sort((a, b) => b.evPct - a.evPct).slice(0, 10);
+  const list = D.boardOpps.filter((o) => (st.op === "all" || o.sport === st.op) && (st.kind === "all" || o.kind === st.kind)).slice(0, 10);
   const sportPills = pills("dash-op", [["all", "All Sports"], ["nfl", "NFL"], ["cfb", "CFB"], ["mlb", "MLB"], ["nba", "NBA"]], st.op);
   const kindPills = pills("dash-kind", [["line", "Game Lines"], ["prop", "Player Props"]], st.kind);
   let body;
@@ -269,13 +327,13 @@ function dashOppsCard(D) {
       const who = o.kind === "prop" ? `<span class="ca-team" title="${ctxEsc(dashMatchup(away, home, o.sport))}">${ctxEsc(o.playerName || "")}</span>`
         : `<span class="ca-team">${dashPickLogo(o) || logoImg(away, o.sport)}${ctxEsc(dashMatchup(away, home, o.sport))}</span>`;
       return `<tr data-href="${dashHref(o.sport, o.game_pk)}"><td class="muted">${i + 1}</td><td><span class="ca-team">${dashLeagueLogo(o.sport)}${DASH_SPORT[o.sport] || ""}</span></td>
-        <td>${who}</td><td><span class="ca-ell ca-dash-mkt" title="${ctxEsc(dashPick(o, D.lineBy))}">${ctxEsc(dashPick(o, D.lineBy))}</span></td><td><span class="ca-dash-odds">${bookBadge(o.book)}${oddsStr(o.odds)}</span></td>
+        <td>${who}</td><td class="ca-dash-gtime">${dashKick(o.commence)}</td><td><span class="ca-ell ca-dash-mkt" title="${ctxEsc(dashPick(o, D.lineBy))}">${ctxEsc(dashPick(o, D.lineBy))}</span></td><td><span class="ca-dash-odds">${bookBadge(o.book)}${oddsStr(o.odds)}</span></td>
         <td>${pct1(o.modelProb)}</td><td>${pct1(o.impliedProb)}</td><td class="${dashCls(o.edgePp)} ca-b">${pStr(o.edgePp)}</td>
         <td>${alphaCell(o.alpha)}</td><td>${confPill(o.tier)}</td><td>${dashGo(o.sport, o.game_pk)}</td></tr>`;
     }).join("");
-    body = `<div class="ca-table-wrap"><table class="ca-table ca-dash-table"><thead><tr><th>#</th><th>Sport</th><th>Matchup / Player</th><th>Market</th><th>Best Odds</th><th>Model Prob.</th><th>Market Prob.</th><th>Edge</th><th>Alpha Score</th><th>Confidence</th><th></th></tr></thead><tbody>${rows}</tbody></table></div>`;
+    body = `<div class="ca-table-wrap"><table class="ca-table ca-dash-table ca-dash-opps"><thead><tr><th>#</th><th>Sport</th><th>Matchup / Player</th><th>Game Time</th><th>Market</th><th>Best Odds</th><th>Model Prob.</th><th>Market Prob.</th><th>Edge</th><th>Alpha Score</th><th>Confidence</th><th></th></tr></thead><tbody>${rows}</tbody></table></div>`;
   }
-  return `<section class="ca-card ca-dash-card" id="dash-opps"><div class="ca-card-head"><h2>Best Opportunities Right Now</h2><p>Top model edges across all sports, sorted by expected value.</p><a class="ca-link" href="ev.html">View All →</a></div>
+  return `<section class="ca-card ca-dash-card" id="dash-opps"><div class="ca-card-head"><h2>Best Opportunities Right Now</h2><p>${D.isToday ? "Top model edges for the next 7 days" : "Top model edges for this date"}, sorted by expected value.</p><a class="ca-link" href="ev.html">View All →</a></div>
     <div class="ca-dash-pillrow">${sportPills}<span class="ca-dash-pillsep"></span>${kindPills}</div>${body}</section>`;
 }
 
@@ -291,7 +349,10 @@ function dashSlateCard(D) {
   else {
     body = `<div class="ca-table-wrap ca-dash-slate-wrap"><table class="ca-table ca-dash-table ca-dash-slate"><thead><tr><th>Time (ET)</th><th>Matchup / Player</th><th>Market</th><th>Line</th><th>Alpha Score</th><th></th></tr></thead><tbody>${rows.map((g) => {
       const start = dashTime(g.commence), mins = (start - D.nowMs) / 6e4;
-      const [dot, dotTitle] = !Number.isFinite(start) ? ["later", "Kickoff time unknown"] : mins <= 0 ? ["live", "Live / started"] : mins <= 180 ? ["soon", "Starts within 3 hours"] : ["later", "Later today"];
+      const past = D.date < etDateStr(new Date(D.nowMs).toISOString());
+      const [dot, dotTitle] = !Number.isFinite(start) ? ["later", "Kickoff time unknown"]
+        : !D.isToday ? (past ? ["final", "Final"] : ["later", "Scheduled"])
+        : mins <= 0 ? ["live", "Live / started"] : mins <= 180 ? ["soon", "Starts within 3 hours"] : ["later", "Later today"];
       let market, line, tip = "";
       if (g.opp) {
         const who = g.opp.kind === "prop" ? `${String(g.opp.playerName || "").split(/\s+/).slice(-1)[0]} ` : "";   // props: player's last name first
@@ -321,18 +382,16 @@ function dashSlateCard(D) {
 /* ── Performance Snapshot ─────────────────────────────────────────────── */
 function dashPerfCard(D) {
   const w = dashState.perf, from = w === "7d" ? dashAddDays(D.date, -6) : w === "30d" ? dashAddDays(D.date, -29) : "0000-00-00";
-  const rows = D.pnl.filter((r) => r.game_date >= from), a = aggPnl(rows);
-  const g = D.graded.filter((r) => r.date >= from), hr = hitRate(g);
-  const edges = g.map((r) => r.edgePp).filter((x) => x != null), avgEdge = edges.length ? edges.reduce((s, x) => s + x, 0) / edges.length : null;
+  const p = dashPerf(D.pnl, D.graded, from, D.date);
   const mini = (label, value, cls = "") => `<div class="ca-dash-mini"><span>${label}</span><b class="${cls}">${value}</b></div>`;
-  // x labels on areaChart's own cadence (every ceil(n/7)th point + the last), minus the one that would collide with the last.
-  // The card is narrow: label every 2nd slot of areaChart's own cadence (ceil(n/7)) plus the last point.
-  const cum = dashCumUnits(rows, from, D.date), every = Math.max(1, Math.ceil(cum.length / 7)), step = cum.length > 14 ? 2 * every : every;
-  const pts = cum.map((p, i) => ({ x: i === cum.length - 1 || (i % step === 0 && cum.length - 1 - i >= Math.max(2, step * 0.5)) ? dashShortDate(p.date) : null, y: p.units }));
+  // Sparse x labels: every 2nd slot of areaChart's own cadence (ceil(n/7)) plus the last point, skipping one that would collide with it.
+  const cum = dashCumUnits(p.rows, from, D.date), every = Math.max(1, Math.ceil(cum.length / 7)), step = cum.length > 14 ? 2 * every : every;
+  const pts = cum.map((q, i) => ({ x: i === cum.length - 1 || (i % step === 0 && cum.length - 1 - i >= Math.max(2, step * 0.5)) ? dashShortDate(q.date) : null, y: q.units }));
   const chart = areaChart(pts, { h: 190, yTicks: 5 });
+  const cap = p.n ? `<p class="ca-dash-cap">${p.n} graded +EV picks (${dashRecord(p)}) · ROI, Units and Hit Rate cover the same bets${p.edgeN ? ` · Avg. Edge: ${p.edgeN} game-line picks with a flagged price` : ""}</p>` : "";
   return `<section class="ca-card ca-dash-card" id="dash-perf"><div class="ca-card-head"><h2>Performance Snapshot</h2>${pills("dash-perf", [["7d", "7D"], ["30d", "30D"], ["season", "Season"]], w)}<a class="ca-link" href="track-record.html">View Track Record →</a></div>
-    <div class="ca-dash-minis">${mini("ROI", a.n ? pStr(a.roiPct) : "—", dashCls(a.roiPct))}${mini("Units", a.n ? uStr(a.units) : "—", dashCls(a.units))}${mini("Hit Rate", hr == null ? "—" : `${(hr * 100).toFixed(1)}%`)}${mini("Avg. Edge", avgEdge == null ? "—" : pStr(avgEdge), dashCls(avgEdge))}</div>
-    ${chart || dashEmpty("No graded bets in this window yet.")}</section>`;
+    <div class="ca-dash-minis">${mini("ROI", p.n ? pStr(p.roiPct) : "—", dashCls(p.roiPct))}${mini("Units", p.n ? uStr(p.units) : "—", dashCls(p.units))}${mini("Hit Rate", p.hitRate == null ? "—" : `${(p.hitRate * 100).toFixed(1)}%`)}${mini("Avg. Edge", p.avgEdge == null ? "—" : pStr(p.avgEdge), dashCls(p.avgEdge))}</div>
+    ${cap}${chart || dashEmpty("No graded +EV picks in this window yet.")}</section>`;
 }
 
 /* ── Market Movers ────────────────────────────────────────────────────── */
@@ -364,7 +423,7 @@ function dashMoversCard(D) {
         title: ctxEsc(title), sub: ctxEsc(`${mu}${spTxt}`), chg, chgCls: dashCls(d), when: m.cur_at ? dashAgo(m.cur_at, D.nowMs) : "" }));
       if (rows.length >= 5) break;
     }
-    empty = "No line-move history yet — Pinnacle open → current moves appear once the line-moves view is live.";
+    empty = "No line moves captured for upcoming games yet.";
   } else if (tab === "model") {
     rows = dashModelVsMarket(D.datePreds).slice(0, 5).map((x) => {
       const p = x.pred, mu = dashMatchup(p.away_team_name, p.home_team_name, p.sport);
@@ -401,12 +460,13 @@ function dashExpoCard(D) {
   const e = D.expo, mode = dashState.expo;
   const segs = mode === "sport"
     ? e.bySport.map((x) => ({ label: DASH_SPORT[x.sport] || String(x.sport).toUpperCase(), pct: x.pct, units: x.units, color: DASH_COLOR[x.sport] || "var(--muted)" }))
-    : e.byMarket.filter((x) => x.staked > 0).map((x) => ({ label: x.label, pct: x.pct, units: x.units, color: DASH_MKT_COLOR[DASH_MKT_TYPES.findIndex(([l]) => l === x.label)] }));
+    : e.byMarket.filter((x) => x.staked > 0).map((x) => ({ label: x.label, pct: x.pct, units: x.units, color: DASH_MKT_COLOR[DASH_MKT_TYPES.findIndex(([l]) => l === x.label)] || "var(--muted)" }));
   const tabs = pills("dash-expo", [["sport", "By Sport"], ["market", "By Market Type"]], mode);
   const body = e.staked
     ? `<div class="ca-dash-expo">${dashDonut(segs, { size: 96, stroke: 14, center: uStr(e.totalUnits), caption: "Total Units" })}${donutLegend(segs.map((s) => ({ label: s.label, pct: s.pct, value: uStr(s.units), color: s.color })))}</div>
+      <p class="ca-dash-cap">Graded +EV picks, last 30 days · ${e.staked} bets staked</p>
       <div class="ca-dash-mtx"><h3>Market Type Exposure</h3>${e.byMarket.map((x) => `<div class="ca-dash-mtx-row"><span>${x.label}</span><i><b style="width:${x.pct.toFixed(1)}%"></b></i><em>${Math.round(x.pct)}%</em></div>`).join("")}</div>`
-    : dashEmpty("No graded bets in the last 30 days.");
+    : dashEmpty("No graded +EV picks in the last 30 days.");
   return `<section class="ca-card ca-dash-card" id="dash-expo"><div class="ca-card-head"><h2>Portfolio &amp; Exposure</h2></div><div class="ca-dash-tabs ca-dash-tabs-2">${tabs}</div>${body}</section>`;
 }
 
@@ -445,7 +505,9 @@ function dashWatchCard(D) {
 }
 
 /* ── page ─────────────────────────────────────────────────────────────── */
-const DASH_CARDS = { "dash-opps": dashOppsCard, "dash-slate": dashSlateCard, "dash-perf": dashPerfCard, "dash-movers": dashMoversCard, "dash-expo": dashExpoCard, watchlist: dashWatchCard };
+const DASH_CARDS = { "dash-opps": ["Best Opportunities", dashOppsCard], "dash-slate": ["Today’s Slate", dashSlateCard], "dash-perf": ["Performance Snapshot", dashPerfCard],
+  "dash-movers": ["Market Movers", dashMoversCard], "dash-expo": ["Portfolio & Exposure", dashExpoCard], watchlist: ["Watchlist", dashWatchCard] };
+const dashCard = (id, D) => dashSafe(DASH_CARDS[id][0], DASH_CARDS[id][1], D, "ca-card ca-dash-card", id);
 const DASH_PILL = { "dash-op": ["op", "dash-opps"], "dash-kind": ["kind", "dash-opps"], "dash-slate": ["slate", "dash-slate"], "dash-perf": ["perf", "dash-perf"],
   "dash-movers": ["movers", "dash-movers"], "dash-expo": ["expo", "dash-expo"], "dash-watch": ["watch", "watchlist"] };
 
@@ -458,8 +520,8 @@ async function buildDashboard() {
   return `<div class="ca-dash">${pageTitle("Today at a Glance", "Key opportunities, performance, and model insights across all sports.", nav)}
     ${dashStatCards(D)}
     <div class="ca-dash-main">
-      <div class="ca-dash-col">${dashOppsCard(D)}<div class="ca-dash-sub ca-dash-sub-l">${dashPerfCard(D)}${dashMoversCard(D)}</div></div>
-      <div class="ca-dash-col">${dashSlateCard(D)}<div class="ca-dash-sub ca-dash-sub-r">${dashExpoCard(D)}${dashWatchCard(D)}</div></div>
+      <div class="ca-dash-col">${dashCard("dash-opps", D)}<div class="ca-dash-sub ca-dash-sub-l">${dashCard("dash-perf", D)}${dashCard("dash-movers", D)}</div></div>
+      <div class="ca-dash-col">${dashCard("dash-slate", D)}<div class="ca-dash-sub ca-dash-sub-r">${dashCard("dash-expo", D)}${dashCard("watchlist", D)}</div></div>
     </div></div>`;
 }
 
@@ -472,15 +534,13 @@ function dashGoDate(d) {
   window.scrollTo(0, 0);
   render();
 }
-// Re-draw one card from the cached data (pill / star changes need no refetch). Stars inside the
-// new markup are wired here (R5: wireShell only wires what exists at render time).
+// Re-draw one card from the cached data (pill changes and watchlist changes need no refetch).
 function dashRedraw(id) {
   const el = document.getElementById(id), D = window.__caDashData;
   if (!el || !D || !DASH_CARDS[id]) return;
-  el.outerHTML = DASH_CARDS[id](D);
-  const fresh = document.getElementById(id);
-  if (fresh) wireStars(fresh);
+  el.outerHTML = dashCard(id, D);
 }
+let dashWatchBound = false;
 function wireDashboard() {
   const root = document.querySelector(".ca-dash");
   if (!root) return;
@@ -501,18 +561,9 @@ function wireDashboard() {
   });
   const inp = root.querySelector("[data-dash-datepick]");
   if (inp) inp.addEventListener("change", () => { if (/^\d{4}-\d{2}-\d{2}$/.test(inp.value)) dashGoDate(inp.value); });
-  // Star toggles (wired by wireShell, which stops propagation) -> refresh the Watchlist after the toggle lands.
-  // The same game can have a star in the Slate and in the Watchlist: re-sync every copy, then redraw the Watchlist.
-  root.addEventListener("click", (e) => {
-    const b = e.target.closest("[data-star-kind]");
-    if (!b) return;
-    setTimeout(() => {
-      const on = watchlistHas(b.dataset.starKind, b.dataset.starId);
-      root.querySelectorAll("[data-star-kind]").forEach((x) => {
-        if (x.dataset.starKind !== b.dataset.starKind || x.dataset.starId !== b.dataset.starId) return;
-        x.classList.toggle("on", on); x.textContent = on ? "★" : "☆"; x.setAttribute("aria-pressed", String(on));
-      });
-      dashRedraw("watchlist");
-    }, 0);
-  }, true);
+  // Stars are handled by shell.js's delegated listener; the Watchlist card just re-reads the list when it changes.
+  if (!dashWatchBound) {
+    dashWatchBound = true;
+    document.addEventListener("ca-watchlist-change", () => dashRedraw("watchlist"));
+  }
 }

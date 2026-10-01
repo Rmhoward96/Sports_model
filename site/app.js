@@ -649,8 +649,18 @@ function parlaySection(parlays) {
 // the ev_picks that produced them for matchup/price context. clv = closing-line
 // value vs the Pinnacle close (the honest scoreboard).
 async function evResultsRows() { return sb("ev_results?order=graded_at.desc&limit=1000"); }
+// A pick can have several rebuild rows: keep the LATEST (max created_at) per (sport, game_pk, market, side)
+// so the price shown is deterministic. If the 4000-row cap is hit, older picks may be missing -> warn.
+const EV_PICKS_CAP = 4000;
 async function evGradedPicks() {
-  return sb("ev_picks?is_pick=eq.true&select=sport,game_pk,market,side,matchup,commence_time,true_prob,base_prob,ev_best,best_book,best_price,pinnacle_price&limit=4000");
+  const rows = await sb(`ev_picks?is_pick=eq.true&select=sport,game_pk,market,side,matchup,commence_time,true_prob,base_prob,ev_best,best_book,best_price,pinnacle_price,created_at&order=created_at.asc&limit=${EV_PICKS_CAP}`);
+  if ((rows || []).length >= EV_PICKS_CAP) console.warn(`evGradedPicks: hit the ${EV_PICKS_CAP}-row cap; older graded picks may be missing prices`);
+  const latest = new Map();
+  for (const r of rows || []) {
+    const k = `${r.sport}|${r.game_pk}|${r.market}|${r.side}`, prev = latest.get(k);
+    if (!prev || String(r.created_at || "") >= String(prev.created_at || "")) latest.set(k, r);
+  }
+  return [...latest.values()];
 }
 
 function evTrackSection(results, picks) {
