@@ -73,22 +73,23 @@ function dailyCounts(rows, dateOf, days, today) {
   }
   return out;
 }
+// Real data only: blank/whitespace/non-numeric DB values must never become numbers.
+// Numeric strings ("-110") are accepted because PostgREST can return numerics as strings.
+const numOrNull = (x) => (typeof x === "number" ? (Number.isFinite(x) ? x : null)
+  : (typeof x === "string" && x.trim() !== "" && Number.isFinite(+x) ? +x : null));
 const americanToProb = (o) => {
-  if (o == null || o === "") return NaN;
-  const n = +o;
-  if (!Number.isFinite(n)) return NaN;
+  const n = numOrNull(o);
+  if (n === null) return NaN;
   return n > 0 ? 100 / (n + 100) : -n / (-n + 100);
 };
 const probToAmerican = (p) => (p >= 0.5 ? -Math.round(p / (1 - p) * 100) : Math.round((1 - p) / p * 100));
 function lineMoveScore(m) {
   if (m.market === "moneyline") {
-    if (m.open_price == null || m.cur_price == null) return null;
-    const open = +m.open_price, cur = +m.cur_price;
-    if (!Number.isFinite(open) || !Number.isFinite(cur)) return null;
+    const open = numOrNull(m.open_price), cur = numOrNull(m.cur_price);
+    if (open === null || cur === null) return null;
     return Math.abs(americanToProb(cur) - americanToProb(open)) * 100 / 2.5;
   }
-  if (m.open_line == null || m.cur_line == null) return null;
-  const open = +m.open_line, cur = +m.cur_line;
-  if (!Number.isFinite(open) || !Number.isFinite(cur)) return null;
+  const open = numOrNull(m.open_line), cur = numOrNull(m.cur_line);
+  if (open === null || cur === null) return null;
   return Math.abs(cur - open);
 }

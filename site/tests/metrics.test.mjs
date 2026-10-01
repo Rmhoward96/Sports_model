@@ -57,5 +57,11 @@ test("edge buckets, histogram, daily counts, odds", () => {
   assert.ok(Number.isNaN(g.americanToProb(undefined)));
   assert.equal(g.lineMoveScore({market:"moneyline", open_price:-110, cur_price:null}), null);
   assert.equal(g.lineMoveScore({market:"spread", open_line:-2.5, cur_line:-4}), 1.5);
+  // Blank/whitespace strings are missing data, not zero
+  assert.equal(g.lineMoveScore({market:"moneyline", open_price:"", cur_price:-110}), null);
+  assert.equal(g.lineMoveScore({market:"spread", open_line:"", cur_line:-4}), null);
+  assert.ok(Number.isNaN(g.americanToProb(" ")));
+  assert.ok(Math.abs(g.americanToProb("-110") - 110 / 210) < 1e-12);
+  assert.equal(g.lineMoveScore({market:"spread", open_line:"-2.5", cur_line:"-4"}), 1.5);
   assert.deepEqual(g.histogram([null, 1, undefined, NaN], [0, 5]).map((b) => b.n), [1]);
 });
