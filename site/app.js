@@ -364,10 +364,13 @@ function readableTeamColor(hex) {
   const lum = relLum(hex);
   if (lum > 0.97) return null;
   const [h, s, l] = hexToHsl(hex);
-  if (s < 0.2 && (lum < 0.25 || lum > 0.8)) return null;
+  const colorless = s < 0.2;
+  if (colorless && (lum < 0.25 || lum > 0.8)) return null;
   if (lum <= 0.5) return hex;
+  // Keep a gray gray: only colored hexes get a saturation floor while darkening.
+  const sat = colorless ? s : Math.max(s, 0.55);
   let out = hex;
-  for (let L = l; L > 0.25 && relLum(out) > 0.5; L -= 0.03) out = hslToHex(h, Math.max(s, 0.55), L);
+  for (let L = l; L > 0.25 && relLum(out) > 0.5; L -= 0.03) out = hslToHex(h, sat, L);
   return out;
 }
 function teamAccent(name, sport, useAlt = false) {
@@ -2378,6 +2381,12 @@ function injectStylesOnce() {  // one-time; re-renders must not keep appending <
     .table-wrap table{border-collapse:collapse;width:100%;min-width:800px}
     .table-wrap th{text-align:left;font-size:11px;font-weight:600;color:var(--muted);padding:12px 16px;border-bottom:1px solid var(--line);background:#FBFAF6}
     .table-wrap td{padding:11px 16px;font-size:12px;color:var(--ink);border-bottom:1px solid #F0ECE3}
+    /* boxscore tables are bare <table class="ev-table box"> in .box-col (no .table-wrap) */
+    .ev-table.box{border-collapse:collapse;width:100%}
+    .ev-table.box th{text-align:left;font-weight:600;color:var(--muted);border-bottom:1px solid var(--line);background:#FBFAF6}
+    .ev-table.box td{color:var(--ink);border-bottom:1px solid #F0ECE3}
+    .ev-table.box tbody tr:last-child td{border:0}
+    .ev-table.box td b{color:var(--ink)}
     .table-wrap tbody tr:last-child td{border:0}
     .table-wrap tbody tr:hover{background:var(--bg)}
     .table-wrap td b{font-size:12px;color:var(--ink)}
