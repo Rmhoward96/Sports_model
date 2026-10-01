@@ -17,6 +17,18 @@ function fakeDom(page) {
   };
 }
 
+// Copy values from vm realm into host realm, preserving non-cloneable types.
+function toHost(v) {
+  if (typeof v !== 'object' || v === null || typeof v === 'string') {
+    return v;  // primitives and strings
+  }
+  try {
+    return structuredClone(v);
+  } catch {
+    return v;  // non-cloneable values like functions or DOM-like objects
+  }
+}
+
 export function loadScripts(files, { page = "dashboard", storage = new Map() } = {}) {
   const localStorage = {
     getItem: (k) => (storage.has(k) ? storage.get(k) : null),
@@ -32,7 +44,27 @@ export function loadScripts(files, { page = "dashboard", storage = new Map() } =
   // Classic scripts share one global scope: concatenate so top-level const/let are visible to later files.
   const src = files.map((f) => fs.readFileSync(path.join(SITE, f), "utf8")).join("\n;\n");
   vm.runInContext(src + "\n;globalThis.__exports = { " + exportNames(src) + " };", ctx, { filename: files.join("+") });
-  return Object.assign(ctx.__exports, { localStorage: ctx.localStorage });
+
+  // Wrap exported functions to return values in host realm; clone non-function exports.
+  const exports = {};
+  for (const [key, value] of Object.entries(ctx.__exports)) {
+    if (typeof value === 'function') {
+      exports[key] = (...args) => {
+        const result = value(...args);
+        // Handle both async and sync functions: if result is thenable, chain toHost.
+        if (result && typeof result.then === 'function') {
+          return result.then(toHost);
+        }
+        return toHost(result);
+      };
+    } else {
+      // Non-function exports: clone them into host realm.
+      exports[key] = toHost(value);
+    }
+  }
+
+  // Keep localStorage as live reference (tests mutate/inspect it).
+  return Object.assign(exports, { localStorage: ctx.localStorage });
 }
 
 // Every top-level function / const / let / class name, so tests can reach them.
