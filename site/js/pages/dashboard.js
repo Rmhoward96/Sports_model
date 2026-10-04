@@ -321,20 +321,9 @@ function dashMoversCard(D) {
       const p = byPk.get(String(m.game_pk)), k = `${m.game_pk}|${m.market}`;
       if (!p || seen.has(k)) continue;
       seen.add(k);
-      const team = shortTeam(m.side === "home" ? p.home_team_name : p.away_team_name, p.sport), mu = shortMatchup(p.away_team_name, p.home_team_name, p.sport);
-      let title, chg, d;
-      if (m.market === "moneyline") {
-        d = (americanToProb(m.cur_price) - americanToProb(m.open_price)) * 100;
-        title = `${team} ML ${oddsStr(m.open_price)} → ${oddsStr(m.cur_price)}`; chg = signedStr(d, 1, "%");
-      } else {
-        d = +m.cur_line - +m.open_line;
-        title = m.market === "total" ? `${teamShort(p.away_team_name, p.sport)} @ ${teamShort(p.home_team_name, p.sport)} O/U ${+m.open_line} → ${+m.cur_line}` : `${team} ${lineStr(+m.open_line)} → ${lineStr(+m.cur_line)}`;
-        chg = `${signedStr(d, 1)} pts`;
-      }
-      const sp = D.splits && D.splits.get(`${m.game_pk}|${m.market}|${m.side}`);
-      const spTxt = sp && finite(sp.ticket_pct) ? ` • ${Math.round(+sp.ticket_pct)}% of tickets on ${m.market === "total" ? (m.side === "under" ? "Under" : "Over") : team}` : "";
+      const info = lineMoveInfo(m, p, D.splits);
       rows.push(dashMoverRow({ href: gameHref(p.sport, p.game_pk), icon: m.market === "total" ? ICON_TREND : logoImg(m.side === "home" ? p.home_team_name : p.away_team_name, p.sport),
-        title: ctxEsc(title), sub: ctxEsc(`${mu}${spTxt}`), chg, chgCls: signCls(d), when: m.cur_at ? dashAgo(m.cur_at, D.nowMs) : "" }));
+        title: ctxEsc(info.title), sub: ctxEsc(`${info.mu}${info.tickets ? ` • ${info.tickets}` : ""}`), chg: info.chg, chgCls: signCls(info.d), when: m.cur_at ? dashAgo(m.cur_at, D.nowMs) : "" }));
       if (rows.length >= 5) break;
     }
     empty = "No line moves captured for upcoming games yet.";

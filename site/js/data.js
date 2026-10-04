@@ -175,3 +175,21 @@ function perfWindow(evRows, graded, from, to) {
     vsMarket: hitRateVsMarket(priced), pricedN: priced.length,
     avgEdge: edges.length ? edges.reduce((s, x) => s + x, 0) / edges.length : null, edgeN: edges.length };
 }
+
+// One captured line move (line_moves_current row `m`) for its game `p` (a predictions row), as display text:
+// title ("Ravens -2.5 → -4.0"), matchup, change (moneyline: implied-prob %, else points), signed delta, ticket split.
+function lineMoveInfo(m, p, splits) {
+  const team = shortTeam(m.side === "home" ? p.home_team_name : p.away_team_name, p.sport), mu = shortMatchup(p.away_team_name, p.home_team_name, p.sport);
+  let title, chg, d;
+  if (m.market === "moneyline") {
+    d = (americanToProb(m.cur_price) - americanToProb(m.open_price)) * 100;
+    title = `${team} ML ${oddsStr(m.open_price)} → ${oddsStr(m.cur_price)}`; chg = signedStr(d, 1, "%");
+  } else {
+    d = +m.cur_line - +m.open_line;
+    title = m.market === "total" ? `${teamShort(p.away_team_name, p.sport)} @ ${teamShort(p.home_team_name, p.sport)} O/U ${+m.open_line} → ${+m.cur_line}` : `${team} ${lineStr(+m.open_line)} → ${lineStr(+m.cur_line)}`;
+    chg = `${signedStr(d, 1)} pts`;
+  }
+  const sp = splits && splits.get(`${m.game_pk}|${m.market}|${m.side}`);
+  const tickets = sp && finite(sp.ticket_pct) ? `${Math.round(+sp.ticket_pct)}% of tickets on ${m.market === "total" ? (m.side === "under" ? "Under" : "Over") : team}` : "";
+  return { team, mu, title, chg, d, tickets };
+}

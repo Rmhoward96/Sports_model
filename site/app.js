@@ -2701,7 +2701,7 @@ async function render() {
     if (page === "dashboard") body = await buildDashboard();
     else if (page === "track") body = await buildTrack();
     else if (page === "game") body = await buildGame();
-    else if (page === "ev") body = await buildEv();
+    else if (page === "ev") body = await buildEvPage();
     else if (page === "settings") body = buildSettings();
     else if (page === "rankings") body = await buildRankings();
     else body = await buildLeague(page); // cfb / nfl
@@ -2709,7 +2709,7 @@ async function render() {
     if (page === "dashboard") wireDashboard();
     if (page === "game") wireGameSim();
     if (page === "track") { wireTrack(selTrackLeague, selTrackWeek); wirePropGames(); wirePnl(); }
-    if (page === "ev") wireEvPage();
+    if (page === "ev") wireEvPage2();
     if (page === "settings") wireSettings();
     if (page === "rankings") wireRankings();
     const chartSvg = document.querySelector(".chart svg");
