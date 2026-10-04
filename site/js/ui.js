@@ -176,3 +176,8 @@ function donutLegend(rows) {
   if (!rs.length) return "";
   return `<div class="ca-donut-legend">${rs.map((r) => `<div class="ca-dl-row"><i class="ca-dl-dot" style="background:${ctxEsc(r.color || "var(--navy)")}"></i><span class="ca-dl-label">${ctxEsc(r.label)}</span>${uiFin(r.pct) ? `<span class="ca-dl-pct">${Math.round(+r.pct)}%</span>` : ""}${r.value != null && r.value !== "" ? `<span class="ca-dl-val">${ctxEsc(r.value)}</span>` : ""}</div>`).join("")}</div>`;
 }
+
+// Shared 22px line icons (stroke follows currentColor).
+const ICON_TREND = `<svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 17l6-6 4 4 8-8"/><path d="M15 7h6v6"/></svg>`;
+const ICON_CLOCK = `<svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/></svg>`;
+const ICON_WAVE = `<svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 20c4 0 4-16 8-16s4 16 8 16"/></svg>`;

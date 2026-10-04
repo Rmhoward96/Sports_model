@@ -132,7 +132,6 @@ function dashAgo(iso, nowMs) {
   return m < 60 ? `${m}m ago` : m < 48 * 60 ? `${Math.round(m / 60)}h ago` : `${Math.round(m / 1440)}d ago`;
 }
 const ICON_CAL = `<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="5" width="18" height="16" rx="2"/><path d="M3 10h18M8 3v4M16 3v4"/></svg>`;
-const ICON_TREND = `<svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 17l6-6 4 4 8-8"/><path d="M15 7h6v6"/></svg>`;
 
 /* ── data ─────────────────────────────────────────────────────────────── */
 function dashDate() {
@@ -459,8 +458,6 @@ function wireDashboard() {
     if (nav) { dashGoDate(nav.dataset.dashDate); return; }
     const pick = e.target.closest(".ca-dn-date");
     if (pick && !e.target.matches("input")) { const inp = pick.querySelector("input"); try { inp.showPicker(); } catch { inp.focus(); } return; }
-    const tr = e.target.closest("tr[data-href]");
-    if (tr && !e.target.closest("a,button")) location.href = tr.dataset.href;
   });
   const inp = root.querySelector("[data-dash-datepick]");
   if (inp) inp.addEventListener("change", () => { if (/^\d{4}-\d{2}-\d{2}$/.test(inp.value)) dashGoDate(inp.value); });

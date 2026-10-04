@@ -11,6 +11,7 @@
 const EV_TIERS = ["HIGH", "STRONG", "MEDIUM"];
 const EV_SORTS = [["edge", "Highest Edge"], ["ev", "Highest EV"], ["alpha", "Alpha Score"], ["time", "Game Time"]];
 const EV_DATES = [["", "All Dates"], ["today", "Today"], ["tomorrow", "Tomorrow"], ["week", "This Week"]];
+const EV_PROP_PICKS_CAP = 4000;
 const EV_MIN_EDGES = [0, 2, 5, 10];
 const EV_DEFAULT = { sport: "", market: "", book: "", minEdge: 0, tier: "", date: "", q: "", kind: "all", sort: "edge" };
 const EV_PARAMS = [["sport", "sport"], ["market", "market"], ["book", "book"], ["minEdge", "min"], ["tier", "conf"], ["date", "date"], ["q", "q"], ["kind", "tab"], ["sort", "sort"]];
@@ -86,11 +87,12 @@ function evxBins(opps) {
   const edges = [-Infinity, -5, 0, 5, 10, 15, Infinity], labels = ["<-5", "-5–0", "0–5", "5–10", "10–15", ">15"];
   return histogram((opps || []).map((o) => o.evPct), edges).map((b, i) => ({ label: labels[i], n: b.n, color: b.hi <= 0 ? "var(--red)" : "var(--green)" }));
 }
-// The upcoming game whose model total is furthest from the market total (unrounded model total).
-function evxMispricedTotal(preds) {
+// The UPCOMING game (kickoff after nowMs; unknown kickoff = unverifiable, skipped) whose model total is furthest from
+// the market total (unrounded model total).
+function evxMispricedTotal(preds, nowMs = Date.now()) {
   let best = null;
   for (const r of preds || []) {
-    if (!r || !finite(r.pred_home_score) || !finite(r.pred_away_score) || !finite(r.market_total)) continue;
+    if (!r || !(timeMs(r.commence_time) > nowMs) || !finite(r.pred_home_score) || !finite(r.pred_away_score) || !finite(r.market_total)) continue;
     const model = +r.pred_home_score + +r.pred_away_score, diff = model - +r.market_total;
     if (!best || Math.abs(diff) > Math.abs(best.diff)) best = { pred: r, market: +r.market_total, model, diff };
   }
@@ -129,12 +131,7 @@ function evxSync(s) {
 
 /* ── small view helpers ───────────────────────────────────────────────── */
 const ICON_REFRESH = `<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12a9 9 0 1 1-2.6-6.4"/><path d="M21 4v5h-5"/></svg>`;
-const ICON_SEARCH_SM = `<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/></svg>`;
 const ICON_STAR_BIG = `<svg class="ca-ev-star" width="38" height="38" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 2.5l2.9 6.2 6.8.8-5 4.7 1.3 6.7L12 17.5l-6 3.4 1.3-6.7-5-4.7 6.8-.8z" fill="#F2A71B"/></svg>`;
-const ICON_MOVE = `<svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 17l6-6 4 4 8-8"/><path d="M15 7h6v6"/></svg>`;
-const ICON_TARGET = `<svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/></svg>`;
-const ICON_TOTAL = `<svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="12" cy="12" r="9"/><path d="M12 6v6l4 2"/></svg>`;
-const ICON_DIVERGE = `<svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 20c4 0 4-16 8-16s4 16 8 16"/></svg>`;
 const evxStamp = (iso) => `${new Date(iso).toLocaleDateString("en-US", { timeZone: "America/New_York", month: "short", day: "numeric", year: "numeric" })} ${timeET(iso)}`;
 const evxBy = (arr, key) => [...new Set((arr || []).map((x) => x[key]).filter((v) => v != null && v !== ""))];
 
@@ -151,7 +148,10 @@ async function evxLoad() {
     evResultsRows().catch(() => []),
     evGradedPicks().catch(() => []),
     propResultsRows().catch(() => []),
-    sb("ev_prop_picks?is_pick=eq.true&select=game_pk,player_id,market,line,model_version,best_price,created_at&order=created_at.asc&limit=4000").catch(() => []),
+    sb(`ev_prop_picks?is_pick=eq.true&select=game_pk,player_id,market,line,model_version,best_price,created_at&order=created_at.asc&limit=${EV_PROP_PICKS_CAP}`).then((rows) => {
+      if ((rows || []).length >= EV_PROP_PICKS_CAP) console.warn(`+EV page: hit the ${EV_PROP_PICKS_CAP}-row cap on ev_prop_picks; older graded props may be missing prices`);
+      return rows;
+    }).catch(() => []),
     trackRecordStarts().catch(() => new Map()),
     loadLineMoves().catch(() => []),
     loadSplits().catch(() => new Map()),
@@ -222,7 +222,7 @@ function evxFilterCard(D) {
     ${evxSelect("market", "Market Type", [["", "All Markets"], ...markets], s.market)}${evxSelect("book", "Sportsbook", [["", "All Books"], ...books], s.book)}
     ${evxSelect("minEdge", "Minimum Edge", EV_MIN_EDGES.map((m) => [m, `≥ ${m}%`]), s.minEdge)}${evxSelect("tier", "Confidence", [["", "All Confidence"], ...EV_TIERS.map((t) => [t, t])], s.tier)}
     ${evxSelect("date", "Date", EV_DATES, s.date)}</div>
-    <label class="ca-ev-search">${ICON_SEARCH_SM}<input class="ca-input" type="search" data-ev-q placeholder="Search teams, players, or games..." value="${ctxEsc(s.q)}" aria-label="Search teams, players, or games" autocomplete="off"></label></section>`;
+    <label class="ca-ev-search">${ICON_SEARCH}<input class="ca-input" type="search" data-ev-q placeholder="Search teams, players, or games..." value="${ctxEsc(s.q)}" aria-label="Search teams, players, or games" autocomplete="off"></label></section>`;
 }
 
 /* ── tabs + table ─────────────────────────────────────────────────────── */
@@ -246,7 +246,7 @@ function evxTableCard(D) {
   const s = evxState(), list = evFilter(D.opps, evxFilters(s));
   let body;
   if (!list.length) {
-    const filtered = JSON.stringify({ ...s, sort: "edge" }) !== JSON.stringify(EV_DEFAULT);
+    const filtered = ["sport", "market", "book", "minEdge", "tier", "date", "q", "kind"].some((k) => s[k] !== EV_DEFAULT[k]);
     body = !D.opps.length ? emptyMsg(SPORT_STATUS[s.sport] || "No +EV opportunities on the board right now.")
       : `${emptyMsg(SPORT_STATUS[s.sport] || "No opportunities match these filters.")}${filtered ? `<p class="ca-ev-reset"><button class="ca-btn" data-ev-reset>Reset filters</button></p>` : ""}`;
   } else {
@@ -272,31 +272,31 @@ function evxPulse(D) {
   const mv = D.moves.map((m) => [m, byPk.get(String(m.game_pk))]).find(([, p]) => p);
   if (mv) {
     const info = lineMoveInfo(mv[0], mv[1], D.splits);
-    rows.push(evxPulseRow(ICON_MOVE, "Biggest Line Move", ctxEsc(info.title), info.chg, signCls(info.d), ctxEsc(info.tickets), gameHref(mv[1].sport, mv[1].game_pk)));
-  } else rows.push(`<div class="ca-ev-pr ca-ev-pr-empty"><span class="ca-ev-pr-ic">${ICON_MOVE}</span><span class="ca-ev-pr-main"><b>Biggest Line Move</b><small>No line moves captured yet.</small></span></div>`);
+    rows.push(evxPulseRow(ICON_TREND, "Biggest Line Move", ctxEsc(info.title), info.chg, signCls(info.d), ctxEsc(info.tickets), gameHref(mv[1].sport, mv[1].game_pk)));
+  } else rows.push(`<div class="ca-ev-pr ca-ev-pr-empty"><span class="ca-ev-pr-ic">${ICON_TREND}</span><span class="ca-ev-pr-main"><b>Biggest Line Move</b><small>No line moves captured yet.</small></span></div>`);
   const top = [...D.opps].sort((a, b) => b.alpha - a.alpha || b.evPct - a.evPct)[0];
-  rows.push(top ? evxPulseRow(ICON_TARGET, "Highest Confidence Edge", ctxEsc(`${top.kind === "prop" ? `${top.playerName || ""} ` : ""}${pickLabel(top, D.lineBy)} (${oddsStr(top.odds)})`.trim()), pStr(top.edgePp), "pos", `Alpha Score: ${top.alpha}`, gameHref(top.sport, top.game_pk))
-    : `<div class="ca-ev-pr ca-ev-pr-empty"><span class="ca-ev-pr-ic">${ICON_TARGET}</span><span class="ca-ev-pr-main"><b>Highest Confidence Edge</b><small>No +EV opportunities on the board.</small></span></div>`);
-  const tot = evxMispricedTotal(D.preds);
+  rows.push(top ? evxPulseRow(ICON_CLOCK, "Highest Confidence Edge", ctxEsc(`${top.kind === "prop" ? `${top.playerName || ""} ` : ""}${pickLabel(top, D.lineBy)} (${oddsStr(top.odds)})`.trim()), pStr(top.edgePp), "pos", `Alpha Score: ${top.alpha}`, gameHref(top.sport, top.game_pk))
+    : `<div class="ca-ev-pr ca-ev-pr-empty"><span class="ca-ev-pr-ic">${ICON_CLOCK}</span><span class="ca-ev-pr-main"><b>Highest Confidence Edge</b><small>No +EV opportunities on the board.</small></span></div>`);
+  const tot = evxMispricedTotal(D.preds, D.nowMs);
   if (tot) {
     const p = tot.pred;
-    rows.push(evxPulseRow(ICON_TOTAL, "Most Mispriced Total", ctxEsc(`${shortMatchup(p.away_team_name, p.home_team_name, p.sport)} O/U ${tot.market}`), `${signedStr(tot.diff, 1)} pts`, signCls(tot.diff), `Model: ${tot.model.toFixed(1)}`, gameHref(p.sport, p.game_pk)));
-  } else rows.push(`<div class="ca-ev-pr ca-ev-pr-empty"><span class="ca-ev-pr-ic">${ICON_TOTAL}</span><span class="ca-ev-pr-main"><b>Most Mispriced Total</b><small>No model totals vs. market totals yet.</small></span></div>`);
+    rows.push(evxPulseRow(ICON_CLOCK, "Most Mispriced Total", ctxEsc(`${shortMatchup(p.away_team_name, p.home_team_name, p.sport)} O/U ${tot.market}`), `${signedStr(tot.diff, 1)} pts`, signCls(tot.diff), `Model: ${tot.model.toFixed(1)}`, gameHref(p.sport, p.game_pk)));
+  } else rows.push(`<div class="ca-ev-pr ca-ev-pr-empty"><span class="ca-ev-pr-ic">${ICON_CLOCK}</span><span class="ca-ev-pr-main"><b>Most Mispriced Total</b><small>No model totals vs. market totals yet.</small></span></div>`);
   const clv = evxMeanClv(D.graded, addDays(D.today, -6), D.today);
-  rows.push(clv ? evxPulseRow(ICON_DIVERGE, "Average Market Divergence", `Graded +EV picks this week (${clv.n})`, pStr(clv.pct), signCls(clv.pct), "vs. closing lines", "track-record.html")
-    : `<div class="ca-ev-pr ca-ev-pr-empty"><span class="ca-ev-pr-ic">${ICON_DIVERGE}</span><span class="ca-ev-pr-main"><b>Average Market Divergence</b><small>No graded +EV picks this week yet.</small></span></div>`);
+  rows.push(clv ? evxPulseRow(ICON_WAVE, "Average Market Divergence", `Graded +EV picks this week (${clv.n})`, pStr(clv.pct), signCls(clv.pct), "vs. closing lines", "track-record.html")
+    : `<div class="ca-ev-pr ca-ev-pr-empty"><span class="ca-ev-pr-ic">${ICON_WAVE}</span><span class="ca-ev-pr-main"><b>Average Market Divergence</b><small>No graded +EV picks this week yet.</small></span></div>`);
   return `<section class="ca-card ca-ev-rail-card" id="ev-pulse"><div class="ca-card-head"><h2>Market Pulse</h2><a class="ca-link" href="index.html">View All →</a></div>${rows.join("")}</section>`;
 }
 function evxDist(D) {
-  const chart = histogramChart(evxBins(D.opps), { w: 150, h: 170 });
+  const chart = histogramChart(evxBins(D.opps), { w: 320, h: 170 });
   return `<section class="ca-card ca-ev-rail-card" id="ev-dist"><div class="ca-card-head"><h2>EV Distribution</h2></div>${chart ? `${chart}<p class="ca-ev-axis">Expected Value (%)</p>` : emptyMsg("No +EV opportunities on the board.")}</section>`;
 }
 function evxBuckets(D) {
   const rows = evBucketRows(D.gradedLines, D.gradedProps), b = edgeBuckets(rows, [10, 5, 2, 0]);
   const body = rows.length
-    ? `<table class="ca-table ca-ev-bt"><thead><tr><th>Edge Range</th><th>Hits</th><th>ROI</th><th>Units</th></tr></thead><tbody>${b.map((x) => x.n
-      ? `<tr title="${x.hits} of ${x.n} graded picks"><td>${ctxEsc(x.label)}</td><td>${Math.round(x.hits / x.n * 100)}%</td><td class="${signCls(x.roiPct)} ca-b">${pStr(x.roiPct)}</td><td class="${signCls(x.units)} ca-b">${uStr(x.units)}</td></tr>`
-      : `<tr class="muted"><td>${ctxEsc(x.label)}</td><td>—</td><td>—</td><td>—</td></tr>`).join("")}</tbody></table>
+    ? `<table class="ca-table ca-ev-bt"><thead><tr><th>Edge Range</th><th>n</th><th>Hits</th><th>ROI</th><th>Units</th></tr></thead><tbody>${b.map((x) => x.n
+      ? `<tr title="${x.hits} of ${x.n} graded picks"><td>${ctxEsc(x.label)}</td><td class="muted">${x.n}</td><td>${Math.round(x.hits / x.n * 100)}%</td><td class="${signCls(x.roiPct)} ca-b">${pStr(x.roiPct)}</td><td class="${signCls(x.units)} ca-b">${uStr(x.units)}</td></tr>`
+      : `<tr class="muted"><td>${ctxEsc(x.label)}</td><td>0</td><td>—</td><td>—</td><td>—</td></tr>`).join("")}</tbody></table>
       <p class="ca-ev-cap">${rows.length} graded +EV picks (game lines + props) with a stored flagged price and edge.</p>`
     : emptyMsg("No graded +EV picks with a flagged price yet.");
   return `<section class="ca-card ca-ev-rail-card" id="ev-buckets"><div class="ca-card-head"><h2>Performance by Edge Bucket</h2></div>${body}</section>`;
@@ -319,8 +319,8 @@ async function buildEvPage() {
   const sortSel = `<label class="ca-ev-sort"><span>Sort By</span><select class="ca-select" data-ev="sort">${EV_SORTS.map(([k, l]) => `<option value="${k}"${k === evxState().sort ? " selected" : ""}>${l}</option>`).join("")}</select></label>`;
   return `<div class="ca-ev">${pageTitle("+EV", "Find the best expected value opportunities across all sports, powered by the CappingAlpha model.", right)}
     ${evxStatCards(D)}${safeCard("Filters", evxFilterCard, D, "ca-card ca-ev-filters", "ev-filters")}
-    <div class="ca-ev-main"><div class="ca-ev-left"><div class="ca-ev-tabsrow">${safeCard("Tabs", evxTabs, D, "ca-card")}${sortSel}</div>${safeCard("+EV Opportunities", evxTableCard, D, "ca-card ca-ev-tablecard", "ev-table")}</div>
-      <aside class="ca-ev-rail" id="ev-rail">${evxRailCard(D, 0)}${evxRailCard(D, 1)}<div class="ca-ev-rail2">${evxRailCard(D, 2)}${evxRailCard(D, 3)}</div></aside></div>
+    <div class="ca-ev-main"><div class="ca-ev-left"><div class="ca-ev-tabsrow">${safeCard("Tabs", evxTabs, D, "ca-card", "ev-tabs")}${sortSel}</div>${safeCard("+EV Opportunities", evxTableCard, D, "ca-card ca-ev-tablecard", "ev-table")}</div>
+      <aside class="ca-ev-rail" id="ev-rail">${evxRailCard(D, 0)}${evxRailCard(D, 1)}${evxRailCard(D, 2)}${evxRailCard(D, 3)}</aside></div>
     <div class="ca-ev-legacy" id="ev-legacy">${safeCard("Parlays", evxParlays, D, "ca-card")}</div></div>`;
 }
 
@@ -329,7 +329,7 @@ function evxRedraw() {
   const D = window.__caEvData;
   if (!D) return;
   const tabs = document.getElementById("ev-tabs"), table = document.getElementById("ev-table");
-  if (tabs) tabs.outerHTML = safeCard("Tabs", evxTabs, D, "ca-card");
+  if (tabs) tabs.outerHTML = safeCard("Tabs", evxTabs, D, "ca-card", "ev-tabs");
   if (table) table.outerHTML = safeCard("+EV Opportunities", evxTableCard, D, "ca-card ca-ev-tablecard", "ev-table");
 }
 function evxSet(key, value) {
@@ -359,7 +359,5 @@ function wireEvPage2() {
       render();
       return;
     }
-    const tr = e.target.closest("tr[data-href]");
-    if (tr && !e.target.closest("a,button")) location.href = tr.dataset.href;
   });
 }

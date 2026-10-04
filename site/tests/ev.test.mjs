@@ -76,11 +76,15 @@ test("EV distribution bins and the most-mispriced total", () => {
   const bins = g.evxBins([{ evPct: -7 }, { evPct: 2 }, { evPct: 3 }, { evPct: 12 }, { evPct: 40 }, { evPct: 15 }]);
   assert.deepEqual(bins.map((b) => [b.label, b.n]), [["<-5", 1], ["-5–0", 0], ["0–5", 2], ["5–10", 0], ["10–15", 1], [">15", 2]]);
   assert.ok(bins[0].color.includes("red") && bins[2].color.includes("green"));
-  const preds = [{ sport: "nfl", game_pk: 1, home_team_name: "A", away_team_name: "B", pred_home_score: 24, pred_away_score: 20.3, market_total: 40.5 },
-                 { sport: "nfl", game_pk: 2, home_team_name: "C", away_team_name: "D", pred_home_score: 20, pred_away_score: 20, market_total: 47 },
-                 { sport: "nfl", game_pk: 3, home_team_name: "E", away_team_name: "F", pred_home_score: 20, pred_away_score: 20, market_total: null }];
-  const m = g.evxMispricedTotal(preds);
+  const NOW = Date.parse("2026-10-05T12:00:00Z"), future = "2026-10-05T17:00:00Z", past = "2026-10-05T08:00:00Z";
+  const preds = [{ sport: "nfl", game_pk: 1, home_team_name: "A", away_team_name: "B", pred_home_score: 24, pred_away_score: 20.3, market_total: 40.5, commence_time: future },
+                 { sport: "nfl", game_pk: 2, home_team_name: "C", away_team_name: "D", pred_home_score: 20, pred_away_score: 20, market_total: 47, commence_time: future },
+                 { sport: "nfl", game_pk: 3, home_team_name: "E", away_team_name: "F", pred_home_score: 20, pred_away_score: 20, market_total: null, commence_time: future },
+                 { sport: "nfl", game_pk: 4, home_team_name: "G", away_team_name: "H", pred_home_score: 10, pred_away_score: 10, market_total: 60, commence_time: past },   // already started: the biggest gap, must be excluded
+                 { sport: "nfl", game_pk: 5, home_team_name: "I", away_team_name: "J", pred_home_score: 10, pred_away_score: 10, market_total: 60 }];   // unknown kickoff: unverifiable, excluded
+  const m = g.evxMispricedTotal(preds, NOW);
   assert.equal(m.pred.game_pk, 2); assert.equal(m.market, 47); assert.equal(m.model, 40); assert.equal(m.diff, -7);
+  assert.equal(g.evxMispricedTotal(preds.slice(3), NOW), null, "only started / undated games -> nothing to show");
   assert.equal(g.evxMispricedTotal([]), null);
 });
 
@@ -238,3 +242,23 @@ test("evxSet writes the changed filter into the URL (history.replaceState) and m
   E.evxSet("minEdge", "7");   // not an offered value -> default
   assert.equal(new URL(calls[2]).search, "?sport=cfb");
 });
+
+test("ev_prop_picks 4000-row cap warns (same as evGradedPicks)", async () => {
+  const warns = [];
+  const big = Array.from({ length: 4000 }, (_, i) => ({ game_pk: i, player_id: "p", market: "rec_yds", line: 1, model_version: "v", best_price: -110, created_at: "2026-09-30T00:00:00Z" }));
+  const E = loadScripts(FILES, { page: "ev", globals: { console: { ...console, warn: (...a) => warns.push(a.join(" ")) },
+    fetch: async (u) => ({ ok: true, json: async () => (urlParts(u).path === "ev_prop_picks" && u.includes("limit=4000") ? big : []) }) } });
+  await E.buildEvPage();
+  assert.equal(warns.filter((w) => /ev_prop_picks/.test(w) && /4000/.test(w)).length, 1);
+});
+
+test("Edge Bucket rows show the sample size n; clicking rows is handled once by the shell", async () => {
+  const { D } = populated();
+  const html = await D.buildEvPage();
+  const b = html.slice(html.indexOf('id="ev-buckets"'));
+  assert.ok(/<th>n<\/th>/.test(b));
+  assert.match(b, /<tr title="2 of 3 graded picks"><td>5% to 10%<\/td><td class="muted">3<\/td>/, "n is a visible cell, not just the tooltip");
+  assert.ok(!/tr\[data-href\]/.test(require_src("js/pages/ev.js")) && !/tr\[data-href\]/.test(require_src("js/pages/dashboard.js")), "no page-level row handlers");
+});
+import fs from "node:fs";
+const require_src = (f) => fs.readFileSync(new URL("../" + f, import.meta.url), "utf8");

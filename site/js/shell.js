@@ -75,7 +75,14 @@ function starDelegate(e, doc = document) {
 }
 // Kept for compatibility: stars are handled by the one delegated listener bound in wireShell.
 function wireStars() {}
-let shellDocBound = false, shellStarsBound = false;
+// Rows with data-href are clickable (any page); clicks on links, buttons and stars keep their own behaviour.
+function rowDelegate(e, go = (url) => { location.href = url; }) {
+  const t = e.target, tr = t && t.closest ? t.closest("tr[data-href]") : null;
+  if (!tr || t.closest("a,button")) return false;
+  go(tr.dataset.href);
+  return true;
+}
+let shellDocBound = false, shellStarsBound = false, shellRowsBound = false;
 function wireShell() {
   const av = document.querySelector("[data-avatar]"), menu = document.querySelector(".ca-menu");
   if (av && menu) {
@@ -88,6 +95,10 @@ function wireShell() {
       if (m) m.hidden = true;
       if (a) a.setAttribute("aria-expanded", "false");
     });
+  }
+  if (!shellRowsBound) {  // one delegated row-click handler for every page
+    shellRowsBound = true;
+    document.addEventListener("click", (e) => rowDelegate(e));
   }
   if (!shellStarsBound) {  // one delegated listener for every star on every page, present or future markup
     shellStarsBound = true;

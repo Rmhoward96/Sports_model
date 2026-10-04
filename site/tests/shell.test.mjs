@@ -83,3 +83,15 @@ test("starDelegate toggles for a star target, ignores other clicks", () => {
   assert.equal(prevented, 1);
   assert.equal(typeof g.wireStars, "function"); g.wireStars(); // compatibility no-op
 });
+
+test("rowDelegate: a row click navigates; clicks on links, buttons and stars (inside the row) do not", () => {
+  const g = load();
+  const row = { dataset: { href: "game.html?sport=nfl&game=1" } };
+  const click = (inner) => ({ target: { closest: (sel) => (sel === "tr[data-href]" ? row : sel === "a,button" ? inner : null) } });
+  const seen = [];
+  assert.equal(g.rowDelegate(click(null), (u) => seen.push(u)), true);
+  assert.deepEqual(seen, ["game.html?sport=nfl&game=1"]);
+  assert.equal(g.rowDelegate(click({}), (u) => seen.push(u)), false);
+  assert.equal(seen.length, 1);
+  assert.equal(g.rowDelegate({ target: { closest: () => null } }, (u) => seen.push(u)), false);
+});
