@@ -372,7 +372,7 @@ test("E3 type scale: the +EV page uses the shared fluid tokens, not the old 24px
   const css = require_src("css/theme.css"), ev = css.slice(css.indexOf("/* +EV page"), css.indexOf("/* Game page"));
   assert.ok(!/\.ca-ev \.ca-card h2\{font-size:24px\}/.test(css) && !/\.ca-ev-table\{font-size:12(\.5)?px\}/.test(ev));
   assert.match(css, /\.ca-dash \.ca-card h2,\.ca-ev \.ca-card h2\{font-size:var\(--fs-card\)/);
-  assert.match(css, /\.ca-ev \.ca-dash-table\{font-size:var\(--fs-table\)/);
+  assert.match(css, /\.ca-ev \.ca-dash-table(,[^{]*)?\{font-size:var\(--fs-table\)/);
   assert.match(css, /\.ca-dash-stats \.ca-stat-value,\.ca-ev-stats \.ca-stat-value\{font-size:var\(--fs-stat\)/);
   assert.match(css, /#ev-table[^{]*\{[^}]*container-type|\.ca-ev-tablecard\{[^}]*container-type:inline-size/, "table card is a size container for the column-fitting queries");
 });

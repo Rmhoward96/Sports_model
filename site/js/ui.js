@@ -216,3 +216,5 @@ function selectField(attr, key, label, options, value, extraCls = "") {
 }
 // Search box with the magnifier (ICON_SEARCH, shell.js).
 const searchField = (attr, value, placeholder, aria) => `<label class="ca-search">${ICON_SEARCH}<input class="ca-input" type="search" ${attr} placeholder="${ctxEsc(placeholder)}" value="${ctxEsc(value)}" aria-label="${ctxEsc(aria || placeholder)}" autocomplete="off"></label>`;
+// Search card (its own card beside a filter card: +EV, Track Record). `id` = the card's element id, `attr` = the data attribute the page's input handler listens for.
+const searchCard = (id, attr, value) => `<section class="ca-card ca-sfind" id="${ctxEsc(id)}">${searchField(attr, value, "Search teams, players, or games...", "Search teams, players, or games")}</section>`;

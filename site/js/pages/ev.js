@@ -221,7 +221,7 @@ function evxFilterCard(D) {
     ${evxSelect("date", "Date", EV_DATES, s.date, "ca-ev-date")}</div></section>`;
 }
 // E4: the search box is its own card to the right of the filter card (same row, equal height).
-const evxSearchCard = () => `<section class="ca-card ca-ev-find" id="ev-search">${searchField("data-ev-q", evxState().q, "Search teams, players, or games...", "Search teams, players, or games")}</section>`;
+const evxSearchCard = () => searchCard("ev-search", "data-ev-q", evxState().q);
 
 /* ── tabs + table ─────────────────────────────────────────────────────── */
 // R19 detail behind the subtitle's (i): which probability the Model Prob. column shows.
@@ -319,7 +319,7 @@ async function buildEvPage() {
   const right = `${D.updated ? `<div class="ca-ev-updated"><span>Last Updated</span><b>${ctxEsc(evxStamp(D.updated))}</b></div>` : ""}<button class="ca-dn-btn ca-ev-refresh" data-ev-refresh aria-label="Refresh" title="Reload the page data">${ICON_REFRESH}</button>`;
   const sortSel = `<label class="ca-ev-sort"><span>Sort By</span><select class="ca-select" data-ev="sort">${EV_SORTS.map(([k, l]) => `<option value="${k}"${k === evxState().sort ? " selected" : ""}>${l}</option>`).join("")}</select></label>`;
   return `<div class="ca-ev">${pageTitle("+EV", "Find the best expected value opportunities across all sports, powered by the CappingAlpha model.", right)}
-    ${evxStatCards(D)}<div class="ca-ev-filterrow">${safeCard("Filters", evxFilterCard, D, "ca-card ca-ev-filters", "ev-filters")}${safeCard("Search", evxSearchCard, D, "ca-card ca-ev-find", "ev-search")}</div>
+    ${evxStatCards(D)}<div class="ca-ev-filterrow">${safeCard("Filters", evxFilterCard, D, "ca-card ca-ev-filters", "ev-filters")}${safeCard("Search", evxSearchCard, D, "ca-card ca-sfind", "ev-search")}</div>
     <div class="ca-ev-main"><div class="ca-ev-left"><div class="ca-ev-tabsrow">${safeCard("Tabs", evxTabs, D, "ca-card", "ev-tabs")}${sortSel}</div>${safeCard("+EV Opportunities", evxTableCard, D, "ca-card ca-ev-tablecard", "ev-table")}</div>
       <aside class="ca-ev-rail" id="ev-rail">${evxRailCard(D, 0)}${evxRailCard(D, 1)}<div class="ca-ev-pair">${evxRailCard(D, 2)}${evxRailCard(D, 3)}</div></aside></div>
     <div class="ca-ev-legacy" id="ev-legacy">${safeCard("Parlays", evxParlays, D, "ca-card")}</div></div>`;
