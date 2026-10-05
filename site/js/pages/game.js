@@ -390,7 +390,7 @@ function gmHero(D) {
     ${gmOddsBox("MONEYLINE", price(o.moneyline.away.price), price(o.moneyline.home.price), lean.ml === "away" ? "l" : lean.ml === "home" ? "r" : "")}
     ${gmOddsBox("SPREAD", L != null ? lineStr(-L) : "—", L != null ? lineStr(L) : "—", lean.spread === "away" ? "l" : lean.spread === "home" ? "r" : "")}
     ${gmOddsBox("TOTAL", T != null ? `O ${T}` : "—", T != null ? `U ${T}` : "—", lean.total === "over" ? "l" : lean.total === "under" ? "r" : "")}</div>` : "";
-  return `<section class="ca-gm-hero"><div class="ca-gm-top"><a class="ca-gm-back" href="${sport}.html">‹ ${SPORT_NAME[sport] || sport.toUpperCase()} Board</a><span class="ca-gm-when">${gmEsc(when)}</span><span></span></div>
+  return `<section class="ca-gm-hero${boxes ? " has-odds" : ""}"><div class="ca-gm-top"><a class="ca-gm-back" href="${sport}.html">‹ ${SPORT_NAME[sport] || sport.toUpperCase()} Board</a><span class="ca-gm-when">${gmEsc(when)}</span><span></span></div>
     <div class="ca-gm-teams">${team("away")}<span class="ca-gm-at">@</span>${team("home")}</div>${gmFinalLine(D)}${boxes}</section>`;
 }
 

@@ -35,9 +35,14 @@ function bookBadge(key) {
   const [abbr, color] = BOOK_STYLE[String(key || "").toLowerCase()] || [String(key || "?").slice(0, 3).toUpperCase(), "#5B6675"];
   return `<span class="ca-book" title="${ctxEsc(key)}" style="background:${color}">${ctxEsc(abbr)}</span>`;
 }
-function statCard({ label, labelNote = "", value, valueClass = "", sub = "", subClass = "", visual = "" }) {
-  return `<div class="ca-card ca-stat"><div class="ca-stat-label">${label}${labelNote ? ` <span class="muted">${labelNote}</span>` : ""}</div>
-    <div class="ca-stat-body"><div><div class="ca-stat-value ${valueClass}">${value}</div>${sub ? `<div class="ca-stat-sub ${subClass}">${sub}</div>` : ""}</div>${visual ? `<div class="ca-stat-visual">${visual}</div>` : ""}</div></div>`;
+// G2: text that does not fit a compact card moves into a native tooltip behind a small (i). `text` is plain text (escaped here).
+const infoTip = (text) => (text ? `<span class="ca-info" title="${ctxEsc(text)}" tabindex="0" role="img" aria-label="${ctxEsc(text)}">i</span>` : "");
+// Compact stat card: label, big value and ONE short sub-line (ellipsised when long; its full text is the hover title). `tip` = optional
+// longer explanation, shown as the (i) tooltip next to the label.
+function statCard({ label, labelNote = "", value, valueClass = "", sub = "", subClass = "", visual = "", tip = "" }) {
+  const subTitle = String(sub).replace(/<[^>]*>/g, "").replace(/"/g, "&quot;").trim();
+  return `<div class="ca-card ca-stat"><div class="ca-stat-label">${label}${labelNote ? ` <span class="muted">${labelNote}</span>` : ""}${infoTip(tip)}</div>
+    <div class="ca-stat-body"><div><div class="ca-stat-value ${valueClass}">${value}</div>${sub ? `<div class="ca-stat-sub ${subClass}" title="${subTitle}">${sub}</div>` : ""}</div>${visual ? `<div class="ca-stat-visual">${visual}</div>` : ""}</div></div>`;
 }
 function pills(name, items, active) {
   return `<div class="ca-pills" role="tablist">${items.map(([k, l]) => `<button class="ca-pill${k === active ? " on" : ""}" data-pill="${ctxEsc(name)}" data-key="${ctxEsc(k)}" role="tab" aria-selected="${k === active}">${l}</button>`).join("")}</div>`;

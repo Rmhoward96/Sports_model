@@ -121,6 +121,11 @@ test("statCard, pills, bookBadge", () => {
   const card = g.statCard({ label: "ROI", value: "+4.2%", valueClass: "pos", sub: "30d", visual: "<i></i>" });
   assert.match(card, /ca-stat-value pos">\+4\.2%</); assert.match(card, /ca-stat-visual/);
   assert.doesNotMatch(g.statCard({ label: "x", value: "1" }), /ca-stat-visual|ca-stat-sub/);
+  const tip = g.statCard({ label: "Model Hit Rate", value: "56%", sub: "<b>+4%</b> vs. \"market\"", tip: "68-52 · 120 graded <picks>" });
+  assert.match(tip, /<span class="ca-info" title="68-52 · 120 graded &lt;picks&gt;" tabindex="0"/, "long text moves into an escaped (i) tooltip next to the label");
+  assert.match(tip, /class="ca-stat-sub " title="\+4% vs\. &quot;market&quot;"/, "the sub-line carries its full text as a hover title");
+  assert.doesNotMatch(g.statCard({ label: "x", value: "1" }), /ca-info/);
+  assert.equal(g.infoTip(""), "");
   const p = g.pills("sport", [["nfl", "NFL"], ["cfb", "CFB"]], "cfb");
   assert.match(p, /data-pill="sport" data-key="nfl"[^>]*aria-selected="false"/);
   assert.match(p, /ca-pill on" data-pill="sport" data-key="cfb"[^>]*aria-selected="true"/);

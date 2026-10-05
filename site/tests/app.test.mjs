@@ -107,6 +107,27 @@ test("the footer is styled in theme.css (muted 13px, aligned to the .ca-page con
   const css = require_src("css/theme.css");
   const rule = css.match(/\nfooter\{([^}]*)\}/);
   assert.ok(rule, "a footer rule exists");
-  for (const d of ["max-width:1376px", "margin:0 auto", "border-top:1px solid var(--line)", "color:var(--muted)", "font-size:13px"]) assert.ok(rule[1].includes(d), d);
-  assert.match(css, /@media \(max-width:620px\)\{[^@]*footer\{width:calc\(100% - 32px\)\}/, "phone gutter matches .ca-page");
+  for (const d of ["width:calc(100% - 2 * var(--gutter))", "margin:0 auto", "border-top:1px solid var(--line)", "color:var(--muted)", "font-size:13px"]) assert.ok(rule[1].includes(d), d);
+  assert.match(css, /@media \(max-width:620px\)\{[^@]*:root\{--gutter:16px\}/, "phone gutter is shared by header, page and footer");
+});
+
+test("fidelity G1/G3: full-width page and header on the shared --gutter, stars hidden until hover / focus / starred", () => {
+  const css = require_src("css/theme.css");
+  assert.match(css, /--gutter:clamp\(20px,3vw,64px\)/);
+  const page = css.match(/\n\.ca-page\{([^}]*)\}/)[1], head = css.match(/\n\.ca-header-inner\{([^}]*)\}/)[1];
+  assert.ok(!/max-width/.test(page) && !/max-width/.test(head), "no 1440px cap on the page or the header");
+  assert.ok(page.includes("var(--gutter)") && head.includes("var(--gutter)"), "header contents align with the page gutters");
+  assert.match(css, /\n\.ca-star\{[^}]*opacity:0/, "stars are hidden by default");
+  const show = css.match(/\n\.ca-star\.on,([^{]*)\{opacity:1\}/);
+  assert.ok(show, "a rule shows them again");
+  for (const sel of [".ca-star:focus-visible", ":hover>.ca-star", "tr:hover .ca-star", ".ca-gm-team:hover .ca-star"]) assert.ok(show[1].includes(sel), sel);
+  assert.match(css, /@media \(hover:none\)\{\.ca-star\{opacity:1\}\}/, "touch screens keep visible stars");
+});
+
+test("fidelity M1: the game hero does not clip, and the odds boxes straddle its bottom edge", () => {
+  const css = require_src("css/theme.css");
+  const hero = css.match(/\n\.ca-gm-hero\{([^}]*)\}/)[1];
+  assert.ok(!/overflow:hidden/.test(hero) && hero.includes("display:flow-root"));
+  assert.match(css, /\.ca-gm-hero\.has-odds \.ca-gm-odds\{margin-bottom:calc\(var\(--ob-h\) \/ -2\)\}/);
+  assert.match(css, /\.ca-gm-hero\.has-odds\{padding-bottom:0;/);
 });
