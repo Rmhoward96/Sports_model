@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import fs from "node:fs";
 import { loadScripts } from "./load.mjs";
 const require_src = (f) => fs.readFileSync(new URL("../" + f, import.meta.url), "utf8");
-const FILES = ["app.js", "js/metrics.js", "js/ui.js", "js/shell.js", "js/data.js", "js/pages/dashboard.js", "js/pages/ev.js", "js/pages/game.js", "js/pages/track.js", "js/pages/board.js", "js/pages/board-left.js", "js/boot.js"];
+const FILES = ["app.js", "js/metrics.js", "js/ui.js", "js/shell.js", "js/data.js", "js/pages/dashboard.js", "js/pages/ev.js", "js/pages/game.js", "js/pages/track.js", "js/pages/board.js", "js/pages/board-left.js", "js/pages/board-right.js", "js/boot.js"];
 const EVIL = '<img src=x onerror="alert(1)">';
 const RAW = /<img src=x|<script>|<b>bad<\/b>/;
 

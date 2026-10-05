@@ -17,8 +17,8 @@ test("every page loads the scripts in order with the current cache key", () => {
   for (const f of fs.readdirSync(new URL("..", import.meta.url)).filter((f) => f.endsWith(".html"))) {
     const html = fs.readFileSync(new URL(`../${f}`, import.meta.url), "utf8");
     const srcs = [...html.matchAll(/<script src="([^"?]+)\?v=([^"]+)"/g)];
-    const sport = ["nfl.html", "cfb.html", "mlb.html", "nba.html"].includes(f);   // the sport pages also load the left column (js/pages/board-left.js) after board.js
-    assert.deepEqual(srcs.map((m) => m[1]), sport ? order.flatMap((s) => (s === "js/pages/board.js" ? [s, "js/pages/board-left.js"] : [s])) : order, f);
+    const sport = ["nfl.html", "cfb.html", "mlb.html", "nba.html"].includes(f);   // the sport pages also load the left and right columns (js/pages/board-left.js, board-right.js) after board.js
+    assert.deepEqual(srcs.map((m) => m[1]), sport ? order.flatMap((s) => (s === "js/pages/board.js" ? [s, "js/pages/board-left.js", "js/pages/board-right.js"] : [s])) : order, f);
     assert.ok(srcs.every((m) => m[2] === srcs[0][2]), `${f}: one cache key`);
     assert.equal(srcs[0][2], "20261006a", `${f}: the current cache key`);
     assert.match(html, /css\/theme\.css\?v=20261006a"/, `${f}: theme.css carries the same key`);

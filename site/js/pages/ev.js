@@ -241,9 +241,7 @@ function evxTableCard(D) {
 /* ── right rail ───────────────────────────────────────────────────────── */
 function evxTopAlpha(D) {
   const top = [...D.opps].sort((a, b) => b.alpha - a.alpha || b.evPct - a.evPct).slice(0, 5);
-  const rows = top.map((o, i) => `<a class="ca-ev-ta" href="${gameHref(o.sport, o.game_pk)}"><span class="ca-ev-rank">#${i + 1}</span><span class="ca-ev-logos">${logoPair(o.matchup, o.sport)}</span>
-    <span class="ca-ev-ta-main"><b class="ca-ell">${ctxEsc(oppLabel(o, D.lineBy))}</b><small>${oppProb(o)} vs ${pct1(o.impliedProb)}</small></span>
-    <span class="ca-ev-ta-odds">${oddsStr(o.odds)}</span><span class="ca-ev-edge"><b>${pStr(o.edgePp)}</b>Edge</span></a>`).join("");
+  const rows = top.map((o, i) => topAlphaRow(o, i, D.lineBy)).join("");
   return `<section class="ca-card ca-ev-rail-card" id="ev-top"><div class="ca-card-head"><h2>Top Alpha Opportunities</h2><a class="ca-link" href="ev.html?sort=alpha">View All →</a></div>${rows || emptyMsg("No +EV opportunities on the board.")}</section>`;
 }
 function evxPulse(D) {

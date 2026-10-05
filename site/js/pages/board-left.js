@@ -56,14 +56,21 @@ function blPerf(sport, rows, pnl, closing, from, to) {
 // ── Season Performance's period ──
 const blKey = (per) => `${per.kind}:${per.kind === "week" ? per.week : per.date}`;
 const blPeriodWord = (per) => (per.kind === "week" ? `Week ${per.week}` : shortDate(per.date));
-// Which scope the card shows: the user's pick for THIS period, else the period itself once it is over and the season otherwise.
-function blScope(D) {
-  const per = D.period, st = blState(), over = per.to < D.today;
-  const pick = st.perfFor === blKey(per) ? st.perf : null, key = pick || (over ? "period" : "season");
+// Which scope a card shows: `pick` (the user's choice for THIS period, "period" | "season" | null), else the period itself once it is over and the
+// season otherwise. Season Performance and the right column's Model Projections each keep their own pick.
+function blScopeOf(D, pick) {
+  const per = D.period, over = per.to < D.today, key = pick || (over ? "period" : "season");
   const season = blSeasonStart(D.sport, D.today);
   if (key === "period") return { key, from: per.from, to: per.to, word: blPeriodWord(per), caption: rangeLabel(per.from, per.kind === "week" ? per.to : per.from) };
   const ds = ((D.left && D.left.rec) || []).map((r) => r.date).filter((d) => d >= season && d <= D.today).sort(), name = LIVE_SPORTS.includes(D.sport) ? `Season ${seasonOf(D.today)}` : "Published record";
   return { key, from: season, to: D.today, word: "Season", caption: ds.length ? `${name} · ${rangeLabel(ds[0], ds[ds.length - 1])}` : name };
+}
+function blScope(D) { const st = blState(); return blScopeOf(D, st.perfFor === blKey(D.period) ? st.perf : null); }
+// The sentence for a scope with no graded picks: a week before the record restart (archived), a period with none yet, or an empty record.
+function blNoPicksMsg(D, L, sc) {
+  const name = boardName(D.sport), rs = L.starts && L.starts.get ? L.starts.get(D.sport) : null, since = rs && rs.starts_at ? etDateStr(rs.starts_at) : "";
+  if (sc.key === "period" && since && sc.to < since) return `${sc.word} is before the published ${name} record, which restarted ${fullDate(since)}${rs.model_version === "nfl-sim-ml-v2" ? " with the ML v2 model" : ""}. Earlier results are archived.`;
+  return sc.key === "period" ? `No graded ${name} picks in ${sc.word} yet.` : `No graded ${name} picks in the published record yet.`;
 }
 
 // ── Model vs. Market ──
@@ -255,12 +262,7 @@ function blSeasonPerf(D) {
   const title = sc.key === "period" ? `${sc.word} Performance` : "Season Performance";
   const toggle = `<div class="ca-bl-scope">${pills("bl-scope", [["period", ctxEsc(blPeriodWord(per))], ["season", "Season"]], sc.key)}</div>`;
   const head = `${blHead(title, `<a class="ca-link" href="track-record.html"><span class="ca-bl-v">View </span>Track Record →</a>`)}${toggle}<p class="ca-bl-cap">${ctxEsc(sc.caption)}</p>`;
-  if (!p.n) {
-    const rs = L.starts && L.starts.get ? L.starts.get(D.sport) : null, since = rs && rs.starts_at ? etDateStr(rs.starts_at) : "";
-    const archived = sc.key === "period" && since && sc.to < since;     // a week before the record restart: its picks are archived, not part of the published record
-    return blCard(id, `${head}${emptyMsg(archived ? `${sc.word} is before the published ${name} record, which restarted ${fullDate(since)}${rs.model_version === "nfl-sim-ml-v2" ? " with the ML v2 model" : ""}. Earlier results are archived.`
-      : sc.key === "period" ? `No graded ${name} picks in ${sc.word} yet.` : `No graded ${name} picks in the published record yet.`)}`);
-  }
+  if (!p.n) return blCard(id, `${head}${emptyMsg(blNoPicksMsg(D, L, sc))}`);
   const pct = p.pct == null ? "—" : `${(p.pct * 100).toFixed(1)}%`;
   const bars = p.weeks.length > 1 ? miniBars(p.weeks, { w: 46, h: 30 }) : "";
   const boxes = [

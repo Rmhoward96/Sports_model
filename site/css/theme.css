@@ -775,6 +775,52 @@ a.ca-ev-pr:hover{background:#FBFAF6}
 .ca-bl-in-t{min-width:0}
 .ca-bl-in-t b{display:block;font-size:clamp(12.5px,.88vw,16px);font-weight:600}
 .ca-bl-in-t small{display:block;color:var(--muted);font-size:clamp(11px,.76vw,13.5px);line-height:1.3}
+/* Sport page, right column (js/pages/board-right.js): Top Alpha Edges, Betting Splits, Model Projections. Heads / pills / empty states reuse the left-column rules (.ca-bl-*). */
+.ca-ev-at{font-style:normal;color:var(--muted);font-size:clamp(11px,.8vw,14px);margin:0 clamp(3px,.35vw,6px)}
+.ca-ev-ta-noaux{grid-template-columns:clamp(38px,3.2vw,58px) auto minmax(0,1fr) clamp(56px,4.4vw,84px)}
+.ca-br-ta .ca-ev-ta{grid-template-columns:clamp(32px,2.5vw,50px) auto minmax(0,1fr) auto clamp(52px,3.8vw,74px);gap:clamp(5px,.55vw,10px)}
+.ca-br-ta .ca-ev-ta-noaux{grid-template-columns:clamp(32px,2.5vw,50px) auto minmax(0,1fr) clamp(52px,3.8vw,74px)}
+.ca-br-ta .ca-ev-rank,.ca-br-ta .ca-ev-edge{height:clamp(36px,2.4vw,46px)}
+.ca-br-ta .ca-ev-ta{padding:clamp(5px,.45vw,8px) 0}
+.ca-br-ta .ca-ev-logos{flex:none}
+.ca-br-ta .ca-ev-logos .tlogo{width:clamp(20px,1.7vw,34px)!important;height:clamp(20px,1.7vw,34px)!important}
+.ca-br-ta .ca-ev-logos .tlogo+.tlogo{margin-left:0!important}
+.ca-br-ta .ca-ev-ta-main b{font-size:clamp(12px,.84vw,15.5px);display:-webkit-box;-webkit-box-orient:vertical;-webkit-line-clamp:2;line-clamp:2;overflow:hidden;white-space:normal;line-height:1.2}
+.ca-br-ta .ca-ev-ta-main small{font-size:clamp(10.5px,.72vw,12.5px)}
+.ca-br-ta .ca-ev-ta-odds{font-size:clamp(11px,.8vw,14px);text-align:center}
+.ca-br-ta .ca-res{font-size:clamp(11px,.8vw,14px);min-width:2em;padding:.25em .4em}
+@container (max-width:340px){.ca-br-ta .ca-ev-at{display:none}.ca-br-ta .ca-ev-ta{gap:5px}}
+@container (max-width:330px){.ca-br-pills .ca-bl-l{display:none}.ca-br-pills .ca-bl-s{display:inline}}
+.ca-br-pills .ca-pills{flex-wrap:nowrap}
+.ca-br-sel{border:1px solid var(--line);background:#fff;border-radius:8px;font:500 clamp(11.5px,.8vw,14px) var(--sans);color:var(--ink);padding:clamp(4px,.35vw,7px) clamp(6px,.5vw,10px);min-width:0;max-width:100%}
+.ca-bl-head .ca-br-sel{margin-left:auto;flex:none;width:auto}
+.ca-bl-head .ca-br-sel+.ca-info{margin-left:0}
+.ca-br-tabs .ca-pills{display:grid;grid-auto-flow:column;grid-auto-columns:minmax(0,1fr);gap:4px;flex-wrap:nowrap}
+.ca-br-tabs .ca-pill{padding:clamp(6px,.5vw,9px) 2px;font-size:clamp(10.5px,.74vw,13px);white-space:nowrap;min-width:0;overflow:hidden;text-overflow:ellipsis}
+.ca-br-game{margin:8px 0 0}.ca-br-game .ca-br-sel{width:100%;text-overflow:ellipsis}
+.ca-br-split{display:flex;align-items:center;gap:clamp(10px,1vw,20px);margin:clamp(8px,.8vw,14px) 0}
+.ca-br-donut{position:relative;flex:none;width:clamp(96px,7.4vw,136px)}
+.ca-br-donut svg{display:block;width:100%;height:auto}
+.ca-br-dc{position:absolute;inset:0;display:grid;place-content:center;text-align:center;line-height:1.1}
+.ca-br-dc b{font:700 clamp(17px,1.4vw,27px) var(--serif)}
+.ca-br-dc span{font-size:clamp(10.5px,.78vw,13.5px);color:var(--muted);font-weight:600}
+.ca-br-leg{flex:1;min-width:0;display:grid;gap:clamp(8px,.8vw,14px)}
+.ca-br-lg{display:flex;align-items:center;gap:6px;font-size:clamp(11.5px,.82vw,15px);min-width:0}
+.ca-br-lg i{width:10px;height:10px;border-radius:2px;flex:none}
+.ca-br-lgn{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.ca-br-lg b{font-weight:600;font-variant-numeric:tabular-nums}
+.ca-br-bar{margin-top:clamp(6px,.6vw,10px)}
+.ca-br-bl{display:block;font-size:clamp(11px,.78vw,13.5px);color:var(--muted)}
+.ca-br-b{display:flex;height:clamp(9px,.7vw,13px);border-radius:7px;overflow:hidden;margin:4px 0}
+.ca-br-b i{display:block;height:100%}
+.ca-br-bv{display:flex;justify-content:space-between;gap:8px;font-size:clamp(10.5px,.74vw,13px);font-weight:600;font-variant-numeric:tabular-nums}
+.ca-br-asof{margin:8px 0 0}
+.ca-br-table{font-size:clamp(11.5px,.8vw,14px);margin-top:2px}
+.ca-br-table th{background:transparent;color:var(--ink);padding:clamp(6px,.5vw,9px) clamp(3px,.3vw,6px);font-size:.95em;text-align:center}
+.ca-br-table td{padding:clamp(6px,.42vw,8px) clamp(3px,.3vw,6px);text-align:center;white-space:nowrap}
+.ca-br-table th:first-child,.ca-br-table td:first-child{text-align:left;padding-left:clamp(4px,.4vw,8px)}
+.ca-br-table td:last-child{font-weight:600}
+.ca-br-tot td{font-weight:600;background:#FBFAF6;border-top:1px solid var(--line)}
 /* Power Rankings (the legacy rankingsTable, restyled; app.js rankingsCard) */
 .ca-pills a.ca-pill{display:inline-block;text-decoration:none}
 .ca-rk-card{padding:18px 16px;min-width:0}

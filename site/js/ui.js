@@ -77,11 +77,12 @@ function miniBars(values, { w = 70, h = 40, color = "var(--green)" } = {}) {
   return `<svg class="ca-minibars" viewBox="0 0 ${w} ${h}" width="${w}" height="${h}">${rects}</svg>`;
 }
 
-function donut(f, { size = 78, stroke = 10, color = "var(--navy)" } = {}) {
+// `track` = the colour of the rest of the ring (default the neutral grey; a team colour makes a two-colour split), `cap` = the arc end style.
+function donut(f, { size = 78, stroke = 10, color = "var(--navy)", track = "#E9E5DB", cap = "round" } = {}) {
   if (!uiFin(f)) return "";
   const r = (size - stroke) / 2, C = 2 * Math.PI * r, x = Math.max(0, Math.min(1, +f)), c = size / 2;
-  const arc = x > 0 ? `<circle cx="${c}" cy="${c}" r="${r}" fill="none" stroke="${ctxEsc(color)}" stroke-width="${stroke}" stroke-dasharray="${(C * x).toFixed(2)} ${(C * (1 - x)).toFixed(2)}" transform="rotate(-90 ${c} ${c})" stroke-linecap="round"/>` : "";
-  return `<svg class="ca-donut" viewBox="0 0 ${size} ${size}" width="${size}" height="${size}"><circle cx="${c}" cy="${c}" r="${r}" fill="none" stroke="#E9E5DB" stroke-width="${stroke}"/>${arc}</svg>`;
+  const arc = x > 0 ? `<circle cx="${c}" cy="${c}" r="${r}" fill="none" stroke="${ctxEsc(color)}" stroke-width="${stroke}" stroke-dasharray="${(C * x).toFixed(2)} ${(C * (1 - x)).toFixed(2)}" transform="rotate(-90 ${c} ${c})" stroke-linecap="${ctxEsc(cap)}"/>` : "";
+  return `<svg class="ca-donut" viewBox="0 0 ${size} ${size}" width="${size}" height="${size}"><circle cx="${c}" cy="${c}" r="${r}" fill="none" stroke="${ctxEsc(track)}" stroke-width="${stroke}"/>${arc}</svg>`;
 }
 
 // Shared axis scaffold for areaChart / lineChart. The SVG (grid, fill, lines) is stretched with

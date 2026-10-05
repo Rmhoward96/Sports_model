@@ -406,6 +406,18 @@ function marketPulseRows(D) {
   return rows.join("");
 }
 
+/* ── Top Alpha rows (the +EV rail and the sport pages' Top Alpha Edges card) ───────────────────────────────────────────
+   Moved from ev.js: one row = rank box, team logos, the bet, "model/fair prob vs implied prob" and the green edge box. The 4th cell
+   defaults to the best price (+EV); `aux` replaces it (the sport page's W / L / P result chip, "" = no 4th cell) and `at` puts an
+   "@" between the logos. `o` = an Opportunity (toOpportunity), `lineBy` = evBestLines. */
+function topAlphaRow(o, i, lineBy, { aux, at = false } = {}) {
+  const cell = aux === undefined ? `<span class="ca-ev-ta-odds">${oddsStr(o.odds)}</span>` : aux ? `<span class="ca-ev-ta-odds">${aux}</span>` : "";
+  const [away, home] = matchupSides(o.matchup), logos = at ? `${logoImg(away, o.sport)}<i class="ca-ev-at">@</i>${logoImg(home, o.sport)}` : logoPair(o.matchup, o.sport);
+  return `<a class="ca-ev-ta${cell ? "" : " ca-ev-ta-noaux"}" href="${gameHref(o.sport, o.game_pk)}"><span class="ca-ev-rank">#${i + 1}</span><span class="ca-ev-logos">${logos}</span>
+    <span class="ca-ev-ta-main"><b class="ca-ell" title="${ctxEsc(oppLabel(o, lineBy))}">${ctxEsc(oppLabel(o, lineBy))}</b><small>${oppProb(o)} vs ${pct1(o.impliedProb)}</small></span>
+    ${cell}<span class="ca-ev-edge"><b>${pStr(o.edgePp)}</b>Edge</span></a>`;
+}
+
 /* ── NFL divisions (same map as src/sportsmodel/nfl/trends.py, keyed by the site's team code: teamShort(name, "nfl")) ─── */
 const NFL_DIVISION = {
   ...Object.fromEntries(["BUF", "MIA", "NE", "NYJ"].map((t) => [t, "AFC East"])), ...Object.fromEntries(["BAL", "CIN", "CLE", "PIT"].map((t) => [t, "AFC North"])),
