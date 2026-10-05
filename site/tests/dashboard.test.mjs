@@ -250,7 +250,7 @@ function populated({ search = "", watch = null, predH = 0 } = {}) {
     else if (path === "ev_prop_picks_current") rows = q.includes("sport=eq.nfl") ? props : [];
     else if (path === "ev_pnl_daily") rows = evPnl;
     else if (path === "ev_results") rows = results;
-    else if (path === "ev_picks") rows = q.includes("limit=10000") ? [{ sport: "nfl", game_pk: 1, market: "moneyline", side: "home", created_at: iso(-1) }] : [gradedPick(11), gradedPick(12)];
+    else if (path === "ev_picks") rows = q.includes("limit=10000") ? [{ sport: "nfl", game_pk: 1, market: "moneyline", side: "home", created_at: iso(-0.01) }] : [gradedPick(11), gradedPick(12)];
     return { ok: true, json: async () => rows };
   };
   const storage = new Map(); if (watch) storage.set("ca-watchlist", JSON.stringify(watch));
