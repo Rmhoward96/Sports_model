@@ -434,7 +434,7 @@ function trackTitle(C) {
   const s = C.s, right = s.view === "ev" ? "" : `${pills("trk-range", TRACK_RANGES, s.range)}<div class="ca-trk-daterange">${ICON_CAL}<span>${ctxEsc(trackRangeLabel(C.scope))}</span></div>`;
   return pageTitle("Track Record", "Prediction performance across leagues and markets.", right);
 }
-// The +EV view and a failed load have no filter row, so the Record select sits alone under the title.
+// The +EV view and a failed load have no filter row, so the Record select gets its own full-width bar (select at the left) under the title.
 const trackRecordBar = (C) => `<section class="ca-card ca-trk-recordbar" id="trk-recordbar">${trackRecordSelect(C)}</section>`;
 // A failed load renders no record numbers at all: one notice card (with a retry) under the title.
 function trackErrorHtml(C) {

@@ -3,9 +3,10 @@
   --amber:#B7791F;--amber-tint:#FCF0D9;--radius:12px;--serif:"Libre Caslon Text",Georgia,serif;
   --sans:"Inter",system-ui,sans-serif;--shadow:0 1px 2px rgba(16,24,40,.04);--gutter:clamp(20px,3vw,64px);
   /* G4 type scale: reaches the mockup sizes (card title 26, stat value 34, label 16, table 14) on wide screens and steps down so content still fits at 1280-1440 */
-  --fs-card:clamp(20px,1.36vw,26px);--fs-card-sm:clamp(15px,.95vw,19px);--fs-stat:clamp(28px,1.78vw,34px);--fs-label:clamp(13.5px,1vw,16px);--fs-table:clamp(12px,.8vw,14px)}
+  --fs-card:clamp(20px,1.36vw,26px);--fs-card-sm:clamp(15px,.95vw,19px);--fs-stat:clamp(28px,1.78vw,34px);--fs-label:clamp(13.5px,1vw,16px);--fs-table:clamp(12px,.8vw,14px);--fs-rail-title:clamp(13px,.82vw,16px)}
 *{box-sizing:border-box}
 html,body{margin:0;background:var(--bg);color:var(--ink);font:15px/1.45 var(--sans)}
+button,select,input,textarea{font-family:inherit}
 .num,td,.ca-stat-value{font-variant-numeric:tabular-nums}
 a{color:inherit}
 .ca-header{background:var(--navy);color:#fff}
@@ -173,10 +174,13 @@ footer{width:calc(100% - 2 * var(--gutter));margin:0 auto;padding:16px 0 32px;bo
 .ca-dash-pillrow .ca-pill{padding:clamp(6px,.5vw,8px) clamp(12px,1.05vw,18px);font-size:clamp(12.5px,.9vw,14.5px)}
 .ca-dash-pillsep{width:clamp(8px,1.2vw,20px)}
 .ca-dash-tabs{margin-bottom:12px}
-.ca-dash-tabs .ca-pills{display:grid;grid-auto-flow:column;grid-auto-columns:1fr;gap:6px}
-.ca-dash-tabs .ca-pill{padding:7px 4px;font-size:clamp(11.5px,.8vw,13px);white-space:nowrap}
-.ca-dash-table{font-size:12px}
-.ca-dash-table th{padding:9px 5px;font-size:11.5px}
+.ca-dash-tabs .ca-pills{display:grid;grid-auto-flow:column;grid-auto-columns:minmax(0,1fr);gap:6px}
+.ca-dash-tabs .ca-pill{padding:7px 4px;font-size:clamp(11.5px,.8vw,13px);white-space:nowrap;min-width:0;overflow:hidden;text-overflow:ellipsis}
+#dash-movers{container-type:inline-size}
+/* compact Movers/Portfolio/Watchlist cards (1280-1440px): labels wrap to two lines instead of overflowing; ellipsis stays as the last-resort guard */
+@container (max-width:470px){.ca-dash-card .ca-dash-tabs .ca-pills{gap:4px}.ca-dash-card .ca-dash-tabs .ca-pill{padding:5px 3px;font-size:11.5px;line-height:1.15;white-space:normal;display:flex;align-items:center;justify-content:center;text-align:center}}
+.ca-dash-table{font-size:var(--fs-table)}
+.ca-dash-table th{padding:9px 5px;font-size:var(--fs-table)}
 .ca-dash-table th:first-child{border-top-left-radius:8px}.ca-dash-table th:last-child{border-top-right-radius:8px}
 .ca-dash-table td{padding:6px 5px}
 .ca-dash-table th:first-child,.ca-dash-table td:first-child{padding-left:10px}
@@ -210,8 +214,10 @@ footer{width:calc(100% - 2 * var(--gutter));margin:0 auto;padding:16px 0 32px;bo
 .ca-dash-who .ca-ell{min-width:0}
 .ca-dash-opps .ca-dash-mkt{max-width:clamp(100px,7vw,150px)}
 .ca-dash-slate{table-layout:fixed}
-.ca-dash-slate th:nth-child(1){width:18.5%}.ca-dash-slate th:nth-child(2){width:29.5%}.ca-dash-slate th:nth-child(3){width:17%}
-.ca-dash-slate th:nth-child(4){width:10%}.ca-dash-slate th:nth-child(5){width:11%}.ca-dash-slate th:nth-child(6){width:14%}
+.ca-dash-slate th:nth-child(1){width:13.5%}.ca-dash-slate th:nth-child(2){width:28.5%}.ca-dash-slate th:nth-child(3){width:28%}
+.ca-dash-slate th:nth-child(4){width:9%}.ca-dash-slate th:nth-child(5){width:11%}.ca-dash-slate th:nth-child(6){width:10%}
+/* narrower Slate card (1366-1440px): Market takes the Matchup/Line slack so typical prop markets ("Olave Under 85.5 Rec Yds") fit without clipping */
+@container (min-width:461px) and (max-width:640px){.ca-dash-slate th:nth-child(1){width:16%}.ca-dash-slate th:nth-child(2){width:19%}.ca-dash-slate th:nth-child(3){width:33%}.ca-dash-slate th:nth-child(4){width:8.5%}.ca-dash-slate th:nth-child(5){width:10.5%}.ca-dash-slate th:nth-child(6){width:13%}.ca-dash-slate .ca-dash-pair .tlogo{display:none}}
 .ca-dash .ca-dash-slate th,.ca-dash .ca-dash-slate td{padding-left:4px;padding-right:4px}
 .ca-dash .ca-dash-slate th:first-child,.ca-dash .ca-dash-slate td:first-child{padding-left:10px}
 .ca-dash .ca-dash-slate th{white-space:normal;vertical-align:bottom}
@@ -350,17 +356,19 @@ footer{width:calc(100% - 2 * var(--gutter));margin:0 auto;padding:16px 0 32px;bo
   .ca-ev-sport-t{display:none}
   .ca-ev .ca-ev-table th{white-space:normal}
   .ca-ev .ca-ev-table th,.ca-ev .ca-ev-table td{padding-left:4px;padding-right:4px}
+  .ca-ev .ca-ev-table th{padding-right:10px}
   .ca-ev-table .ca-ev-mkt{max-width:132px}.ca-ev-who,.ca-ev-table .ca-team .ca-ell{max-width:170px}
   .ca-ev .ca-ev-table .ca-conf{min-width:48px;padding:4px}
 }
 @container (max-width:900px){.ca-ev-table .ca-book{display:none}.ca-ev-table .ca-ev-mkt{max-width:116px}.ca-ev-who,.ca-ev-table .ca-team .ca-ell{max-width:128px}
-  .ca-ev .ca-ev-table th,.ca-ev .ca-ev-table td{padding-left:3px;padding-right:3px}.ca-ev .ca-ev-table .ca-conf{min-width:44px}}
+  .ca-ev .ca-ev-table th,.ca-ev .ca-ev-table td{padding-left:3px;padding-right:3px}.ca-ev .ca-ev-table th{padding-right:10px}.ca-ev .ca-ev-table .ca-conf{min-width:44px}}
 /* rail: Top Alpha, Market Pulse full width; EV Distribution + Performance by Edge Bucket side by side */
 .ca-ev-rail{display:grid;gap:16px;align-content:start;min-width:0}
 .ca-ev-pair{display:grid;grid-template-columns:minmax(0,.86fr) minmax(0,1.14fr);gap:12px;align-items:stretch}
 .ca-ev-rail-card{padding:clamp(12px,1vw,18px);min-width:0;container-type:inline-size}
 .ca-ev-rail-card .ca-card-head{margin-bottom:10px}
 .ca-ev-pair .ca-card-head h2{font-size:var(--fs-card-sm);white-space:normal;line-height:1.15}
+@media (min-width:1440px){.ca-ev-pair .ca-card-head h2{font-size:var(--fs-rail-title);white-space:nowrap}}
 .ca-ev-ta{display:grid;grid-template-columns:clamp(38px,3.2vw,58px) auto minmax(0,1fr) auto clamp(56px,4.4vw,84px);gap:clamp(6px,.7vw,12px);align-items:center;padding:clamp(6px,.6vw,10px) 0;border-bottom:1px solid #F0ECE3;text-decoration:none;color:var(--ink)}
 .ca-ev-ta:last-child{border-bottom:0}
 .ca-ev-ta:hover{background:#FBFAF6}
@@ -399,7 +407,7 @@ a.ca-ev-pr:hover{background:#FBFAF6}
 .ca-ev-bt td{padding:7px 2px;white-space:nowrap}
 .ca-ev-bt th:not(:first-child),.ca-ev-bt td:not(:first-child){text-align:right}
 .ca-cap{margin:8px 0 0;font-size:11px;line-height:1.35;color:var(--muted)}
-@container (max-width:860px){.ca-ev .ca-ev-table th,.ca-ev .ca-ev-table td{padding-left:2px;padding-right:2px}.ca-ev .ca-ev-table .ca-conf{min-width:42px}.ca-ev-prob .ca-fair{margin-left:3px}}
+@container (max-width:860px){.ca-ev .ca-ev-table th,.ca-ev .ca-ev-table td{padding-left:2px;padding-right:2px}.ca-ev .ca-ev-table th{padding-right:8px}.ca-ev .ca-ev-table .ca-conf{min-width:42px}.ca-ev-prob .ca-fair{margin-left:3px}}
 /* narrow rail (1280px): the sample size n leaves the table (it stays in each row's tooltip) so Edge Range / Hits / ROI / Units fit */
 @container (max-width:205px){#ev-buckets .ca-ev-bt th:nth-child(2),#ev-buckets .ca-ev-bt td:nth-child(2){display:none}}
 .ca-ev-legacy{margin-top:20px}
@@ -506,9 +514,8 @@ a.ca-ev-pr:hover{background:#FBFAF6}
 .ca-trk .ca-title-right .ca-pills{gap:clamp(6px,.55vw,10px);flex-wrap:nowrap}
 .ca-trk .ca-title-right .ca-pill{padding:clamp(8px,.62vw,12px) clamp(12px,1vw,19px);font-size:clamp(13px,.85vw,15px)}
 .ca-trk-daterange{display:inline-flex;align-items:center;gap:10px;height:clamp(38px,2.35vw,46px);padding:0 clamp(12px,1vw,18px);border:1px solid var(--line);background:#fff;border-radius:8px;font:600 clamp(13px,.85vw,15px) var(--sans);white-space:nowrap}
-.ca-trk-recordbar{display:flex;width:fit-content;margin:-4px 0 16px auto;padding:10px 14px}
+.ca-trk-recordbar{display:flex;justify-content:flex-start;width:auto;margin:-4px 0 16px;padding:10px 14px}
 .ca-trk-recordbar .ca-f{min-width:220px}
-.ca-trk-note{margin:0;color:var(--muted);font-size:13px}
 .ca-trk-error{padding:24px}
 .ca-trk-banner{margin:0 0 16px;padding:12px 16px;border:1px solid #EBD6A6;border-radius:10px;background:var(--amber-tint);color:#6B4A12;font-size:14px}
 .ca-trk-banner .ca-link{background:none;border:0;padding:0;margin-left:6px;color:var(--blue);font:600 14px var(--sans);cursor:pointer;text-decoration:underline}
