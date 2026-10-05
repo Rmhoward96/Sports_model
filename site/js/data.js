@@ -316,11 +316,11 @@ async function trackClosing(gamePks) {
    The tables carry no week column (power_rankings' week counts played weeks, not a game's week), so a game's week comes from
    its ET date. Both leagues use Tuesday-to-Monday weeks (the new week starts the day after Monday night), which keeps a
    Wednesday opener, Thursday / Friday games, the weekend and Monday night together.
-     NFL week 1 starts on the Tuesday after Labor Day (the Tuesday before the first Thursday game), weeks 1..22 (22 = Super Bowl).
+     NFL week 1 starts on the Tuesday after Labor Day (the Tuesday before the first Thursday game), weeks 1..23 (23 = Super Bowl, which lands two Tuesday-Monday weeks after the conference title games).
      CFB week 1 starts on the Tuesday before the Saturday of Labor Day weekend, so "Week 0" is the previous Tuesday-to-Monday
        (the Aug opener Saturday), weeks 0..21 (bowls and the title game run into January).
    The season is the calendar year of its opening; January / February games belong to the season that started the year before. */
-const WEEK_BOUNDS = { nfl: [1, 22], cfb: [0, 21] };
+const WEEK_BOUNDS = { nfl: [1, 23], cfb: [0, 21] };
 const dayDiff = (a, b) => Math.round((Date.parse(`${a}T12:00:00Z`) - Date.parse(`${b}T12:00:00Z`)) / 864e5);
 // First Monday of September (YYYY-MM-DD).
 function laborDay(year) {

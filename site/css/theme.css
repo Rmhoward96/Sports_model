@@ -62,6 +62,7 @@ a{color:inherit}
 .ca-conf.MEDIUM{background:var(--amber-tint);color:var(--amber)}
 .ca-alpha-cell{display:inline-block;min-width:56px;text-align:center;border-radius:6px;padding:5px 8px;background:var(--amber-tint);font-weight:600}
 .ca-alpha-cell.hi{background:var(--green-tint)}
+.ca-alpha-cell.lo{background:#EEE9DD;color:var(--muted)}
 .ca-fair{display:inline-block;margin-left:5px;padding:1px 5px;border-radius:4px;background:#F1EEE6;color:var(--muted);font:600 10px/1.4 var(--sans);letter-spacing:.04em;text-transform:uppercase;vertical-align:1px;cursor:help}
 .ca-go{display:inline-grid;place-items:center;width:32px;height:28px;border-radius:7px;background:var(--blue-tint);color:var(--blue);text-decoration:none;font-weight:700}
 .ca-empty{color:var(--muted);padding:18px 4px}
@@ -675,7 +676,7 @@ a.ca-ev-pr:hover{background:#FBFAF6}
 .ca-board-table th.ca-bd-grp{text-align:center;color:var(--ink);border-bottom:1px solid var(--line);padding-bottom:5px}
 .ca-board-table th.ca-bd-sub{font-size:.92em;font-weight:500;color:var(--muted);padding-top:5px}
 .ca-board-table .ca-bd-gs{border-left:1px solid #F0ECE3}
-.ca-board-table th:first-child,.ca-board-table td:first-child{text-align:left;padding-left:clamp(11px,.8vw,16px)}
+.ca-board-table th:first-child,.ca-board-table td:first-child{text-align:left;padding-left:clamp(10px,.6vw,12px)}
 .ca-board-table tr[data-href]{cursor:pointer}
 .ca-board-table tbody tr:hover{background:#FBFAF6}
 .ca-board-table td.ca-bd-match{position:relative;overflow:visible}
@@ -683,24 +684,23 @@ a.ca-ev-pr:hover{background:#FBFAF6}
 .ca-board-table .tlogo{width:clamp(14px,1vw,20px)!important;height:clamp(14px,1vw,20px)!important;max-width:none;max-height:none;margin:0!important;flex:none}
 .ca-bd-pair{gap:clamp(3px,.28vw,5px);white-space:nowrap}
 /* column widths (% of the table) by the width of the card content: wide above 780px (everything inline); up to 780 the spread / pick cells stack team over number; up to 660 the matchup stacks away over home too. No width needs a horizontal scroll. */
-.ca-bd-up col:nth-child(1){width:21%}.ca-bd-up col:nth-child(2){width:7.5%}.ca-bd-up col:nth-child(3){width:5.5%}.ca-bd-up col:nth-child(4){width:9.5%}.ca-bd-up col:nth-child(5){width:5%}.ca-bd-up col:nth-child(6){width:5.5%}.ca-bd-up col:nth-child(7){width:9.5%}.ca-bd-up col:nth-child(8){width:5%}.ca-bd-up col:nth-child(9){width:6%}.ca-bd-up col:nth-child(10){width:5.5%}.ca-bd-up col:nth-child(11){width:5.5%}.ca-bd-up col:nth-child(12){width:7%}.ca-bd-up col:nth-child(13){width:7.5%}
-.ca-bd-fin col:nth-child(1){width:21%}.ca-bd-fin col:nth-child(2){width:6%}.ca-bd-fin col:nth-child(3){width:7%}.ca-bd-fin col:nth-child(4){width:5.5%}.ca-bd-fin col:nth-child(5){width:9%}.ca-bd-fin col:nth-child(6){width:5%}.ca-bd-fin col:nth-child(7){width:5.5%}.ca-bd-fin col:nth-child(8){width:9%}.ca-bd-fin col:nth-child(9){width:5%}.ca-bd-fin col:nth-child(10){width:8%}.ca-bd-fin col:nth-child(11){width:7%}.ca-bd-fin col:nth-child(12){width:7%}.ca-bd-fin col:nth-child(13){width:5%}
+.ca-bd-up col:nth-child(1){width:22%}.ca-bd-up col:nth-child(2){width:7.5%}.ca-bd-up col:nth-child(3){width:5.5%}.ca-bd-up col:nth-child(4){width:10%}.ca-bd-up col:nth-child(5){width:5%}.ca-bd-up col:nth-child(6){width:5.5%}.ca-bd-up col:nth-child(7){width:10%}.ca-bd-up col:nth-child(8){width:5%}.ca-bd-up col:nth-child(9){width:6%}.ca-bd-up col:nth-child(10){width:5.5%}.ca-bd-up col:nth-child(11){width:5.5%}.ca-bd-up col:nth-child(12){width:6%}.ca-bd-up col:nth-child(13){width:6.5%}
+.ca-bd-fin col:nth-child(1){width:22%}.ca-bd-fin col:nth-child(2){width:5.5%}.ca-bd-fin col:nth-child(3){width:7%}.ca-bd-fin col:nth-child(4){width:5.5%}.ca-bd-fin col:nth-child(5){width:9.5%}.ca-bd-fin col:nth-child(6){width:5%}.ca-bd-fin col:nth-child(7){width:5.5%}.ca-bd-fin col:nth-child(8){width:9.5%}.ca-bd-fin col:nth-child(9){width:5%}.ca-bd-fin col:nth-child(10){width:8%}.ca-bd-fin col:nth-child(11){width:7%}.ca-bd-fin col:nth-child(12){width:6%}.ca-bd-fin col:nth-child(13){width:4.5%}
 .ca-bd-side{display:inline-flex;align-items:center;gap:clamp(3px,.35vw,6px);min-width:0}
 .ca-bd-pair b{min-width:0;overflow:hidden;text-overflow:ellipsis}
 @container (max-width:780px){
-.ca-bd-up col:nth-child(1){width:21%}.ca-bd-up col:nth-child(2){width:7.5%}.ca-bd-up col:nth-child(3){width:5.5%}.ca-bd-up col:nth-child(4){width:8.5%}.ca-bd-up col:nth-child(5){width:5%}.ca-bd-up col:nth-child(6){width:5.5%}.ca-bd-up col:nth-child(7){width:8.5%}.ca-bd-up col:nth-child(8){width:5%}.ca-bd-up col:nth-child(9){width:6%}.ca-bd-up col:nth-child(10){width:5.5%}.ca-bd-up col:nth-child(11){width:5.5%}.ca-bd-up col:nth-child(12){width:8.5%}.ca-bd-up col:nth-child(13){width:8%}
-.ca-bd-fin col:nth-child(1){width:21%}.ca-bd-fin col:nth-child(2){width:6.5%}.ca-bd-fin col:nth-child(3){width:9%}.ca-bd-fin col:nth-child(4){width:5.5%}.ca-bd-fin col:nth-child(5){width:7.5%}.ca-bd-fin col:nth-child(6){width:5%}.ca-bd-fin col:nth-child(7){width:5.5%}.ca-bd-fin col:nth-child(8){width:7.5%}.ca-bd-fin col:nth-child(9){width:5%}.ca-bd-fin col:nth-child(10){width:8%}.ca-bd-fin col:nth-child(11){width:7.5%}.ca-bd-fin col:nth-child(12){width:7%}.ca-bd-fin col:nth-child(13){width:5%}
+.ca-bd-up col:nth-child(1){width:21%}.ca-bd-up col:nth-child(2){width:7.5%}.ca-bd-up col:nth-child(3){width:6.5%}.ca-bd-up col:nth-child(4){width:8.5%}.ca-bd-up col:nth-child(5){width:5%}.ca-bd-up col:nth-child(6){width:6.5%}.ca-bd-up col:nth-child(7){width:8.5%}.ca-bd-up col:nth-child(8){width:5%}.ca-bd-up col:nth-child(9){width:6%}.ca-bd-up col:nth-child(10){width:5.5%}.ca-bd-up col:nth-child(11){width:5.5%}.ca-bd-up col:nth-child(12){width:8.5%}.ca-bd-up col:nth-child(13){width:6%}
+.ca-bd-fin col:nth-child(1){width:20.5%}.ca-bd-fin col:nth-child(2){width:6%}.ca-bd-fin col:nth-child(3){width:8.5%}.ca-bd-fin col:nth-child(4){width:6.5%}.ca-bd-fin col:nth-child(5){width:7.5%}.ca-bd-fin col:nth-child(6){width:5%}.ca-bd-fin col:nth-child(7){width:6.5%}.ca-bd-fin col:nth-child(8){width:7.5%}.ca-bd-fin col:nth-child(9){width:5%}.ca-bd-fin col:nth-child(10){width:8%}.ca-bd-fin col:nth-child(11){width:7.5%}.ca-bd-fin col:nth-child(12){width:7%}.ca-bd-fin col:nth-child(13){width:4.5%}
   .ca-board-table .ca-go{width:20px}
   .ca-board-table td,.ca-board-table th{padding-left:1px;padding-right:1px}
   .ca-board-table td:first-child,.ca-board-table th:first-child{padding-left:9px}
-  .ca-bd-pk{display:block;max-width:100%;margin:0 0 1px;font-size:.88em;line-height:1.1}
+  .ca-board-table .ca-bd-pk{display:block;max-width:100%;margin:0 0 1px;font-size:.88em;line-height:1.1}
   .ca-bd-sp i{display:block;font-size:.88em;line-height:1.1}
 }
 @container (max-width:660px){
-.ca-bd-up col:nth-child(1){width:15%}.ca-bd-up col:nth-child(2){width:9%}.ca-bd-up col:nth-child(3){width:6.5%}.ca-bd-up col:nth-child(4){width:8%}.ca-bd-up col:nth-child(5){width:5.5%}.ca-bd-up col:nth-child(6){width:6.5%}.ca-bd-up col:nth-child(7){width:8%}.ca-bd-up col:nth-child(8){width:5.5%}.ca-bd-up col:nth-child(9){width:6.5%}.ca-bd-up col:nth-child(10){width:6%}.ca-bd-up col:nth-child(11){width:6%}.ca-bd-up col:nth-child(12){width:11%}.ca-bd-up col:nth-child(13){width:6.5%}
-.ca-bd-fin col:nth-child(1){width:15%}.ca-bd-fin col:nth-child(2){width:7.5%}.ca-bd-fin col:nth-child(3){width:9.5%}.ca-bd-fin col:nth-child(4){width:6.5%}.ca-bd-fin col:nth-child(5){width:7.5%}.ca-bd-fin col:nth-child(6){width:5.5%}.ca-bd-fin col:nth-child(7){width:6.5%}.ca-bd-fin col:nth-child(8){width:7.5%}.ca-bd-fin col:nth-child(9){width:5.5%}.ca-bd-fin col:nth-child(10){width:8.5%}.ca-bd-fin col:nth-child(11){width:8.5%}.ca-bd-fin col:nth-child(12){width:7%}.ca-bd-fin col:nth-child(13){width:5%}
+.ca-bd-up col:nth-child(1){width:15%}.ca-bd-up col:nth-child(2){width:9%}.ca-bd-up col:nth-child(3){width:7%}.ca-bd-up col:nth-child(4){width:8%}.ca-bd-up col:nth-child(5){width:5.5%}.ca-bd-up col:nth-child(6){width:7%}.ca-bd-up col:nth-child(7){width:8%}.ca-bd-up col:nth-child(8){width:5.5%}.ca-bd-up col:nth-child(9){width:6.5%}.ca-bd-up col:nth-child(10){width:6%}.ca-bd-up col:nth-child(11){width:6%}.ca-bd-up col:nth-child(12){width:10%}.ca-bd-up col:nth-child(13){width:6.5%}
+.ca-bd-fin col:nth-child(1){width:14.5%}.ca-bd-fin col:nth-child(2){width:7.5%}.ca-bd-fin col:nth-child(3){width:9%}.ca-bd-fin col:nth-child(4){width:7%}.ca-bd-fin col:nth-child(5){width:7.5%}.ca-bd-fin col:nth-child(6){width:5.5%}.ca-bd-fin col:nth-child(7){width:7%}.ca-bd-fin col:nth-child(8){width:7.5%}.ca-bd-fin col:nth-child(9){width:5.5%}.ca-bd-fin col:nth-child(10){width:8.5%}.ca-bd-fin col:nth-child(11){width:8.5%}.ca-bd-fin col:nth-child(12){width:7%}.ca-bd-fin col:nth-child(13){width:5%}
   .ca-bd-pair{flex-direction:column;align-items:flex-start;gap:2px}
-  .ca-bd-pair i{display:none}
   .ca-bd-side{gap:4px}
 }
 
@@ -714,7 +714,7 @@ a.ca-ev-pr:hover{background:#FBFAF6}
 .ca-bd-res{white-space:nowrap}
 .ca-bd-pk{display:inline-block;max-width:calc(100% - 1.9em);overflow:hidden;text-overflow:ellipsis;vertical-align:bottom;margin-right:.3em;color:var(--muted);font-weight:600}
 .ca-bd-go{text-align:center}
-.ca-board-table .ca-go{width:clamp(22px,1.8vw,32px);height:clamp(22px,1.7vw,28px);font-size:.95em}
+.ca-board-table .ca-go{width:clamp(22px,1.5vw,28px);height:clamp(22px,1.5vw,26px);font-size:.95em}
 .ca-bd-mkt{max-width:100%;font-weight:600}
 .ca-bd-odds{display:inline-flex;align-items:center;gap:6px;color:var(--muted)}
 .ca-bd-odds .ca-book{width:22px;height:22px}

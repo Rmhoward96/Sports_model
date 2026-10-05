@@ -29,7 +29,7 @@ const BOARD_SUB = "Model projections, market edges, and performance tracking.";
 const BOARD_MARKETS = [["all", "All Games"], ["moneyline", "Moneyline"], ["spread", "Spread"], ["total", "Total"], ["props", "Player Props"]];
 const BOARD_SORTS = [["time", "Sort by: Start Time"], ["alpha", "Sort by: Alpha Score"], ["edge", "Sort by: Edge"]];
 const BOARD_PRED_SELECT = "sport,game_pk,game_date,home_team_name,away_team_name,home_win_prob,pred_home_score,pred_away_score,commence_time,market_spread,market_total,model_version";
-const BOARD_EMPTY = { mlb: "MLB model paused since Aug 31 (last projections Aug 31, 2026).", nba: "No NBA model yet. NBA projections are not live." };
+const BOARD_OWNED = ["week", "date", "view"];     // the query params this page owns; every other param is left alone
 const BOARD_DEFAULT = { week: null, date: null, view: "games" };
 const BOARD_FILTER_DEFAULT = { market: "all", team: "", time: "", sort: "time" };
 // Mount points for the cards of the left and right columns, top to bottom. A card registers BOARD_CARDS[id] = (D) => html.
@@ -125,12 +125,35 @@ function boardLines(g, D) {
   return { fav, favName, favAbbr: fav ? teamShort(favName, g.sport) : "", mkt: { ml: mktMl, spread: mktLine, total: mktTotal }, model: { ml: modMl, spread: modLine, total }, edge };
 }
 
+// Alpha Score of an upcoming game, or null when it cannot be computed. A game with a tiered +EV opportunity (R9) uses that
+// opportunity's score. Otherwise it is the better side of the game's moneyline: the MODEL's win probability vs the best
+// available price (game_moneylines_current), through the same alphaScore() the opportunities use (EV and edge from those two
+// numbers, no segment record). Spread / total carry no model probability or price, so they cannot be scored here.
+function boardAlpha(g, D) {
+  if (!g || g.final) return null;
+  if (g.opp) return { score: g.opp.alpha, tier: g.opp.tier, basis: oppSlateLabel(g.opp, D.lineBy) };
+  const pHome = boardNum(g.pred && g.pred.home_win_prob), m = D.mlBy && D.mlBy.get(String(g.game_pk));
+  if (pHome == null || !m) return null;
+  let best = null;
+  for (const [p, price, team] of [[pHome, boardNum(m.home_price), g.home], [1 - pHome, boardNum(m.away_price), g.away]]) {
+    const imp = price == null ? NaN : americanToProb(price);
+    if (!Number.isFinite(imp)) continue;
+    const dec = price > 0 ? 1 + price / 100 : 1 + 100 / -price;
+    const score = alphaScore({ evPct: (p * dec - 1) * 100, edgePp: (p - imp) * 100 });
+    if (!best || score > best.score) best = { score, tier: alphaTier(score), basis: `${shortTeam(team, g.sport)} ML ${oddsStr(price)}: model ${pct1(p)} vs price ${pct1(imp)}` };
+  }
+  return best;
+}
+// Tier colours at 65 and above (alphaCell), a neutral grey box below.
+const boardAlphaCell = (a) => (a.score >= 65 ? alphaCell(a.score) : `<span class="ca-alpha-cell lo">${a.score}</span>`);
+
 // Filters (team / kickoff label) then the sort. Edge sort = the largest |edge| of the selected market pill (all markets: the largest of the three).
 function boardView(games, D, s) {
   let rows = games.filter((g) => (!s.team || g.away === s.team || g.home === s.team) && (!s.time || kickLabel(g.commence) === s.time));
   const edgeOf = (g) => { const e = boardLines(g, D).edge, v = (s.market === "moneyline" ? [e.ml] : s.market === "spread" ? [e.spread] : s.market === "total" ? [e.total] : [e.ml, e.spread, e.total]).filter((x) => x != null);
     return v.length ? Math.max(...v.map(Math.abs)) : -1; };
-  if (s.sort === "alpha") rows = rows.slice().sort((a, b) => (b.opp ? b.opp.alpha : -1) - (a.opp ? a.opp.alpha : -1) || boardSortKey(a) - boardSortKey(b));
+  const alphaOf = (g) => { const a = boardAlpha(g, D); return a ? a.score : -1; };
+  if (s.sort === "alpha") rows = rows.slice().sort((a, b) => alphaOf(b) - alphaOf(a) || boardSortKey(a) - boardSortKey(b));
   else if (s.sort === "edge") rows = rows.slice().sort((a, b) => edgeOf(b) - edgeOf(a) || boardSortKey(a) - boardSortKey(b));
   return rows;
 }
@@ -147,14 +170,20 @@ function boardState(sport) {
   if (!window.__caBoard || window.__caBoard.sport !== sport) {
     let q = "";
     try { q = location.search; } catch { q = ""; }
-    window.__caBoard = { sport, ...boardParse(q, sport), ...BOARD_FILTER_DEFAULT };
+    const st = { sport, ...boardParse(q, sport), ...BOARD_FILTER_DEFAULT };
+    window.__caBoard = st;
+    try {   // an invalid ?week= / ?date= / ?view= falls back to the default and leaves the URL
+      const cur = new URLSearchParams(q), want = new URLSearchParams(boardQuery(st));
+      if (BOARD_OWNED.some((k) => cur.get(k) !== want.get(k))) boardSync(st);
+    } catch { /* keep the URL */ }
   }
   return window.__caBoard;
 }
 function boardSync(s) {
   try {
-    const u = new URL(location.href);
-    u.search = boardQuery(s);
+    const u = new URL(location.href), q = new URLSearchParams(boardQuery(s));
+    for (const k of BOARD_OWNED) u.searchParams.delete(k);      // params this page does not own survive
+    for (const [k, v] of q) u.searchParams.set(k, v);
     history.replaceState(null, "", u.toString());
   } catch { /* keep the current URL */ }
 }
@@ -176,11 +205,13 @@ async function boardLoad(sport, view) {
   const s = boardState(sport), nowMs = Date.now(), today = etDateStr(new Date(nowMs).toISOString()), period = boardPeriod(sport, s, today);
   const live = LIVE_SPORTS.includes(sport), widen = (n) => addDays(period.from, n), upTo = addDays(period.to, 1);
   const inWin = (r) => { const d = gameDate(r); return !!d && d >= period.from && d <= period.to; };
-  const [anyRows, curRows, accRows] = await Promise.all([
+  const [anyRows, curRows, accRows, lastRows] = await Promise.all([
     sbAll(`predictions_any?sport=eq.${sport}&game_date=gte.${widen(-1)}&game_date=lte.${upTo}&select=${BOARD_PRED_SELECT}&order=commence_time.asc,game_pk.asc`).catch(() => []),
     period.to >= today ? predictions(sport).catch(() => []) : [],
     sbAll(`prediction_accuracy?sport=eq.${sport}&game_date=gte.${period.from}&game_date=lte.${period.to}&select=${TRACK_ACC_SELECT}&order=game_date.asc,game_pk.asc`).catch(() => []),
+    live ? [] : sb(`predictions_any?sport=eq.${sport}&select=game_date&order=game_date.desc&limit=1`).catch(() => []),   // a paused sport: when its model last projected
   ]);
+  const lastProj = (lastRows || []).map((r) => r && r.game_date).filter(boardIsDate).sort().pop() || null;
   const by = new Map();
   for (const r of [...(anyRows || []), ...(curRows || [])]) if (r) by.set(String(r.game_pk), { ...by.get(String(r.game_pk)), ...r, sport });   // current rows win
   const preds = [...by.values()].filter(inWin);
@@ -195,7 +226,7 @@ async function boardLoad(sport, view) {
     acc.length ? trackClosing(acc.map((r) => r.game_pk)).catch(() => []) : [],
   ]);
   const pks = new Set(preds.map((r) => String(r.game_pk)));
-  const D = { sport, view, nowMs, today, period, preds, acc, mlBy: mlMap, lineBy, closing: trackClosingMap(closingRows),
+  const D = { sport, view, nowMs, today, period, lastProj, preds, acc, mlBy: mlMap, lineBy, closing: trackClosingMap(closingRows),
     opps: (oppsAll || []).filter((o) => o.tier && o.sport === sport && pks.has(String(o.game_pk))) };   // R9: an opportunity is a pick with a tier
   await Promise.all(BOARD_LOADERS.map((f) => Promise.resolve().then(() => f(D)).catch((e) => console.error("board loader failed", e))));
   return D;
@@ -228,8 +259,8 @@ function boardTitleRight(D, games) {
 /* ── games card ───────────────────────────────────────────────────────── */
 // "Sun 1:00 PM" as two short lines (day, time) so the narrow Kickoff column never wraps mid-time.
 const boardKick = (iso) => { const k = kickLabel(iso), i = k.indexOf(" "); return !k ? boardDash : i < 0 ? ctxEsc(k) : `<span>${ctxEsc(k.slice(0, i))}</span><span>${ctxEsc(k.slice(i + 1))}</span>`; };
-// American price; a blowout's -100000 reads "-100k" so it never overflows its narrow column (the exact price is in the hover title).
-const boardOdds = (x) => (x == null ? boardDash : Math.abs(x) >= 10000 ? `<span title="${ctxEsc(oddsStr(x))}">${x < 0 ? "-" : "+"}${Math.round(Math.abs(x) / 1000)}k</span>` : oddsStr(x));
+// American price; 4-digit prices carry the exact price as a hover title, and a blowout's -100000 reads "-100k" so it never overflows its column.
+const boardOdds = (x) => (x == null ? boardDash : Math.abs(x) >= 10000 ? `<span title="${ctxEsc(oddsStr(x))}">${x < 0 ? "-" : "+"}${Math.round(Math.abs(x) / 1000)}k</span>` : Math.abs(x) >= 1000 ? `<span title="${ctxEsc(oddsStr(x))}">${oddsStr(x)}</span>` : oddsStr(x));
 const boardAbbr = (name, sport) => ctxEsc(teamShort(name, sport));
 const boardEdge = (x, unit = "") => (x == null ? boardDash : `<span class="${signCls(x)}">${signedStr(x, 1, unit)}</span>`);
 const boardMktSpread = (L) => (L.mkt.spread == null ? boardDash : `<span class="ca-bd-sp"><i>${ctxEsc(L.favAbbr)}</i> ${lineStr(L.mkt.spread)}</span>`);
@@ -240,7 +271,7 @@ const boardTotal = (x) => (x == null ? boardDash : (+x).toFixed(1));
 const boardCols = (n) => `<colgroup>${"<col>".repeat(n)}</colgroup>`;
 function boardMatchup(g) {
   const label = `${g.away} @ ${g.home}`;
-  return `<td class="ca-bd-match"><span class="ca-team ca-bd-pair" title="${ctxEsc(label)}">${starButton("games", g.game_pk, shortMatchup(g.away, g.home, g.sport))}<span class="ca-bd-side">${logoImg(g.away, g.sport)}<b>${boardAbbr(g.away, g.sport)}</b></span><i>@</i><span class="ca-bd-side">${logoImg(g.home, g.sport)}<b>${boardAbbr(g.home, g.sport)}</b></span></span></td>`;
+  return `<td class="ca-bd-match"><span class="ca-team ca-bd-pair" title="${ctxEsc(label)}">${starButton("games", g.game_pk, shortMatchup(g.away, g.home, g.sport))}<span class="ca-bd-side">${logoImg(g.away, g.sport)}<b>${boardAbbr(g.away, g.sport)}</b></span><span class="ca-bd-side"><i>@</i>${logoImg(g.home, g.sport)}<b>${boardAbbr(g.home, g.sport)}</b></span></span></td>`;
 }
 const boardGoCell = (g) => `<td class="ca-bd-go">${goLink(g.sport, g.game_pk)}</td>`;
 const boardModelCells = (L) => `<td data-m="moneyline" class="ca-bd-gs">${boardOdds(L.model.ml)}</td><td data-m="spread">${boardModSpread(L)}</td><td data-m="total">${boardTotal(L.model.total)}</td>`;
@@ -251,12 +282,12 @@ const boardSubHead = () => [0, 1, 2].map(() => [["moneyline", "ML"], ["spread", 
 function boardUpcomingTable(rows, D, s) {
   const head = `${boardCols(13)}<thead><tr><th rowspan="2" class="ca-bd-th-match">Matchup</th><th rowspan="2" class="ca-bd-th-time">Kickoff (ET)</th><th colspan="3" class="ca-bd-grp">Market</th><th colspan="3" class="ca-bd-grp">CappingAlpha</th><th colspan="3" class="ca-bd-grp">Edge</th><th rowspan="2">Alpha Score</th><th rowspan="2">View</th></tr><tr>${boardSubHead()}</tr></thead>`;
   const body = rows.map((g) => {
-    const L = boardLines(g, D), tip = g.opp ? oppSlateLabel(g.opp, D.lineBy) : "";
+    const L = boardLines(g, D), al = boardAlpha(g, D), tip = al ? al.basis : "";
     return `<tr data-href="${gameHref(g.sport, g.game_pk)}">${boardMatchup(g)}<td class="ca-bd-time">${boardKick(g.commence)}</td>
       <td data-m="moneyline" class="ca-bd-gs">${boardOdds(L.mkt.ml)}</td><td data-m="spread">${boardMktSpread(L)}</td><td data-m="total">${boardTotal(L.mkt.total)}</td>
       ${boardModelCells(L)}
       <td data-m="moneyline" class="ca-bd-gs">${boardEdge(L.edge.ml, "%")}</td><td data-m="spread">${boardEdge(L.edge.spread)}</td><td data-m="total">${boardEdge(L.edge.total)}</td>
-      <td class="ca-bd-alpha"${tip ? ` title="${ctxEsc(tip)}"` : ""}>${g.opp ? alphaCell(g.opp.alpha) : boardDash}</td>${boardGoCell(g)}</tr>`;
+      <td class="ca-bd-alpha"${tip ? ` title="${ctxEsc(tip)}"` : ""}>${al ? boardAlphaCell(al) : boardDash}</td>${boardGoCell(g)}</tr>`;
   }).join("");
   return `<table class="ca-table ca-board-table ca-bd-up${s.market === "all" ? "" : ` ca-bd-em-${ctxEsc(s.market)}`}">${head}<tbody>${body}</tbody></table>`;
 }
@@ -307,13 +338,21 @@ function boardHeading(D, games) {
     const wk = `Week ${per.week}`;
     if (allFinal) return { title: `${wk} Results`, sub: `Final scores, model picks and results for ${wk}.` };
     const title = per.isCurrent ? "This Week's Games" : `${wk} Games`;
-    return { title, sub: nFinal ? `Final scores and model results so far, then projections and lines for the games still to play in ${wk}.` : `Model projections, current lines, and edges for all ${wk} matchups.` };
+    const past = per.week < per.def;     // a past week with no graded games: nothing to call a current line or an edge
+    return { title, sub: nFinal ? `Final scores and model results so far, then projections and lines for the games still to play in ${wk}.` : past ? `Model projections and lines for all ${wk} matchups.` : `Model projections, current lines, and edges for all ${wk} matchups.` };
   }
   const d = shortDate(per.date);
   if (allFinal) return { title: `Results · ${d}`, sub: `Final scores, model picks and results for ${d}.` };
-  return { title: per.isCurrent ? "Today's Games" : `Games · ${d}`, sub: `Model projections, current lines, and edges for all ${name} games ${per.isCurrent ? "today" : `on ${d}`}.` };
+  return { title: per.isCurrent ? "Today's Games" : `Games · ${d}`, sub: per.date < D.today ? `Model projections and lines for all ${name} games on ${d}.` : `Model projections, current lines, and edges for all ${name} games ${per.isCurrent ? "today" : `on ${d}`}.` };
 }
-const boardEmptyText = (D) => (D.period.kind === "week" ? `No ${boardName(D.sport)} games in Week ${D.period.week}.` : `No ${boardName(D.sport)} games on ${shortDate(D.period.date)}.`);
+// Why a live sport's period is empty: a week / day still to come has no projections yet; a past one had no games.
+const boardEmptyText = (D) => {
+  const per = D.period, name = boardName(D.sport), ahead = per.kind === "week" ? per.week > per.def : per.date > D.today;
+  return per.kind === "week" ? (ahead ? `No projections yet for Week ${per.week}.` : `No ${name} games in Week ${per.week}.`) : (ahead ? `No projections yet for ${shortDate(per.date)}.` : `No ${name} games on ${shortDate(per.date)}.`);
+};
+// Why a sport with no live model has nothing to show; the paused date is the newest projection the table holds (D.lastProj).
+const boardStatusText = (D) => (D.lastProj ? `${boardName(D.sport)} model paused since ${shortDate(D.lastProj)} (last projections ${fullDate(D.lastProj)}).`
+  : D.sport === "mlb" ? "MLB model paused." : `No ${boardName(D.sport)} model yet. ${boardName(D.sport)} projections are not live.`);
 
 function boardTools(D, games) {
   const s = boardState(D.sport), propsOk = (D.opps || []).some((o) => o.kind === "prop");
@@ -328,7 +367,7 @@ function boardGamesCard(D) {
   const s = boardState(D.sport), games = boardGames(D), h = boardHeading(D, games);
   if (!games.length && !LIVE_SPORTS.includes(D.sport)) h.sub = "";     // a paused / not-live sport: the empty state says why, the usual subtitle would contradict it
   let body;
-  if (!games.length) body = emptyMsg(!LIVE_SPORTS.includes(D.sport) && BOARD_EMPTY[D.sport] ? BOARD_EMPTY[D.sport] : boardEmptyText(D));
+  if (!games.length) body = emptyMsg(!LIVE_SPORTS.includes(D.sport) ? boardStatusText(D) : boardEmptyText(D));
   else {
     const rows = boardView(games, D, s), fin = rows.filter((g) => g.final), up = rows.filter((g) => !g.final);
     if (s.market === "props" && (D.opps || []).some((o) => o.kind === "prop")) body = boardPropsTable(rows, D);

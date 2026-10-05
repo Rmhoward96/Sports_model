@@ -74,7 +74,7 @@ test("week math: NFL weeks run Tuesday-Monday from the Tuesday after Labor Day; 
   assert.equal(g.weekOf("nfl", "2026-10-05"), 4, "Monday night belongs to the week it closes");
   assert.equal(g.weekOf("cfb", "2026-08-29"), 0); assert.equal(g.weekOf("cfb", "2026-09-05"), 1); assert.equal(g.weekOf("cfb", "2026-10-03"), 5);
   assert.equal(g.seasonOf("2027-01-10"), 2026, "January playoff games belong to the season that started the year before"); assert.equal(g.seasonOf("2026-09-01"), 2026);
-  assert.equal(g.clampWeek("nfl", 0), 1); assert.equal(g.clampWeek("nfl", 99), 22); assert.equal(g.clampWeek("cfb", -3), 0);
+  assert.equal(g.clampWeek("nfl", 0), 1); assert.equal(g.clampWeek("nfl", 99), 23, "the Super Bowl (week 23) is reachable"); assert.equal(g.clampWeek("cfb", -3), 0);
   assert.equal(g.rangeLabel("2025-10-09", "2025-10-13"), "Oct 9 – Oct 13, 2025"); assert.equal(g.rangeLabel("2026-10-13", "2026-10-13"), "Oct 13, 2026");
   assert.equal(g.rangeLabel("2026-12-30", "2027-01-04"), "Dec 30, 2026 – Jan 4, 2027");
 });
@@ -84,7 +84,8 @@ test("boardParse / boardQuery: the period (?week= / ?date=) and the view live in
   assert.deepEqual(g.boardParse("?week=6", "nfl"), { week: 6, date: null, view: "games" });
   assert.deepEqual(g.boardParse("?week=0&view=rankings", "cfb"), { week: 0, date: null, view: "rankings" });
   assert.deepEqual(g.boardParse("?week=0", "nfl"), { week: null, date: null, view: "games" }, "NFL has no week 0");
-  assert.deepEqual(g.boardParse("?week=23", "nfl"), { week: null, date: null, view: "games" }, "out of the season");
+  assert.deepEqual(g.boardParse("?week=23", "nfl"), { week: 23, date: null, view: "games" }, "the Super Bowl week");
+  assert.deepEqual(g.boardParse("?week=24", "nfl"), { week: null, date: null, view: "games" }, "out of the season");
   assert.deepEqual(g.boardParse("?week=abc&range=week", "nfl"), { week: null, date: null, view: "games" }, "junk and the retired ?range= are ignored");
   assert.deepEqual(g.boardParse("?date=2026-10-13", "mlb"), { week: null, date: "2026-10-13", view: "games" });
   assert.deepEqual(g.boardParse("?date=2026-02-31", "nba"), { week: null, date: null, view: "games" }, "an impossible date");
@@ -101,7 +102,8 @@ test("boardPeriod: the default is the current week / today; prev / next step by 
   assert.deepEqual([nfl.kind, nfl.week, nfl.from, nfl.to, nfl.isCurrent, nfl.prev, nfl.next], ["week", 4, "2026-09-29", "2026-10-05", true, 3, 5]);
   const past = g.boardPeriod("nfl", { week: 2 }, "2026-10-05");
   assert.deepEqual([past.week, past.from, past.to, past.isCurrent, past.def], [2, "2026-09-15", "2026-09-21", false, 4]);
-  assert.equal(g.boardPeriod("nfl", { week: 1 }, "2026-10-05").prev, null); assert.equal(g.boardPeriod("nfl", { week: 22 }, "2026-10-05").next, null);
+  assert.equal(g.boardPeriod("nfl", { week: 1 }, "2026-10-05").prev, null); assert.equal(g.boardPeriod("nfl", { week: 23 }, "2026-10-05").next, null); assert.equal(g.boardPeriod("nfl", { week: 22 }, "2026-10-05").next, 23);
+  assert.equal(g.weekOf("nfl", "2027-02-14"), 23, "Super Bowl LXI (Feb 14, 2027) falls in week 23"); assert.equal(g.weekStart("nfl", 2026, 23), "2027-02-09");
   assert.equal(g.boardPeriod("nfl", { week: null }, "2026-07-15").week, 1, "before the season: week 1");
   const cfb = g.boardPeriod("cfb", { week: null }, "2026-10-05");
   assert.deepEqual([cfb.week, cfb.from, cfb.to], [5, "2026-09-29", "2026-10-05"]);
@@ -224,7 +226,7 @@ test("title row: the sport name, the subtitle, the period navigator and the date
   assert.ok(html.includes("<h1>NFL</h1>") && html.includes("Model projections, market edges, and performance tracking."));
   assert.ok(!html.includes("NFL Board") && !html.includes("board-range") && !html.includes("board-view") && !/This Week<\/button>/.test(html), "old pill pairs removed");
   assert.match(html, /data-board-step="-1"[^>]*aria-label="Previous week"/); assert.match(html, /data-board-step="1"[^>]*aria-label="Next week"/);
-  assert.ok(html.includes('<option value="4" selected>Week 4</option>') && html.includes('<option value="1">Week 1</option>') && html.includes('<option value="22">Week 22</option>'));
+  assert.ok(html.includes('<option value="4" selected>Week 4</option>') && html.includes('<option value="1">Week 1</option>') && html.includes('<option value="23">Week 23</option>'));
   assert.match(html, /id="board-daterange"[^>]*>.*?<span>Oct 1 – Oct 5, 2026<\/span>/s, "the span of the week's games");
   assert.ok(!/NaN|undefined|Infinity/.test(html));
   const w1 = await populated({ search: "?week=1" }).G.buildBoardPage("nfl");
@@ -326,16 +328,27 @@ test("filters + sort selects: All Teams, All Times, Sort by Start Time (Alpha Sc
 
 test("empty states: a week with no games, MLB paused, NBA without a model", async () => {
   const w = await populated({ search: "?week=19" }).G.buildBoardPage("nfl");
-  assert.ok(w.includes("No NFL games in Week 19.") && !w.includes("<tbody>"));
+  assert.ok(w.includes("No projections yet for Week 19.") && !w.includes("<tbody>"), "a week still to come: no projections yet");
+  const pastEmpty = await populated({ search: "?week=1", any: [], cur: [], acc: [] }).G.buildBoardPage("nfl");
+  assert.ok(pastEmpty.includes("No NFL games in Week 1.") && !pastEmpty.includes("No projections yet"), "a past week with nothing: no games");
   const c = await populated({ sport: "cfb", search: "?week=14", any: [], cur: [], acc: [] }).G.buildBoardPage("cfb");
-  assert.ok(c.includes("No CFB games in Week 14."));
-  const mlb = await populated({ sport: "mlb", any: [], cur: [], acc: [] }).G.buildBoardPage("mlb");
-  assert.ok(mlb.includes("<h1>MLB</h1>") && mlb.includes("MLB model paused since Aug 31") && !mlb.includes("<tbody>"));
+  assert.ok(c.includes("No projections yet for Week 14."));
+  const mlbRow = { sport: "mlb", game_pk: 5, home_team_name: "Boston Red Sox", away_team_name: "New York Yankees", commence_time: "2026-08-31T23:00:00Z", game_date: "2026-08-31", pred_home_score: 5, pred_away_score: 4 };
+  const mlb = await populated({ sport: "mlb", any: [mlbRow], cur: [], acc: [] }).G.buildBoardPage("mlb");
+  assert.ok(mlb.includes("<h1>MLB</h1>") && mlb.includes("MLB model paused since Aug 31 (last projections Aug 31, 2026).") && !mlb.includes("<tbody>"), "the paused date comes from the newest stored projection");
+  const mlbOct = await populated({ sport: "mlb", any: [{ ...mlbRow, game_date: "2026-09-12", commence_time: "2026-09-12T23:00:00Z" }], cur: [], acc: [] }).G.buildBoardPage("mlb");
+  assert.ok(mlbOct.includes("paused since Sep 12 (last projections Sep 12, 2026)") && !mlbOct.includes("Aug 31"), "no hard-coded date");
+  const mlbNone = await populated({ sport: "mlb", any: [], cur: [], acc: [] }).G.buildBoardPage("mlb");
+  assert.ok(mlbNone.includes("MLB model paused.") && !/last projections/.test(mlbNone), "no projections at all: no date");
   assert.ok(mlb.includes("<h2>Today's Games</h2>") && mlb.includes("data-board-step") && mlb.includes('type="date"') && mlb.includes("Oct 5, 2026"), "the day navigator and the date");
   const nba = await populated({ sport: "nba", any: [], cur: [], acc: [] }).G.buildBoardPage("nba");
   assert.ok(nba.includes("<h1>NBA</h1>") && nba.includes("No NBA model yet") && !nba.includes("<tbody>"));
   const past = await populated({ sport: "nba", search: "?date=2026-10-13", any: [], cur: [], acc: [] }).G.buildBoardPage("nba");
   assert.ok(past.includes("<h2>Games · Oct 13</h2>") && past.includes("Oct 13, 2026") && past.includes("No NBA model yet"));
+  const pastMlb = await populated({ sport: "mlb", search: "?date=2026-08-31", any: [mlbRow], cur: [], acc: [] }).G.buildBoardPage("mlb");
+  assert.ok(pastMlb.includes("Model projections and lines for all MLB games on Aug 31.") && !pastMlb.includes("current lines, and edges"), "a past day without graded rows does not promise current lines or edges");
+  const todayNba = await populated({ sport: "nba", any: [], cur: [], acc: [] }).G.buildBoardPage("nba");
+  assert.ok(todayNba.includes("<h2>Today's Games</h2></div>"), "an empty paused / not-live sport shows no subtitle");
   const rows = [{ sport: "mlb", game_pk: 9, home_team_name: "Boston Red Sox", away_team_name: "New York Yankees", commence_time: "2026-10-05T23:00:00Z", game_date: "2026-10-05", pred_home_score: 5.1, pred_away_score: 3.9, market_spread: -1.5, market_total: 8.5 }];
   const withRows = await populated({ sport: "mlb", any: rows, cur: [], acc: [] }).G.buildBoardPage("mlb");
   assert.ok(withRows.includes("<tbody>") && withRows.includes("game.html?sport=mlb") && !withRows.includes("MLB model paused"), "an MLB day that has projections shows them");
@@ -369,7 +382,7 @@ test("mount points: a registered renderer fills its slot (and receives D); a thr
 test("fetch failures degrade to empty states; a failing opportunity feed only drops the Alpha Score", async () => {
   const q = quiet();
   const html = await populated({ fail: ["ev_current", "ev_prop_picks_current", "ev_pnl_daily", "ev_best_lines", "game_moneylines_current", "game_closing_prices"], q }).G.buildBoardPage("nfl");
-  assert.ok(html.includes("<tbody>") && html.includes("ca-board") && !/ca-alpha-cell/.test(html));
+  assert.ok(html.includes("<tbody>") && html.includes("ca-board") && !/ca-alpha-cell/.test(html), "no opportunities and no prices: the Alpha Score cannot be computed (dash)");
   assert.ok(!/NaN|undefined/.test(html));
   const p = await populated({ fail: ["predictions_any", "predictions_current", "prediction_accuracy"], q }).G.buildBoardPage("nfl");
   assert.ok(p.includes("No NFL games in Week 4."));
@@ -579,4 +592,65 @@ test("rankings.html and settings.html keep their own pages inside the new shell 
 test("a blowout's extreme moneyline reads compactly (-100k) with the exact price on hover; ordinary prices are untouched", () => {
   assert.equal(g.boardOdds(-210), "-210"); assert.equal(g.boardOdds(105), "+105"); assert.ok(g.boardOdds(null).includes("—"));
   assert.equal(g.boardOdds(-100000), '<span title="-100000">-100k</span>'); assert.equal(g.boardOdds(25000), '<span title="+25000">+25k</span>');
+});
+
+// ---- Alpha Score on every upcoming row, ML odds, matchup, URL hygiene ----------------------------
+test("boardAlpha: the game's opportunity score, else the better moneyline side (model prob vs best price) through alphaScore; null when it cannot be computed", () => {
+  const G = (o) => ({ sport: "nfl", game_pk: 7, away: "Buffalo Bills", home: "Atlanta Falcons", ...o });
+  const D = (m) => ({ mlBy: new Map([["7", m]]) });
+  const hi = g.boardAlpha(G({ pred: { home_win_prob: 0.7 } }), D({ home_price: 100, away_price: -120 }));
+  assert.equal(hi.score, g.alphaScore({ evPct: 40, edgePp: 20 })); assert.equal(hi.score, 95); assert.equal(hi.tier, "HIGH");
+  assert.ok(/Falcons ML \+100|ATL ML \+100/.test(hi.basis));
+  const lo = g.boardAlpha(G({ pred: { home_win_prob: 0.6 } }), D({ home_price: -150, away_price: 130 }));
+  assert.equal(lo.score, 45); assert.equal(lo.tier, null, "below 65: no tier");
+  const away = g.boardAlpha(G({ pred: { home_win_prob: 0.3 } }), D({ home_price: -250, away_price: 120 }));
+  assert.ok(away.score > g.boardAlpha(G({ pred: { home_win_prob: 0.6 } }), D({ home_price: -250, away_price: 120 })).score - 100 && /BUF|Bills/.test(away.basis), "the away side can be the better one");
+  assert.equal(g.boardAlpha(G({ opp: { alpha: 81, tier: "STRONG", kind: "line", market: "total", side: "over", sport: "nfl" } }), {}).score, 81, "a tiered opportunity wins");
+  assert.equal(g.boardAlpha(G({ pred: { home_win_prob: 0.7 } }), {}), null, "no price");
+  assert.equal(g.boardAlpha(G({ pred: {} }), D({ home_price: 100, away_price: -120 })), null, "no model probability");
+  assert.equal(g.boardAlpha(G({ pred: { home_win_prob: 0.7 }, final: true }), D({ home_price: 100, away_price: -120 })), null, "a final game has no Alpha Score");
+  assert.equal(g.boardAlpha(G({ pred: { home_win_prob: 0.7 } }), D({ home_price: null, away_price: "" })), null);
+  assert.ok(g.boardAlphaCell({ score: 45 }).includes("ca-alpha-cell lo") && !g.boardAlphaCell({ score: 45 }).includes("hi"), "neutral grey below 65");
+  assert.ok(g.boardAlphaCell({ score: 70 }).includes("ca-alpha-cell") && !g.boardAlphaCell({ score: 70 }).includes(" lo"), "tier colours from 65");
+  assert.ok(g.boardAlphaCell({ score: 90 }).includes("ca-alpha-cell hi"));
+});
+
+test("Alpha Score column: every upcoming row with a price and a model probability shows one (grey below 65); a dash only when it cannot be computed", async () => {
+  const html = await populated({ search: "?week=5" }).G.buildBoardPage("nfl"), r = rowOf(tableOf(html, "ca-bd-up"), 20);
+  assert.match(r, /class="ca-bd-alpha" title="[^"]*ML[^"]*"><span class="ca-alpha-cell lo">45<\/span>/, "game 20 has no tiered opportunity: the model's moneyline score, neutral");
+  const cur = await populated().G.buildBoardPage("nfl");
+  assert.match(rowOf(tableOf(cur, "ca-bd-up"), 3), /class="ca-alpha-cell/, "game 3 keeps its opportunity score");
+  const noPrice = await populated({ search: "?week=5", fail: ["game_moneylines_current"] }).G.buildBoardPage("nfl");
+  assert.ok(rowOf(tableOf(noPrice, "ca-bd-up"), 20).includes('class="ca-bd-alpha"><span class="muted">—</span>'), "no price: a dash");
+  const P = populated({ search: "?week=4" }); P.G.boardSetFilter("nfl", "sort", "alpha");
+  assert.ok((await P.G.buildBoardPage("nfl")).includes('value="alpha" selected'), "Alpha sort uses the computed score");
+});
+
+test("4-digit moneylines carry the exact price on hover; the narrow-card ML columns are wide enough for -1439", () => {
+  assert.equal(g.boardOdds(-1439), '<span title="-1439">-1439</span>'); assert.equal(g.boardOdds(1250), '<span title="+1250">+1250</span>');
+  assert.equal(g.boardOdds(-999), "-999");
+  const css = fs.readFileSync(new URL("../css/theme.css", import.meta.url), "utf8");
+  assert.match(css, /@container \(max-width:780px\)\{\n\.ca-bd-up col:nth-child\(1\)\{width:21%\}\.ca-bd-up col:nth-child\(2\)\{width:7\.5%\}\.ca-bd-up col:nth-child\(3\)\{width:6\.5%\}/, "mid-width ML column widened");
+});
+
+test("the matchup keeps its '@' when it stacks (home line reads '@ HOME')", async () => {
+  const html = await populated().G.buildBoardPage("nfl");
+  assert.ok(/<span class="ca-bd-side"><i>@<\/i><img|<span class="ca-bd-side"><i>@<\/i>[^<]*<b>/.test(html), "the @ sits inside the home side, so the stacked layout shows it");
+  const css = fs.readFileSync(new URL("../css/theme.css", import.meta.url), "utf8");
+  assert.ok(!/\.ca-bd-pair i\{display:none\}/.test(css), "the @ is never hidden");
+});
+
+test("the URL: unknown params survive a period change; an invalid ?week= is normalised away on load", async () => {
+  const urls = [];
+  const P = populated({ search: "?week=99&utm=x&view=bogus", extra: { history: { replaceState: (a, b, u) => urls.push(u) }, location: { search: "?week=99&utm=x&view=bogus", href: "http://localhost/nfl.html?week=99&utm=x&view=bogus" } } });
+  await P.G.buildBoardPage("nfl");
+  assert.equal(urls.length, 1, "normalised once on load");
+  const u = new URL(urls[0]); assert.equal(u.searchParams.get("utm"), "x"); assert.equal(u.searchParams.get("week"), null); assert.equal(u.searchParams.get("view"), null);
+  const ok = []; const Q = populated({ search: "?week=2&utm=x", extra: { history: { replaceState: (a, b, u2) => ok.push(u2) }, location: { search: "?week=2&utm=x", href: "http://localhost/nfl.html?week=2&utm=x" } } });
+  await Q.G.buildBoardPage("nfl");
+  assert.equal(ok.length, 0, "a valid URL is left alone");
+  Q.G.boardGoPeriod("nfl", 3, "2026-10-05");
+  const v = new URL(ok[0]); assert.equal(v.searchParams.get("week"), "3"); assert.equal(v.searchParams.get("utm"), "x", "foreign params preserved");
+  Q.G.boardGoPeriod("nfl", 4, "2026-10-05");
+  assert.equal(new URL(ok[1]).search, "?utm=x", "the default week removes ?week= only");
 });
