@@ -1,6 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { loadScripts } from "./load.mjs";
+import fs from "node:fs";
 const g = loadScripts(["app.js", "js/metrics.js", "js/ui.js", "js/shell.js", "js/data.js", "js/pages/track.js", "js/boot.js"]);
 test("track rows: one per graded market, favorite-side probability, push handling", () => {
   const acc = [{ sport: "cfb", game_pk: 9, game_date: "2026-09-27", home_team_name: "Texas", away_team_name: "Oklahoma",
@@ -542,4 +543,13 @@ test("CSS contract: every ca-* class the +EV and Track Record filter bars emit e
   assert.deepEqual(missing(trk, false), [], "every ca-* class on the Track Record page appears in the CSS");
   assert.deepEqual(missing(ev, false), [], "every ca-* class on the +EV page appears in the CSS");
   assert.ok(!/\.ca-ev-f[ {.]|\.ca-ev-search|\.ca-ev-cap/.test(css), "no dead CSS for the renamed shared classes");
+});
+
+test("Overall Record says it combines moneyline winner picks with spread / total picks vs the line (tooltip + caption)", async () => {
+  const { T } = populated();
+  const html = await T.buildTrackPage();
+  const card = html.slice(html.indexOf("OVERALL RECORD") - 120, html.indexOf("ACCURACY VS CLOSING LINE"));
+  assert.match(card, /<span title="Combines moneyline winner picks with spread and total picks graded against the line">OVERALL RECORD<\/span>/);
+  assert.ok(card.includes("Moneyline winners + spread / total picks vs the line"));
+  assert.ok(!/__cappingAlphaChartSeries/.test(fs.readFileSync(new URL("../js/pages/track.js", import.meta.url), "utf8")), "dead legacy chart global removed");
 });

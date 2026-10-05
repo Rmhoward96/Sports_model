@@ -131,7 +131,7 @@ test("modelProjectionRows: Market / CappingAlpha / Difference at the same line; 
   assert.deepEqual(rows.map((r) => r.label), ["Moneyline", "Spread", "Total"]);
   const [ml, sp, tot] = rows;
   assert.equal(ml.market, "ALA -233 (70.0%)"); assert.equal(ml.model, "75.0%"); assert.ok(Math.abs(ml.diff - (0.75 - 233 / 333) * 100) < 1e-9);
-  assert.equal(sp.market, "ALA -3 (50.0%)"); assert.equal(sp.model, "ALA -10.0 (35.0%)");
+  assert.equal(sp.market, "ALA -3 (50.0%)"); assert.equal(sp.model, "ALA -10 (35.0%)");
   assert.ok(Math.abs(sp.diff + 15) < 1e-9, "35% cover vs 50% implied"); assert.ok(Math.abs(sp.pts - 7) < 1e-9);
   assert.equal(tot.market, "O 50 (45.0%)"); assert.equal(tot.model, "50.0 (47.4%)"); assert.ok(Math.abs(tot.diff - (9 / 19 - 0.45) * 100) < 1e-9);
   assert.ok(!JSON.stringify(rows).includes("99.0%"), "Pinnacle's true_prob never reaches the table");
@@ -142,7 +142,7 @@ test("modelProjectionRows: away favorite, under lean, missing odds / probabiliti
   const [ml, sp, tot] = g.modelProjectionRows(p, g.gmOdds(p, [], null, null, null));
   assert.equal(ml.market, "—"); assert.equal(ml.model, "70.0%"); assert.equal(ml.diff, null);
   assert.equal(sp.market, "SC -2.5", "away line = -home line; no price known so no implied %");
-  assert.equal(sp.model, "SC -13.0"); assert.equal(sp.diff, null); assert.ok(Math.abs(sp.pts - 10.5) < 1e-9, "model likes the away side by 10.5 more points than the market");
+  assert.equal(sp.model, "SC -13"); assert.equal(sp.diff, null); assert.ok(Math.abs(sp.pts - 10.5) < 1e-9, "model likes the away side by 10.5 more points than the market");
   assert.equal(tot.market, "U 52.5"); assert.equal(tot.model, "47.0"); assert.ok(Math.abs(tot.pts - 5.5) < 1e-9);
   const blank = g.modelProjectionRows({ sport: "cfb", home_team_name: "A", away_team_name: "B" }, g.gmOdds({ sport: "cfb" }, [], null, null, null));
   assert.equal(blank.length, 3);
@@ -320,7 +320,7 @@ test("Overview cards: Alpha Score from this game's best opportunity, win probabi
   assert.ok(cards.includes("<b>20</b><span>-</span><b>27</b>"), "projected score, away - home");
   assert.ok(cards.includes("Market: -3.5") && cards.includes("Market: 44.5"));
   assert.ok(cards.includes('ca-gm-mid">47.7<'), "projected total = 27.4 + 20.3");
-  assert.ok(cards.includes("-7.1"), "projected spread = home by 7.1");
+  assert.ok(cards.includes(' -7</div><div class="ca-gm-sub">Market: -3.5'), "projected spread = home by 7.1, at the half point like the board");
   const none = await populated({ noEdge: true }).D.buildGamePage();
   assert.match(none.slice(none.indexOf('id="gm-cards"'), none.indexOf('id="gm-projection"')), /Alpha Score[\s\S]*—/);
 });
@@ -330,7 +330,7 @@ test("Model Projection, Key Insights and Cover Probability: the model at the mar
   const proj = html.slice(html.indexOf('id="gm-projection"'), html.indexOf('id="gm-insights"'));
   assert.ok(/Moneyline/.test(proj) && /Spread/.test(proj) && /Total/.test(proj));
   assert.ok(proj.includes("-3.5 (55.0%)"), "market: line and the implied probability of its price");
-  assert.ok(proj.includes("-7.1 (" + p1(HOME_COVER) + ")"), "CappingAlpha: model margin and the model's cover probability at -3.5");
+  assert.ok(proj.includes("-7 (" + p1(HOME_COVER) + ")"), "CappingAlpha: model margin (half point) and the model's cover probability at -3.5");
   assert.ok(proj.includes(sp1((HOME_COVER - 0.55) * 100)), "difference = model cover minus implied");
   assert.ok(proj.includes("62.0%") && !proj.includes("99.0%"));
   const ins = html.slice(html.indexOf('id="gm-insights"'), html.indexOf('id="gm-cover"'));
@@ -497,4 +497,18 @@ test("R24: a starred team / player renders filled (watchlist read by the shared 
   assert.match(L.starButton("teams", HOME, HOME), /class="ca-star on"/);
   assert.match(L.propsProjectionSection([{ player_id: "p1", name: PLAYER, pos: "WR", team: HOME, market: "rec_yds", mean: 71 }], [], [], [], "", { star: (n) => L.starButton("players", n, n) }), /class="ca-star on" data-star-kind="players"/);
   assert.ok(!L.propsProjectionSection([{ player_id: "p1", name: PLAYER, pos: "WR", team: HOME, market: "rec_yds", mean: 71 }], [], [], []).includes("ca-star"), "no star option -> no star (legacy callers unchanged)");
+});
+
+test("one model-spread formatter on the board and the game page: half-point rounding, PK at 0 (no 'ATL -0.2')", () => {
+  assert.equal(g.modelLineStr(-0.2), "PK"); assert.equal(g.modelLineStr(0.2), "PK"); assert.equal(g.modelLineStr(-0), "PK");
+  assert.equal(g.modelLineStr(-7.1), "-7"); assert.equal(g.modelLineStr(-7.3), "-7.5"); assert.equal(g.modelLineStr(3.26), "+3.5");
+  const pred = { sport: "nfl", home_team_name: "Atlanta Falcons", away_team_name: "Tampa Bay Buccaneers", pred_home_score: 24.1, pred_away_score: 23.9, market_spread: -1.5 };
+  assert.match(g.gmSpreadCard({ sport: "nfl", r: pred }), /ca-gm-mid">ATL PK</);
+  assert.match(g.modelProjectionRows(pred, g.gmOdds(pred, [], null, null, null))[1].model, /^ATL PK$/);
+  assert.ok(!src("js/pages/game.js").includes("gmLine1") && src("js/pages/board.js").includes("modelLineStr("), "both pages use the shared formatter");
+});
+
+test("Alpha Score card without an opportunity says 'No +EV opportunity on this game.'", async () => {
+  const none = await populated({ noEdge: true }).D.buildGamePage();
+  assert.ok(none.includes("No +EV opportunity on this game.") && !none.includes("No graded opportunity"));
 });

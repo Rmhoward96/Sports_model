@@ -99,7 +99,7 @@ function boardRow(g, D) {
   const mkt = (txt) => `<small>Mkt ${txt}</small>`;
   const score = m.away != null && m.home != null
     ? `<b title="${ctxEsc(`${g.away} ${m.away}, ${g.home} ${m.home}`)}">${m.away}–${m.home}</b>` : boardDash;
-  const spread = `${m.spread != null ? `<b>${ctxEsc(homeName)} ${lineStr(m.spread)}</b>` : boardDash}${mkt(m.mktSpread != null ? lineStr(m.mktSpread) : "—")}`;
+  const spread = `${m.spread != null ? `<b>${ctxEsc(homeName)} ${modelLineStr(m.spread)}</b>` : boardDash}${mkt(m.mktSpread != null ? lineStr(m.mktSpread) : "—")}`;
   const total = `${m.total != null ? `<b>${m.total.toFixed(1)}</b>` : boardDash}${mkt(m.mktTotal != null ? m.mktTotal.toFixed(1) : "—")}`;
   let best = boardDash;
   if (g.opp) {

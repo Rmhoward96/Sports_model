@@ -285,12 +285,16 @@ const trackFinalText = (r) => (r.winner && r.finalScore.startsWith(r.winner) ? `
 const trackClosingText = (r) => (r.closing == null ? "—" : r.market === "moneyline" ? oddsStr(r.closing) : r.market === "total" ? (+r.closing).toFixed(1) : trackLine(r.closing));
 
 /* ── stat cards ───────────────────────────────────────────────────────── */
+// The record mixes two kinds of graded pick, so the card says so (tooltip on the label + a caption).
+const TRACK_RECORD_TIP = "Combines moneyline winner picks with spread and total picks graded against the line";
+const TRACK_RECORD_LABEL = `<span title="${TRACK_RECORD_TIP}">OVERALL RECORD</span>`;
 function trackStatRecord(C) {
   const t = trackTally(C.scope);
-  if (!t.n) return statCard({ label: "OVERALL RECORD", value: "—", sub: "No graded picks in this range." });
+  if (!t.n) return statCard({ label: TRACK_RECORD_LABEL, value: "—", sub: "No graded picks in this range." });
   const weeks = trackWeekly(C.scope).slice(-10).map((w) => (w.pct == null ? 0 : w.pct * 100)), bars = miniBars(weeks, { w: 70, h: 44 });
   const rec = `<span class="ca-trk-rec">${[["W", t.w], ["L", t.l], ["P", t.p]].map(([k, v]) => `<span><b>${v}</b><em>${k}</em></span>`).join("<i>-</i>")}</span>`;
-  return statCard({ label: "OVERALL RECORD", value: `${rec}<small class="${t.pct != null && t.pct >= 0.5 ? "pos" : ""}">${trackPct(t.pct)}</small>`,
+  return statCard({ label: TRACK_RECORD_LABEL, value: `${rec}<small class="${t.pct != null && t.pct >= 0.5 ? "pos" : ""}">${trackPct(t.pct)}</small>`,
+    sub: `<span title="${TRACK_RECORD_TIP}">Moneyline winners + spread / total picks vs the line</span>`,
     visual: bars ? `<span title="Win % by week">${bars}</span>` : "" });
 }
 function trackStatLine(C) {
@@ -466,7 +470,6 @@ function trackEvHtml(C) {
 async function buildTrackPage() {
   const s = trackState();
   window.__caPnl = [];                     // pnlSection registers its rows here (legacy wirePnl reads them)
-  window.__cappingAlphaChartSeries = [];   // the legacy accuracy chart (and its dark tooltip) is not on this page
   const D = s.view === "ev" ? await trackEvLoad() : await trackLoad();
   window.__caTrkData = D;
   const C = trackCtx(D);

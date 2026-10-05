@@ -97,6 +97,8 @@ const addDays = (d, n) => new Date(Date.parse(`${d}T12:00:00Z`) + n * 864e5).toI
 const timeMs = (iso) => (iso ? Date.parse(iso) : NaN);
 const matchupSides = (matchup) => { const [a = "", h = ""] = String(matchup || "").split(" @ "); return [a, h]; };
 const lineStr = (x) => (x === 0 ? "PK" : x > 0 ? `+${x}` : `${x}`);
+// The MODEL's spread as every page shows it (board, game page): rounded to the half point, "PK" at 0 ("ATL -0.2" -> "PK").
+const modelLineStr = (x) => lineStr(r05(+x) || 0);
 const signedStr = (x, d = 1, unit = "") => `${x > 0 ? "+" : x < 0 ? "−" : ""}${Math.abs(x).toFixed(d)}${unit}`;
 const signCls = (x) => (x > 0 ? "pos" : x < 0 ? "neg" : "");
 const emptyMsg = (msg) => `<p class="ca-empty">${ctxEsc(msg)}</p>`;

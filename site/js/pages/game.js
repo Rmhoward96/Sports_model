@@ -145,7 +145,6 @@ function gmCover(odds) {
   return s && s.home.modelProb != null && s.away.modelProb != null ? { home: s.home.modelProb, away: s.away.modelProb } : null;
 }
 
-const gmLine1 = (x) => (Math.abs(x) < 0.05 ? "PK" : x > 0 ? `+${x.toFixed(1)}` : x.toFixed(1));
 const gmPctP = (p) => (p != null ? ` (${pct1(p)})` : "");
 
 // Model Projection table: Market / CappingAlpha / Difference for moneyline (the model's favorite), spread (the model's
@@ -167,9 +166,9 @@ function modelProjectionRows(pred, odds) {
   rows.push(ml);
   const sp = blank("Spread");
   if (h != null && a != null) {
-    const margin = h - a, side = margin >= 0 ? "home" : "away", modelLine = side === "home" ? -margin : margin;
+    const margin = h - a, side = margin >= 0 ? "home" : "away", modelLine = r05(side === "home" ? -margin : margin) || 0;   // the half-point line the cell shows
     const e = o.spread && o.spread[side];
-    sp.model = `${ab(side)} ${gmLine1(modelLine)}${gmPctP(e ? e.modelProb : null)}`;
+    sp.model = `${ab(side)} ${modelLineStr(modelLine)}${gmPctP(e ? e.modelProb : null)}`;
     if (e && e.line != null) {
       sp.market = `${ab(side)} ${lineStr(e.line)}${gmPctP(e.implied)}`;
       sp.pts = e.line - modelLine;
@@ -415,7 +414,7 @@ function gmAlphaCard(D) {
   const o = gmBestOpp(D);
   return `<div class="ca-card ca-gm-card"><div class="ca-gm-cl">Alpha Score</div>${o
     ? `<div class="ca-gm-big">${gmEsc(o.alpha)}<small> / 100</small></div>${confPill(o.tier)}<div class="ca-gm-sub ca-ell" title="${gmEsc(oppLabel(o, D.lineBy))}">${gmEsc(oppLabel(o, D.lineBy))}</div>`
-    : `<div class="ca-gm-big">—</div><div class="ca-gm-sub">No graded opportunity on this game.</div>`}</div>`;
+    : `<div class="ca-gm-big">—</div><div class="ca-gm-sub">No +EV opportunity on this game.</div>`}</div>`;
 }
 function gmWinCard(D) {
   const wp = numOrNull(D.r.home_win_prob), row = (name, p) => `<div class="ca-gm-wp">${logoImg(name, D.sport)}<b>${p != null ? pct1(p) : "—"}</b></div>`;
@@ -432,7 +431,7 @@ function gmSpreadCard(D) {
   if (h == null || a == null) return `<div class="ca-card ca-gm-card"><div class="ca-gm-cl">Projected Spread</div><div class="ca-gm-big">—</div></div>`;
   const margin = h - a, side = margin >= 0 ? "home" : "away", nm = teamShort(side === "home" ? r.home_team_name : r.away_team_name, D.sport);
   const mk = L == null ? "" : `<div class="ca-gm-sub">Market: ${lineStr(side === "home" ? L : -L)}</div>`;
-  return `<div class="ca-card ca-gm-card"><div class="ca-gm-cl">Projected Spread</div><div class="ca-gm-mid">${gmEsc(nm)} ${gmEsc(gmLine1(side === "home" ? -margin : margin))}</div>${mk}</div>`;
+  return `<div class="ca-card ca-gm-card"><div class="ca-gm-cl">Projected Spread</div><div class="ca-gm-mid">${gmEsc(nm)} ${gmEsc(modelLineStr(side === "home" ? -margin : margin))}</div>${mk}</div>`;
 }
 function gmTotalCard(D) {
   const r = D.r, h = numOrNull(r.pred_home_score), a = numOrNull(r.pred_away_score), T = numOrNull(r.market_total);
