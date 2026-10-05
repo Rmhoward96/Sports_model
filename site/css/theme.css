@@ -54,6 +54,7 @@ a{color:inherit}
 .ca-conf.MEDIUM{background:var(--amber-tint);color:var(--amber)}
 .ca-alpha-cell{display:inline-block;min-width:56px;text-align:center;border-radius:6px;padding:5px 8px;background:var(--amber-tint);font-weight:600}
 .ca-alpha-cell.hi{background:var(--green-tint)}
+.ca-fair{display:inline-block;margin-left:5px;padding:1px 5px;border-radius:4px;background:#F1EEE6;color:var(--muted);font:600 10px/1.4 var(--sans);letter-spacing:.04em;text-transform:uppercase;vertical-align:1px;cursor:help}
 .ca-go{display:inline-grid;place-items:center;width:32px;height:28px;border-radius:7px;background:var(--blue-tint);color:var(--blue);text-decoration:none;font-weight:700}
 .ca-empty{color:var(--muted);padding:18px 4px}
 .ca-star{background:none;border:0;cursor:pointer;color:var(--amber);font-size:17px}

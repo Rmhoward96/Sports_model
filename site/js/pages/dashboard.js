@@ -169,11 +169,12 @@ function dashStatLive(D) {
     visual: c.some((x) => x.n > 0) ? `<span title="New picks per day, last 7 days">${miniBars(c.map((x) => x.n), { w: 56, h: 46 })}</span>` : "" });
 }
 function dashStatBest(D) {
-  const best = [...D.opps].sort((a, b) => b.evPct - a.evPct)[0];
+  // Edge = probability points (model / fair price minus the market's implied), the same number as +EV's Highest Edge.
+  const best = [...D.opps].filter((o) => finite(o.edgePp)).sort((a, b) => b.edgePp - a.edgePp)[0];
   if (!best) return statCard({ label: "Best Current Edge", value: "—", sub: "No +EV opportunities on this date." });
   const [away, home] = matchupSides(best.matchup);
   const txt = best.kind === "prop" ? `${ctxEsc(best.playerName || "")}<br>${ctxEsc(pickLabel(best, D.lineBy))}` : `${ctxEsc(pickLabel(best, D.lineBy))}<br>${ctxEsc(shortMatchup(away, home, best.sport))}`;
-  return statCard({ label: "Best Current Edge", value: pStr(best.evPct), valueClass: "pos",
+  return statCard({ label: "Best Current Edge", value: pStr(best.edgePp), valueClass: signCls(best.edgePp),
     sub: `<a class="ca-dash-be" href="${gameHref(best.sport, best.game_pk)}">${logoImg(away, best.sport)}<span>${txt}</span><i>at</i>${logoImg(home, best.sport)}</a>` });
 }
 const dashRecord = (p) => `${p.wins}-${p.losses}`;
@@ -218,12 +219,12 @@ function dashOppsCard(D) {
         : `<span class="ca-team">${oppLogo(o) || logoImg(away, o.sport)}${ctxEsc(shortMatchup(away, home, o.sport))}</span>`;
       return `<tr data-href="${gameHref(o.sport, o.game_pk)}"><td class="muted">${i + 1}</td><td><span class="ca-team">${leagueLogo(o.sport)}${SPORT_NAME[o.sport] || ""}</span></td>
         <td>${who}</td><td class="ca-dash-gtime">${kickLabel(o.commence)}</td><td><span class="ca-ell ca-dash-mkt" title="${ctxEsc(pickLabel(o, D.lineBy))}">${ctxEsc(pickLabel(o, D.lineBy))}</span></td><td><span class="ca-dash-odds">${bookBadge(o.book)}${oddsStr(o.odds)}</span></td>
-        <td>${pct1(o.modelProb)}</td><td>${pct1(o.impliedProb)}</td><td class="${signCls(o.edgePp)} ca-b">${pStr(o.edgePp)}</td>
+        <td>${oppProb(o)}</td><td>${pct1(o.impliedProb)}</td><td class="${signCls(o.edgePp)} ca-b">${pStr(o.edgePp)}</td>
         <td>${alphaCell(o.alpha)}</td><td>${confPill(o.tier)}</td><td>${goLink(o.sport, o.game_pk)}</td></tr>`;
     }).join("");
-    body = `<div class="ca-table-wrap"><table class="ca-table ca-dash-table ca-dash-opps"><thead><tr><th>#</th><th>Sport</th><th>Matchup / Player</th><th>Game Time</th><th>Market</th><th>Best Odds</th><th>Model Prob.</th><th>Market Prob.</th><th>Edge</th><th>Alpha Score</th><th>Confidence</th><th></th></tr></thead><tbody>${rows}</tbody></table></div>`;
+    body = `<div class="ca-table-wrap"><table class="ca-table ca-dash-table ca-dash-opps"><thead><tr><th>#</th><th>Sport</th><th>Matchup / Player</th><th>Game Time</th><th>Market</th><th>Best Odds</th>${oppProbTh()}<th>Market Prob.</th><th>Edge</th><th>Alpha Score</th><th>Confidence</th><th></th></tr></thead><tbody>${rows}</tbody></table></div>`;
   }
-  return `<section class="ca-card ca-dash-card" id="dash-opps"><div class="ca-card-head"><h2>Best Opportunities Right Now</h2><p>${D.isToday ? "Top model edges for the next 7 days" : "Top model edges for this date"}, sorted by expected value.</p><a class="ca-link" href="ev.html">View All →</a></div>
+  return `<section class="ca-card ca-dash-card" id="dash-opps"><div class="ca-card-head"><h2>Best Opportunities Right Now</h2><p>${D.isToday ? "Top edges for the next 7 days" : "Top edges for this date"} — model for props, sharp fair price for game lines, sorted by expected value.</p><a class="ca-link" href="ev.html">View All →</a></div>
     <div class="ca-dash-pillrow">${sportPills}<span class="ca-dash-pillsep"></span>${kindPills}</div>${body}</section>`;
 }
 

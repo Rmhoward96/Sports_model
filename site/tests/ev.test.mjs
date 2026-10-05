@@ -152,7 +152,7 @@ test("buildEvPage renders every mockup section from stubbed data; names escaped;
     "All Opportunities (3)", "Game Lines (2)", "Player Props (1)", "Sort By", "+EV Opportunities", "Top Alpha Opportunities", "Market Pulse", "EV Distribution", "Performance by Edge Bucket",
     "Biggest Line Move", "Highest Confidence Edge", "Most Mispriced Total", "Average Market Divergence"]) assert.ok(html.includes(t), `missing ${t}`);
   const table = sect(html, "ev-table", "ev-rail");
-  for (const h of ["#", "Sport", "Matchup / Player", "Market", "Best Odds", "Model Prob.", "Impl. Prob.", "Edge", "EV", "Alpha Score", "Confidence", "Game Time", "View"]) assert.ok(table.includes(`<th>${h}</th>`) || table.includes(`<th>${h}`), `column ${h}`);
+  for (const h of ["#", "Sport", "Matchup / Player", "Market", "Best Odds", "Model Prob.", "Impl. Prob.", "Edge", "EV", "Alpha Score", "Confidence", "Game Time", "View"]) assert.ok(table.includes(`<th>${h}</th>`) || table.includes(`<th>${h}`) || table.includes(`">${h}</th>`), `column ${h}`);
   assert.equal((table.match(/<tr data-href/g) || []).length, 3, "all listed opportunities; the non-pick row is not listed");
   assert.ok(html.includes("&lt;b&gt;Crew&lt;/b&gt;") && html.includes("O&quot;Brien &lt;i&gt;Zed&lt;/i&gt;"));
   assert.ok(!html.includes("<b>Crew</b>") && !html.includes("<i>Zed</i>"));
@@ -270,3 +270,17 @@ test("Edge Bucket rows show the sample size n; clicking rows is handled once by 
 });
 import fs from "node:fs";
 const require_src = (f) => fs.readFileSync(new URL("../" + f, import.meta.url), "utf8");
+
+test("R19: +EV table and Top Alpha rail mark game-line probabilities as the sharp fair price; props carry none", async () => {
+  const { D } = populated();
+  const html = await D.buildEvPage();
+  const table = sect(html, "ev-table", "ev-rail");
+  assert.match(table, /<th title="Model for player props; sharp fair price \(Pinnacle no-vig\) for game lines">Model Prob\.<\/th>/);
+  const rows = table.split("<tr data-href").slice(1);
+  assert.match(rows.find((r) => r.includes("game=1")), /70\.0%<span class="ca-fair"[^>]*>fair<\/span>/);
+  assert.ok(!rows.find((r) => r.includes("game=5")).includes("ca-fair"));
+  assert.ok(table.includes("model for props, sharp fair price for game lines") && !table.includes("Model projections, current odds"));
+  const top = sect(html, "ev-top", "ev-pulse"), items = top.split('class="ca-ev-ta"').slice(1);
+  assert.match(items.find((x) => x.includes("game=1") || x.includes("Chiefs")) || "", /fair<\/span> vs 50\.0%/);
+  assert.ok(items.some((x) => x.includes("O&quot;Brien") && !x.includes("ca-fair")), "prop rail row: no marker");
+});

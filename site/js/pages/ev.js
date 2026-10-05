@@ -233,7 +233,7 @@ function evxRow(o, i, D) {
     : `<span class="ca-team" title="${ctxEsc(shortMatchup(away, home, o.sport))}">${oppLogo(o) || logoImg(away, o.sport)}<span class="ca-ell">${ctxEsc(shortMatchup(away, home, o.sport))}</span></span>`;
   return `<tr data-href="${gameHref(o.sport, o.game_pk)}"><td class="muted">${i + 1}</td><td><span class="ca-team">${leagueLogo(o.sport)}${SPORT_NAME[o.sport] || ""}</span></td><td>${who}</td>
     <td><span class="ca-ell ca-ev-mkt" title="${ctxEsc(pick)}">${ctxEsc(pick)}</span></td><td><span class="ca-dash-odds">${bookBadge(o.book)}${oddsStr(o.odds)}</span></td>
-    <td>${pct1(o.modelProb)}</td><td>${pct1(o.impliedProb)}</td><td class="${signCls(o.edgePp)} ca-b">${pStr(o.edgePp)}</td><td class="${signCls(o.evPct)} ca-b">${pStr(o.evPct)}</td>
+    <td>${oppProb(o)}</td><td>${pct1(o.impliedProb)}</td><td class="${signCls(o.edgePp)} ca-b">${pStr(o.edgePp)}</td><td class="${signCls(o.evPct)} ca-b">${pStr(o.evPct)}</td>
     <td>${alphaCell(o.alpha)}</td><td>${confPill(o.tier)}</td><td class="ca-dash-gtime">${kickLabel(o.commence)}</td><td>${goLink(o.sport, o.game_pk)}</td></tr>`;
 }
 function evxTableCard(D) {
@@ -244,16 +244,16 @@ function evxTableCard(D) {
     body = !D.opps.length ? emptyMsg(SPORT_STATUS[s.sport] || "No +EV opportunities on the board right now.")
       : `${emptyMsg(SPORT_STATUS[s.sport] || "No opportunities match these filters.")}${filtered ? `<p class="ca-ev-reset"><button class="ca-btn" data-ev-reset>Reset filters</button></p>` : ""}`;
   } else {
-    body = `<div class="ca-table-wrap"><table class="ca-table ca-dash-table ca-ev-table"><thead><tr><th>#</th><th>Sport</th><th>Matchup / Player</th><th>Market</th><th>Best Odds</th><th>Model Prob.</th><th>Impl. Prob.</th><th>Edge</th><th>EV</th><th>Alpha Score</th><th>Confidence</th><th>Game Time</th><th>View</th></tr></thead><tbody>${list.map((o, i) => evxRow(o, i, D)).join("")}</tbody></table></div>`;
+    body = `<div class="ca-table-wrap"><table class="ca-table ca-dash-table ca-ev-table"><thead><tr><th>#</th><th>Sport</th><th>Matchup / Player</th><th>Market</th><th>Best Odds</th>${oppProbTh()}<th>Impl. Prob.</th><th>Edge</th><th>EV</th><th>Alpha Score</th><th>Confidence</th><th>Game Time</th><th>View</th></tr></thead><tbody>${list.map((o, i) => evxRow(o, i, D)).join("")}</tbody></table></div>`;
   }
-  return `<section class="ca-card ca-ev-tablecard" id="ev-table"><div class="ca-card-head"><div><h2>+EV Opportunities</h2><p>Model projections, current odds, and expected value across all sports.</p></div></div>${body}</section>`;
+  return `<section class="ca-card ca-ev-tablecard" id="ev-table"><div class="ca-card-head"><div><h2>+EV Opportunities</h2><p>Edges across all sports — model for props, sharp fair price for game lines — with current odds and expected value.</p></div></div>${body}</section>`;
 }
 
 /* ── right rail ───────────────────────────────────────────────────────── */
 function evxTopAlpha(D) {
   const top = [...D.opps].sort((a, b) => b.alpha - a.alpha || b.evPct - a.evPct).slice(0, 5);
   const rows = top.map((o, i) => `<a class="ca-ev-ta" href="${gameHref(o.sport, o.game_pk)}"><span class="ca-ev-rank">#${i + 1}</span><span class="ca-ev-logos">${logoPair(o.matchup, o.sport)}</span>
-    <span class="ca-ev-ta-main"><b class="ca-ell">${ctxEsc(oppLabel(o, D.lineBy))}</b><small>${pct1(o.modelProb)} vs ${pct1(o.impliedProb)}</small></span>
+    <span class="ca-ev-ta-main"><b class="ca-ell">${ctxEsc(oppLabel(o, D.lineBy))}</b><small>${oppProb(o)} vs ${pct1(o.impliedProb)}</small></span>
     <span class="ca-ev-ta-odds">${oddsStr(o.odds)}</span><span class="ca-ev-edge"><b>${pStr(o.edgePp)}</b>Edge</span></a>`).join("");
   return `<section class="ca-card ca-ev-rail-card" id="ev-top"><div class="ca-card-head"><h2>Top Alpha Opportunities</h2><a class="ca-link" href="ev.html?sort=alpha">View All →</a></div>${rows || emptyMsg("No +EV opportunities on the board.")}</section>`;
 }

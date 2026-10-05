@@ -140,6 +140,11 @@ function pickLabel(o, lineBy) {
   if (o.market === "moneyline") return `${team} ML`;
   return `${team} ${l != null ? lineStr(l) : "spread"}`;
 }
+// R19: an opportunity's probability is the MODEL's only for props; a game line's is Pinnacle's no-vig fair price
+// (ev_current.true_prob). The column header says so and every game-line value carries a small "fair" marker.
+const OPP_PROB_TIP = "Model for player props; sharp fair price (Pinnacle no-vig) for game lines";
+const oppProbTh = (label = "Model Prob.") => `<th title="${OPP_PROB_TIP}">${label}</th>`;
+const oppProb = (o) => `${pct1(o.modelProb)}${o.kind === "prop" ? "" : `<span class="ca-fair" title="Sharp fair price (Pinnacle no-vig), not the model">fair</span>`}`;
 // pickLabel with the player's name in front for props ("Josh Allen Over 64.5 Rec Yds").
 const oppLabel = (o, lineBy) => `${o.kind === "prop" ? `${o.playerName || ""} ` : ""}${pickLabel(o, lineBy)}`.trim();
 // ET calendar day of a predictions / results row ("" when it has neither a kickoff nor a game_date).

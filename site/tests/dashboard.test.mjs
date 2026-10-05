@@ -292,7 +292,7 @@ test("populated render (a date): the board is date-scoped to that date", async (
   const opps = slice(html, "dash-opps", "dash-perf");
   assert.equal((opps.match(/<tr data-href/g) || []).length, 1);
   assert.ok(opps.includes("game=1") && !opps.includes("game=5") && !opps.includes("game=4"));
-  assert.ok(html.includes("Top model edges for this date"));
+  assert.ok(html.includes("Top edges for this date — model for props, sharp fair price for game lines"));
 });
 
 test("populated render: team and player names are escaped everywhere, including a Movers tab", async () => {
@@ -354,4 +354,26 @@ test("Line Moves empty state is user-facing copy", async () => {
   const html = await D.buildDashboard();
   assert.ok(html.includes("No line moves captured for upcoming games yet."));
   assert.ok(!/migration|view/i.test(slice(html, "dash-movers", "dash-slate").replace(/viewBox/g, "")));
+});
+
+test("R19: Best Opportunities marks game-line probabilities as the sharp fair price; prop rows carry no marker", async () => {
+  const { D } = populated();
+  const html = await D.buildDashboard();
+  const opps = slice(html, "dash-opps", "dash-perf");
+  assert.match(opps, /<th title="Model for player props; sharp fair price \(Pinnacle no-vig\) for game lines">Model Prob\.<\/th>/);
+  const rows = opps.split("<tr data-href").slice(1);
+  const lineRow = rows.find((r) => r.includes("game=1")), propRow = rows.find((r) => r.includes("game=5"));
+  assert.match(lineRow, /70\.0%<span class="ca-fair"[^>]*>fair<\/span>/, "game line: fair marker beside the %");
+  assert.ok(!propRow.includes("ca-fair"), "prop: the model's own probability, no marker");
+  assert.ok(!/Top model edges/.test(html), "the subtitle no longer claims the model for game lines");
+});
+
+test("Best Current Edge picks and shows the largest edge in probability points (not EV%), with the matchup line", () => {
+  const base = { kind: "line", sport: "nfl", market: "moneyline", side: "home", matchup: "Detroit Lions @ Kansas City Chiefs", tier: "HIGH" };
+  const D = { lineBy: new Map(), opps: [{ ...base, game_pk: 1, evPct: 30, edgePp: 5 }, { ...base, game_pk: 2, side: "away", evPct: 8, edgePp: 12.4 }] };
+  const html = g.dashStatBest(D);
+  assert.match(html, /class="ca-stat-value pos">\+12\.4%</, "edge in points, from the higher-edge opportunity");
+  assert.ok(html.includes("game=2") && html.includes("Lions ML") && html.includes("Lions @ Chiefs"));
+  assert.ok(!html.includes("+30.0%"));
+  assert.match(g.dashStatBest({ lineBy: new Map(), opps: [] }), /No \+EV opportunities on this date\./);
 });
