@@ -259,7 +259,7 @@ function evxTableCard(D) {
 function evxTopAlpha(D) {
   const top = [...D.opps].sort((a, b) => b.alpha - a.alpha || b.evPct - a.evPct).slice(0, 5);
   const rows = top.map((o, i) => `<a class="ca-ev-ta" href="${gameHref(o.sport, o.game_pk)}"><span class="ca-ev-rank">#${i + 1}</span><span class="ca-ev-logos">${logoPair(o.matchup, o.sport)}</span>
-    <span class="ca-ev-ta-main"><b class="ca-ell">${ctxEsc(`${o.kind === "prop" ? `${o.playerName || ""} ` : ""}${pickLabel(o, D.lineBy)}`.trim())}</b><small>${pct1(o.modelProb)} vs ${pct1(o.impliedProb)}</small></span>
+    <span class="ca-ev-ta-main"><b class="ca-ell">${ctxEsc(oppLabel(o, D.lineBy))}</b><small>${pct1(o.modelProb)} vs ${pct1(o.impliedProb)}</small></span>
     <span class="ca-ev-ta-odds">${oddsStr(o.odds)}</span><span class="ca-ev-edge"><b>${pStr(o.edgePp)}</b>Edge</span></a>`).join("");
   return `<section class="ca-card ca-ev-rail-card" id="ev-top"><div class="ca-card-head"><h2>Top Alpha Opportunities</h2><a class="ca-link" href="ev.html?sort=alpha">View All →</a></div>${rows || emptyMsg("No +EV opportunities on the board.")}</section>`;
 }
@@ -275,7 +275,7 @@ function evxPulse(D) {
     rows.push(evxPulseRow(ICON_TREND, "Biggest Line Move", ctxEsc(info.title), info.chg, signCls(info.d), ctxEsc(info.tickets), gameHref(mv[1].sport, mv[1].game_pk)));
   } else rows.push(`<div class="ca-ev-pr ca-ev-pr-empty"><span class="ca-ev-pr-ic">${ICON_TREND}</span><span class="ca-ev-pr-main"><b>Biggest Line Move</b><small>No line moves captured yet.</small></span></div>`);
   const top = [...D.opps].sort((a, b) => b.alpha - a.alpha || b.evPct - a.evPct)[0];
-  rows.push(top ? evxPulseRow(ICON_CLOCK, "Highest Confidence Edge", ctxEsc(`${top.kind === "prop" ? `${top.playerName || ""} ` : ""}${pickLabel(top, D.lineBy)} (${oddsStr(top.odds)})`.trim()), pStr(top.edgePp), "pos", `Alpha Score: ${top.alpha}`, gameHref(top.sport, top.game_pk))
+  rows.push(top ? evxPulseRow(ICON_CLOCK, "Highest Confidence Edge", ctxEsc(`${oppLabel(top, D.lineBy)} (${oddsStr(top.odds)})`), pStr(top.edgePp), "pos", `Alpha Score: ${top.alpha}`, gameHref(top.sport, top.game_pk))
     : `<div class="ca-ev-pr ca-ev-pr-empty"><span class="ca-ev-pr-ic">${ICON_CLOCK}</span><span class="ca-ev-pr-main"><b>Highest Confidence Edge</b><small>No +EV opportunities on the board.</small></span></div>`);
   const tot = evxMispricedTotal(D.preds, D.nowMs);
   if (tot) {

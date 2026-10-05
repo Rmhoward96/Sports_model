@@ -116,3 +116,12 @@ test("loaders return empty data when fetch throws", async () => {
   assert.equal((await L.loadSplits()).size, 0);
   assert.deepEqual(await L.loadEvHistory(8), []);
 });
+
+test("latestSplitMap keeps the newest capture per game|market|side; oppLabel puts the player's name before a prop pick", () => {
+  const m = g.latestSplitMap([{ game_pk: 1, market: "spread", side: "home", captured_at: "2026-10-01T00:00:00Z", ticket_pct: 40 },
+    { game_pk: 1, market: "spread", side: "home", captured_at: "2026-10-02T00:00:00Z", ticket_pct: 55 }, { game_pk: 1, market: "total", side: "over", captured_at: "2026-10-01T00:00:00Z", ticket_pct: 60 }]);
+  assert.equal(m.size, 2); assert.equal(m.get("1|spread|home").ticket_pct, 55);
+  assert.equal(g.latestSplitMap(null).size, 0);
+  assert.equal(g.oppLabel({ kind: "prop", market: "rec_yds", marketLabel: "Rec Yds", side: "under", line: 64.5, playerName: "Josh Allen", sport: "nfl" }), "Josh Allen Under 64.5 Rec Yds");
+  assert.equal(g.oppLabel({ kind: "line", sport: "nfl", game_pk: 1, matchup: "Detroit Lions @ Kansas City Chiefs", market: "moneyline", side: "away" }, new Map()), "Lions ML");
+});

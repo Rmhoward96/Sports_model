@@ -56,8 +56,12 @@ async function loadSplits() {
     sb("nfl_betting_splits_current?select=*").catch(() => []),
     sb("cfb_betting_splits_current?select=*").catch(() => []),
   ]);
+  return latestSplitMap([...(nfl || []), ...(cfb || [])]);
+}
+// Newest capture of each game|market|side from betting-splits rows.
+function latestSplitMap(rows) {
   const m = new Map();
-  [...(nfl || []), ...(cfb || [])].forEach((r) => {
+  (rows || []).forEach((r) => {
     const k = `${r.game_pk}|${r.market}|${r.side}`, prev = m.get(k);
     if (!prev || r.captured_at > prev.captured_at) m.set(k, r);
   });
@@ -127,6 +131,8 @@ function pickLabel(o, lineBy) {
   if (o.market === "moneyline") return `${team} ML`;
   return `${team} ${l != null ? lineStr(l) : "spread"}`;
 }
+// pickLabel with the player's name in front for props ("Josh Allen Over 64.5 Rec Yds").
+const oppLabel = (o, lineBy) => `${o.kind === "prop" ? `${o.playerName || ""} ` : ""}${pickLabel(o, lineBy)}`.trim();
 // Logo of the team a game-line opportunity is on ("" for props and totals).
 const oppLogo = (o) => {
   if (o.kind === "prop" || o.market === "total") return "";

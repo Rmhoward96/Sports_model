@@ -35,7 +35,7 @@ test("gmLean: moneyline favorite, spread / total lean at half-point rounding, no
   assert.deepEqual({ ...none }, { ml: null, spread: null, total: null });
 });
 
-test("gmWhen: 'Sat, Oct 12 · 7:00 PM ET' in Eastern time; blank for none", () => {
+test("gmWhen: 'Mon, Oct 12 · 7:00 PM ET' in Eastern time; blank for none", () => {
   assert.equal(g.gmWhen("2026-10-12T23:00:00Z"), "Mon, Oct 12 · 7:00 PM ET");
   assert.equal(g.gmWhen("2026-10-06T00:15:00Z"), "Mon, Oct 5 · 8:15 PM ET", "00:15Z is still the 5th in ET");
   assert.equal(g.gmWhen(null), "");
@@ -57,91 +57,103 @@ test("consensusAmerican: median implied probability across books (object or JSON
 const AWAY_C = "South Carolina Gamecocks", HOME_C = "Alabama Crimson Tide";
 const cfbPred = { sport: "cfb", game_pk: 7, away_team_name: AWAY_C, home_team_name: HOME_C, home_win_prob: 0.821, pred_home_score: 34, pred_away_score: 20.8,
   market_spread: -10.5, market_total: 52.5, commence_time: "2026-10-12T23:00:00Z" };
-const evRow = (o) => ({ sport: "cfb", game_pk: 7, market: "spread", side: "home", true_prob: 0.618, best_line_implied: 0.554, best_price: -124, best_book: "fanduel", is_pick: true, created_at: "2026-10-10T12:00:00Z", ...o });
+// ev_picks rows: true_prob is Pinnacle's no-vig line, NOT the model. Poison it (0.99) so any leak into a model number shows.
+const evRow = (o) => ({ sport: "cfb", game_pk: 7, market: "spread", side: "home", true_prob: 0.99, best_line_implied: 0.5, best_price: -110, best_book: "fanduel", is_pick: false, created_at: "2026-10-10T12:00:00Z", ...o });
+const uniform = (lo, hi, len) => Array.from({ length: len }, (_, i) => (i >= lo && i <= hi ? 1 / (hi - lo + 1) : 0));
+const MARGIN = { kind: "margin", offset: 10, pmf: uniform(0, 20, 21) };    // home margin -10..10, uniform
+const TOTAL = { kind: "pmf", pmf: uniform(40, 59, 101) };                  // total 40..59, uniform
+// model: home 75%, margin / total distributions; market: spread -3, total 50
+const P = { ...cfbPred, home_win_prob: 0.75, pred_home_score: 30, pred_away_score: 20, market_spread: -3, market_total: 50, margin_dist: JSON.stringify(MARGIN), total_dist: TOTAL };
+const EV = [evRow({ market: "moneyline", side: "home", best_line_implied: 0.7, best_price: -233 }), evRow({ market: "moneyline", side: "away", best_line_implied: 0.31, best_price: 225 }),
+  evRow({ market: "spread", side: "home", best_line_implied: 0.5 }), evRow({ market: "spread", side: "away", best_line_implied: 0.5 }),
+  evRow({ market: "total", side: "over", best_line_implied: 0.45, best_price: 120 })];
 
-test("gmMarkets: only is_pick rows become reads; latest build per market/side; label uses the best book's line, else the market line", () => {
-  const rows = [evRow({}), evRow({ true_prob: 0.5, created_at: "2026-10-09T12:00:00Z" }),                       // older build of the same side: ignored
-    evRow({ market: "total", side: "over", true_prob: 0.573, best_line_implied: 0.501, best_price: -101 }),
-    evRow({ market: "moneyline", side: "home", is_pick: false, true_prob: 0.9, best_line_implied: 0.8 }),         // not a pick
-    evRow({ market: "spread", side: "away", true_prob: null })];                                                  // no model prob
-  const m = g.gmMarkets(cfbPred, rows, new Map([["7|total|over", 53]]));
-  assert.deepEqual(m.map((x) => [x.market, x.side, x.label]), [["spread", "home", "Alabama -10.5"], ["total", "over", "Over 53"]]);
-  assert.equal(m[0].modelProb, 0.618); assert.equal(m[0].impliedProb, 0.554);
-  const away = g.gmMarkets(cfbPred, [evRow({ side: "away", true_prob: 0.55 })], new Map());
-  assert.equal(away[0].label, "South Carolina +10.5", "away line is the negated home line");
-  assert.deepEqual(g.gmMarkets(cfbPred, [], new Map()), []);
-  assert.deepEqual(g.gmMarkets(cfbPred, null, null), []);
+test("gmOdds: the model's probability comes from the distributions at the market line (never true_prob); pushes excluded", () => {
+  const o = g.gmOdds(P, EV, null, null, null);
+  // home covers at -3 when margin > 3: 4..10 = 7 of 20 (3 is a push); away at +3 when margin < 3: -10..2 = 13 of 20
+  assert.ok(Math.abs(o.spread.home.modelProb - 7 / 20) < 1e-9); assert.ok(Math.abs(o.spread.away.modelProb - 13 / 20) < 1e-9);
+  assert.equal(o.spread.home.line, -3); assert.equal(o.spread.away.line, 3);
+  // over 50: 51..59 = 9 of 19; under: 40..49 = 10 of 19
+  assert.ok(Math.abs(o.total.over.modelProb - 9 / 19) < 1e-9); assert.ok(Math.abs(o.total.under.modelProb - 10 / 19) < 1e-9);
+  assert.equal(o.moneyline.home.modelProb, 0.75); assert.ok(Math.abs(o.moneyline.away.modelProb - 0.25) < 1e-9);
+  assert.equal(o.spread.home.implied, 0.5); assert.equal(o.total.over.implied, 0.45); assert.equal(o.total.under.implied, null, "no price known for that side");
+  const json = JSON.stringify(o);
+  assert.ok(!json.includes("0.99"), "true_prob (Pinnacle) appears in no model number");
 });
 
-const odds = (extra = {}) => g.gmOdds(cfbPred, [
-  evRow({ market: "moneyline", side: "home", is_pick: false, true_prob: 0.8, best_price: -400, best_line_implied: 0.8 }),
-  evRow({ market: "spread", side: "home" }), evRow({ market: "spread", side: "away", is_pick: true, true_prob: 0.382, best_line_implied: 0.5, best_price: 100 }),
-  evRow({ market: "total", side: "over", true_prob: 0.573, best_line_implied: 0.501, best_price: -101 }),
-  evRow({ market: "total", side: "under", is_pick: false, true_prob: 0.49, best_line_implied: 0.5, best_price: -110 })],
-  { home_prices: { dk: -425, fd: -425, mgm: -450 }, away_prices: { dk: 320, fd: 320, mgm: 300 } }, null, extra);
+test("gmOdds: evaluated at the line the market row is priced at (ev_best_lines), and the label shows that line", () => {
+  const lineBy = new Map([["7|spread|home", -4], ["7|spread|away", 4]]);
+  const o = g.gmOdds(P, EV, null, null, lineBy);
+  assert.equal(o.spread.home.line, -4);
+  assert.ok(Math.abs(o.spread.home.modelProb - 6 / 20) < 1e-9, "home covers -4 when margin > 4: 5..10");
+  assert.ok(Math.abs(o.spread.away.modelProb - 14 / 20) < 1e-9, "away covers +4 when margin < 4: -10..3");
+  const c = g.gmCandidates(P, o).find((x) => x.market === "spread" && x.side === "home");
+  assert.equal(c.label, "Alabama -4");
+});
 
-test("gmOdds: consensus moneyline, cover / hit probabilities from pick rows, implied from the best price", () => {
-  const o = odds();
+test("gmOdds: the prediction row's distributions win over the sim's; the sim is the fallback; no distribution -> no spread / total probability (moneyline still has one)", () => {
+  const simMargin = { kind: "margin", offset: 10, pmf: uniform(20, 20, 21) };   // all mass at +10
+  const withPred = g.gmOdds(P, EV, null, { margin_dist: simMargin, total_dist: TOTAL }, null);
+  assert.ok(Math.abs(withPred.spread.home.modelProb - 7 / 20) < 1e-9, "prediction row's margin_dist is used");
+  const bare = { ...P, margin_dist: null, total_dist: undefined };
+  const viaSim = g.gmOdds(bare, EV, null, { margin_dist: JSON.stringify(MARGIN), total_dist: JSON.stringify(TOTAL) }, null);
+  assert.ok(Math.abs(viaSim.spread.home.modelProb - 7 / 20) < 1e-9 && Math.abs(viaSim.total.over.modelProb - 9 / 19) < 1e-9);
+  const none = g.gmOdds(bare, EV, null, null, null);
+  assert.equal(none.spread.home.modelProb, null); assert.equal(none.total.over.modelProb, null);
+  assert.equal(none.moneyline.home.modelProb, 0.75);
+  assert.equal(g.gmCover(none), null);
+  assert.ok(!JSON.stringify(none).includes("0.99"));
+});
+
+test("gmOdds: consensus moneyline price, best price kept for the read; moneyline falls back to the moneylines view's best price", () => {
+  const ml = { home_price: -400, home_book: "fd", away_price: 330, away_book: "mgm", home_prices: { dk: -425, fd: -425, mgm: -450 }, away_prices: { dk: 320, fd: 320, mgm: 300 } };
+  const o = g.gmOdds(P, [], ml, null, null);
   assert.equal(o.moneyline.home.price, -425); assert.equal(o.moneyline.away.price, 320);
   assert.ok(Math.abs(o.moneyline.home.implied - 425 / 525) < 1e-9);
-  assert.equal(o.spread.line, -10.5);
-  assert.equal(o.spread.home.modelProb, 0.618); assert.equal(o.spread.home.implied, 0.554);
-  assert.equal(o.total.line, 52.5); assert.equal(o.total.over.modelProb, 0.573);
-  assert.ok(Math.abs(o.total.under.modelProb - 0.427) < 1e-9, "the other side of a pick is its complement, never the non-pick row's true_prob (the sharp line)");
-  const lone = g.gmOdds(cfbPred, [evRow({ market: "total", side: "under", is_pick: false, true_prob: 0.49 })], null, null);
-  assert.equal(lone.total.under.modelProb, null, "a non-pick row alone gives the model no number");
-  assert.equal(o.total.under.implied, 0.5);
-  const e = g.gmOdds(cfbPred, [], null, null);
-  assert.equal(e.moneyline.home.price, null); assert.equal(e.spread.home.modelProb, null);
+  assert.equal(o.moneyline.home.bestPrice, -400); assert.ok(Math.abs(o.moneyline.home.bestImplied - 400 / 500) < 1e-9, "the read compares against the price you could take");
+  const e = g.gmOdds({ sport: "cfb" }, [], null, null, null);
+  assert.equal(e.moneyline.home.price, null); assert.equal(e.spread.home.modelProb, null); assert.equal(e.spread.line, null);
 });
 
-test("modelProjectionRows: Market / CappingAlpha / Difference for moneyline, spread, total (favorite side, model lean)", () => {
-  const rows = g.modelProjectionRows(cfbPred, odds());
+test("gameCandidates / read: the model disagrees with the market and NO row is a pick -> the Read still shows the model's edge", () => {
+  const cands = g.gmCandidates(P, g.gmOdds(P, EV, null, null, null));
+  assert.deepEqual(cands.map((c) => `${c.market}|${c.side}`), ["moneyline|away", "moneyline|home", "spread|away", "spread|home", "total|over"]);
+  const r = g.gameRead(cands);
+  assert.equal(r.label, "South Carolina +3");                      // away +3 covers 65% vs 50% implied: +15.0
+  assert.equal(r.market, "spread"); assert.ok(Math.abs(r.edgePp - 15) < 1e-9);
+  assert.ok(Math.abs(r.modelProb - 0.65) < 1e-9); assert.equal(r.impliedProb, 0.5);
+  const rowsWithOnlyPoison = g.gmCandidates(P, g.gmOdds({ ...P, margin_dist: null, total_dist: null, home_win_prob: null }, EV, null, null, null));
+  assert.deepEqual(rowsWithOnlyPoison, [], "without a model number nothing is compared, true_prob is never used");
+});
+
+test("modelProjectionRows: Market / CappingAlpha / Difference at the same line; the CappingAlpha cell is the model, never true_prob", () => {
+  const rows = g.modelProjectionRows(P, g.gmOdds(P, EV, null, null, null));
   assert.deepEqual(rows.map((r) => r.label), ["Moneyline", "Spread", "Total"]);
   const [ml, sp, tot] = rows;
-  assert.equal(ml.market, "ALA -425 (81.0%)");
-  assert.equal(ml.model, "82.1%");
-  assert.ok(Math.abs(ml.diff - (0.821 - 425 / 525) * 100) < 1e-9);
-  assert.equal(sp.market, "ALA -10.5 (55.4%)");
-  assert.equal(sp.model, "ALA -13.2 (61.8%)");
-  assert.ok(Math.abs(sp.diff - 6.4) < 1e-9); assert.ok(Math.abs(sp.pts - 2.7) < 1e-9);
-  assert.equal(tot.market, "O 52.5 (50.1%)");
-  assert.equal(tot.model, "54.8 (57.3%)");
-  assert.ok(Math.abs(tot.diff - 7.2) < 1e-9); assert.ok(Math.abs(tot.pts - 2.3) < 1e-9);
+  assert.equal(ml.market, "ALA -233 (70.0%)"); assert.equal(ml.model, "75.0%"); assert.ok(Math.abs(ml.diff - (0.75 - 233 / 333) * 100) < 1e-9);
+  assert.equal(sp.market, "ALA -3 (50.0%)"); assert.equal(sp.model, "ALA -10.0 (35.0%)");
+  assert.ok(Math.abs(sp.diff + 15) < 1e-9, "35% cover vs 50% implied"); assert.ok(Math.abs(sp.pts - 7) < 1e-9);
+  assert.equal(tot.market, "O 50 (45.0%)"); assert.equal(tot.model, "50.0 (47.4%)"); assert.ok(Math.abs(tot.diff - (9 / 19 - 0.45) * 100) < 1e-9);
+  assert.ok(!JSON.stringify(rows).includes("99.0%"), "Pinnacle's true_prob never reaches the table");
 });
 
 test("modelProjectionRows: away favorite, under lean, missing odds / probabilities show dashes (never NaN) and fall back to points", () => {
   const p = { ...cfbPred, home_win_prob: 0.3, pred_home_score: 17, pred_away_score: 30, market_spread: 2.5, market_total: 52.5 };
-  const [ml, sp, tot] = g.modelProjectionRows(p, g.gmOdds(p, [], null, null));
+  const [ml, sp, tot] = g.modelProjectionRows(p, g.gmOdds(p, [], null, null, null));
   assert.equal(ml.market, "—"); assert.equal(ml.model, "70.0%"); assert.equal(ml.diff, null);
   assert.equal(sp.market, "SC -2.5", "away line = -home line; no price known so no implied %");
   assert.equal(sp.model, "SC -13.0"); assert.equal(sp.diff, null); assert.ok(Math.abs(sp.pts - 10.5) < 1e-9, "model likes the away side by 10.5 more points than the market");
   assert.equal(tot.market, "U 52.5"); assert.equal(tot.model, "47.0"); assert.ok(Math.abs(tot.pts - 5.5) < 1e-9);
-  const blank = g.modelProjectionRows({ sport: "cfb", home_team_name: "A", away_team_name: "B" }, g.gmOdds({ sport: "cfb" }, [], null, null));
+  const blank = g.modelProjectionRows({ sport: "cfb", home_team_name: "A", away_team_name: "B" }, g.gmOdds({ sport: "cfb" }, [], null, null, null));
   assert.equal(blank.length, 3);
   assert.ok(blank.every((r) => r.market === "—" && r.model === "—" && r.diff === null && r.pts === null));
   assert.ok(!JSON.stringify(blank).includes("NaN"));
 });
 
-test("gmCover: model cover probability per side; pick rows beat nothing; null when unknown", () => {
-  assert.deepEqual({ ...g.gmCover(odds()) }, { home: 0.618, away: 0.382 });
-  const only = g.gmOdds(cfbPred, [evRow({})], null, null);
-  const c = g.gmCover(only);
-  assert.equal(c.home, 0.618); assert.ok(Math.abs(c.away - 0.382) < 1e-9, "the other side is the complement");
-  assert.equal(g.gmCover(g.gmOdds(cfbPred, [], null, null)), null);
-});
-
-test("gmOdds: NFL sim distribution supplies cover / hit probabilities when no pick row does (pushes excluded)", () => {
-  const margin = { kind: "margin", offset: 10, pmf: Array.from({ length: 21 }, () => 1 / 21) };   // home margin -10..10, uniform
-  const total = { kind: "pmf", pmf: Array.from({ length: 101 }, (_, i) => (i >= 40 && i <= 59 ? 1 / 20 : 0)) };   // 40..59 uniform
-  const pred = { ...cfbPred, sport: "nfl", market_spread: -3, market_total: 50 };
-  const o = g.gmOdds(pred, [], null, { margin_dist: JSON.stringify(margin), total_dist: total });
-  // home covers when margin > 3: 4..10 = 7 of 21; away when margin < 3: -10..2 = 13 of 21; push (3) excluded
-  assert.ok(Math.abs(o.spread.home.modelProb - 7 / 20) < 1e-9); assert.ok(Math.abs(o.spread.away.modelProb - 13 / 20) < 1e-9);
-  // over 50: 51..59 = 9; under: 40..49 = 10; push excluded
-  assert.ok(Math.abs(o.total.over.modelProb - 9 / 19) < 1e-9); assert.ok(Math.abs(o.total.under.modelProb - 10 / 19) < 1e-9);
-  const picked = g.gmOdds(pred, [evRow({ true_prob: 0.7 })], null, { margin_dist: margin, total_dist: total });
-  assert.equal(picked.spread.home.modelProb, 0.7, "a pick row's probability wins over the sim");
+test("gmCover: model cover probability per side at the market lines; null when the model has no distribution", () => {
+  const c = g.gmCover(g.gmOdds(P, EV, null, null, null));
+  assert.ok(Math.abs(c.home - 0.35) < 1e-9 && Math.abs(c.away - 0.65) < 1e-9);
+  assert.equal(g.gmCover(g.gmOdds({ ...P, margin_dist: null }, EV, null, null, null)), null);
 });
 
 /* team context fixtures */
@@ -169,7 +181,7 @@ test("gmKeyInsights: up to four sentences from unit grades, explosive plays, pow
   assert.equal(ins.length, 4);
   assert.deepEqual(ins.map((i) => i.kind), ["grade", "explosive", "power", "streak"]);
   assert.match(ins[0].title, /Alabama offense grades A vs South Carolina/); assert.match(ins[0].body, /Pass A, run C/);
-  assert.match(ins[1].title, /Explosive plays favor Alabama/);
+  assert.match(ins[1].title, /Big-play grades favor Alabama/); assert.ok(!/pass and run/.test(ins[1].body), "only what is computed");
   assert.match(ins[2].title, /Alabama ranks #2/); assert.match(ins[2].body, /South Carolina ranks #31/); assert.match(ins[2].body, /20\.5/);
   assert.match(ins[3].title, /Alabama won 4 straight/);
   assert.ok(ins.every((i) => !/NaN|undefined/.test(i.title + i.body)));
@@ -181,7 +193,7 @@ test("gmKeyInsights: up to four sentences from unit grades, explosive plays, pow
 
 test("gmBestBooks: moneyline best price per side from the moneylines view; spread / total from the latest pick builds", () => {
   const ml = { home_price: -400, home_book: "fanduel", away_price: 330, away_book: "betmgm" };
-  const rows = g.gmBestBooks(cfbPred, ml, [evRow({}), evRow({ market: "total", side: "under", best_price: -105, best_book: "draftkings", is_pick: false })]);
+  const rows = g.gmBestBooks(cfbPred, ml, [evRow({ best_price: -124, best_book: "fanduel" }), evRow({ market: "total", side: "under", best_price: -105, best_book: "draftkings" })]);
   assert.deepEqual(rows.map((r) => [r.label, r.price, r.book]), [["South Carolina ML", 330, "betmgm"], ["Alabama ML", -400, "fanduel"], ["Alabama -10.5", -124, "fanduel"], ["Under 52.5", -105, "draftkings"]]);
   assert.deepEqual(g.gmBestBooks(cfbPred, null, []), []);
 });
@@ -191,14 +203,15 @@ const EVIL_AWAY = 'Evil "Q" <b>Crew</b>', HOME = 'Kansas City "Chiefs"', PLAYER 
 const urlParts = (url) => { const u = new URL(url); return { path: u.pathname.split("/").pop(), q: u.search }; };
 const gauss = (n, mu, sd) => { const v = Array.from({ length: n }, (_, i) => Math.exp(-0.5 * ((i - mu) / sd) ** 2)), s = v.reduce((a, b) => a + b, 0); return v.map((x) => x / s); };
 
-function populated({ search = "?sport=nfl&game=5", moves = "rows", noEdge = false, sport = "nfl", pred: predOver = {}, ctx = true, noPred = false } = {}) {
+function populated({ search = "?sport=nfl&game=5", moves = "rows", noEdge = false, sport = "nfl", pred: predOver = {}, ctx = true, noPred = false, propOpp = false } = {}) {
   const NOW = Date.now(), iso = (h) => new Date(NOW + h * 36e5).toISOString();
   const pred = { game_pk: 5, sport, home_team_name: HOME, away_team_name: EVIL_AWAY, commence_time: iso(30), home_win_prob: 0.62, pred_home_score: 27.4, pred_away_score: 20.3,
     market_spread: -3.5, market_total: 44.5, model_version: "nfl-sim-ml-v2", ...predOver };
-  const ev = (o) => ({ sport, game_pk: 5, matchup: `${EVIL_AWAY} @ ${HOME}`, market: "spread", side: "home", true_prob: 0.62, best_line_implied: 0.55, best_price: -122, best_book: "fanduel",
-    ev_best: 0.3, is_pick: !noEdge, model_version: "ev-pilot-v1", created_at: iso(-3), commence_time: iso(30), ...o });
-  const evRows = [ev({}), ev({ market: "total", side: "over", true_prob: 0.58, best_line_implied: 0.5, best_price: 100, best_book: "draftkings" }),
-    ev({ market: "moneyline", side: "home", true_prob: 0.8, best_line_implied: 0.78, best_price: -355, is_pick: false })];
+  // ev_picks rows are NOT picks and carry a poisoned true_prob (Pinnacle's line, 0.99): the page must read the model, never this.
+  const ev = (o) => ({ sport, game_pk: 5, matchup: `${EVIL_AWAY} @ ${HOME}`, market: "spread", side: "home", true_prob: 0.99, best_line_implied: noEdge ? 0.95 : 0.55, best_price: -122, best_book: "fanduel",
+    ev_best: 0.3, is_pick: false, model_version: "ev-pilot-v1", created_at: iso(-3), commence_time: iso(30), ...o });
+  const evRows = [ev({}), ev({ market: "total", side: "over", best_line_implied: noEdge ? 0.95 : 0.45, best_price: 120, best_book: "draftkings" }),
+    ev({ market: "moneyline", side: "home", best_line_implied: noEdge ? 0.95 : 0.78, best_price: -355 })];
   const sim = { game_pk: 5, model_version: "nfl-sim-ml-v2", created_at: iso(-2), margin_dist: JSON.stringify({ kind: "margin", offset: 40, pmf: gauss(81, 47, 12) }),
     total_dist: JSON.stringify({ kind: "pmf", pmf: gauss(101, 47, 9) }), away_score_dist: JSON.stringify({ kind: "pmf", pmf: gauss(80, 20, 7) }), home_score_dist: JSON.stringify({ kind: "pmf", pmf: gauss(80, 27, 7) }) };
   const pdist = JSON.stringify({ kind: "pmf", pmf: gauss(150, 70, 25) });
@@ -209,8 +222,10 @@ function populated({ search = "?sport=nfl&game=5", moves = "rows", noEdge = fals
     { side: "home", team: "KC", overall: "D", pass: "D", run: "F", overall_pct: 21, early: false, units: { pass_rate: 0.6, off: { pass_explosive: -0.01, run_explosive: -0.02 }, def: { pass_explosive: 0, run_explosive: 0.01 } } }];
   const power = [pw("AAA", 4, 6.2, "3-1"), pw("KC", 19, -1.4, "2-2")];
   const splits = [{ game_pk: 5, market: "spread", side: "away", cash_pct: 61, ticket_pct: 40, captured_at: iso(-1) }, { game_pk: 5, market: "spread", side: "home", cash_pct: 39, ticket_pct: 60, captured_at: iso(-1) }];
-  const mlRow = { game_pk: 5, home_price: -330, home_book: "fanduel", away_price: 290, away_book: "betmgm", home_prices: { dk: -340, fd: -330, mgm: -350 }, away_prices: { dk: 280, fd: 290, mgm: 270 } };
-  const oppEv = [ev({ true_prob: 0.7, best_line_implied: 0.5, best_price: 100, ev_best: 0.3 })];
+  const mlRow = noEdge ? { game_pk: 5, home_price: -2000, home_book: "fanduel", away_price: -2000, away_book: "betmgm", home_prices: { dk: -2000 }, away_prices: { dk: -2000 } }
+    : { game_pk: 5, home_price: -330, home_book: "fanduel", away_price: 290, away_book: "betmgm", home_prices: { dk: -340, fd: -330, mgm: -350 }, away_prices: { dk: 280, fd: 290, mgm: 270 } };
+  const oppEv = [ev({ true_prob: 0.7, best_line_implied: 0.5, best_price: 100, ev_best: 0.3, is_pick: true })];
+  const propRows = propOpp ? [{ sport, game_pk: 5, matchup: `${EVIL_AWAY} @ ${HOME}`, market: "rec_yds", side: "over", line: 64.5, player_name: PLAYER, model_prob: 0.7, best_price: -110, best_book: "fanduel", ev_best: 0.5, is_pick: true, commence_time: iso(30) }] : [];
   const requested = [];
   const fetch = async (url) => {
     const { path, q } = urlParts(url); requested.push(path + q);
@@ -222,6 +237,7 @@ function populated({ search = "?sport=nfl&game=5", moves = "rows", noEdge = fals
     else if (path === "nfl_player_sim") rows = playerSims;
     else if (path === "game_moneylines_current") rows = [mlRow];
     else if (path === "ev_current") rows = !noEdge && q.includes(`sport=eq.${sport}`) ? oppEv : [];
+    else if (path === "ev_prop_picks_current") rows = q.includes(`sport=eq.${sport}`) ? propRows : [];
     else if (path === "nfl_betting_splits_current" || path === "cfb_betting_splits_current") rows = splits;
     else if (path === "team_history") rows = ctx ? hist : [];
     else if (path === "matchup_grades") rows = ctx ? grades : [];
@@ -238,6 +254,10 @@ function populated({ search = "?sport=nfl&game=5", moves = "rows", noEdge = fals
 }
 const tabHtml = async (tab, o = {}) => { const { D } = populated({ search: `?sport=nfl&game=5&tab=${tab}`, ...o }); return D.buildGamePage(); };
 const clean = (html) => html.replace(/\bnull\b(?=[^<]*>)/g, "");
+// the populated game's model, computed independently of the page: sim margin = i - 40 (mean +7), total = i (mean 47)
+const tail = (arr, from) => arr.slice(from).reduce((a, b) => a + b, 0);
+const HOME_COVER = tail(gauss(81, 47, 12), 44), TOTAL_OVER = tail(gauss(101, 47, 9), 45);   // margin > 3.5 ; total > 44.5 (half lines: no pushes)
+const p1 = (x) => `${(x * 100).toFixed(1)}%`, sp1 = (pp) => `${pp >= 0 ? "+" : ""}${pp.toFixed(1)}%`;
 
 test("buildGamePage: hero, odds boxes, CappingAlpha Read, tabs and all five Overview cards from stubbed data; names escaped; no NaN / undefined", async () => {
   const { D, requested } = populated();
@@ -264,15 +284,16 @@ test("hero odds boxes: consensus moneyline, lines, total; the model's side is ma
   assert.ok(!/\(\d+-\d+ [A-Z]+\)/.test(hero), "no conference record is ever invented");
 });
 
-test("Read card: largest positive edge among the pick rows, market vs model probability, edge box", async () => {
+test("Read card: the largest model-minus-market edge over every side (no pick gate), at the line used, with the edge box", async () => {
   const html = await populated().D.buildGamePage();
   const read = html.slice(html.indexOf("ca-gm-read"), html.indexOf("ca-gm-tabs"));
-  assert.ok(read.includes("Over 44.5") || read.includes("O"), "headline names the market");
-  assert.ok(read.includes("The market implies a 50.0% hit probability. CappingAlpha estimates <b>58.0%</b>.") || /market implies a \d+\.\d% hit probability/.test(read));
-  assert.ok(read.includes("+8.0%") && read.includes("ca-gm-edge"));
+  assert.ok(read.includes("<h2>Over 44.5 shows the strongest model divergence</h2>"), "total over 44.5: model beats the 45.0% implied by the most");
+  assert.ok(read.includes(`The market implies a 45.0% hit probability. CappingAlpha estimates <b>${p1(TOTAL_OVER)}</b>.`));
+  assert.ok(read.includes(`<b>${sp1((TOTAL_OVER - 0.45) * 100)}</b><span>MODEL EDGE</span>`));
+  assert.ok(!read.includes("99.0%"), "Pinnacle's true_prob (poisoned to 0.99 here) is never shown as CappingAlpha");
 });
 
-test("no pick rows: 'No model edge on this game', no edge box, page still renders", async () => {
+test("no side beats its price: 'No model edge on this game', no edge box, page still renders", async () => {
   const html = await populated({ noEdge: true }).D.buildGamePage();
   const read = html.slice(html.indexOf("ca-gm-read"), html.indexOf("ca-gm-tabs"));
   assert.ok(read.includes("No model edge on this game"));
@@ -281,43 +302,64 @@ test("no pick rows: 'No model edge on this game', no edge box, page still render
   assert.ok(!/NaN|undefined/.test(clean(html)));
 });
 
+test("a started game shows no live-looking edge box: 'The model read is shown before kickoff.'", async () => {
+  const started = new Date(Date.now() - 5 * 36e5).toISOString();
+  const html = await populated({ pred: { commence_time: started } }).D.buildGamePage();
+  const read = html.slice(html.indexOf("ca-gm-read"), html.indexOf("ca-gm-tabs"));
+  assert.ok(read.includes("Pre-game read — this game has started") && read.includes("The model read is shown before kickoff."));
+  assert.ok(!read.includes("ca-gm-edge") && !read.includes("MODEL EDGE"));
+  const upcoming = await populated().D.buildGamePage();
+  assert.ok(upcoming.includes("MODEL EDGE"), "same data, upcoming: the edge is shown");
+});
+
 test("Overview cards: Alpha Score from this game's best opportunity, win probability, projected score / spread / total with the market line", async () => {
   const html = await populated().D.buildGamePage();
   const cards = html.slice(html.indexOf('id="gm-cards"'), html.indexOf('id="gm-projection"'));
   assert.match(cards, /Alpha Score[\s\S]*?95/, "alpha score of the best opportunity for this game");
   assert.ok(cards.includes("62.0%") && cards.includes("38.0%"), "win probability, both sides");
-  assert.ok(cards.includes("20") && cards.includes("27"), "projected score");
+  assert.ok(cards.includes("<b>20</b><span>-</span><b>27</b>"), "projected score, away - home");
   assert.ok(cards.includes("Market: -3.5") && cards.includes("Market: 44.5"));
-  assert.ok(cards.includes("47.7") || cards.includes("47.6"), "projected total = 27.4 + 20.3");
+  assert.ok(cards.includes('ca-gm-mid">47.7<'), "projected total = 27.4 + 20.3");
+  assert.ok(cards.includes("-7.1"), "projected spread = home by 7.1");
   const none = await populated({ noEdge: true }).D.buildGamePage();
   assert.match(none.slice(none.indexOf('id="gm-cards"'), none.indexOf('id="gm-projection"')), /Alpha Score[\s\S]*—/);
 });
 
-test("Model Projection table, Key Insights and Cover Probability render real numbers with the splits caption", async () => {
+test("Model Projection, Key Insights and Cover Probability: the model at the market line, with the splits caption", async () => {
   const html = await populated().D.buildGamePage();
   const proj = html.slice(html.indexOf('id="gm-projection"'), html.indexOf('id="gm-insights"'));
   assert.ok(/Moneyline/.test(proj) && /Spread/.test(proj) && /Total/.test(proj));
-  assert.ok(/\(55\.0%\)/.test(proj) && /\(62\.0%\)/.test(proj), "spread implied and model cover probability");
-  assert.ok(/\+7\.0%/.test(proj), "spread difference in points of probability");
+  assert.ok(proj.includes("-3.5 (55.0%)"), "market: line and the implied probability of its price");
+  assert.ok(proj.includes("-7.1 (" + p1(HOME_COVER) + ")"), "CappingAlpha: model margin and the model's cover probability at -3.5");
+  assert.ok(proj.includes(sp1((HOME_COVER - 0.55) * 100)), "difference = model cover minus implied");
+  assert.ok(proj.includes("62.0%") && !proj.includes("99.0%"));
   const ins = html.slice(html.indexOf('id="gm-insights"'), html.indexOf('id="gm-cover"'));
-  assert.ok(ins.includes("offense grades B vs") && /ranks #4 in the power rankings/.test(ins));
+  assert.ok(ins.includes("offense grades B vs") && /rank #4 in the power rankings/.test(ins), "NFL nicknames are plural");
   const cover = html.slice(html.indexOf('id="gm-cover"'));
-  assert.ok(cover.includes("38.0%") && cover.includes("62.0%"));
+  assert.ok(cover.includes(p1(HOME_COVER)) && cover.includes(p1(1 - HOME_COVER)));
   assert.ok(/% of Money/.test(cover) && cover.includes("61%") && cover.includes("39%"), "caption only when splits exist");
 });
 
-test("without splits the Cover Probability card has no '% of Money' caption", async () => {
-  const E = loadScripts(FILES, { page: "game", globals: { location: { search: "?sport=nfl&game=5", href: "http://localhost/game.html?sport=nfl&game=5" },
+test("without splits the Cover Probability card has no '% of Money' caption; without a model distribution it says so", async () => {
+  const mk = (extra) => loadScripts(FILES, { page: "game", globals: { location: { search: "?sport=nfl&game=5", href: "http://localhost/game.html?sport=nfl&game=5" },
     fetch: async (url) => {
       const { path } = urlParts(url);
-      const pred = { game_pk: 5, sport: "nfl", home_team_name: HOME, away_team_name: EVIL_AWAY, commence_time: "2026-10-12T17:00:00Z", home_win_prob: 0.6, pred_home_score: 27, pred_away_score: 20, market_spread: -3.5, market_total: 44.5 };
-      const rows = path === "predictions_any" ? [pred] : path === "ev_picks" ? [{ sport: "nfl", game_pk: 5, market: "spread", side: "home", true_prob: 0.62, best_line_implied: 0.55, best_price: -122, is_pick: true, created_at: "2026-10-10T00:00:00Z" }] : [];
-      return { ok: true, json: async () => rows };
+      const pred = { game_pk: 5, sport: "nfl", home_team_name: HOME, away_team_name: EVIL_AWAY, commence_time: "2026-10-12T17:00:00Z", home_win_prob: 0.6, pred_home_score: 27, pred_away_score: 20, market_spread: -3.5, market_total: 44.5, ...extra };
+      return { ok: true, json: async () => (path === "predictions_any" ? [pred] : []) };
     } } });
-  const html = await E.buildGamePage();
+  const html = await mk({ margin_dist: JSON.stringify(MARGIN) }).buildGamePage();     // uniform margin -10..10, home covers -3.5 when margin >= 4: 7 of 21
   const cover = html.slice(html.indexOf('id="gm-cover"'));
-  assert.ok(cover.includes("62.0%") && cover.includes("38.0%"));
+  assert.ok(cover.includes("33.3%") && cover.includes("66.7%"));
   assert.ok(!cover.includes("% of Money"));
+  const none = await mk({}).buildGamePage();
+  assert.ok(none.slice(none.indexOf('id="gm-cover"')).includes("Model cover probability isn't available for this game yet."));
+});
+
+test("Alpha Score card names the player for a prop opportunity (shared oppLabel)", async () => {
+  const html = await populated({ propOpp: true }).D.buildGamePage();
+  const cards = html.slice(html.indexOf('id="gm-cards"'), html.indexOf('id="gm-projection"'));
+  assert.ok(cards.includes("O&quot;Brien &lt;i&gt;Zed&lt;/i&gt; Over 64.5 Rec Yds"));
+  assert.ok(!cards.includes("<i>Zed</i>"));
 });
 
 test("Matchup tab: NFL prediction block, unit grades, power rankings, sim widget", async () => {
@@ -404,7 +446,6 @@ test("empty sources: every card renders its empty state, no throw, no NaN / unde
 
 test("a throwing card is isolated: placeholder in its own slot, the rest of the page renders", async () => {
   const logs = []; const quiet = { ...console, error: (...a) => logs.push(a.join(" ")), warn() {} };
-  const { D } = populated();
   const E = loadScripts(FILES, { page: "game", globals: { console: quiet, location: { search: "?sport=nfl&game=5", href: "http://localhost/game.html?sport=nfl&game=5" },
     fetch: async (url) => { const p = urlParts(url).path; return { ok: true, json: async () => (p === "predictions_any" ? [{ ...cfbPred, sport: "nfl" }] : []) }; } } });
   E.GM_OVERVIEW[1][1] = () => { throw new Error("win prob broke"); };
@@ -412,7 +453,6 @@ test("a throwing card is isolated: placeholder in its own slot, the rest of the 
   assert.ok(html.includes("This panel couldn't load."));
   assert.ok(html.includes("Alpha Score") && html.includes("Projected Score") && html.includes("Model Projection"));
   assert.ok(logs.some((l) => /Win Probability/.test(l)));
-  void D;
 });
 
 test("the game route uses the new page; no dark hero / chart tooltip styling comes from the game page", () => {

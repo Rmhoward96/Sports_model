@@ -568,10 +568,10 @@ function evRow(r) {
     <td class="pick">${evSideLabel(r)}</td>
     <td>${evPctVal(r.base_prob)}<small>sharp / true</small></td>
     <td><b>${evPctVal(r.true_prob)}</b></td>
-    <td>${evPctVal(r.best_line_implied)}<small>${evBookName(r.best_book)}</small></td>
+    <td>${evPctVal(r.best_line_implied)}<small>${ctxEsc(evBookName(r.best_book))}</small></td>
     <td class="${evCls(r.soft_vs_sharp_gap)}">${evSigned(r.soft_vs_sharp_gap)}<small>vs sharp price</small></td>
     <td>${price(r.pinnacle_price)}<br><span class="${evCls(r.ev_pinnacle)}">${evSigned(r.ev_pinnacle)}</span><small>Pinnacle</small></td>
-    <td><b>${price(r.best_price)}</b> <b class="ev-book">${evBookName(r.best_book)}</b><br><span class="${evCls(r.ev_best)}">${evSigned(r.ev_best)}</span></td>
+    <td><b>${price(r.best_price)}</b> <b class="ev-book">${ctxEsc(evBookName(r.best_book))}</b><br><span class="${evCls(r.ev_best)}">${evSigned(r.ev_best)}</span></td>
   </tr>`;
 }
 

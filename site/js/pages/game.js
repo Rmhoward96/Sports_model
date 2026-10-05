@@ -2,8 +2,9 @@
    state and the mockup's numbers are never rendered. The tab (Overview / Matchup / Market / Trends / Players) lives in
    window.__caGame AND in the URL (?tab=) and survives the 5-minute re-render; switching tabs redraws from the cached load
    (window.__caGameData) without a refetch. Phase B items (venue / weather line, Projected Game Flow, TV network) are omitted.
-   "Opportunities" are is_pick rows with a non-null Alpha tier (loadOpportunities); the Read card reads only the game's pick
-   rows, because a non-pick row's true_prob is the sharp line, not the model.
+   "Opportunities" are is_pick rows with a non-null Alpha tier (loadOpportunities). Every "CappingAlpha" number is the MODEL's
+   (home_win_prob; margin / total distributions at the market line), never ev_picks.true_prob, which is Pinnacle's no-vig line.
+   The Read card compares the model with the price available on every side (no pick gate) and is not shown for started games.
    Depends on app.js (sb, gameParams, predictions-row helpers, the legacy sections matchupSection / historySection /
    trendsSection / splitsSection / propsProjectionSection / gameSimVisual / nflPredictionSection / boxscoreSection / evSection,
    wireGameSim, ctxEsc, ctxOrd, logoImg, teamShort, timeET, evBookName, gameMoneylines, evBestLines, nflServedSimVersion,
@@ -68,135 +69,124 @@ function gmLatest(evRows) {
   }
   return [...by.values()];
 }
-// The market line a side is bet at: the best book's line (ev_best_lines) else the posted market line. Spread lines
-// are from the side's own view (away = -home). null when unknown.
-function gmSideLine(pred, row, lineBy) {
-  const l = lineBy && lineBy.get(`${pred.game_pk}|${row.market}|${row.side}`);
+// The line a side is priced at: the best book's line (ev_best_lines) when known, else the posted market line, from the side's
+// own view (away spread = -home). null when unknown. The model is evaluated at this same line, and the label shows it.
+function gmSideLine(pred, market, side, lineBy) {
+  const l = lineBy && lineBy.get(`${pred.game_pk}|${market}|${side}`);
   if (finite(l)) return +l;
-  if (row.market === "total") return numOrNull(pred.market_total);
+  if (market === "total") return numOrNull(pred.market_total);
   const ls = numOrNull(pred.market_spread);
-  return ls == null ? null : row.side === "home" ? ls : -ls;
+  return ls == null ? null : side === "home" ? ls : -ls;
 }
-const gmTeam = (pred, side) => shortTeam(side === "home" ? pred.home_team_name : pred.away_team_name, pred.sport);
-function gmSideLabel(pred, row, line) {
-  if (row.market === "total") return `${row.side === "under" ? "Under" : "Over"} ${line != null ? line : "total"}`;
-  const t = gmTeam(pred, row.side);
-  if (row.market === "moneyline") return `${t} ML`;
-  return `${t} ${line != null ? lineStr(line) : "spread"}`;
-}
-const gmImplied = (r) => (finite(r.best_line_implied) ? +r.best_line_implied : (Number.isFinite(americanToProb(r.best_price)) ? americanToProb(r.best_price) : null));
+// The bet as placed ("Lions ML", "Chiefs -6.5", "Over 56.5"), through the shared pickLabel, at an explicit line.
+const gmLabel = (pred, market, side, line) => pickLabel({ kind: "line", sport: pred.sport, game_pk: pred.game_pk, market, side,
+  matchup: `${pred.away_team_name} @ ${pred.home_team_name}` }, new Map([[`${pred.game_pk}|${market}|${side}`, line]]));
+const gmImplied = (r) => { const p = finite(r.best_line_implied) ? +r.best_line_implied : americanToProb(r.best_price); return Number.isFinite(p) ? p : null; };
 
-// Candidate reads: this game's current PICK rows (is_pick, finite model + market probabilities).
-function gmMarkets(pred, evRows, lineBy) {
-  return gmLatest(evRows).filter((r) => r.is_pick === true && finite(r.true_prob) && gmImplied(r) != null).map((r) => {
-    const line = r.market === "moneyline" ? null : gmSideLine(pred, r, lineBy);
-    return { market: r.market, side: r.side, label: gmSideLabel(pred, r, line), line, price: numOrNull(r.best_price), book: r.best_book || null,
-      modelProb: +r.true_prob, impliedProb: gmImplied(r) };
-  });
+// The MODEL's probabilities (never ev_picks.true_prob, which is Pinnacle's no-vig line): the margin / total distributions
+// of the prediction row when it carries them, else of the NFL sim row; null parts when neither has a distribution.
+function gmDists(pred, sim) {
+  const get = (k) => { for (const src of [pred, sim]) { const d = src && distParse(src[k]); if (d && Array.isArray(d.pmf)) return d; } return null; };
+  return { margin: get("margin_dist"), total: get("total_dist") };
+}
+// P(value > threshold) / P(value < threshold) of a distribution, pushes excluded; null without a distribution or threshold.
+function gmSplit(dist, threshold) {
+  if (!dist || threshold == null) return null;
+  const { under, over } = distProbs(dist, threshold), s = under + over;
+  return s > 0 ? { over: over / s, under: under / s } : null;
 }
 
-// P(home covers) / P(away covers) at the market spread and P(over) / P(under) at the market total from the NFL sim's
-// distributions, pushes excluded. null parts when there is no distribution or no line.
-function gmSimProbs(pred, sim) {
-  const out = { home: null, away: null, over: null, under: null };
-  if (!sim) return out;
-  const split = (dist, line) => {
-    const d = distParse(dist);
-    if (!d || line == null) return null;
-    const { under, over } = distProbs(d, line), s = under + over;
-    return s > 0 ? { over: over / s, under: under / s } : null;
+// Per-market view of the game's odds: consensus moneyline prices, and per side the line it is priced at, the implied
+// probability of the price you would take (latest ev_picks row; moneyline falls back to the moneylines view's best price)
+// and the model probability at that same line. modelProb is null whenever the model has no number for the market.
+function gmOdds(pred, evRows, mlRow, sim, lineBy) {
+  const p = pred || {}, by = new Map(gmLatest(evRows).map((r) => [`${r.market}|${r.side}`, r])), d = gmDists(p, sim);
+  const wp = numOrNull(p.home_win_prob);
+  const mlSide = (side) => {
+    const r = by.get(`moneyline|${side}`), cons = mlRow ? consensusAmerican(mlRow[`${side}_prices`]) : null;
+    const bestPrice = r && numOrNull(r.best_price) != null ? +r.best_price : mlRow ? numOrNull(mlRow[`${side}_price`]) : null;
+    const price = cons != null ? cons : bestPrice;
+    const prob = (x) => (x != null && Number.isFinite(americanToProb(x)) ? americanToProb(x) : null);
+    return { price, implied: prob(price), bestPrice, bestImplied: r && gmImplied(r) != null ? gmImplied(r) : prob(bestPrice),
+      modelProb: wp == null ? null : side === "home" ? wp : 1 - wp };
   };
-  const ls = numOrNull(pred.market_spread), lt = numOrNull(pred.market_total);
-  const sp = split(sim.margin_dist, ls == null ? null : -ls), tt = split(sim.total_dist, lt);
-  if (sp) { out.home = sp.over; out.away = sp.under; }
-  if (tt) { out.over = tt.over; out.under = tt.under; }
+  const one = (market, side, modelAt) => {
+    const r = by.get(`${market}|${side}`), line = gmSideLine(p, market, side, lineBy), imp = r ? gmImplied(r) : null, price = r ? numOrNull(r.best_price) : null;
+    return { line, price, implied: imp, bestPrice: price, bestImplied: imp, modelProb: line == null ? null : modelAt(line) };
+  };
+  const m = d.margin, t = d.total;
+  return {
+    moneyline: { away: mlSide("away"), home: mlSide("home") },
+    spread: { line: numOrNull(p.market_spread),
+      away: one("spread", "away", (L) => { const s = gmSplit(m, L); return s && s.under; }),     // away covers when the home margin < its line
+      home: one("spread", "home", (L) => { const s = gmSplit(m, -L); return s && s.over; }) },   // home covers when the home margin > -its line
+    total: { line: numOrNull(p.market_total),
+      over: one("total", "over", (L) => { const s = gmSplit(t, L); return s && s.over; }),
+      under: one("total", "under", (L) => { const s = gmSplit(t, L); return s && s.under; }) },
+  };
+}
+
+// Every side of the game with both a model probability and a market probability, as read candidates
+// [{market, side, label, line, price, modelProb, impliedProb}] (no pick gate: the model's view against the price available).
+function gmCandidates(pred, odds) {
+  const out = [];
+  for (const [market, side] of [["moneyline", "away"], ["moneyline", "home"], ["spread", "away"], ["spread", "home"], ["total", "over"], ["total", "under"]]) {
+    const s = odds && odds[market] && odds[market][side];
+    if (!s || s.modelProb == null || s.bestImplied == null) continue;
+    const line = market === "moneyline" ? null : s.line;
+    out.push({ market, side, label: gmLabel(pred, market, side, line), line, price: s.bestPrice, modelProb: s.modelProb, impliedProb: s.bestImplied });
+  }
   return out;
 }
 
-// Per-market view of the game's odds for the Overview: consensus moneyline prices, the market spread / total line and,
-// per side, the implied probability (best price) and the model probability (a pick row's true_prob, else the NFL sim).
-function gmOdds(pred, evRows, mlRow, sim) {
-  const p = pred || {}, rows = gmLatest(evRows), by = new Map(rows.map((r) => [`${r.market}|${r.side}`, r])), sp = gmSimProbs(p, sim);
-  const implied = (r) => (r ? gmImplied(r) : null);
-  const pickP = (r) => (r && r.is_pick === true && finite(r.true_prob) ? +r.true_prob : null);
-  const mlSide = (side) => {
-    const r = by.get(`moneyline|${side}`), cons = mlRow ? consensusAmerican(mlRow[`${side}_prices`]) : null;
-    const price = cons != null ? cons : r ? numOrNull(r.best_price) : null;
-    const imp = price != null ? americanToProb(price) : null;
-    return { price, implied: imp != null && Number.isFinite(imp) ? imp : null };
-  };
-  // A two-way market: a pick row's probability is the model's; the other side is its complement unless that side is a pick
-  // too. With no pick row the NFL sim supplies both sides. Otherwise the model has no number (a non-pick true_prob is the sharp line).
-  const twoWay = (market, a, b, simA, simB) => {
-    const ra = by.get(`${market}|${a}`), rb = by.get(`${market}|${b}`), pa = pickP(ra), pb = pickP(rb);
-    const [ma, mb] = pa != null || pb != null ? [pa != null ? pa : 1 - pb, pb != null ? pb : 1 - pa] : [simA, simB];
-    const one = (r, m) => ({ implied: implied(r), modelProb: m, price: r ? numOrNull(r.best_price) : null });
-    return { [a]: one(ra, ma), [b]: one(rb, mb) };
-  };
-  return {
-    moneyline: { away: mlSide("away"), home: mlSide("home") },
-    spread: { line: numOrNull(p.market_spread), ...twoWay("spread", "away", "home", sp.away, sp.home) },
-    total: { line: numOrNull(p.market_total), ...twoWay("total", "over", "under", sp.over, sp.under) },
-  };
-}
-
-// Model cover probability for each side of the spread; one side known -> the other is its complement.
+// Model cover probability for each side of the spread, at the lines the market prices; null when the model has no distribution.
 function gmCover(odds) {
   const s = odds && odds.spread;
-  if (!s) return null;
-  let home = s.home.modelProb, away = s.away.modelProb;
-  if (home == null && away == null) return null;
-  if (home == null) home = 1 - away;
-  if (away == null) away = 1 - home;
-  return { home, away };
+  return s && s.home.modelProb != null && s.away.modelProb != null ? { home: s.home.modelProb, away: s.away.modelProb } : null;
 }
 
-const gmPct = (x) => `${(x * 100).toFixed(1)}%`;
 const gmLine1 = (x) => (Math.abs(x) < 0.05 ? "PK" : x > 0 ? `+${x.toFixed(1)}` : x.toFixed(1));
-const gmPctP = (p) => (p != null ? ` (${gmPct(p)})` : "");
+const gmPctP = (p) => (p != null ? ` (${pct1(p)})` : "");
 
 // Model Projection table: Market / CappingAlpha / Difference for moneyline (the model's favorite), spread (the model's
-// side) and total (the model's lean). diff = model minus market implied probability, in points (null when either is
-// unknown); pts = how many more points the model asks for than the market, from the same side (null when unknown).
+// side) and total (the model's lean). The CappingAlpha cell is the model, at the same line the Market cell shows. diff =
+// model minus market implied probability, in points (null when either is unknown); pts = how many more points the model
+// asks for than the market, from the same side (null when unknown).
 function modelProjectionRows(pred, odds) {
   const p = pred || {}, o = odds || {}, sport = p.sport;
   const wp = numOrNull(p.home_win_prob), h = numOrNull(p.pred_home_score), a = numOrNull(p.pred_away_score);
   const blank = (label) => ({ label, market: "—", model: "—", diff: null, pts: null });
   const ab = (side) => teamShort(side === "home" ? p.home_team_name : p.away_team_name, sport);
   const rows = [];
-  // moneyline
   const ml = blank("Moneyline");
   if (wp != null) {
-    const side = wp >= 0.5 ? "home" : "away", prob = Math.max(wp, 1 - wp), e = o.moneyline && o.moneyline[side];
-    ml.model = gmPct(prob);
-    if (e && e.price != null) { ml.market = `${ab(side)} ${oddsStr(e.price)}${gmPctP(e.implied)}`; if (e.implied != null) ml.diff = (prob - e.implied) * 100; }
+    const side = wp >= 0.5 ? "home" : "away", e = o.moneyline && o.moneyline[side];
+    ml.model = pct1(Math.max(wp, 1 - wp));
+    if (e && e.price != null) { ml.market = `${ab(side)} ${oddsStr(e.price)}${gmPctP(e.implied)}`; if (e.implied != null) ml.diff = (Math.max(wp, 1 - wp) - e.implied) * 100; }
   }
   rows.push(ml);
-  // spread
   const sp = blank("Spread");
   if (h != null && a != null) {
     const margin = h - a, side = margin >= 0 ? "home" : "away", modelLine = side === "home" ? -margin : margin;
-    const e = o.spread && o.spread[side], L = o.spread ? o.spread.line : null;
+    const e = o.spread && o.spread[side];
     sp.model = `${ab(side)} ${gmLine1(modelLine)}${gmPctP(e ? e.modelProb : null)}`;
-    if (L != null) {
-      const ml1 = side === "home" ? L : -L;
-      sp.market = `${ab(side)} ${lineStr(ml1)}${gmPctP(e ? e.implied : null)}`;
-      sp.pts = ml1 - modelLine;
+    if (e && e.line != null) {
+      sp.market = `${ab(side)} ${lineStr(e.line)}${gmPctP(e.implied)}`;
+      sp.pts = e.line - modelLine;
+      if (e.modelProb != null && e.implied != null) sp.diff = (e.modelProb - e.implied) * 100;
     }
-    if (e && e.modelProb != null && e.implied != null) sp.diff = (e.modelProb - e.implied) * 100;
   }
   rows.push(sp);
-  // total
   const tt = blank("Total");
   if (h != null && a != null) {
-    const model = h + a, T = o.total ? o.total.line : null, lean = T == null ? null : model >= T ? "over" : "under";
-    const e = lean && o.total[lean];
+    const model = h + a, T0 = o.total ? o.total.line : null, lean = T0 == null ? null : model >= T0 ? "over" : "under";
+    const e = lean && o.total[lean], T = e && e.line != null ? e.line : T0;
     tt.model = `${model.toFixed(1)}${gmPctP(e ? e.modelProb : null)}`;
     if (T != null) {
       tt.market = `${lean === "under" ? "U" : "O"} ${T}${gmPctP(e ? e.implied : null)}`;
       tt.pts = lean === "over" ? model - T : T - model;
+      if (e && e.modelProb != null && e.implied != null) tt.diff = (e.modelProb - e.implied) * 100;
     }
-    if (e && e.modelProb != null && e.implied != null) tt.diff = (e.modelProb - e.implied) * 100;
   }
   rows.push(tt);
   return rows;
@@ -215,11 +205,15 @@ function gmRecord(hist, power, side) {
 // Up to four generated sentences from data that exists: offense-vs-defense unit grade, explosive-play edge, power-rank
 // gap, current streak. Each is {kind, title, body} (plain text; escaped when rendered).
 const gmPoss = (n) => (/s$/i.test(n) ? `${n}'` : `${n}'s`);
-const GM_STREAK = { su: { W: "won", L: "lost" }, ats: { W: "covered", L: "failed to cover" }, ou: { O: "has gone over in", U: "has gone under in" } };
+// team_history / matchup_grades / power_rankings identify a side by team code.
+const gmTeamCode = (hist, grades, side) => { const x = (hist || []).find((y) => y.side === side) || (grades || []).find((y) => y.side === side); return x ? String(x.team) : null; };
+const GM_STREAK = { su: { W: ["won", "won"], L: ["lost", "lost"] }, ats: { W: ["covered", "covered"], L: ["failed to cover", "failed to cover"] },
+  ou: { O: ["has gone over in", "have gone over in"], U: ["has gone under in", "have gone under in"] } };
 function gmKeyInsights(D) {
   const r = (D && D.r) || {}, grades = (D && D.ctxGrades) || [], hist = (D && D.ctxHist) || [], power = (D && D.ctxPower) || [];
   const name = (side) => shortTeam(side === "home" ? r.home_team_name : r.away_team_name, D && D.sport);
   const other = (s) => (s === "home" ? "away" : "home");
+  const pl = (D && D.sport) === "nfl" ? 1 : 0;   // NFL short names are plural nicknames ("Saints rank"), CFB schools singular ("Alabama ranks")
   const out = [];
   const graded = grades.filter((g) => g && g.overall && finite(g.overall_pct)).sort((x, y) => y.overall_pct - x.overall_pct)[0];
   if (graded) out.push({ kind: "grade", title: `${name(graded.side)} offense grades ${graded.overall} vs ${name(other(graded.side))}`,
@@ -235,16 +229,15 @@ function gmKeyInsights(D) {
   const xh = xpl(grades.find((g) => g.side === "home")), xa = xpl(grades.find((g) => g.side === "away"));
   if (xh != null && xa != null && Math.abs(xh - xa) > 1e-9) {
     const w = xh > xa ? "home" : "away";
-    out.push({ kind: "explosive", title: `Explosive plays favor ${name(w)}`,
-      body: `${gmPoss(name(w))} offense vs ${gmPoss(name(other(w)))} defense grades out ahead on big plays, pass and run, compared with the reverse matchup.` });
+    out.push({ kind: "explosive", title: `Big-play grades favor ${name(w)}`,
+      body: `${gmPoss(name(w))} offense vs ${gmPoss(name(other(w)))} defense is ahead of the reverse matchup on pass-rate-weighted explosive-play ratings.` });
   }
-  const code = (side) => { const x = hist.find((y) => y.side === side) || grades.find((y) => y.side === side); return x ? String(x.team) : null; };
-  const pr = (side) => power.find((x) => String(x.team) === code(side));
+  const pr = (side) => power.find((x) => String(x.team) === gmTeamCode(hist, grades, side));
   const ph = pr("home"), pa = pr("away");
   if (ph && pa && finite(ph.rank) && finite(pa.rank) && ph.rank !== pa.rank) {
     const [bs, b, w] = ph.rank < pa.rank ? ["home", ph, pa] : ["away", pa, ph];
     const gap = finite(b.rating) && finite(w.rating) ? ` Rating gap: ${(b.rating - w.rating).toFixed(1)} pts.` : "";
-    out.push({ kind: "power", title: `${name(bs)} ranks #${b.rank} in the power rankings`, body: `${name(other(bs))} ranks #${w.rank}.${gap}` });
+    out.push({ kind: "power", title: `${name(bs)} ${pl ? "rank" : "ranks"} #${b.rank} in the power rankings`, body: `${name(other(bs))} ${pl ? "rank" : "ranks"} #${w.rank}.${gap}` });
   }
   let st = null;
   for (const h of hist) {
@@ -254,7 +247,7 @@ function gmKeyInsights(D) {
       if (m && GM_STREAK[k][m[1]] && +m[2] >= 3 && (!st || +m[2] > st.n)) st = { side: h.side, k, kind: m[1], n: +m[2] };
     }
   }
-  if (st) out.push({ kind: "streak", title: `${name(st.side)} ${GM_STREAK[st.k][st.kind]} ${st.n} straight`,
+  if (st) out.push({ kind: "streak", title: `${name(st.side)} ${GM_STREAK[st.k][st.kind][pl]} ${st.n} straight`,
     body: `Current ${{ su: "straight-up", ats: "against-the-spread", ou: "over/under" }[st.k]} streak entering this game.` });
   return out.slice(0, 4);
 }
@@ -266,20 +259,14 @@ function gmBestBooks(pred, mlRow, evRows) {
     const ev = rows.find((r) => r.market === "moneyline" && r.side === side);
     const price = mlRow && finite(mlRow[`${side}_price`]) ? +mlRow[`${side}_price`] : ev ? numOrNull(ev.best_price) : null;
     const book = mlRow && finite(mlRow[`${side}_price`]) ? mlRow[`${side}_book`] : ev ? ev.best_book : null;
-    if (price != null) out.push({ label: `${gmTeam(pred, side)} ML`, price, book });
+    if (price != null) out.push({ label: gmLabel(pred, "moneyline", side, null), price, book });
   }
   for (const r of rows) {
     if (r.market === "moneyline" || numOrNull(r.best_price) == null) continue;
-    out.push({ label: gmSideLabel(pred, r, gmSideLine(pred, r, null)), price: +r.best_price, book: r.best_book || null });
+    out.push({ label: gmLabel(pred, r.market, r.side, gmSideLine(pred, r.market, r.side, null)), price: +r.best_price, book: r.best_book || null });
   }
   return out;
 }
-
-const gmSplitMap = (splits) => {
-  const m = new Map();
-  (splits || []).forEach((r) => { const k = `${r.game_pk}|${r.market}|${r.side}`, prev = m.get(k); if (!prev || String(r.captured_at) > String(prev.captured_at)) m.set(k, r); });
-  return m;
-};
 
 /* ── state <-> URL ────────────────────────────────────────────────────── */
 function gmParseTab(search) {
@@ -388,7 +375,7 @@ function gmOddsBox(title, left, right, leanSide) {
   return `<div class="ca-gm-ob"><div class="ca-gm-ob-vals">${cell(left, "l")}${cell(right, "r")}</div><div class="ca-gm-ob-t">${title}</div></div>`;
 }
 function gmHero(D) {
-  const r = D.r, sport = D.sport, o = gmOdds(r, D.evRows, D.mlRow, null), lean = gmLean(r), live = sport === "nfl" || sport === "cfb";
+  const r = D.r, sport = D.sport, o = gmOdds(r, D.evRows, D.mlRow, null, D.lineBy), lean = gmLean(r), live = sport === "nfl" || sport === "cfb";
   const when = gmWhen(r.commence_time);
   const team = (side) => {
     const rec = gmRecord(D.ctxHist, D.ctxPower, side), nm = side === "home" ? r.home_team_name : r.away_team_name;
@@ -404,12 +391,17 @@ function gmHero(D) {
     <div class="ca-gm-teams">${team("away")}<span class="ca-gm-at">@</span>${team("home")}</div>${gmFinalLine(D)}${boxes}</section>`;
 }
 
+const gmOddsOf = (D) => gmOdds(D.r, D.evRows, D.mlRow, D.simRows[0], D.lineBy);
+const gmStarted = (r) => timeMs(r.commence_time) <= Date.now();
 function gmReadCard(D) {
-  const m = gameRead(gmMarkets(D.r, D.evRows, D.lineBy));
+  const started = gmStarted(D.r), m = started ? null : gameRead(gmCandidates(D.r, gmOddsOf(D)));
   const noun = m && { moneyline: "win", spread: "cover", total: "hit" }[m.market];
-  const body = m
+  const body = started
+    ? `<div class="ca-gm-read-text"><p class="ca-gm-kicker">CAPPINGALPHA READ</p><h2>Pre-game read — this game has started</h2>
+        <p>The model read is shown before kickoff.</p></div>`
+    : m
     ? `<div class="ca-gm-read-text"><p class="ca-gm-kicker">CAPPINGALPHA READ</p><h2>${gmEsc(m.label)} shows the strongest model divergence</h2>
-        <p>The market implies a ${gmPct(m.impliedProb)} ${noun} probability. CappingAlpha estimates <b>${gmPct(m.modelProb)}</b>.</p></div>
+        <p>The market implies a ${pct1(m.impliedProb)} ${noun} probability. CappingAlpha estimates <b>${pct1(m.modelProb)}</b>.</p></div>
        <div class="ca-gm-edge"><b>${pStr(m.edgePp)}</b><span>MODEL EDGE</span></div>`
     : `<div class="ca-gm-read-text"><p class="ca-gm-kicker">CAPPINGALPHA READ</p><h2>No model edge on this game</h2>
         <p>No game-line market prices above the model's estimate right now.</p></div>`;
@@ -421,11 +413,11 @@ function gmBestOpp(D) { return (D.opps || [])[0] || null; }
 function gmAlphaCard(D) {
   const o = gmBestOpp(D);
   return `<div class="ca-card ca-gm-card"><div class="ca-gm-cl">Alpha Score</div>${o
-    ? `<div class="ca-gm-big">${gmEsc(o.alpha)}<small> / 100</small></div>${confPill(o.tier)}<div class="ca-gm-sub ca-ell" title="${gmEsc(pickLabel(o, D.lineBy))}">${gmEsc(pickLabel(o, D.lineBy))}</div>`
+    ? `<div class="ca-gm-big">${gmEsc(o.alpha)}<small> / 100</small></div>${confPill(o.tier)}<div class="ca-gm-sub ca-ell" title="${gmEsc(oppLabel(o, D.lineBy))}">${gmEsc(oppLabel(o, D.lineBy))}</div>`
     : `<div class="ca-gm-big">—</div><div class="ca-gm-sub">No graded opportunity on this game.</div>`}</div>`;
 }
 function gmWinCard(D) {
-  const wp = numOrNull(D.r.home_win_prob), row = (name, p) => `<div class="ca-gm-wp">${logoImg(name, D.sport)}<b>${p != null ? gmPct(p) : "—"}</b></div>`;
+  const wp = numOrNull(D.r.home_win_prob), row = (name, p) => `<div class="ca-gm-wp">${logoImg(name, D.sport)}<b>${p != null ? pct1(p) : "—"}</b></div>`;
   return `<div class="ca-card ca-gm-card"><div class="ca-gm-cl">Win Probability</div>${row(D.r.home_team_name, wp)}${row(D.r.away_team_name, wp != null ? 1 - wp : null)}</div>`;
 }
 function gmScoreCard(D) {
@@ -449,7 +441,7 @@ function gmTotalCard(D) {
 const GM_OVERVIEW = [["Alpha Score", gmAlphaCard], ["Win Probability", gmWinCard], ["Projected Score", gmScoreCard], ["Projected Spread", gmSpreadCard], ["Projected Total", gmTotalCard]];
 
 function gmProjectionCard(D) {
-  const rows = modelProjectionRows(D.r, gmOdds(D.r, D.evRows, D.mlRow, D.simRows[0]));
+  const rows = modelProjectionRows(D.r, gmOddsOf(D));
   const body = rows.map((x) => {
     const d = x.diff != null ? `<td class="${signCls(x.diff)} ca-b">${pStr(x.diff)}</td>` : x.pts != null ? `<td class="${signCls(x.pts)} ca-b">${signedStr(x.pts, 1, " pts")}</td>` : `<td class="muted">—</td>`;
     return `<tr><td>${gmEsc(x.label)}</td><td>${gmEsc(x.market)}</td><td class="ca-b">${gmEsc(x.model)}</td>${d}</tr>`;
@@ -464,17 +456,17 @@ function gmInsightsCard(D) {
   return `<section class="ca-card ca-gm-ins-card" id="gm-insights"><div class="ca-card-head"><h2>Key Insights</h2></div>${rows}</section>`;
 }
 function gmCoverCard(D) {
-  const c = gmCover(gmOdds(D.r, D.evRows, D.mlRow, D.simRows[0]));
+  const c = gmCover(gmOddsOf(D));
   let body;
   if (!c) body = emptyMsg("Model cover probability isn't available for this game yet.");
   else {
     const away = Math.max(0, Math.min(100, c.away / (c.away + c.home) * 100));
-    const money = gmSplitMap(D.splits), ma = money.get(`${D.game}|spread|away`), mh = money.get(`${D.game}|spread|home`);
+    const money = latestSplitMap(D.splits), ma = money.get(`${D.game}|spread|away`), mh = money.get(`${D.game}|spread|home`);
     const cap = ma && mh && finite(ma.cash_pct) && finite(mh.cash_pct)
       ? `<p class="ca-gm-cap">% of Money · ${gmEsc(teamShort(D.r.away_team_name, D.sport))} ${Math.round(ma.cash_pct)}% · ${gmEsc(teamShort(D.r.home_team_name, D.sport))} ${Math.round(mh.cash_pct)}%</p>` : "";
-    body = `<div class="ca-gm-cov"><span class="ca-gm-cov-s">${logoImg(D.r.away_team_name, D.sport)}<b>${gmPct(c.away)}</b></span>
+    body = `<div class="ca-gm-cov"><span class="ca-gm-cov-s">${logoImg(D.r.away_team_name, D.sport)}<b>${pct1(c.away)}</b></span>
       <span class="ca-gm-bar"><i style="width:${away.toFixed(1)}%;background:${gmEsc(D.awayCol)}"></i><i style="width:${(100 - away).toFixed(1)}%;background:${gmEsc(D.homeCol)}"></i></span>
-      <span class="ca-gm-cov-s"><b>${gmPct(c.home)}</b>${logoImg(D.r.home_team_name, D.sport)}</span></div>${cap}`;
+      <span class="ca-gm-cov-s"><b>${pct1(c.home)}</b>${logoImg(D.r.home_team_name, D.sport)}</span></div>${cap}`;
   }
   return `<section class="ca-card ca-gm-cover" id="gm-cover"><div class="ca-card-head"><h2>Cover Probability</h2></div>${body}</section>`;
 }
@@ -488,9 +480,8 @@ function gmOverview(D) {
 /* ── other tabs ───────────────────────────────────────────────────────── */
 const gmLegacy = (html, empty) => (html ? `<div class="ca-gm-legacy">${html}</div>` : empty ? emptyMsg(empty) : "");
 function gmPowerCard(D) {
-  const code = (side) => { const x = D.ctxHist.find((y) => y.side === side) || D.ctxGrades.find((y) => y.side === side); return x ? String(x.team) : null; };
   const rows = ["away", "home"].map((side) => {
-    const p = D.ctxPower.find((x) => String(x.team) === code(side));
+    const p = D.ctxPower.find((x) => String(x.team) === gmTeamCode(D.ctxHist, D.ctxGrades, side));
     if (!p) return "";
     const u = ctxJson(p.units) || {}, rk = (k) => (u[k] && finite(u[k].rank) ? `#${u[k].rank}` : "—");
     const nm = side === "home" ? D.r.home_team_name : D.r.away_team_name;
@@ -508,7 +499,7 @@ function gmMatchupTab(D) {
   return `${safeCard("Power Rankings", gmPowerCard, D, "ca-card", "gm-power")}${gmLegacy(pred + mu + sim, "No matchup data for this game yet.")}`;
 }
 function gmMovesCard(D) {
-  const sm = gmSplitMap(D.splits);
+  const sm = latestSplitMap(D.splits);
   const rows = D.moves.map((m) => lineMoveInfo(m, D.r, sm)).map((i) =>
     `<div class="ca-gm-mv"><div><b>${gmEsc(i.title)}</b>${i.tickets ? `<small>${gmEsc(i.tickets)}</small>` : ""}</div><span class="${signCls(i.d)} ca-b">${gmEsc(i.chg)}</span></div>`).join("");
   return `<section class="ca-card ca-gm-moves" id="gm-moves"><div class="ca-card-head"><h2>Line Moves</h2><p>Pinnacle, opening to current.</p></div>${rows || emptyMsg("No line moves captured for this game yet.")}</section>`;
