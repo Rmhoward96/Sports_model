@@ -2699,7 +2699,7 @@ async function render() {
     }
     let body;
     if (page === "dashboard") body = await buildDashboard();
-    else if (page === "track") body = await buildTrack();
+    else if (page === "track") body = await buildTrackPage();
     else if (page === "game") body = await buildGamePage();
     else if (page === "ev") body = await buildEvPage();
     else if (page === "settings") body = buildSettings();
@@ -2708,7 +2708,7 @@ async function render() {
     shell.innerHTML = siteHeader(page === "rankings" || page === "settings" ? "" : page) + `<div class="ca-page">${body}</div>` + footer(); wireShell();
     if (page === "dashboard") wireDashboard();
     if (page === "game") wireGamePage();
-    if (page === "track") { wireTrack(selTrackLeague, selTrackWeek); wirePropGames(); wirePnl(); }
+    if (page === "track") wireTrackPage();
     if (page === "ev") wireEvPage2();
     if (page === "settings") wireSettings();
     if (page === "rankings") wireRankings();

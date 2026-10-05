@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { loadScripts } from "./load.mjs";
-const g = loadScripts(["app.js", "js/metrics.js", "js/ui.js", "js/boot.js"]);
+const g = loadScripts(["app.js", "js/metrics.js", "js/ui.js", "js/shell.js", "js/boot.js"]);
 const count = (s, re) => (s.match(re) || []).length;
 
 test("conf pill + alpha cell", () => {
@@ -70,6 +70,14 @@ test("groupedBars: one bar + value label per bar, group labels, empty renders no
   assert.equal(g.groupedBars([]), "");
   assert.equal(g.groupedBars(null), "");
   assert.equal(g.groupedBars([{ label: "x", bars: [{ value: null }] }]), "");
+});
+test("groupedBars: an optional per-group `sub` caption renders a second line under the group label, escaped", () => {
+  const svg = g.groupedBars([{ label: "Moneyline", sub: "109-76-9 <(194)>", bars: [{ value: 59, label: "59%" }] }, { label: "Spread", bars: [{ value: 40 }] }], { h: 190 });
+  assert.equal(count(svg, /class="ca-axis-sub"/g), 1);
+  assert.match(svg, />109-76-9 &lt;\(194\)&gt;</);
+  assert.doesNotMatch(svg, /<\(194\)>/);
+  const plain = g.groupedBars([{ label: "NFL", bars: [{ value: 5 }] }], { h: 180 });
+  assert.doesNotMatch(plain, /ca-axis-sub/);
 });
 test("histogramChart: one bar per bin with its color, empty or all-zero renders nothing", () => {
   const bins = [{ label: "-2", n: 3, color: "#C8372D" }, { label: "0", n: 7, color: "#1E8E4E" }, { label: "2", n: null, color: "#1E8E4E" }];
@@ -186,4 +194,32 @@ test("groupedBars: negative bars extend below the baseline and labels do not col
   assert.ok(vals[1] > base);                                  // negative label sits below its bar start
   assert.ok(vals[1] <= groupY - 12, `neg label ${vals[1]} vs group label ${groupY}`);
   assert.ok(Math.max(...down) < 180 && vals[0] > 0);          // everything stays inside the viewBox
+});
+test("selectField / searchField: labelled select keeps an unknown current value, escapes everything; search box carries its attribute", () => {
+  const html = g.selectField("data-x", "league", "League <b>", [["", "All"], ["nfl", "NFL"]], "cfb<", "wide");
+  assert.match(html, /<label class="ca-f wide"><span>League <b><\/span>/);   // the label is trusted markup from the page
+  assert.match(html, /<select class="ca-select" data-x="league">/);
+  assert.match(html, /<option value="cfb&lt;" selected>cfb&lt;<\/option>/);
+  assert.equal(count(html, /<option /g), 3);
+  assert.match(g.selectField("data-x", "k", "L", [["a", "A"]], "a"), /<option value="a" selected>A<\/option>/);
+  const s = g.searchField("data-q", `x"y`, "Search...", "Search it");
+  assert.match(s, /data-q placeholder="Search\.\.\."/); assert.match(s, /value="x&quot;y"/); assert.match(s, /aria-label="Search it"/);
+});
+test("areaChart nice ticks: counts get round steps and the line stays inside the widened range; default ticks unchanged", () => {
+  const pts = [0, 40, 171].map((y, i) => ({ x: ["a", "b", "c"][i], y }));
+  const nice = g.areaChart(pts, { yTicks: 5, unit: "", nice: true });
+  for (const t of ["0", "50", "100", "150", "200"]) assert.match(nice, new RegExp(`>${t}<`), `tick ${t}`);
+  assert.doesNotMatch(nice, />42\.8</);
+  const plain = g.areaChart(pts, { yTicks: 5, unit: "" });
+  assert.match(plain, />42\.8</); assert.match(plain, />171\.0</);
+  const neg = g.areaChart([{ x: "a", y: -18 }, { x: "b", y: 7 }, { x: "c", y: 33 }], { yTicks: 5, unit: "", nice: true });
+  assert.match(neg, />-20</); assert.match(neg, />40</); assert.match(neg, />0</);
+  const flat = g.areaChart([{ x: "a", y: 3 }, { x: "b", y: 3 }], { nice: true });
+  assert.ok(flat.includes("ca-chart"), "flat data still draws");
+});
+test("groupedBars: bar width / gap options widen the bars (defaults unchanged)", () => {
+  const groups = [{ label: "A", bars: [{ value: 5 }, { value: 7 }] }];
+  const w = (o) => +g.groupedBars(groups, o).match(/viewBox="0 0 (\d+) /)[1];
+  assert.equal(w({}), 2 * 26 + 6 + 30, "default: two 26px bars, 6px gap, 30px group gap");
+  assert.equal(w({ bw: 40, bgap: 10, ggap: 50 }), 2 * 40 + 10 + 50);
 });

@@ -124,14 +124,12 @@ function dashDonut(segs, { size = 136, stroke = 18, center = "", caption = "" } 
 
 /* ── small view helpers ───────────────────────────────────────────────── */
 const dashClock = (iso) => (iso ? timeET(iso).replace(/ ET$/, "") : "");
-const dashShortDate = (d) => new Date(`${d}T12:00:00Z`).toLocaleDateString("en-US", { timeZone: "UTC", month: "short", day: "numeric" });
 const dashDateLabel = (d) => new Date(`${d}T12:00:00Z`).toLocaleDateString("en-US", { timeZone: "UTC", weekday: "short", month: "short", day: "numeric", year: "numeric" });
 function dashAgo(iso, nowMs) {
   const m = Math.max(0, Math.round((nowMs - timeMs(iso)) / 6e4));
   if (!Number.isFinite(m)) return "";
   return m < 60 ? `${m}m ago` : m < 48 * 60 ? `${Math.round(m / 60)}h ago` : `${Math.round(m / 1440)}d ago`;
 }
-const ICON_CAL = `<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="5" width="18" height="16" rx="2"/><path d="M3 10h18M8 3v4M16 3v4"/></svg>`;
 
 /* ── data ─────────────────────────────────────────────────────────────── */
 function dashDate() {
@@ -297,9 +295,7 @@ function dashPerfCard(D) {
   const w = dashState.perf, from = w === "7d" ? addDays(D.date, -6) : w === "30d" ? addDays(D.date, -29) : "0000-00-00";
   const p = perfWindow(D.pnl, D.graded, from, D.date);
   const mini = (label, value, cls = "") => `<div class="ca-dash-mini"><span>${label}</span><b class="${cls}">${value}</b></div>`;
-  // Sparse x labels: every 2nd slot of areaChart's own cadence (ceil(n/7)) plus the last point, skipping one that would collide with it.
-  const cum = dashCumUnits(p.rows, from, D.date), every = Math.max(1, Math.ceil(cum.length / 7)), step = cum.length > 14 ? 2 * every : every;
-  const pts = cum.map((q, i) => ({ x: i === cum.length - 1 || (i % step === 0 && cum.length - 1 - i >= Math.max(2, step * 0.5)) ? dashShortDate(q.date) : null, y: q.units }));
+  const pts = dateAxisPoints(dashCumUnits(p.rows, from, D.date), (q) => q.units);
   const chart = areaChart(pts, { h: 190, yTicks: 5 });
   const cap = p.n ? `<p class="ca-dash-cap">${p.n} graded +EV picks (${dashRecord(p)}) · ROI, Units and Hit Rate cover the same bets${p.edgeN ? ` · Avg. Edge: ${p.edgeN} game-line picks with a flagged price` : ""}</p>` : "";
   return `<section class="ca-card ca-dash-card" id="dash-perf"><div class="ca-card-head"><h2>Performance Snapshot</h2>${pills("dash-perf", [["7d", "7D"], ["30d", "30D"], ["season", "Season"]], w)}<a class="ca-link" href="track-record.html">View Track Record →</a></div>

@@ -208,10 +208,7 @@ const EV_STATS = [["Total +EV Opportunities", evxStatTotal], ["Average Edge", ev
 const evxStatCards = (D) => `<div class="ca-stats ca-ev-stats">${EV_STATS.map(([name, fn]) => safeCard(name, fn, D, "ca-card ca-stat")).join("")}</div>`;
 
 /* ── filter card ──────────────────────────────────────────────────────── */
-function evxSelect(key, label, options, value, extraCls = "") {
-  const opts = options.some(([k]) => String(k) === String(value)) ? options : [...options, [value, String(value)]];
-  return `<label class="ca-ev-f ${extraCls}"><span>${label}</span><select class="ca-select" data-ev="${key}">${opts.map(([k, l]) => `<option value="${ctxEsc(k)}"${String(k) === String(value) ? " selected" : ""}>${ctxEsc(l)}</option>`).join("")}</select></label>`;
-}
+const evxSelect = (key, label, options, value, extraCls = "") => selectField("data-ev", key, label, options, value, extraCls);
 function evxFilterCard(D) {
   const s = evxState();
   const sports = [...new Set([...LIVE_SPORTS, ...evxBy(D.opps, "sport")])].map((x) => [x, SPORT_NAME[x] || String(x).toUpperCase()]);
@@ -222,7 +219,7 @@ function evxFilterCard(D) {
     ${evxSelect("market", "Market Type", [["", "All Markets"], ...markets], s.market)}${evxSelect("book", "Sportsbook", [["", "All Books"], ...books], s.book)}
     ${evxSelect("minEdge", "Minimum Edge", EV_MIN_EDGES.map((m) => [m, `≥ ${m}%`]), s.minEdge)}${evxSelect("tier", "Confidence", [["", "All Confidence"], ...EV_TIERS.map((t) => [t, t])], s.tier)}
     ${evxSelect("date", "Date", EV_DATES, s.date)}</div>
-    <label class="ca-ev-search">${ICON_SEARCH}<input class="ca-input" type="search" data-ev-q placeholder="Search teams, players, or games..." value="${ctxEsc(s.q)}" aria-label="Search teams, players, or games" autocomplete="off"></label></section>`;
+    ${searchField("data-ev-q", s.q, "Search teams, players, or games...", "Search teams, players, or games")}</section>`;
 }
 
 /* ── tabs + table ─────────────────────────────────────────────────────── */

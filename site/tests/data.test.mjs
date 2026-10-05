@@ -125,3 +125,14 @@ test("latestSplitMap keeps the newest capture per game|market|side; oppLabel put
   assert.equal(g.oppLabel({ kind: "prop", market: "rec_yds", marketLabel: "Rec Yds", side: "under", line: 64.5, playerName: "Josh Allen", sport: "nfl" }), "Josh Allen Under 64.5 Rec Yds");
   assert.equal(g.oppLabel({ kind: "line", sport: "nfl", game_pk: 1, matchup: "Detroit Lions @ Kansas City Chiefs", market: "moneyline", side: "away" }, new Map()), "Lions ML");
 });
+
+test("shortDate / fullDate / dateAxisPoints: calendar labels never shift, sparse x labels always end on the last point", () => {
+  assert.equal(g.shortDate("2026-10-04"), "Oct 4"); assert.equal(g.fullDate("2026-10-04"), "Oct 4, 2026");
+  const items = Array.from({ length: 30 }, (_, i) => ({ date: g.addDays("2026-09-01", i), v: i }));
+  const pts = g.dateAxisPoints(items, (q) => q.v);
+  assert.equal(pts.length, 30); assert.equal(pts[29].x, "Sep 30", "the last point is always labelled"); assert.equal(pts[0].x, "Sep 1");
+  assert.deepEqual(pts.map((p) => p.y), items.map((q) => q.v));
+  const labelled = pts.map((p, i) => (p.x ? i : -1)).filter((i) => i >= 0);
+  assert.ok(labelled.every((i, k) => k === 0 || i - labelled[k - 1] >= 2), "no two labels collide");
+  assert.deepEqual(g.dateAxisPoints(null, (q) => q), []);
+});

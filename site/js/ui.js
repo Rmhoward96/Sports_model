@@ -76,13 +76,25 @@ function donut(f, { size = 78, stroke = 10, color = "var(--navy)" } = {}) {
 // percentage inside .ca-plot, so it renders at its CSS size at any container width.
 // Flat data (all values equal, incl. zero) gets a symmetric pad so the line sits mid-chart, and ticks
 // are generated from the same lo/hi the Y scale uses (they never leave [lo, hi]).
-function uiChartFrame(vals, { h, yTicks, unit, includeZero, xLabels, n }) {
-  let lo = Math.min(...vals), hi = Math.max(...vals);
+// `nice` widens [lo, hi] to multiples of a 1 / 2 / 5 x 10^k step (for counts: ticks 0, 50, 100 instead of 0, 42.75, 85.5).
+function uiNiceTicks(lo, hi, n) {
+  const raw = (hi - lo) / (Math.max(2, n | 0) - 1), pow = 10 ** Math.floor(Math.log10(raw)), m = raw / pow;
+  const step = (m <= 1 ? 1 : m <= 2 ? 2 : m <= 5 ? 5 : 10) * pow;
+  const a = Math.floor(lo / step + 1e-9) * step, b = Math.ceil(hi / step - 1e-9) * step, dec = step >= 1 ? 0 : Math.ceil(-Math.log10(step) - 1e-9);
+  const ticks = [];
+  for (let v = a; v <= b + step / 2; v += step) ticks.push({ v, text: uiClean(v.toFixed(dec)) });
+  return { lo: a, hi: b, ticks };
+}
+function uiChartFrame(vals, { h, yTicks, unit, includeZero, xLabels, n, nice }) {
+  let lo = Math.min(...vals), hi = Math.max(...vals), ticks = null;
   if (hi === lo) { const pad = lo ? Math.abs(lo) * 0.1 : 1; lo -= pad; hi += pad; }
-  else if (includeZero) { lo = Math.min(lo, 0); hi = Math.max(hi, 0); }
+  else {
+    if (includeZero) { lo = Math.min(lo, 0); hi = Math.max(hi, 0); }
+    if (nice) { const t = uiNiceTicks(lo, hi, yTicks); lo = t.lo; hi = t.hi; ticks = t.ticks; }
+  }
   const r = hi - lo;
   const Y = (v) => (hi - v) / r * 100, X = (i) => (n > 1 ? i / (n - 1) * 100 : 0);   // percentages of the plot box
-  const ticks = uiTicks(lo, hi, yTicks);
+  ticks = ticks || uiTicks(lo, hi, yTicks);
   const grid = ticks.map((t) => `<line x1="0" x2="1000" y1="${Y(t.v).toFixed(2)}" y2="${Y(t.v).toFixed(2)}" class="ca-grid-line"/>`).join("");
   const yl = ticks.map((t) => `<span class="ca-yl" style="top:${Y(t.v).toFixed(2)}%">${t.text}${ctxEsc(unit)}</span>`).join("");
   const labels = Array.isArray(xLabels) ? xLabels : [], every = Math.max(1, Math.ceil(n / 7));
@@ -105,13 +117,13 @@ function uiSegments(values) {
 }
 const uiSegPath = (segs, F) => segs.map((sg) => sg.map((p, k) => `${k ? "L" : "M"}${(F.X(p.i) * 10).toFixed(1)} ${F.Y(p.v).toFixed(2)}`).join(" ")).join(" ");
 
-function areaChart(points, { w, h = 260, yTicks = 5, color = "var(--green)", unit = "u" } = {}) {
+function areaChart(points, { w, h = 260, yTicks = 5, color = "var(--green)", unit = "u", nice = false } = {}) {
   const pts = Array.isArray(points) ? points : [];
   const ys = pts.map((p) => (p && uiFin(p.y) ? +p.y : null));
   const finite = ys.filter((v) => v != null);
   if (finite.length < 2) return "";
   const n = pts.length, col = ctxEsc(color), segs = uiSegments(ys);
-  const F = uiChartFrame(finite, { h, yTicks, unit, includeZero: true, xLabels: pts.map((p) => p && p.x), n });
+  const F = uiChartFrame(finite, { h, yTicks, unit, includeZero: true, xLabels: pts.map((p) => p && p.x), n, nice });
   const runs = segs.filter((sg) => sg.length > 1);
   const fill = runs.map((sg) => `${uiSegPath([sg], F)} L${(F.X(sg[sg.length - 1].i) * 10).toFixed(1)} 100 L${(F.X(sg[0].i) * 10).toFixed(1)} 100Z`).join(" ");
   const endI = ys.length - 1 - [...ys].reverse().findIndex((v) => v != null);
@@ -126,18 +138,20 @@ function uiBar(x, base, hgt, bw, color, text) {
   return `<path class="ca-bar" d="${uiBarPath(x, base, hgt, bw)}" fill="${ctxEsc(color || "var(--green)")}"/><text class="ca-bar-val" x="${(x + bw / 2).toFixed(1)}" y="${ly.toFixed(1)}" text-anchor="middle">${ctxEsc(text)}</text>`;
 }
 
-function groupedBars(groups, { h = 180 } = {}) {
-  const gs = (Array.isArray(groups) ? groups : []).map((g) => ({ label: g && g.label, bars: ((g && g.bars) || []).filter((b) => b && uiFin(b.value)) })).filter((g) => g.bars.length);
+function groupedBars(groups, { h = 180, bw = 26, bgap = 6, ggap = 30 } = {}) {
+  const gs = (Array.isArray(groups) ? groups : []).map((g) => ({ label: g && g.label, sub: g && g.sub, bars: ((g && g.bars) || []).filter((b) => b && uiFin(b.value)) })).filter((g) => g.bars.length);
   if (!gs.length) return "";
   const all = gs.flatMap((g) => g.bars.map((b) => +b.value));
   const lo = Math.min(0, ...all), hi = Math.max(0, ...all), r = hi - lo || 1;
-  const top = 20, bottom = lo < 0 ? 42 : 26, plot = h - top - bottom, base = top + hi / r * plot;
-  const bw = 26, bgap = 6, ggap = 30;
+  const sub = gs.some((g) => g.sub != null && g.sub !== "");   // a second caption line (e.g. "W-L-P (n)") under the group label
+  const top = 20, bottom = (lo < 0 ? 42 : 26) + (sub ? 16 : 0), plot = h - top - bottom, base = top + hi / r * plot;
   let x = ggap / 2, out = "";
   for (const g of gs) {
     const gw = g.bars.length * bw + (g.bars.length - 1) * bgap;
     g.bars.forEach((b, i) => { out += uiBar(x + i * (bw + bgap), base, +b.value / r * plot, bw, b.color, b.label != null && b.label !== "" ? b.label : uiFmt(b.value)); });
-    if (g.label != null) out += `<text class="ca-axis" x="${(x + gw / 2).toFixed(1)}" y="${h - 8}" text-anchor="middle">${ctxEsc(g.label)}</text>`;
+    const cx = (x + gw / 2).toFixed(1), hasSub = g.sub != null && g.sub !== "";
+    if (g.label != null) out += `<text class="ca-axis${hasSub ? " ca-axis-main" : ""}" x="${cx}" y="${h - (hasSub ? 24 : 8)}" text-anchor="middle">${ctxEsc(g.label)}</text>`;
+    if (hasSub) out += `<text class="ca-axis-sub" x="${cx}" y="${h - 7}" text-anchor="middle">${ctxEsc(g.sub)}</text>`;
     x += gw + ggap;
   }
   const W = Math.round(x - ggap / 2);
@@ -181,3 +195,13 @@ function donutLegend(rows) {
 const ICON_TREND = `<svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 17l6-6 4 4 8-8"/><path d="M15 7h6v6"/></svg>`;
 const ICON_CLOCK = `<svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/></svg>`;
 const ICON_WAVE = `<svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 20c4 0 4-16 8-16s4 16 8 16"/></svg>`;
+const ICON_CAL = `<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="5" width="18" height="16" rx="2"/><path d="M3 10h18M8 3v4M16 3v4"/></svg>`;
+
+// Labelled <select> for the filter rows (+EV, Track Record). options: [[value, label]]; a current value that is not in the list is
+// appended so the control never shows something other than the state. `attr` is the data attribute the page's handler listens for.
+function selectField(attr, key, label, options, value, extraCls = "") {
+  const opts = options.some(([k]) => String(k) === String(value)) ? options : [...options, [value, String(value)]];
+  return `<label class="ca-f ${extraCls}"><span>${label}</span><select class="ca-select" ${attr}="${ctxEsc(key)}">${opts.map(([k, l]) => `<option value="${ctxEsc(k)}"${String(k) === String(value) ? " selected" : ""}>${ctxEsc(l)}</option>`).join("")}</select></label>`;
+}
+// Search box with the magnifier (ICON_SEARCH, shell.js).
+const searchField = (attr, value, placeholder, aria) => `<label class="ca-search">${ICON_SEARCH}<input class="ca-input" type="search" ${attr} placeholder="${ctxEsc(placeholder)}" value="${ctxEsc(value)}" aria-label="${ctxEsc(aria || placeholder)}" autocomplete="off"></label>`;

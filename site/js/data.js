@@ -103,6 +103,15 @@ const emptyMsg = (msg) => `<p class="ca-empty">${ctxEsc(msg)}</p>`;
 const leagueLogo = (s) => (LEAGUE_LOGO[s] ? `<img class="ca-league" src="https://a.espncdn.com/i/${LEAGUE_LOGO[s]}.png" alt="" loading="lazy" onerror="this.style.visibility='hidden'">` : "");
 const gameHref = (sport, gamePk) => `game.html?sport=${encodeURIComponent(sport)}&game=${encodeURIComponent(gamePk)}`;
 const goLink = (sport, gamePk) => `<a class="ca-go" href="${gameHref(sport, gamePk)}" aria-label="Open game">→</a>`;
+// "Oct 13" / "Oct 13, 2026" for a YYYY-MM-DD ET game date (UTC-pinned so the calendar day never shifts).
+const shortDate = (d) => new Date(`${d}T12:00:00Z`).toLocaleDateString("en-US", { timeZone: "UTC", month: "short", day: "numeric" });
+const fullDate = (d) => new Date(`${d}T12:00:00Z`).toLocaleDateString("en-US", { timeZone: "UTC", month: "short", day: "numeric", year: "numeric" });
+// Area-chart points for a dated series [{date, ...}]: x labels only on a sparse cadence (every 2nd slot of areaChart's own ceil(n/7)
+// step beyond 14 points) plus the last point, skipping a slot that would collide with it.
+function dateAxisPoints(items, valueOf) {
+  const rs = items || [], n = rs.length, every = Math.max(1, Math.ceil(n / 7)), step = n > 14 ? 2 * every : every;
+  return rs.map((q, i) => ({ x: i === n - 1 || (i % step === 0 && n - 1 - i >= Math.max(2, step * 0.5)) ? shortDate(q.date) : null, y: valueOf(q) }));
+}
 const kickLabel = (iso) => (iso ? bpKick(iso).replace(/ ET$/, "") : "");
 
 // Display name as the mockups show it: NFL nickname ("Lions"), CFB school ("Ohio State"), else as-is.
