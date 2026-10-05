@@ -554,7 +554,7 @@ const evSideLabel = (r) => {
   const [away, home] = String(r.matchup || " @ ").split(" @ ");
   if (r.market === "total") return r.side === "over" ? "Over" : "Under";
   const team = r.side === "home" ? home : away;
-  return `${logoImg(team, r.sport)}${team} ${r.market === "moneyline" ? "ML" : "spread"}`;
+  return `${logoImg(team, r.sport)}${ctxEsc(team)} ${r.market === "moneyline" ? "ML" : "spread"}`;
 };
 // green when positive (edge/value), red when negative (worse than sharp), else neutral.
 const evCls = (x) => (x == null ? "" : x > 1e-9 ? "ev-good" : x < -1e-9 ? "ev-bad" : "");
@@ -564,7 +564,7 @@ const evBookName = (b) => (b ? (EV_BOOKS[String(b).toLowerCase()] || b) : "—")
 function evRow(r) {
   const price = (am) => (am == null ? "—" : am > 0 ? `+${am}` : `${am}`);
   return `<tr class="ev-pick-row">
-    <td><b>${logoPair(r.matchup, r.sport)}${r.matchup}</b><small>${timeET(r.commence_time)}</small></td>
+    <td><b>${logoPair(r.matchup, r.sport)}${ctxEsc(r.matchup)}</b><small>${timeET(r.commence_time)}</small></td>
     <td class="pick">${evSideLabel(r)}</td>
     <td>${evPctVal(r.base_prob)}<small>sharp / true</small></td>
     <td><b>${evPctVal(r.true_prob)}</b></td>
@@ -1280,9 +1280,9 @@ function gameSimVisual(sim, away, home, awayCol, homeCol) {
   if (!dists.margin || !dists.total) return "";
   const awayMed = distMedian(dists.away), homeMed = distMedian(dists.home);
   window.__caGameSim = Object.assign(window.__caGameSim || {}, { dists, awayCol, homeCol });
-  const tabs = [["margin", "Spread"], ["total", "Total"], ["away", `${away} total`], ["home", `${home} total`]];
+  const tabs = [["margin", "Spread"], ["total", "Total"], ["away", `${ctxEsc(away)} total`], ["home", `${ctxEsc(home)} total`]];
   const defLine = distMedian(dists.margin);
-  const teamTotals = `<div class="team-totals"><div class="tt"><span class="tt-name">${away}</span><span class="tt-score" style="color:${awayCol}">${awayMed}</span></div><span class="tt-vs">sim median</span><div class="tt"><span class="tt-score" style="color:${homeCol}">${homeMed}</span><span class="tt-name">${home}</span></div></div>`;
+  const teamTotals = `<div class="team-totals"><div class="tt"><span class="tt-name">${ctxEsc(away)}</span><span class="tt-score" style="color:${awayCol}">${awayMed}</span></div><span class="tt-vs">sim median</span><div class="tt"><span class="tt-score" style="color:${homeCol}">${homeMed}</span><span class="tt-name">${ctxEsc(home)}</span></div></div>`;
   const tabBar = `<div class="sim-tabs">${tabs.map(([k, l], i) => `<button class="sim-tab${i === 0 ? " active" : ""}" data-dist="${k}">${l}</button>`).join("")}</div>`;
   const controls = `<div class="sim-controls">Line <input id="sim-line" type="number" step="0.5" value="${defLine}" inputmode="decimal"></div>`;
   const chart = `<div id="sim-chart">${histogramSVG(dists.margin, { line: defLine, colorFn: gameChartColorFn("margin", defLine, awayCol, homeCol) })}</div>`;
@@ -1303,19 +1303,19 @@ function boxscoreSection(sims, r) {
   const qbTable = (list) => {
     const qbs = list.filter((p) => p.pos === "QB" && mean(p.id, "pass_yds")).sort((a, b) => mean(b.id, "pass_yds") - mean(a.id, "pass_yds"));
     if (!qbs.length) return "";
-    return `<table class="ev-table box"><thead><tr><th>QB</th><th>Pass Yds</th><th>Pass TD</th><th>Rush Yds</th></tr></thead><tbody>${qbs.map((p) => `<tr class="box-row" ${clk(p.id, "pass_yds")}><td>${p.name}</td><td>${num(mean(p.id, "pass_yds"))}</td><td>${num(mean(p.id, "pass_tds"), 1)}</td><td>${num(mean(p.id, "rush_yds"))}</td></tr>`).join("")}</tbody></table>`;
+    return `<table class="ev-table box"><thead><tr><th>QB</th><th>Pass Yds</th><th>Pass TD</th><th>Rush Yds</th></tr></thead><tbody>${qbs.map((p) => `<tr class="box-row" ${clk(p.id, "pass_yds")}><td>${ctxEsc(p.name)}</td><td>${num(mean(p.id, "pass_yds"))}</td><td>${num(mean(p.id, "pass_tds"), 1)}</td><td>${num(mean(p.id, "rush_yds"))}</td></tr>`).join("")}</tbody></table>`;
   };
   const rushTable = (list) => {
     const rb = list.filter((p) => (mean(p.id, "rush_yds") || 0) >= 5 && p.pos !== "QB").sort((a, b) => mean(b.id, "rush_yds") - mean(a.id, "rush_yds")).slice(0, 6);
     if (!rb.length) return "";
-    return `<table class="ev-table box"><thead><tr><th>Rusher</th><th>Rush Yds</th><th>Any TD</th></tr></thead><tbody>${rb.map((p) => `<tr class="box-row" ${clk(p.id, "rush_yds")}><td>${p.name}</td><td>${num(mean(p.id, "rush_yds"))}</td><td>${atd(p.id)}</td></tr>`).join("")}</tbody></table>`;
+    return `<table class="ev-table box"><thead><tr><th>Rusher</th><th>Rush Yds</th><th>Any TD</th></tr></thead><tbody>${rb.map((p) => `<tr class="box-row" ${clk(p.id, "rush_yds")}><td>${ctxEsc(p.name)}</td><td>${num(mean(p.id, "rush_yds"))}</td><td>${atd(p.id)}</td></tr>`).join("")}</tbody></table>`;
   };
   const recTable = (list) => {
     const wr = list.filter((p) => (mean(p.id, "rec_yds") || 0) >= 5 && p.pos !== "QB").sort((a, b) => mean(b.id, "rec_yds") - mean(a.id, "rec_yds")).slice(0, 7);
     if (!wr.length) return "";
-    return `<table class="ev-table box"><thead><tr><th>Receiver</th><th>Rec Yds</th><th>Rec</th><th>Any TD</th></tr></thead><tbody>${wr.map((p) => `<tr class="box-row" ${clk(p.id, "rec_yds")}><td>${p.name}</td><td>${num(mean(p.id, "rec_yds"))}</td><td>${num(mean(p.id, "receptions"), 1)}</td><td>${atd(p.id)}</td></tr>`).join("")}</tbody></table>`;
+    return `<table class="ev-table box"><thead><tr><th>Receiver</th><th>Rec Yds</th><th>Rec</th><th>Any TD</th></tr></thead><tbody>${wr.map((p) => `<tr class="box-row" ${clk(p.id, "rec_yds")}><td>${ctxEsc(p.name)}</td><td>${num(mean(p.id, "rec_yds"))}</td><td>${num(mean(p.id, "receptions"), 1)}</td><td>${atd(p.id)}</td></tr>`).join("")}</tbody></table>`;
   };
-  const col = (teamName) => { const list = teamPlayers(teamName); return `<div class="box-col"><h3>${teamName}</h3>${qbTable(list)}${rushTable(list)}${recTable(list)}</div>`; };
+  const col = (teamName) => { const list = teamPlayers(teamName); return `<div class="box-col"><h3>${ctxEsc(teamName)}</h3>${qbTable(list)}${rushTable(list)}${recTable(list)}</div>`; };
   return `<section class="section boxscore"><div class="section-title"><div><h2>Boxscore <span class="sim-tag">median by player</span></h2><p>Sim median stat line · tap a player for their full distribution.</p></div></div><div class="box-grid">${col(r.away_team_name)}${col(r.home_team_name)}</div><div id="player-dist"></div></section>`;
 }
 function distMean(dist) {
@@ -1357,7 +1357,7 @@ function wireGameSim() {
     const opts = markets.map((k) => `<option value="${k}"${k === mk ? " selected" : ""}>${MK[k] || k}</option>`).join("");
     const panel = view.querySelector("#player-dist");
     if (!panel) return;
-    panel.innerHTML = `<div class="player-dist-inner"><div class="section-title"><div><h2>${pl.name} — ${pl.team} · ${pl.pos}</h2></div><button class="pd-close" data-close-pd>Close</button></div><div class="sim-controls">Stat <select id="pd-stat" data-cur="${mk}">${opts}</select> Line <input id="pd-line" type="number" step="0.5" value="${line}" inputmode="decimal"></div><div id="pd-chart">${histogramSVG(dist, { line, accent: playerColor(pl), width: widthOf(panel) })}</div><div id="pd-prob">${probVsLineRow(dist, line)}</div></div>`;
+    panel.innerHTML = `<div class="player-dist-inner"><div class="section-title"><div><h2>${ctxEsc(pl.name)} — ${ctxEsc(pl.team)} · ${ctxEsc(pl.pos)}</h2></div><button class="pd-close" data-close-pd>Close</button></div><div class="sim-controls">Stat <select id="pd-stat" data-cur="${mk}">${opts}</select> Line <input id="pd-line" type="number" step="0.5" value="${line}" inputmode="decimal"></div><div id="pd-chart">${histogramSVG(dist, { line, accent: playerColor(pl), width: widthOf(panel) })}</div><div id="pd-prob">${probVsLineRow(dist, line)}</div></div>`;
   };
   const redrawPlayer = () => {
     const pl = g.players && g.players[g.activePlayer]; if (!pl) return;
@@ -1502,7 +1502,7 @@ function propsProjectionSection(sims, props, actuals, lines, modelTag = "") {
     ["PASS TD", (p) => cell(p, "pass_tds", 1)], ["RUSH TD", anyTd]];
   const SKILL_COLS = [["REC YDS", (p) => cell(p, "rec_yds")], ["REC'NS", (p) => cell(p, "receptions", 1)],
     ["RUSH YDS", (p) => cell(p, "rush_yds")], ["RUSH ATT", (p) => cell(p, "rush_att", 1)], ["TD", anyTd]];
-  const group = (title, list, cols) => !list.length ? "" : `<div class="prop-group"><h3>${title}<small>${list.length}</small></h3><div class="table-wrap"><table class="ev-table prop-proj"><thead><tr><th>PLAYER</th>${cols.map(([h]) => `<th>${h}</th>`).join("")}</tr></thead><tbody>${list.map((p) => `<tr><td><b>${p.name}</b><small>${p.team || ""}</small></td>${cols.map(([, f]) => `<td>${f(p)}</td>`).join("")}</tr>`).join("")}</tbody></table></div></div>`;
+  const group = (title, list, cols) => !list.length ? "" : `<div class="prop-group"><h3>${title}<small>${list.length}</small></h3><div class="table-wrap"><table class="ev-table prop-proj"><thead><tr><th>PLAYER</th>${cols.map(([h]) => `<th>${h}</th>`).join("")}</tr></thead><tbody>${list.map((p) => `<tr><td><b>${ctxEsc(p.name)}</b><small>${ctxEsc(p.team || "")}</small></td>${cols.map(([, f]) => `<td>${f(p)}</td>`).join("")}</tr>`).join("")}</tbody></table></div></div>`;
   const groups = group("Quarterbacks", qbs, QB_COLS) + group("Running Backs", atPos("RB"), SKILL_COLS)
     + group("Wide Receivers", atPos("WR"), SKILL_COLS) + group("Tight Ends", atPos("TE"), SKILL_COLS);
   const note = (hasActuals
@@ -1546,7 +1546,7 @@ function splitsSection(splits, r, awayCol, homeCol) {
     return `<div class="split-row">
       <div class="split-mkt">${label}</div>
       <div class="split-bar"><span style="width:${lp}%;background:${lCol}"></span><span style="width:${rp}%;background:${rCol}"></span></div>
-      <div class="split-legend"><span><b style="color:${lCol}">${t(lPct)}</b> ${lLbl}</span><span>${rLbl} <b style="color:${rCol}">${t(rPct)}</b></span></div>
+      <div class="split-legend"><span><b style="color:${lCol}">${t(lPct)}</b> ${ctxEsc(lLbl)}</span><span>${ctxEsc(rLbl)} <b style="color:${rCol}">${t(rPct)}</b></span></div>
     </div>`;
   };
   const away = r.away_team_name, home = r.home_team_name;
@@ -1926,15 +1926,15 @@ function nflPredictionSection(r, actual, modelTag = "") {
     const aa = Math.round((actual.actual_total - actual.actual_margin) / 2);
     const m = +actual.actual_margin;
     const w = actual.actual_winner || (m >= 0 ? r.home_team_name : r.away_team_name);
-    aWin = `Actual: <b>${w}</b>${ok(actual.winner_correct)}`;
+    aWin = `Actual: <b>${ctxEsc(w)}</b>${ok(actual.winner_correct)}`;
     aScore = `Actual: <b>${aa}–${ah}</b>`;
-    aMargin = `Actual: <b>${m === 0 ? "tie" : `${m > 0 ? r.home_team_name : r.away_team_name} by ${Math.abs(m)}`}</b>${ok(actual.spread_pick_correct)}`;
+    aMargin = `Actual: <b>${m === 0 ? "tie" : `${ctxEsc(m > 0 ? r.home_team_name : r.away_team_name)} by ${Math.abs(m)}`}</b>${ok(actual.spread_pick_correct)}`;
     aTotal = `Actual: <b>${(+actual.actual_total).toFixed(0)}</b>${ok(actual.total_pick_correct)}`;
   }
   const head = `<div class="section-title"><div><h2>Prediction ${modelTag}</h2><p>Pre-game projection${graded ? " · actual result beside each once graded" : ""}</p></div></div>`;
   return `<section class="section pred-block">${head}<section class="compact-stats">
-    ${card("PROJECTED WINNER", predWinner(r), `${confPct(r.home_win_prob)} win probability`, aWin)}
-    ${card("PROJECTED SCORE", projScore(r), matchupOf(r), aScore)}
+    ${card("PROJECTED WINNER", ctxEsc(predWinner(r)), `${confPct(r.home_win_prob)} win probability`, aWin)}
+    ${card("PROJECTED SCORE", projScore(r), ctxEsc(matchupOf(r)), aScore)}
     ${card("SPREAD LEAN", spreadLean(r), `model ${homeSpread(r)}`, aMargin, "blue")}
     ${card("TOTAL LEAN", totalLean(r), `model ${modelTotal(r)}`, aTotal, "cyan")}
   </section></section>`;
@@ -2700,14 +2700,14 @@ async function render() {
     let body;
     if (page === "dashboard") body = await buildDashboard();
     else if (page === "track") body = await buildTrack();
-    else if (page === "game") body = await buildGame();
+    else if (page === "game") body = await buildGamePage();
     else if (page === "ev") body = await buildEvPage();
     else if (page === "settings") body = buildSettings();
     else if (page === "rankings") body = await buildRankings();
     else body = await buildLeague(page); // cfb / nfl
     shell.innerHTML = siteHeader(page === "rankings" || page === "settings" ? "" : page) + `<div class="ca-page">${body}</div>` + footer(); wireShell();
     if (page === "dashboard") wireDashboard();
-    if (page === "game") wireGameSim();
+    if (page === "game") wireGamePage();
     if (page === "track") { wireTrack(selTrackLeague, selTrackWeek); wirePropGames(); wirePnl(); }
     if (page === "ev") wireEvPage2();
     if (page === "settings") wireSettings();
