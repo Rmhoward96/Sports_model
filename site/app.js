@@ -2051,8 +2051,23 @@ function injectStylesOnce() {  // one-time; re-renders must not keep appending <
 }
 
 const BOARD_PAGES = ["nfl", "cfb", "mlb", "nba"];
-async function render() {
+const navPage = () => (page === "rankings" || page === "settings" ? "" : page);
+// Each render takes a token; an older render still awaiting its data never paints over a newer one.
+let renderSeq = 0;
+// The 5-minute refresh skips a tick while the user is typing / choosing in a field on the page (e.g. the +EV or
+// Track Record search box): a re-render would replace the field under them.
+function editingInPage(doc = document) {
+  const a = doc.activeElement;
+  return !!(a && a.closest && a.matches && a.closest(".ca-page") && a.matches("input, select, textarea"));
+}
+async function render({ auto = false } = {}) {
   const shell = document.querySelector(".page-shell");
+  if (auto && editingInPage()) return;
+  const seq = ++renderSeq;
+  // First load: paint the header (and a small "Loading…") right away instead of a blank page while the data loads.
+  if (!shell.querySelector(".ca-header")) {
+    shell.innerHTML = siteHeader(navPage()) + `<div class="ca-page"><p class="ca-loading">Loading…</p></div>` + footer(); wireShell();
+  }
   // preserve scroll so the 5-min refresh isn't disruptive (each page keeps its own tab/filter/sort state)
   const scrollY = window.scrollY;
   try {
@@ -2068,7 +2083,8 @@ async function render() {
     else if (page === "rankings") body = await buildRankings();
     else if (BOARD_PAGES.includes(page)) body = await buildBoardPage(page);
     else throw new Error(`Unknown page: ${page}`);
-    shell.innerHTML = siteHeader(page === "rankings" || page === "settings" ? "" : page) + `<div class="ca-page">${body}</div>` + footer(); wireShell();
+    if (seq !== renderSeq) return;   // a newer render started while this one loaded: drop this one
+    shell.innerHTML = siteHeader(navPage()) + `<div class="ca-page">${body}</div>` + footer(); wireShell();
     if (page === "dashboard") wireDashboard();
     if (page === "game") wireGamePage();
     if (page === "track") wireTrackPage();
@@ -2078,6 +2094,7 @@ async function render() {
     if (BOARD_PAGES.includes(page)) wireBoardPage();
     window.scrollTo(0, scrollY);
   } catch (e) {
+    if (seq !== renderSeq) return;
     shell.innerHTML = siteHeader("") + `<div class="ca-page"><main><section class="section"><div class="section-title"><h2>Couldn’t load data</h2></div><p style="opacity:.7">${ctxEsc(e && e.message)}</p></section></main></div>` + footer(); wireShell();
     console.error(e);
   }

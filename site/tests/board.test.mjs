@@ -248,7 +248,7 @@ test("cards are isolated: a board failure does not blank the page, and fetch fai
 
 // ---- interaction ----------------------------------------------------------------------------------
 function fakeBoardDoc() {
-  const handlers = {}, root = { addEventListener: (t, f) => { handlers[t] = f; } }, els = {}, shell = { innerHTML: "" };
+  const handlers = {}, root = { addEventListener: (t, f) => { handlers[t] = f; } }, els = {}, shell = { innerHTML: "", querySelector: () => null };
   const doc = { body: { dataset: { page: "nfl" }, appendChild() {}, classList: { add() {}, remove() {} } }, head: { appendChild() {} }, documentElement: {}, createElement: () => ({}),
     querySelector: (sel) => (sel === ".ca-board" ? root : sel === ".page-shell" ? shell : null),
     getElementById: (id) => (els[id] = els[id] || { id, outerHTML: "" }), querySelectorAll: () => [], addEventListener() {} };

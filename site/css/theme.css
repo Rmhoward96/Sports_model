@@ -60,10 +60,14 @@ a{color:inherit}
 .ca-star{background:none;border:0;cursor:pointer;color:var(--amber);font-size:17px}
 .ca-select,.ca-input{border:1px solid var(--line);background:#fff;border-radius:8px;padding:9px 12px;font:500 14px var(--sans);color:var(--ink)}
 .ca-btn{border:1px solid var(--line);background:#fff;border-radius:8px;padding:8px 12px;font-weight:600;cursor:pointer}
+.ca-loading{color:var(--muted);padding:40px 4px;margin:0}
+/* Site footer (app.js footer()): outside .ca-page, aligned to its content box (1440px - 2 x 32px gutters). */
+footer{max-width:1376px;width:calc(100% - 64px);margin:0 auto;padding:16px 0 32px;border-top:1px solid var(--line);color:var(--muted);font-size:13px}
 @media (max-width:620px){
   .ca-header-inner{padding:0 16px;gap:14px;height:auto;flex-wrap:wrap}
   .ca-nav{order:3;width:100%;overflow-x:auto;gap:18px}
   .ca-page{padding:16px}
+  footer{width:calc(100% - 32px)}
   .ca-title h1{font-size:32px}
   .ca-stats{grid-template-columns:1fr}
 }
