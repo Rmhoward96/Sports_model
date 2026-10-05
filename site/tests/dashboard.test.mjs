@@ -269,7 +269,7 @@ const slice = (html, from, to) => html.slice(html.indexOf(`id="${from}"`), html.
 test("populated render (today): board lists the next 7 days by EV (kickoff in the matchup tooltip); stat cards use one performance population", async () => {
   const { D, requested } = populated();
   const html = await D.buildDashboard();
-  const opps = slice(html, "dash-opps", "dash-slate");
+  const opps = slice(html, "dash-opps", "dash-perf");
   const rows = opps.match(/<tr data-href/g) || [];
   assert.equal(rows.length, 3, "A (+2d), prop (+3d), D (+4d); not the past game or the +10d game");
   assert.ok(!opps.includes("Game Time") && !opps.includes("ca-dash-gtime"), "F3: no Game Time column on the dashboard");
@@ -292,7 +292,7 @@ test("populated render (a date): the board is date-scoped to that date", async (
   const d = new Date(NOW + 48 * 36e5).toLocaleDateString("en-CA", { timeZone: "America/New_York" });
   const P = populated({ search: `?date=${d}` });
   const html = await P.D.buildDashboard();
-  const opps = slice(html, "dash-opps", "dash-slate");
+  const opps = slice(html, "dash-opps", "dash-perf");
   assert.equal((opps.match(/<tr data-href/g) || []).length, 1);
   assert.ok(opps.includes("game=1") && !opps.includes("game=5") && !opps.includes("game=4"));
   assert.ok(html.includes("Top edges for this date — model for props, sharp fair price for game lines"));
@@ -305,7 +305,7 @@ test("populated render: team and player names are escaped everywhere, including 
   assert.ok(html.includes("&lt;b&gt;Crew&lt;/b&gt;"), "team name is escaped");
   assert.ok(html.includes("O&quot;Brien &lt;i&gt;Zed&lt;/i&gt;"), "player name is escaped");
   assert.ok(!html.includes("<b>Crew</b>") && !html.includes("<i>Zed</i>"), "no raw markup from data");
-  const mv = slice(html, "dash-movers", "dash-expo").slice(0, 4000);
+  const mv = slice(html, "dash-movers", "dash-slate").slice(0, 4000);
   assert.ok(mv.includes("Market → model") && mv.includes("pts"), "Model vs. Market tab has rows");
   assert.ok(!/NaN|undefined/.test(html));
   D.dashState.movers = "moves";
@@ -317,7 +317,7 @@ test("populated render: Watchlist shows a starred game (on star) and a starred p
   const wl = html.slice(html.indexOf('id="watchlist"'));
   assert.match(wl, /class="ca-star on"[^>]*data-star-kind="games" data-star-id="1"/);
   assert.ok(wl.includes("&lt;b&gt;Crew&lt;/b&gt;"));
-  const slate = slice(html, "dash-slate", "dash-perf");
+  const slate = slice(html, "dash-slate", "dash-expo");
   assert.match(slate, /class="ca-star on"[^>]*data-star-kind="games" data-star-id="1"/);
   D.dashState.watch = "players";
   html = await D.buildDashboard();
@@ -334,7 +334,7 @@ test("pill state in window.__caDash survives a second buildDashboard()", async (
   for (const html of [a, b]) {
     assert.match(html, /class="ca-pill on" data-pill="dash-kind" data-key="prop"/);
     assert.match(html, /class="ca-pill on" data-pill="dash-slate" data-key="nfl"/);
-    assert.equal((slice(html, "dash-opps", "dash-slate").match(/<tr data-href/g) || []).length, 1, "prop filter applies");
+    assert.equal((slice(html, "dash-opps", "dash-perf").match(/<tr data-href/g) || []).length, 1, "prop filter applies");
   }
   assert.equal(D.dashState.kind, "prop");
 });
@@ -356,13 +356,13 @@ test("Line Moves empty state is user-facing copy", async () => {
   D.dashState.movers = "moves";
   const html = await D.buildDashboard();
   assert.ok(html.includes("No line moves captured for upcoming games yet."));
-  assert.ok(!/migration|view/i.test(slice(html, "dash-movers", "dash-expo").replace(/viewBox/g, "")));
+  assert.ok(!/migration|view/i.test(slice(html, "dash-movers", "dash-slate").replace(/viewBox/g, "")));
 });
 
 test("R19: Best Opportunities marks game-line probabilities as the sharp fair price; prop rows carry no marker", async () => {
   const { D } = populated();
   const html = await D.buildDashboard();
-  const opps = slice(html, "dash-opps", "dash-slate");
+  const opps = slice(html, "dash-opps", "dash-perf");
   assert.match(opps, /<th title="Model for player props; sharp fair price \(Pinnacle no-vig\) for game lines">Model Prob\.<\/th>/);
   const rows = opps.split("<tr data-href").slice(1);
   const lineRow = rows.find((r) => r.includes("game=1")), propRow = rows.find((r) => r.includes("game=5"));
@@ -416,7 +416,7 @@ const statBlock = (html, label) => { const i = html.indexOf(`<span class="ca-sta
 test("D3: Opportunities table columns are exactly # · Sport · Matchup/Player · Market · Best Odds · Model Prob. · Market Prob. · Edge · Alpha Score · Confidence · arrow", async () => {
   const { D } = populated();
   const html = await D.buildDashboard();
-  const opps = slice(html, "dash-opps", "dash-slate");
+  const opps = slice(html, "dash-opps", "dash-perf");
   assert.deepEqual(ths(opps), ["#", "Sport", "Matchup / Player", "Market", "Best Odds", "Model Prob.", "Market Prob.", "Edge", "Alpha Score", "Confidence", ""]);
   const row = opps.split("<tr data-href")[1];
   assert.equal((row.match(/<td/g) || []).length, 11, "one cell per header");
@@ -425,7 +425,7 @@ test("D3: Opportunities table columns are exactly # · Sport · Matchup/Player �
 
 test("D2: Opportunities head is title + one-line subtitle + View All; pills are sports, a gap, then Game Lines / Player Props", async () => {
   const { D } = populated();
-  const opps = slice(await D.buildDashboard(), "dash-opps", "dash-slate");
+  const opps = slice(await D.buildDashboard(), "dash-opps", "dash-perf");
   assert.match(opps, /<div class="ca-card-head"><h2>Best Opportunities Right Now<\/h2><p title="[^"]+">Top model edges across all sports, sorted by expected value\.<\/p><span class="ca-info"[^>]*>i<\/span><a class="ca-link" href="ev\.html">View All →<\/a><\/div>/);
   const row = opps.slice(opps.indexOf('class="ca-dash-pillrow"'), opps.indexOf('<div class="ca-table-wrap">'));
   assert.deepEqual([...row.matchAll(/data-pill="(dash-op|dash-kind)" data-key="(\w+)"/g)].map((m) => m[2]), ["all", "nfl", "cfb", "mlb", "nba", "line", "prop"]);
@@ -434,30 +434,34 @@ test("D2: Opportunities head is title + one-line subtitle + View All; pills are 
 
 test("D4: Today's Slate has its pills on the title row (before View All) and the columns Time · Matchup/Player · Market · Line · Alpha Score · arrow", async () => {
   const { D } = populated();
-  const slate = slice(await D.buildDashboard(), "dash-slate", "dash-perf");
+  const slate = slice(await D.buildDashboard(), "dash-slate", "dash-expo");
   const head = slate.slice(0, slate.indexOf("</a></div>") + 10);
   assert.match(head, /^id="dash-slate"><div class="ca-card-head"><h2>Today’s Slate<\/h2><div class="ca-pills"[\s\S]*?<\/div><a class="ca-link" href="[a-z]+\.html">View All →<\/a><\/div>$/);
   assert.deepEqual([...head.matchAll(/data-pill="dash-slate" data-key="(\w+)"/g)].map((m) => m[1]), ["all", "nfl", "cfb", "mlb", "nba"]);
   assert.deepEqual(ths(slate), ["Time (ET)", "Matchup / Player", "Market", "Line", "Alpha Score", ""]);
 });
 
-test("D5: top row = Opportunities + Slate; bottom row = Performance, Movers, Portfolio, Watchlist in ONE four-card row", async () => {
+test("D5 (fix round 1): two independent columns; each stacks its main card over a two-card row", async () => {
   const { D } = populated();
   const html = await D.buildDashboard();
-  const top = html.slice(html.indexOf('class="ca-dash-top"'), html.indexOf('class="ca-dash-bottom"'));
-  const bottom = html.slice(html.indexOf('class="ca-dash-bottom"'));
   const ids = (h) => [...h.matchAll(/<section class="ca-card ca-dash-card" id="([\w-]+)"/g)].map((m) => m[1]);
-  assert.deepEqual(ids(top), ["dash-opps", "dash-slate"]);
-  assert.deepEqual(ids(bottom), ["dash-perf", "dash-movers", "dash-expo", "watchlist"]);
-  assert.ok(!html.includes("ca-dash-main") && !html.includes("ca-dash-sub"), "the two-column layout is gone");
+  const cols = html.split('<div class="ca-dash-col">').slice(1);
+  assert.equal(cols.length, 2);
+  assert.deepEqual(ids(cols[0]), ["dash-opps", "dash-perf", "dash-movers"]);
+  assert.deepEqual(ids(cols[1]), ["dash-slate", "dash-expo", "watchlist"]);
+  assert.ok(cols[0].includes('class="ca-dash-sub ca-dash-sub-l"') && cols[1].includes('class="ca-dash-sub ca-dash-sub-r"'));
+  assert.ok(!html.includes("ca-dash-bottom") && !html.includes("ca-dash-top"), "no single four-card row");
   const theme = fs.readFileSync(new URL("../css/theme.css", import.meta.url), "utf8");
-  assert.match(theme, /\.ca-dash-bottom\{display:grid;grid-template-columns:minmax\(0,1\.48fr\) minmax\(0,1\.29fr\) minmax\(0,1fr\) minmax\(0,1fr\);[^}]*align-items:stretch/, "31 / 27 / 21 / 21 %, equal heights");
+  assert.match(theme, /\.ca-dash-main\{display:grid;grid-template-columns:minmax\(0,1\.56fr\) minmax\(0,1fr\);gap:16px;align-items:start\}/, "61 / 39 columns that do not share a baseline");
+  assert.match(theme, /\.ca-dash-sub\{display:grid;gap:16px;align-items:stretch\}/, "equal height inside each pair");
+  assert.match(theme, /\.ca-dash-sub-l\{grid-template-columns:minmax\(0,1\.17fr\) minmax\(0,1fr\)\}/);
+  assert.match(theme, /\.ca-dash-sub-r\{grid-template-columns:repeat\(2,minmax\(0,1fr\)\)\}/);
 });
 
 test("D6: Performance Snapshot: pills + View Track Record on the title row, four mini boxes, population caption in a tooltip", async () => {
   const { D } = populated();
   const perf = slice(await D.buildDashboard(), "dash-perf", "dash-movers");
-  assert.match(perf, /<div class="ca-card-head"><h2>Performance Snapshot<\/h2><span class="ca-info" title="16 graded \+EV picks[^"]*"[\s\S]*?<div class="ca-pills"[\s\S]*?<\/div><a class="ca-link" href="track-record\.html">View Track Record →<\/a><\/div>/);
+  assert.match(perf, /<div class="ca-card-head"><h2>Performance Snapshot<\/h2><span class="ca-info" title="16 graded \+EV picks[^"]*"[\s\S]*?<div class="ca-pills"[\s\S]*?<\/div><a class="ca-link" href="track-record\.html"><span class="ca-lk-opt">View <\/span>Track Record →<\/a><\/div>/);
   assert.deepEqual([...perf.matchAll(/<div class="ca-dash-mini"><span>([^<]+)<\/span>/g)].map((m) => m[1]), ["ROI", "Units", "Hit Rate", "Avg. Edge"]);
   assert.ok(!perf.includes("ca-dash-cap"), "no caption paragraph under the boxes");
   assert.match(perf, /height:140px/, "short cumulative-units chart");

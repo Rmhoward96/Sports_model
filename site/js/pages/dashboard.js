@@ -286,7 +286,7 @@ function dashPerfCard(D) {
   const chart = areaChart(pts, { h: 140, yTicks: 4 });
   // The population caption is a tooltip (i) beside the title.
   const cap = p.n ? `${p.n} graded +EV picks (${dashRecord(p)}) · ROI, Units and Hit Rate cover the same bets${p.edgeN ? ` · Avg. Edge: ${p.edgeN} game-line picks with a flagged price` : ""}` : "";
-  return `<section class="ca-card ca-dash-card" id="dash-perf"><div class="ca-card-head"><h2>Performance Snapshot</h2>${infoTip(cap)}${pills("dash-perf", [["7d", "7D"], ["30d", "30D"], ["season", "Season"]], w)}<a class="ca-link" href="track-record.html">View Track Record →</a></div>
+  return `<section class="ca-card ca-dash-card" id="dash-perf"><div class="ca-card-head"><h2>Performance Snapshot</h2>${infoTip(cap)}${pills("dash-perf", [["7d", "7D"], ["30d", "30D"], ["season", "Season"]], w)}<a class="ca-link" href="track-record.html"><span class="ca-lk-opt">View </span>Track Record →</a></div>
     <div class="ca-dash-minis">${mini("ROI", p.n ? pStr(p.roiPct) : "—", signCls(p.roiPct))}${mini("Units", p.n ? uStr(p.units) : "—", signCls(p.units))}${mini("Hit Rate", p.hitRate == null ? "—" : `${(p.hitRate * 100).toFixed(1)}%`)}${mini("Avg. Edge", p.avgEdge == null ? "—" : pStr(p.avgEdge), signCls(p.avgEdge))}</div>
     ${chart || emptyMsg("No graded +EV picks in this window yet.")}</section>`;
 }
@@ -409,8 +409,10 @@ async function buildDashboard() {
     <button class="ca-dn-btn" data-dash-date="${addDays(date, 1)}" aria-label="Next day">›</button></div>`;
   return `<div class="ca-dash">${pageTitle("Today at a Glance", "Key opportunities, performance, and model insights across all sports.", nav)}
     ${dashStatCards(D)}
-    <div class="ca-dash-top">${dashCard("dash-opps", D)}${dashCard("dash-slate", D)}</div>
-    <div class="ca-dash-bottom">${dashCard("dash-perf", D)}${dashCard("dash-movers", D)}${dashCard("dash-expo", D)}${dashCard("watchlist", D)}</div></div>`;
+    <div class="ca-dash-main">
+      <div class="ca-dash-col">${dashCard("dash-opps", D)}<div class="ca-dash-sub ca-dash-sub-l">${dashCard("dash-perf", D)}${dashCard("dash-movers", D)}</div></div>
+      <div class="ca-dash-col">${dashCard("dash-slate", D)}<div class="ca-dash-sub ca-dash-sub-r">${dashCard("dash-expo", D)}${dashCard("watchlist", D)}</div></div>
+    </div></div>`;
 }
 
 function dashGoDate(d) {
