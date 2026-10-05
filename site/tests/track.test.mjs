@@ -282,7 +282,7 @@ const clean = (html) => html.replace(/\bnull\b(?=[^<]*>)/g, "");
 test("buildTrackPage: title, range pills, five stat cards, every chart card, filters, table and right column; names escaped; no NaN / undefined", async () => {
   const { T, requested } = populated();
   const html = await T.buildTrackPage();
-  for (const t of ["Track Record", "Prediction performance across leagues and markets.", "7D", "30D", "Season", "All Time", "Archive", "Model picks", "+EV picks",
+  for (const t of ["Track Record", "Prediction performance across leagues and markets.", "7D", "30D", "Season", "All Time", "Model picks", "+EV picks", "NFL archive (pre-",
     "OVERALL RECORD", "ACCURACY VS CLOSING LINE", "TOTAL PREDICTIONS", "CURRENT STREAK", "AVERAGE CONFIDENCE", "vs market", "Across all leagues and markets",
     "Cumulative Prediction Performance", "Overall", "Performance by Market", "Win %", "Loss %", "Push %", "Performance by League", "Confidence Calibration", "Predicted Confidence", "Actual Hit Rate",
     "Recent Form", "Last 10", "Last 25", "Last 50", "Last 100", "All Predictions", "Moneyline", "Spread", "Totals", "All Leagues", "All Markets", "All Confidence", "All Results", "Most Recent", "Highest Confidence",
@@ -489,12 +489,16 @@ test("interaction: range, archive, filters, Show more and the URL (non-default v
   D.handlers.click(hit({ "[data-pill]": { dataset: { pill: "trk-range", key: "7d" } } }));
   assert.equal(last().searchParams.get("range"), "7d"); assert.equal([...last().searchParams.keys()].join(), "range", "non-default values only");
   assert.match(D.root.innerHTML, /class="ca-pill on" data-pill="trk-range" data-key="7d"/);
-  // archive toggle
-  D.handlers.click(hit({ "[data-trk-archive]": {} }));
+  // the Record select: archive (redraw from the cached load), back to model picks, +EV picks (refetch = render())
+  const record = (value) => D.handlers.change({ target: { closest: (sel) => (sel === "select[data-trk-record]" ? { value } : null) } });
+  record("archive");
   assert.equal(last().searchParams.get("archive"), "1"); assert.deepEqual([...last().searchParams.keys()].sort(), ["archive", "range"]);
   assert.match(D.root.innerHTML, /archived pre-restart/);
-  D.handlers.click(hit({ "[data-trk-archive]": {} }));
-  assert.equal(last().searchParams.has("archive"), false, "toggling back removes the param");
+  D.handlers.click(hit({ "[data-trk-record-back]": {} }));
+  assert.equal(last().searchParams.has("archive"), false, "back to the record removes the param");
+  assert.doesNotMatch(D.root.innerHTML, /archived pre-restart/);
+  record("archive"); record("model");
+  assert.equal(last().searchParams.has("archive"), false);
   D.handlers.click(hit({ "[data-pill]": { dataset: { pill: "trk-range", key: "all" } } }));
   assert.equal(last().search, "", "everything back to default: a clean URL");
   // a select change redraws the filters + table cards only and resets the page size
@@ -545,11 +549,162 @@ test("CSS contract: every ca-* class the +EV and Track Record filter bars emit e
   assert.ok(!/\.ca-ev-f[ {.]|\.ca-ev-search|\.ca-ev-cap/.test(css), "no dead CSS for the renamed shared classes");
 });
 
-test("Overall Record says it combines moneyline winner picks with spread / total picks vs the line (tooltip + caption)", async () => {
+test("Overall Record: the (i) tooltip says what the record combines AND carries the NFL restart note; no caption line, no header note", async () => {
   const { T } = populated();
   const html = await T.buildTrackPage();
   const card = html.slice(html.indexOf("OVERALL RECORD") - 120, html.indexOf("ACCURACY VS CLOSING LINE"));
-  assert.match(card, /<span title="Combines moneyline winner picks with spread and total picks graded against the line">OVERALL RECORD<\/span>/);
-  assert.ok(card.includes("Moneyline winners + spread / total picks vs the line"));
-  assert.ok(!/__cappingAlphaChartSeries/.test(fs.readFileSync(new URL("../js/pages/track.js", import.meta.url), "utf8")), "dead legacy chart global removed");
+  assert.match(card, /<span class="ca-info" title="Combines moneyline winner picks with spread and total picks graded against the line\. NFL record restarted with the ML v2 model on [A-Z][a-z]{2} \d{1,2}, \d{4}; earlier NFL results are archived for comparison\."/);
+  assert.match(card, /class="ca-stat-label"[^>]*><span class="ca-stat-lt">OVERALL RECORD<\/span><span class="ca-info"/, "the (i) sits right next to the label");
+  assert.ok(!card.includes("Moneyline winners + spread / total picks vs the line"), "the caption line moved into the tooltip");
+  assert.ok(!html.includes("ca-trk-note") && !/ca-trk-sub/.test(html), "the restart-note line and the toggle row are gone from the page");
+  assert.ok(!/ca-trk-arch|data-trk-archive|data-pill="trk-view"/.test(html), "no Archive pill and no Model / +EV toggle");
+  const none = loadScripts(["app.js", "js/metrics.js", "js/ui.js", "js/shell.js", "js/data.js", "js/pages/track.js", "js/boot.js"], { page: "track", globals: { fetch: async (u) => ({ ok: true, json: async () => (String(u).includes("prediction_accuracy") ? [A({ sport: "cfb", game_pk: 1, game_date: dayOff(-1) })] : []) } ) } });
+  assert.match(await none.buildTrackPage(), /title="Combines moneyline winner picks[^"]*NFL predictions switched to the ML model on Sep 28, 2026/, "no restart row: the fallback wording");
+  assert.ok(!fs.readFileSync(new URL("../js/pages/track.js", import.meta.url), "utf8").includes("__cappingAlphaChartSeries"), "dead legacy chart global removed");
+});
+
+/* ── fidelity task 4 (T1-T7) ──────────────────────────────────────────── */
+const optionsOf = (html, attr) => { const m = html.match(new RegExp(`<select class="ca-select" ${attr}="record">([\\s\\S]*?)</select>`)); return m ? [...m[1].matchAll(/<option value="([^"]*)"( selected)?>([^<]*)</g)].map((x) => [x[1], x[3], !!x[2]]) : null; };
+
+test("T2 Record select: Model picks (default) / +EV picks / NFL archive (pre-<restart day>), labelled, in the filter row, replacing the Archive pill and the toggle", async () => {
+  const html = await populated().T.buildTrackPage();
+  const opts = optionsOf(html, "data-trk-record");
+  assert.ok(opts, "a Record select exists");
+  assert.deepEqual(opts.map((o) => o.slice(0, 2)), [["model", "Model picks"], ["ev", "+EV picks"], ["archive", `NFL archive (pre-${new Date(Date.now() - 5 * 864e5).toLocaleDateString("en-US", { timeZone: "America/New_York", month: "short", day: "numeric" })})`]]);
+  assert.deepEqual(opts.filter((o) => o[2]).map((o) => o[0]), ["model"], "default = Model picks");
+  const bar = html.slice(html.indexOf('id="trk-filters"'), html.indexOf('id="trk-search"'));
+  assert.match(bar, /<label class="ca-f "><span>Record<\/span><select class="ca-select" data-trk-record="record">/, "labelled Record, inside the filter card");
+  const labels = [...bar.matchAll(/<label class="ca-f[^"]*"><span>(.*?)<\/span>/g)].map((m) => m[1].replace(/<[^>]*>/g, ""));
+  assert.deepEqual(labels, ["League", "Market Type", "Confidence", "Result", "Sort By", "Record"], "selects in the mockup order, labels above");
+  assert.equal((html.match(/data-trk-record="record"/g) || []).length, 1);
+  const arc = optionsOf(await populated({ search: "?archive=1" }).T.buildTrackPage(), "data-trk-record"), ev = optionsOf(await populated({ search: "?view=ev" }).T.buildTrackPage(), "data-trk-record");
+  assert.deepEqual(arc.filter((o) => o[2]).map((o) => o[0]), ["archive"], "?archive=1 selects the archive");
+  assert.deepEqual(ev.filter((o) => o[2]).map((o) => o[0]), ["ev"], "?view=ev selects +EV picks (the +EV view has no filter row: the Record select stands alone under the title)");
+  assert.ok((await populated({ search: "?view=ev" }).T.buildTrackPage()).includes('id="trk-recordbar"'));
+  const noStart = optionsOf(await populated({ starts: [] }).T.buildTrackPage(), "data-trk-record");
+  assert.equal(noStart[2][1], "NFL archive", "no restart row: no date to quote");
+  const failed = loud(), err = await populated({ fail: ["track_record_start"], quiet: failed.console }).T.buildTrackPage();
+  assert.ok(optionsOf(err, "data-trk-record") && err.includes('id="trk-error"'), "a failed load still offers the Record select");
+});
+
+test("T2 Record select: switching source keeps all three data paths (model rows, the pre-restart archive, +EV sections)", async () => {
+  const model = await populated().T.buildTrackPage(), arc = await populated({ search: "?archive=1" }).T.buildTrackPage(), ev = await populated({ search: "?view=ev" }).T.buildTrackPage();
+  assert.ok(model.includes("Lions @ Chiefs") && !model.includes("Dolphins @ Bills"));
+  assert.ok(arc.includes("Dolphins @ Bills") && !arc.includes("Lions @ Chiefs") && arc.includes("archived pre-restart"), "archive = the pre-restart NFL rows only");
+  assert.ok(ev.includes("+EV profit tracker") && !ev.includes("Cumulative Prediction Performance"));
+});
+
+test("T1 header: title and subtitle inline, range pills + date range on the right, nothing else", async () => {
+  const html = await populated().T.buildTrackPage();
+  const row = html.slice(html.indexOf('class="ca-title-row"'), html.indexOf('class="ca-stats'));
+  assert.match(row, /<div class="ca-title"><h1>Track Record<\/h1><p>Prediction performance across leagues and markets\.<\/p><\/div>/);
+  const right = row.slice(row.indexOf('class="ca-title-right"'));
+  assert.deepEqual([...right.matchAll(/data-key="([^"]+)"/g)].map((m) => m[1]), ["7d", "30d", "season", "all"]);
+  assert.ok(right.includes("ca-trk-daterange"));
+  assert.ok(!/Archive|Model picks|\+EV picks|restarted/.test(row), "no Archive pill, no toggle row, no restart note in the header area");
+});
+
+test("T3 stat cards: five, short sub-lines; the long explanations moved into (i) tooltips", async () => {
+  const html = await populated().T.buildTrackPage();
+  const cards = html.slice(html.indexOf('class="ca-stats ca-trk-stats"'), html.indexOf('class="ca-trk-r1"')).split('<div class="ca-card ca-stat">').slice(1);
+  assert.equal(cards.length, 5);
+  const sub = (c) => (c.match(/class="ca-stat-sub[^"]*"[^>]*>([\s\S]*?)<\/div>/) || [])[1];
+  assert.equal(sub(cards[0]), undefined, "Overall Record: no sub-line (W / L / P sit under the numbers)");
+  assert.ok(/<em>W<\/em>/.test(cards[0]) && /<em>L<\/em>/.test(cards[0]) && /<em>P<\/em>/.test(cards[0]));
+  assert.match(sub(cards[1]).replace(/<[^>]*>/g, ""), /^[+-]?\d+(\.\d+)?% vs market$/, "Accuracy: just the vs-market line");
+  assert.ok(/class="ca-info" title="\d+ spread and total picks/.test(cards[1]) && !/breakeven<\/span>/.test(sub(cards[1])), "pick count + breakeven moved into the tooltip");
+  assert.equal(sub(cards[2]), "Across all leagues and markets");
+  assert.match(sub(cards[3]), /^Last 5: \d - \d - \d$/);
+  assert.match(sub(cards[4]), /^On moneyline picks$/);
+});
+
+test("T7 structure: row 2 pair, row 3 trio, row 4 = full-width filter row (filters + search) then table + rail", async () => {
+  const html = await populated().T.buildTrackPage();
+  const at = (s) => html.indexOf(s);
+  const r1 = html.slice(at('class="ca-trk-r1"'), at('class="ca-trk-r2"')), r2 = html.slice(at('class="ca-trk-r2"'), at('class="ca-trk-filterrow"'));
+  assert.deepEqual([...r1.matchAll(/<section class="ca-card ca-trk-card" id="([^"]+)"/g)].map((m) => m[1]), ["trk-cum", "trk-market"], "row 2: cumulative + by-market");
+  assert.deepEqual([...r2.matchAll(/<section class="ca-card ca-trk-card" id="([^"]+)"/g)].map((m) => m[1]), ["trk-league", "trk-calib", "trk-form"], "row 3: league + calibration + form");
+  const fr = html.slice(at('class="ca-trk-filterrow"'), at('class="ca-trk-main"'));
+  assert.deepEqual([...fr.matchAll(/<section class="[^"]*" id="([^"]+)"/g)].map((m) => m[1]), ["trk-filters", "trk-search"], "row 4a: filter card, then the search card beside it");
+  assert.ok(/class="ca-card ca-sfind" id="trk-search"/.test(fr) && fr.includes("data-trk-q"), "the shared search card");
+  const main = html.slice(at('class="ca-trk-main"'), at('id="trk-profit"') > 0 ? at('id="trk-profit"') : undefined);
+  assert.ok(at('id="trk-table"') > at('class="ca-trk-main"') && at('class="ca-trk-left"') < at('id="trk-table"') && at('id="trk-table"') < at('<aside class="ca-trk-rail"'));
+  assert.deepEqual([...main.slice(main.indexOf("<aside")).matchAll(/<section class="ca-card ca-trk-rail-card" id="([^"]+)"/g)].map((m) => m[1]), ["trk-segments", "trk-model"], "rail: segments then calibration");
+  assert.ok(at('class="ca-trk-r1"') > at('class="ca-stats ca-trk-stats"') && at('class="ca-trk-filterrow"') > at('class="ca-trk-r2"'));
+  const css = fs.readFileSync(new URL("../css/theme.css", import.meta.url), "utf8");
+  assert.match(css, /\.ca-trk-r1\{[^}]*grid-template-columns:minmax\(0,63fr\) minmax\(0,37fr\)/, "row 2 = 63 / 37");
+  assert.match(css, /\.ca-trk-r2\{[^}]*grid-template-columns:minmax\(0,32fr\) minmax\(0,45fr\) minmax\(0,23fr\)/, "row 3 = 32 / 45 / 23");
+  assert.match(css, /\.ca-trk-filterrow\{[^}]*grid-template-columns:minmax\(0,77fr\) minmax\(0,23fr\)/, "filter row = 77 / 23 (search over the rail)");
+  assert.match(css, /\.ca-trk-main\{[^}]*grid-template-columns:minmax\(0,77fr\) minmax\(0,23fr\)/, "table + rail = 77 / 23");
+  assert.match(css, /\.ca-trk-stats \.ca-stat-label\{[^}]*text-transform:uppercase/, "T7: UPPERCASE stat labels, scoped to this page");
+  assert.match(css, /\.ca-trk \.ca-card h2\{font-size:var\(--fs-card\)/, "shared fluid type tokens, not the old fixed 24px");
+  assert.ok(!/\.ca-trk \.ca-card h2\{font-size:24px\}/.test(css));
+  assert.match(css, /\.ca-trk-tablecard\{[^}]*container-type:inline-size/, "the table card is a size container (no inner scroll at 1280-1920)");
+});
+
+test("T7 results table: exact column list, Result chip, row height content; one search card, no dead filters", async () => {
+  const html = await populated().T.buildTrackPage();
+  const heads = [...html.slice(html.indexOf("<thead>"), html.indexOf("</thead>")).matchAll(/<th>([^<]*)<\/th>/g)].map((m) => m[1]);
+  assert.deepEqual(heads, ["Date", "League", "Matchup / Player", "Market", "Model Prediction", "Closing Line", "Model Prob.", "Result", "Confidence", "Final Score / Outcome", "View"]);
+  const tbody = html.slice(html.indexOf("<tbody>"), html.indexOf("</tbody>"));
+  for (const tr of tbody.split("<tr ").slice(1)) assert.equal((tr.match(/<td/g) || []).length, heads.length, "every row has one cell per column");
+});
+
+test("T7 filter row: the search card is its own card, redrawn on reset (clears the box); the Record select does not use the League/Market data attribute", async () => {
+  const D = fakeTrackDoc(), urls = [];
+  const T2 = loadScripts(["app.js", "js/metrics.js", "js/ui.js", "js/shell.js", "js/data.js", "js/pages/track.js", "js/boot.js"], { page: "track", globals: {
+    document: D.doc, location: { search: "?q=lions", href: "http://localhost/track-record.html?q=lions" }, history: { replaceState: (a, b, u) => urls.push(u) },
+    fetch: async (url) => ({ ok: true, json: async () => (urlParts(url).path === "prediction_accuracy" ? [A({ sport: "cfb", game_pk: 1, game_date: dayOff(-1) })] : []) }) } });
+  const html = await T2.buildTrackPage();
+  assert.ok(html.includes('value="lions"'), "the URL's search text fills the search card");
+  T2.wireTrackPage();
+  D.handlers.click(hit({ "[data-trk-reset]": {} }));
+  assert.ok(D.els["trk-search"].outerHTML.includes('id="trk-search"') && !D.els["trk-search"].outerHTML.includes('value="lions"'), "reset redraws the search card with the cleared text");
+  assert.ok(!html.includes('data-trk="record"'));
+  const sel = (key, value) => D.handlers.change({ target: { closest: (s) => (s === "select[data-trk]" ? { dataset: { trk: key }, value } : null) } });
+  assert.doesNotThrow(() => sel("league", "cfb"));
+});
+
+
+// A permissive document: enough for app.js render() (shell + wireShell + the page wiring) to run end to end.
+function renderDoc() {
+  const dummy = new Proxy(function () {}, { get: (t, k) => (k === Symbol.toPrimitive ? () => "" : k === "length" ? 0 : dummy), apply: () => dummy, set: () => true });
+  const handlers = {}, root = { addEventListener: (t, f) => { handlers[t] = f; }, querySelector: () => null }, shell = { html: "", get innerHTML() { return this.html; }, set innerHTML(v) { this.html = v; }, querySelector: () => dummy };
+  const doc = { body: new Proxy({ dataset: { page: "track" } }, { get: (t, k) => (k in t ? t[k] : dummy) }), head: dummy, documentElement: dummy, createElement: () => dummy, addEventListener() {}, querySelectorAll: () => [],
+    getElementById: (id) => (id === "trk-root" ? root : dummy), querySelector: (sel) => (sel === ".page-shell" ? shell : dummy) };
+  return { doc, shell, handlers };
+}
+test("T2 Record select: +EV picks re-renders the page with the +EV sections (and back); archive redraws without a refetch", async () => {
+  const R = renderDoc(), urls = [], reqs = [];
+  const T2 = loadScripts(["app.js", "js/metrics.js", "js/ui.js", "js/shell.js", "js/data.js", "js/pages/track.js", "js/boot.js"], { page: "track", globals: {
+    document: R.doc, location: { search: "", href: "http://localhost/track-record.html" }, history: { replaceState: (a, b, u) => urls.push(u) }, scrollTo() {},
+    fetch: async (url) => { const { path } = urlParts(url); reqs.push(path); return { ok: true, json: async () => (path === "prediction_accuracy" ? [A({ sport: "cfb", game_pk: 1, game_date: dayOff(-1) })] : path === "track_record_start" ? [{ sport: "nfl", starts_at: dayOff(-5) + "T12:00:00+00:00", model_version: "nfl-sim-ml-v2" }] : []) }; } } });
+  await T2.render();
+  assert.ok(R.shell.html.includes("Cumulative Prediction Performance") && !R.shell.html.includes("+EV profit tracker"));
+  const change = (value) => R.handlers.change({ target: { closest: (sel) => (sel === "select[data-trk-record]" ? { value } : null) } });
+  const last = () => new URL(urls[urls.length - 1]);
+  const before = reqs.length;
+  change("archive");
+  assert.equal(last().searchParams.get("archive"), "1"); assert.equal(reqs.length, before, "the archive redraws from the cached load: no fetch");
+  change("ev");
+  await new Promise((r) => setTimeout(r, 30));
+  assert.equal(last().searchParams.get("view"), "ev"); assert.equal(last().searchParams.has("archive"), false, "+EV picks leaves the archive");
+  assert.ok(R.shell.html.includes("+EV profit tracker") && !R.shell.html.includes("Cumulative Prediction Performance"), "the +EV sections replace the model cards");
+  assert.ok(reqs.includes("ev_pnl_daily"), "the +EV data is fetched");
+  change("model");
+  await new Promise((r) => setTimeout(r, 30));
+  assert.equal(last().searchParams.has("view"), false, "model picks is the default: a clean URL");
+  assert.ok(R.shell.html.includes("Cumulative Prediction Performance") && !R.shell.html.includes("+EV profit tracker"));
+});
+
+test("T8: filter row is one line from a ~1331px container (F7), wraps below; search card keeps its full placeholder on the narrow rail", () => {
+  const css = fs.readFileSync(new URL("../css/theme.css", import.meta.url), "utf8");
+  assert.match(css, /@container \(max-width:1330px\)\{\.ca-trk-filters\{flex-wrap:wrap\}\.ca-trk-fgrid\{flex-basis:100%\}\}/, "wrap only below the 1331px container");
+  assert.doesNotMatch(css, /@container \(max-width:1480px\)\{\.ca-trk-filters/, "the old 1480px wrap threshold is gone");
+  const band = css.slice(css.indexOf("@container (min-width:1331px) and (max-width:1580px){"));
+  const block = band.slice(0, band.indexOf("\n}") + 2);
+  assert.match(block, /\.ca-trk-fgrid\{grid-template-columns:repeat\(6,minmax\(0,auto\)\)/, "six content-sized selects on one line");
+  assert.match(block, /\.ca-trk \.ca-f \.ca-select\{[^}]*text-overflow:ellipsis/, "long selected options ellipsise inside the closed select");
+  assert.ok(!/11\.5px/.test(block), "the 12px font floor holds in the one-line band");
+  assert.match(css, /@media \(max-width:1500px\)\{\.ca-trk \.ca-sfind\{padding-left:10px;padding-right:10px\}\.ca-trk \.ca-sfind \.ca-search\{padding:0 6px\}\}/, "Track search card side padding is tightened (scoped to .ca-trk so +EV is unchanged)");
 });

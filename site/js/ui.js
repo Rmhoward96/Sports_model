@@ -35,9 +35,21 @@ function bookBadge(key) {
   const [abbr, color] = BOOK_STYLE[String(key || "").toLowerCase()] || [String(key || "?").slice(0, 3).toUpperCase(), "#5B6675"];
   return `<span class="ca-book" title="${ctxEsc(key)}" style="background:${color}">${ctxEsc(abbr)}</span>`;
 }
-function statCard({ label, labelNote = "", value, valueClass = "", sub = "", subClass = "", visual = "" }) {
-  return `<div class="ca-card ca-stat"><div class="ca-stat-label">${label}${labelNote ? ` <span class="muted">${labelNote}</span>` : ""}</div>
-    <div class="ca-stat-body"><div><div class="ca-stat-value ${valueClass}">${value}</div>${sub ? `<div class="ca-stat-sub ${subClass}">${sub}</div>` : ""}</div>${visual ? `<div class="ca-stat-visual">${visual}</div>` : ""}</div></div>`;
+// G2: text that does not fit a compact card moves into a native tooltip behind a small (i). `text` is plain text (escaped here).
+const infoTip = (text) => (text ? `<span class="ca-info" title="${ctxEsc(text)}" tabindex="0" role="img" aria-label="${ctxEsc(text)}">i</span>` : "");
+// Plain text of an HTML snippet, safe inside a double-quoted title="" attribute (each tag becomes a space so neighbouring words do
+// not fuse, whitespace collapsed, quotes escaped).
+const uiTitleText = (html) => String(html).replace(/<[^>]*>/g, " ").replace(/\s+/g, " ").trim().replace(/"/g, "&quot;");
+// Stat-card label line: the (ellipsising) label text, then the optional (i) tooltip. The whole line carries its full text as a hover
+// title so a label cut short by a narrow card stays readable. `note` = muted suffix such as "(30D)".
+// `noteShort` = a shorter note ("(30D)") that replaces `note` ("(Last 30 Days)") in a narrow card (container query on .ca-stat in theme.css).
+const statLabel = (label, note = "", tip = "", noteShort = "") =>
+  `<div class="ca-stat-label" title="${uiTitleText(`${label}${note ? ` ${note}` : ""}`)}"><span class="ca-stat-lt">${label}${note ? ` <span class="muted">${noteShort ? `<span class="ca-note-l">${note}</span><span class="ca-note-s">${noteShort}</span>` : note}</span>` : ""}</span>${infoTip(tip)}</div>`;
+// Compact stat card: label, big value and ONE short sub-line (ellipsised when long; its full text is the hover title). `tip` = optional
+// longer explanation, shown as the (i) tooltip next to the label.
+function statCard({ label, labelNote = "", labelNoteShort = "", value, valueClass = "", sub = "", subClass = "", visual = "", tip = "" }) {
+  return `<div class="ca-card ca-stat">${statLabel(label, labelNote, tip, labelNoteShort)}
+    <div class="ca-stat-body"><div><div class="ca-stat-value ${valueClass}">${value}</div>${sub ? `<div class="ca-stat-sub ${subClass}" title="${uiTitleText(sub)}">${sub}</div>` : ""}</div>${visual ? `<div class="ca-stat-visual">${visual}</div>` : ""}</div></div>`;
 }
 function pills(name, items, active) {
   return `<div class="ca-pills" role="tablist">${items.map(([k, l]) => `<button class="ca-pill${k === active ? " on" : ""}" data-pill="${ctxEsc(name)}" data-key="${ctxEsc(k)}" role="tab" aria-selected="${k === active}">${l}</button>`).join("")}</div>`;
@@ -166,7 +178,7 @@ function histogramChart(bins, { w = 520, h = 180 } = {}) {
   const out = bs.map((b, i) => {
     const x = i * slot + (slot - bw) / 2;
     return uiBar(x, base, +b.n / max * plot, bw, b.color, uiFmt(b.n))
-      + (i % every === 0 ? `<text class="ca-axis" x="${(x + bw / 2).toFixed(1)}" y="${h - 6}" text-anchor="middle">${ctxEsc(b.label)}</text>` : "");
+      + (i % every === 0 ? `<text class="ca-axis${i % 2 ? " ca-axis-alt" : ""}" x="${(x + bw / 2).toFixed(1)}" y="${h - 6}" text-anchor="middle">${ctxEsc(b.label)}</text>` : "");
   }).join("");
   return `<svg class="ca-hist" viewBox="0 0 ${w} ${h}" width="${w}" height="${h}"><line x1="0" x2="${w}" y1="${base}" y2="${base}" class="ca-grid-line"/>${out}</svg>`;
 }
@@ -204,3 +216,5 @@ function selectField(attr, key, label, options, value, extraCls = "") {
 }
 // Search box with the magnifier (ICON_SEARCH, shell.js).
 const searchField = (attr, value, placeholder, aria) => `<label class="ca-search">${ICON_SEARCH}<input class="ca-input" type="search" ${attr} placeholder="${ctxEsc(placeholder)}" value="${ctxEsc(value)}" aria-label="${ctxEsc(aria || placeholder)}" autocomplete="off"></label>`;
+// Search card (its own card beside a filter card: +EV, Track Record). `id` = the card's element id, `attr` = the data attribute the page's input handler listens for.
+const searchCard = (id, attr, value) => `<section class="ca-card ca-sfind" id="${ctxEsc(id)}">${searchField(attr, value, "Search teams, players, or games...", "Search teams, players, or games")}</section>`;

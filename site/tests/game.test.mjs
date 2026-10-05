@@ -279,6 +279,7 @@ test("hero odds boxes: consensus moneyline, lines, total; the model's side is ma
   assert.ok(hero.includes("+280"), "median of +280 / +290 / +270 away");
   assert.ok(hero.includes("+3.5") && hero.includes("-3.5"), "spread: away +3.5 / home -3.5");
   assert.ok(hero.includes("O 44.5") && hero.includes("U 44.5"));
+  assert.match(html, /class="ca-gm-hero has-odds"/, "hero with odds boxes lets them straddle its edge");
   assert.match(hero, /class="ca-gm-v lean">-340</, "home is the model's moneyline side");
   assert.ok(hero.includes("3-1") && hero.includes("2-2"), "season records");
   assert.ok(!/\(\d+-\d+ [A-Z]+\)/.test(hero), "no conference record is ever invented");

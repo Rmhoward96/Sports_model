@@ -121,11 +121,28 @@ test("statCard, pills, bookBadge", () => {
   const card = g.statCard({ label: "ROI", value: "+4.2%", valueClass: "pos", sub: "30d", visual: "<i></i>" });
   assert.match(card, /ca-stat-value pos">\+4\.2%</); assert.match(card, /ca-stat-visual/);
   assert.doesNotMatch(g.statCard({ label: "x", value: "1" }), /ca-stat-visual|ca-stat-sub/);
+  const tip = g.statCard({ label: "Model Hit Rate", value: "56%", sub: "<b>+4%</b> vs. \"market\"", tip: "68-52 · 120 graded <picks>" });
+  assert.match(tip, /<span class="ca-info" title="68-52 · 120 graded &lt;picks&gt;" tabindex="0"/, "long text moves into an escaped (i) tooltip next to the label");
+  assert.match(tip, /class="ca-stat-sub " title="\+4% vs\. &quot;market&quot;"/, "the sub-line carries its full text as a hover title");
+  assert.doesNotMatch(g.statCard({ label: "x", value: "1" }), /ca-info/);
+  // the label carries its own tag-stripped, escaped text as a title (readable when ellipsised); the (i) sits outside the ellipsised span
+  const lab = g.statCard({ label: "Live +EV <b>\"Opps\"</b>", labelNote: "(30D)", value: "1", tip: "t" });
+  assert.match(lab, /<div class="ca-stat-label" title="Live \+EV &quot;Opps&quot; \(30D\)"><span class="ca-stat-lt">Live \+EV <b>"Opps"<\/b> <span class="muted">\(30D\)<\/span><\/span><span class="ca-info"/);
+  assert.equal(g.infoTip(""), "");
   const p = g.pills("sport", [["nfl", "NFL"], ["cfb", "CFB"]], "cfb");
   assert.match(p, /data-pill="sport" data-key="nfl"[^>]*aria-selected="false"/);
   assert.match(p, /ca-pill on" data-pill="sport" data-key="cfb"[^>]*aria-selected="true"/);
   assert.match(g.bookBadge("draftkings"), />DK</);
   assert.match(g.bookBadge("weird<book>"), /title="weird&lt;book&gt;"/);
+});
+
+test("uiTitleText: tags become spaces (no fused words), whitespace collapsed, quotes escaped", () => {
+  assert.equal(g.uiTitleText('Rec Yds</span><i>at</i>'), "Rec Yds at");
+  assert.equal(g.uiTitleText('<b>Rec</b><b>Yds</b>'), "Rec Yds");
+  assert.equal(g.uiTitleText('  Under   85.5 \n <span class="x">Rec Yds</span> '), "Under 85.5 Rec Yds");
+  assert.equal(g.uiTitleText('say "hi" <i>now</i>'), "say &quot;hi&quot; now");
+  const card = g.statCard({ label: "x", value: "1", sub: "Falco<small>ns</small> <i>at</i> Saints" });
+  assert.match(card, /class="ca-stat-sub " title="Falco ns at Saints"/);
 });
 
 const pct = (svg, cls) => [...svg.matchAll(new RegExp(`class="${cls}[^"]*" style="[^"]*?(?:top|left):(-?[\\d.]+)%`, "g"))].map((m) => +m[1]);

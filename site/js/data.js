@@ -102,7 +102,9 @@ const modelLineStr = (x) => lineStr(r05(+x) || 0);
 const signedStr = (x, d = 1, unit = "") => `${x > 0 ? "+" : x < 0 ? "−" : ""}${Math.abs(x).toFixed(d)}${unit}`;
 const signCls = (x) => (x > 0 ? "pos" : x < 0 ? "neg" : "");
 const emptyMsg = (msg) => `<p class="ca-empty">${ctxEsc(msg)}</p>`;
-const leagueLogo = (s) => (LEAGUE_LOGO[s] ? `<img class="ca-league" src="https://a.espncdn.com/i/${LEAGUE_LOGO[s]}.png" alt="" loading="lazy" onerror="this.style.visibility='hidden'">` : "");
+// ESPN's ncaa_football logo renders as a black person silhouette, so CFB gets an inline brown football with white laces instead (sized by .ca-league like the other league logos).
+const CFB_BALL = `<svg class="ca-league" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><g transform="rotate(-45 12 12)"><ellipse cx="12" cy="12" rx="11.5" ry="7" fill="#8B4A22" stroke="#5A2E12" stroke-width="1"/><path d="M5.4 7.4v9.2M18.6 7.4v9.2" stroke="#fff" stroke-width="1.1" fill="none" stroke-linecap="round"/><path d="M8.2 12h7.6M10 10.1v3.8M12 9.9v4.2M14 10.1v3.8" stroke="#fff" stroke-width="1.15" stroke-linecap="round" fill="none"/></g></svg>`;
+const leagueLogo = (s) => (s === "cfb" ? CFB_BALL : LEAGUE_LOGO[s] ? `<img class="ca-league" src="https://a.espncdn.com/i/${LEAGUE_LOGO[s]}.png" alt="" loading="lazy" onerror="this.style.visibility='hidden'">` : "");
 const gameHref = (sport, gamePk) => `game.html?sport=${encodeURIComponent(sport)}&game=${encodeURIComponent(gamePk)}`;
 const goLink = (sport, gamePk) => `<a class="ca-go" href="${gameHref(sport, gamePk)}" aria-label="Open game">→</a>`;
 // "Oct 13" / "Oct 13, 2026" for a YYYY-MM-DD ET game date (UTC-pinned so the calendar day never shifts).

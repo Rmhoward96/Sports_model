@@ -1,10 +1,11 @@
 /* Track Record (track-record.html) — mockup #4. Real data only: every card has an empty state and the mockup's numbers
    are never rendered. The main view ("Model picks") is the model's graded predictions: one row per graded market
    (moneyline / spread / total) from prediction_accuracy, scoped to the published record (track_record_start) and to
-   the range pills; the "+EV picks" toggle shows the legacy profit tracker and +EV / prop sections (same data as before).
+   the range pills; the "Record" select (filter row) switches the source: "Model picks" (default), "+EV picks" (the legacy profit
+   tracker and +EV / prop sections, same data as before) and the pre-restart NFL archive.
    Range, archive, view, league tab, segment tab, filters, sort, search and the page size live in window.__caTrk AND in
    the URL (so a reload or share keeps them) and survive the 5-minute re-render; changing them redraws from the cached
-   load (window.__caTrkData) without a refetch (only the view toggle refetches, it needs different data).
+   load (window.__caTrkData) without a refetch (only the +EV view refetches, it needs different data).
    Probabilities are the MODEL's (win_prob); the prediction carries no spread / total probability, so those rows show
    "—". prediction_pnl (per-pick P&L) times out under the anon 3s statement limit and is never requested, so `units`
    stays null in the page (trackRows still joins it when given); the moneyline closing price comes from
@@ -30,7 +31,13 @@ const TRACK_CONF_OPTS = [["", "All Confidence"], ...TRACK_BAND_KEYS.map((k, i) =
 const TRACK_RESULT_OPTS = [["", "All Results"], ["W", "Win"], ["L", "Loss"], ["P", "Push"]];
 const TRACK_SORTS = [["recent", "Most Recent"], ["conf", "Highest Confidence"]];
 const TRACK_SEGS = [["market", "Market"], ["league", "League"], ["confidence", "Confidence"]];
-const TRACK_VIEWS = [["model", "Model picks"], ["ev", "+EV picks"]];
+// The Record select (F2): one control for the three sources. "archive" = the model view scoped to the pre-restart NFL rows (state.archive).
+const trackRecordKey = (s) => (s.view === "ev" ? "ev" : s.archive ? "archive" : "model");
+function trackRecordOpts(starts) {
+  const st = starts && starts.get ? starts.get("nfl") : null;
+  return [["model", "Model picks"], ["ev", "+EV picks"], ["archive", st ? `NFL archive (pre-${trackStartDay(st.starts_at)})` : "NFL archive"]];
+}
+const trackStartDay = (iso) => new Date(iso).toLocaleDateString("en-US", { timeZone: "America/New_York", month: "short", day: "numeric" });
 const TRACK_DEFAULT = { range: "all", archive: false, view: "model", chart: "overall", market: "all", league: "", conf: "", result: "", sort: "recent", q: "", seg: "market", n: TRACK_PAGE };
 const TRACK_PARAMS = ["range", "archive", "view", "chart", "market", "league", "conf", "result", "sort", "q", "seg", "n"];
 const TRACK_ACC_SELECT = "sport,game_pk,game_date,home_team_name,away_team_name,win_prob,predicted_winner,actual_winner,winner_correct,pred_margin,actual_margin,pred_total,actual_total,market_spread,market_total,spread_pick_correct,total_pick_correct";
@@ -287,14 +294,20 @@ const trackClosingText = (r) => (r.closing == null ? "—" : r.market === "money
 /* ── stat cards ───────────────────────────────────────────────────────── */
 // The record mixes two kinds of graded pick, so the card says so (tooltip on the label + a caption).
 const TRACK_RECORD_TIP = "Combines moneyline winner picks with spread and total picks graded against the line";
-const TRACK_RECORD_LABEL = `<span title="${TRACK_RECORD_TIP}">OVERALL RECORD</span>`;
+// The restart note (formerly a header line) and what the record combines: the (i) tooltip on OVERALL RECORD.
+function trackRecordTip(C) {
+  const st = C.starts && C.starts.get ? C.starts.get("nfl") : null;
+  const when = st ? new Date(st.starts_at).toLocaleDateString("en-US", { timeZone: "America/New_York", month: "short", day: "numeric", year: "numeric" }) : "";
+  const note = st ? `NFL record restarted with ${st.model_version === "nfl-sim-ml-v2" ? "the ML v2 model" : st.model_version} on ${when}; earlier NFL results are archived for comparison.`
+    : "NFL predictions switched to the ML model on Sep 28, 2026; earlier games were graded against the previous model.";
+  return `${TRACK_RECORD_TIP}. ${note}`;
+}
 function trackStatRecord(C) {
-  const t = trackTally(C.scope);
-  if (!t.n) return statCard({ label: TRACK_RECORD_LABEL, value: "—", sub: "No graded picks in this range." });
+  const t = trackTally(C.scope), tip = trackRecordTip(C);
+  if (!t.n) return statCard({ label: "OVERALL RECORD", tip, value: "—", sub: "No graded picks in this range." });
   const weeks = trackWeekly(C.scope).slice(-10).map((w) => (w.pct == null ? 0 : w.pct * 100)), bars = miniBars(weeks, { w: 70, h: 44 });
   const rec = `<span class="ca-trk-rec">${[["W", t.w], ["L", t.l], ["P", t.p]].map(([k, v]) => `<span><b>${v}</b><em>${k}</em></span>`).join("<i>-</i>")}</span>`;
-  return statCard({ label: TRACK_RECORD_LABEL, value: `${rec}<small class="${t.pct != null && t.pct >= 0.5 ? "pos" : ""}">${trackPct(t.pct)}</small>`,
-    sub: `<span title="${TRACK_RECORD_TIP}">Moneyline winners + spread / total picks vs the line</span>`,
+  return statCard({ label: "OVERALL RECORD", tip, value: `${rec}<small class="${t.pct != null && t.pct >= 0.5 ? "pos" : ""}">${trackPct(t.pct)}</small>`,
     visual: bars ? `<span title="Win % by week">${bars}</span>` : "" });
 }
 function trackStatLine(C) {
@@ -302,7 +315,8 @@ function trackStatLine(C) {
   if (!v) return statCard({ label: "ACCURACY VS CLOSING LINE", value: "—", sub: "No graded spread or total picks in this range." });
   const spark = sparkline(trackShareSeries(C.scope), { w: 84, h: 40 });
   return statCard({ label: "ACCURACY VS CLOSING LINE", value: trackPct(v.share), valueClass: signCls(v.vsMarket),
-    sub: `<span class="${signCls(v.vsMarket)}">${pStr(v.vsMarket)}</span> vs market<br><span class="muted" title="Share of spread and total picks on the right side of the closing line, minus the 52.4% breakeven">${v.n} picks · vs 52.4% breakeven</span>`,
+    sub: `<span class="${signCls(v.vsMarket)}">${pStr(v.vsMarket)}</span> vs market`,
+    tip: `${v.n} spread and total picks · share on the right side of the closing line, vs the 52.4% breakeven`,
     visual: spark ? `<span title="Running share of spread and total picks on the right side of the close">${spark}</span>` : "" });
 }
 function trackStatTotal(C) {
@@ -323,14 +337,14 @@ function trackStatAvg(C) {
 
 /* ── charts ───────────────────────────────────────────────────────────── */
 function trackCumCard(C) {
-  const pts = dateAxisPoints(trackCumulative(C.scope, C.s.chart), (p) => p.net), chart = areaChart(pts, { h: 232, yTicks: 5, unit: "", nice: true });
+  const pts = dateAxisPoints(trackCumulative(C.scope, C.s.chart), (p) => p.net), chart = areaChart(pts, { h: 168, yTicks: 5, unit: "", nice: true });
   return `<section class="ca-card ca-trk-card" id="trk-cum"><div class="ca-card-head"><div><h2>Cumulative Prediction Performance</h2><p>Running record (net wins) over time.</p></div>${pills("trk-chart", TRACK_CHARTS, C.s.chart)}</div>
     ${chart || emptyMsg(C.s.chart === "overall" ? "Not enough graded results in this range yet." : `Not enough graded ${trackSportName(C.s.chart)} results in this range yet.`)}</section>`;
 }
 function trackMarketCard(C) {
   const groups = TRACK_MARKETS.map((m) => ({ m, t: trackTally(C.scope.filter((r) => r.market === m)) })).filter((x) => x.t.n).map(({ m, t }) => ({ label: TRACK_MKT_LABEL[m], sub: `${trackRec(t)} (${t.n})`,
     bars: [[t.w, TRACK_WIN], [t.l, TRACK_LOSS], [t.p, TRACK_PUSH]].map(([k, color]) => ({ value: k / t.n * 100, color, label: `${(k / t.n * 100).toFixed(1)}%` })) }));
-  const chart = groupedBars(groups, { h: 232, bw: 36, bgap: 8, ggap: 44 });
+  const chart = groupedBars(groups, { h: 176, bw: 36, bgap: 8, ggap: 44 });
   return `<section class="ca-card ca-trk-card" id="trk-market"><div class="ca-card-head"><div><h2>Performance by Market</h2><p>Win rate by market type.</p></div>${trackLegend([["Win %", TRACK_WIN], ["Loss %", TRACK_LOSS], ["Push %", TRACK_PUSH]])}</div>
     ${chart ? `<div class="ca-trk-bars">${chart}</div>` : emptyMsg("No graded picks in this range yet.")}</section>`;
 }
@@ -340,8 +354,8 @@ function trackLeagueCard(C) {
   return `<section class="ca-card ca-trk-card" id="trk-league"><div class="ca-card-head"><div><h2>Performance by League</h2><p>Win rate and record by league.</p></div></div>${rows || emptyMsg("No graded picks in this range yet.")}</section>`;
 }
 function trackCalibCard(C) {
-  const c = trackCalibration(C.scope), chart = groupedBars(c.groups, { h: 232, bw: 36, bgap: 8, ggap: 40 });
-  return `<section class="ca-card ca-trk-card" id="trk-calib"><div class="ca-card-head"><div><h2>Confidence Calibration</h2><p>Predicted confidence vs. actual hit rate (moneyline picks).</p></div>${trackLegend([["Predicted Confidence", "var(--navy)"], ["Actual Hit Rate", "var(--green)"]])}</div>
+  const c = trackCalibration(C.scope), chart = groupedBars(c.groups, { h: 176, bw: 36, bgap: 8, ggap: 40 });
+  return `<section class="ca-card ca-trk-card" id="trk-calib"><div class="ca-card-head"><div><h2>Confidence Calibration</h2><p title="Moneyline picks: the model&#39;s win probability against how often it won">Predicted confidence vs. actual hit rate.</p></div>${trackLegend([["Predicted Confidence", "var(--navy)"], ["Actual Hit Rate", "var(--green)"]])}</div>
     ${chart ? `<div class="ca-trk-bars">${chart}</div>` : emptyMsg("No graded moneyline picks in this range yet.")}</section>`;
 }
 function trackFormCard(C) {
@@ -350,18 +364,21 @@ function trackFormCard(C) {
 }
 
 /* ── filters + table ──────────────────────────────────────────────────── */
+// Row 4 controls (T7): market pills + the League / Market Type / Confidence / Result / Sort By / Record selects (labels above) in one
+// card; the search box is its own card beside it (id trk-search, not redrawn while typing).
+const trackRecordSelect = (C) => selectField("data-trk-record", "record", "Record", trackRecordOpts(C.starts), trackRecordKey(C.s));
 function trackFilterCard(C) {
   const s = C.s, leagues = [["", "All Leagues"], ...SPORTS.map((x) => [x, trackSportName(x)])];
   return `<section class="ca-card ca-trk-filters" id="trk-filters">${pills("trk-mkt", TRACK_MARKET_PILLS, s.market)}
     <div class="ca-trk-fgrid">${selectField("data-trk", "league", "League", leagues, s.league)}${selectField("data-trk", "market", "Market Type", TRACK_MARKET_OPTS, s.market)}
-    ${selectField("data-trk", "conf", `<span title="The model's win probability: applies to moneyline picks only">Confidence (ML)</span>`, TRACK_CONF_OPTS, s.conf)}${selectField("data-trk", "result", "Result", TRACK_RESULT_OPTS, s.result)}
-    ${selectField("data-trk", "sort", "Sort By", TRACK_SORTS, s.sort)}</div>
-    ${searchField("data-trk-q", s.q, "Search teams, players, or games...", "Search teams, players, or games")}</section>`;
+    ${selectField("data-trk", "conf", `<span title="The model's win probability: applies to moneyline picks only">Confidence</span>`, TRACK_CONF_OPTS, s.conf)}${selectField("data-trk", "result", "Result", TRACK_RESULT_OPTS, s.result)}
+    ${selectField("data-trk", "sort", "Sort By", TRACK_SORTS, s.sort)}${trackRecordSelect(C)}</div></section>`;
 }
+const trackSearchCard = (C) => searchCard("trk-search", "data-trk-q", C.s.q);
 function trackTr(r) {
   const team = r.side === "home" ? r.home : r.away, chipTitle = r.units != null ? ` title="${ctxEsc(signedStr(r.units, 2, "u"))}"` : "";
   const text = trackPickText(r);
-  return `<tr data-href="${gameHref(r.sport, r.game_pk)}"><td class="ca-trk-date">${fullDate(r.date)}</td><td><span class="ca-team">${leagueLogo(r.sport)}${ctxEsc(trackSportName(r.sport))}</span></td>
+  return `<tr data-href="${gameHref(r.sport, r.game_pk)}"><td class="ca-trk-date">${fullDate(r.date)}</td><td><span class="ca-team">${leagueLogo(r.sport)}<span class="ca-trk-lgt">${ctxEsc(trackSportName(r.sport))}</span></span></td>
     <td><span class="ca-team" title="${ctxEsc(r.matchup)}">${logoImg(team || r.away, r.sport)}<span class="ca-ell">${ctxEsc(shortMatchup(r.away, r.home, r.sport))}</span></span></td>
     <td class="muted">${TRACK_MKT_LABEL[r.market]}</td><td><span class="ca-ell ca-trk-pick" title="${ctxEsc(text)}">${ctxEsc(text)}</span></td><td>${ctxEsc(trackClosingText(r))}</td>
     <td>${pct1(r.prob)}</td><td><span class="ca-trk-chip ${r.result}"${chipTitle}>${r.result === "P" ? "Push" : r.result}</span></td>
@@ -374,7 +391,7 @@ function trackTableCard(C) {
   else if (!list.length) body = `${emptyMsg("No predictions match these filters.")}<p class="ca-trk-reset"><button class="ca-btn" data-trk-reset>Reset filters</button></p>`;
   else {
     body = `<div class="ca-table-wrap"><table class="ca-table ca-dash-table ca-trk-table"><thead><tr><th>Date</th><th>League</th><th>Matchup / Player</th><th>Market</th><th>Model Prediction</th><th>Closing Line</th><th>Model Prob.</th><th>Result</th><th>Confidence</th><th>Final Score / Outcome</th><th>View</th></tr></thead><tbody>${shown.map(trackTr).join("")}</tbody></table></div>
-      <div class="ca-trk-more"><span class="muted">Showing ${shown.length} of ${list.length}</span>${shown.length < list.length ? `<button class="ca-btn" data-trk-more>Show more</button>` : ""}</div>`;
+      <div class="ca-trk-more"><span class="muted">Showing ${shown.length} of ${list.length}${C.capped ? ` <span class="ca-trk-capnote">· Showing the most recent ${TRACK_ROWS_CAP.toLocaleString("en-US")} graded games.</span>` : ""}</span>${shown.length < list.length ? `<button class="ca-btn" data-trk-more>Show more</button>` : ""}</div>`;
   }
   return `<section class="ca-card ca-trk-tablecard" id="trk-table">${body}</section>`;
 }
@@ -406,38 +423,32 @@ const TRACK_CARDS = {
   "trk-total": ["Total Predictions", trackStatTotal, "ca-card ca-stat"], "trk-streak": ["Current Streak", trackStatStreak, "ca-card ca-stat"], "trk-avg": ["Average Confidence", trackStatAvg, "ca-card ca-stat"],
   "trk-cum": ["Cumulative Prediction Performance", trackCumCard, "ca-card ca-trk-card"], "trk-market": ["Performance by Market", trackMarketCard, "ca-card ca-trk-card"],
   "trk-league": ["Performance by League", trackLeagueCard, "ca-card ca-trk-card"], "trk-calib": ["Confidence Calibration", trackCalibCard, "ca-card ca-trk-card"], "trk-form": ["Recent Form", trackFormCard, "ca-card ca-trk-card"],
-  "trk-filters": ["Filters", trackFilterCard, "ca-card ca-trk-filters"], "trk-table": ["Predictions", trackTableCard, "ca-card ca-trk-tablecard"],
+  "trk-filters": ["Filters", trackFilterCard, "ca-card ca-trk-filters"], "trk-search": ["Search", trackSearchCard, "ca-card ca-sfind"], "trk-table": ["Predictions", trackTableCard, "ca-card ca-trk-tablecard"],
   "trk-segments": ["Best Performing Segments", trackSegmentsCard, "ca-card ca-trk-rail-card"], "trk-model": ["Model Calibration", trackModelCard, "ca-card ca-trk-rail-card"],
   "trk-profit": ["Profit tracker", trackProfitCard, "ca-card"],
 };
 const trackCard = (id, C) => safeCard(TRACK_CARDS[id][0], TRACK_CARDS[id][1], C, TRACK_CARDS[id][2], id);
 
-// Title row: range pills + the range's date span + the Archive toggle (the +EV view has no range).
+// Title row: "Track Record" + subtitle inline; range pills + the range's date span on the right (the +EV view has no range).
 function trackTitle(C) {
-  const s = C.s, arch = `<button class="ca-pill ca-trk-arch${s.archive ? " on" : ""}" data-trk-archive aria-pressed="${s.archive}" title="Show the pre-restart NFL results kept for comparison (not part of the published record)">Archive</button>`;
-  const right = s.view === "ev" ? "" : `${pills("trk-range", TRACK_RANGES, s.range)}${arch}<div class="ca-trk-daterange">${ICON_CAL}<span>${ctxEsc(trackRangeLabel(C.scope))}</span></div>`;
+  const s = C.s, right = s.view === "ev" ? "" : `${pills("trk-range", TRACK_RANGES, s.range)}<div class="ca-trk-daterange">${ICON_CAL}<span>${ctxEsc(trackRangeLabel(C.scope))}</span></div>`;
   return pageTitle("Track Record", "Prediction performance across leagues and markets.", right);
 }
-function trackNote(C) {
-  const st = C.starts && C.starts.get ? C.starts.get("nfl") : null;
-  const when = st ? new Date(st.starts_at).toLocaleDateString("en-US", { timeZone: "America/New_York", month: "short", day: "numeric", year: "numeric" }) : "";
-  const note = st ? `NFL record restarted with ${st.model_version === "nfl-sim-ml-v2" ? "the ML v2 model" : ctxEsc(st.model_version)} on ${when}; earlier NFL results are archived for comparison.`
-    : "NFL predictions switched to the ML model on Sep 28, 2026; earlier games were graded against the previous model.";
-  return `<div class="ca-trk-sub">${pills("trk-view", TRACK_VIEWS, C.s.view)}<p class="ca-trk-note">${note}</p>${C.capped ? `<p class="ca-trk-note ca-trk-capnote">Showing the most recent ${TRACK_ROWS_CAP.toLocaleString("en-US")} graded games.</p>` : ""}</div>`;
-}
+// The +EV view and a failed load have no filter row, so the Record select gets its own full-width bar (select at the left) under the title.
+const trackRecordBar = (C) => `<section class="ca-card ca-trk-recordbar" id="trk-recordbar">${trackRecordSelect(C)}</section>`;
 // A failed load renders no record numbers at all: one notice card (with a retry) under the title.
 function trackErrorHtml(C) {
-  return `${trackTitle(C)}<div class="ca-trk-sub">${pills("trk-view", TRACK_VIEWS, C.s.view)}</div>
+  return `${trackTitle(C)}${trackRecordBar(C)}
     <section class="ca-card ca-trk-error" id="trk-error" role="alert"><p class="ca-empty">${ctxEsc(TRACK_ERRORS[C.error])}</p><p class="ca-trk-reset"><button class="ca-btn" data-trk-retry>Try again</button></p></section>`;
 }
 function trackModelHtml(C) {
   if (C.error) return trackErrorHtml(C);
-  const banner = C.s.archive ? `<p class="ca-trk-banner">Showing archived pre-restart NFL results (the earlier model). They are kept for comparison and are not part of the published record. <button class="ca-link" data-trk-archive>Back to the record</button></p>` : "";
-  return `${trackTitle(C)}${trackNote(C)}${banner}
+  const banner = C.s.archive ? `<p class="ca-trk-banner">Showing archived pre-restart NFL results (the earlier model). They are kept for comparison and are not part of the published record. <button class="ca-link" data-trk-record-back>Back to the record</button></p>` : "";
+  return `${trackTitle(C)}${banner}
     <div class="ca-stats ca-trk-stats">${["trk-record", "trk-line", "trk-total", "trk-streak", "trk-avg"].map((id) => trackCard(id, C)).join("")}</div>
     <div class="ca-trk-r1">${trackCard("trk-cum", C)}${trackCard("trk-market", C)}</div>
     <div class="ca-trk-r2">${trackCard("trk-league", C)}${trackCard("trk-calib", C)}${trackCard("trk-form", C)}</div>
-    ${trackCard("trk-filters", C)}
+    <div class="ca-trk-filterrow">${trackCard("trk-filters", C)}${trackCard("trk-search", C)}</div>
     <div class="ca-trk-main"><div class="ca-trk-left">${trackCard("trk-table", C)}</div><aside class="ca-trk-rail">${trackCard("trk-segments", C)}${trackCard("trk-model", C)}</aside></div>
     ${trackCard("trk-profit", C)}`;
 }
@@ -460,7 +471,7 @@ async function trackEvLoad() {
 function trackEvHtml(C) {
   if (C.error) return trackErrorHtml(C);
   const s = getSettings(), U = unitLabel(s), sec = (name, fn) => safeCard(name, fn, C, "ca-card");
-  return `${trackTitle(C)}${trackNote(C)}<div class="ca-trk-legacy">
+  return `${trackTitle(C)}${trackRecordBar(C)}<div class="ca-trk-legacy">
     ${sec("+EV profit tracker", () => pnlSection(`+EV profit tracker <span style="font-size:.6em;opacity:.6">${U} per bet</span>`, `What ${U} on every graded +EV pick would have made, at the price it was flagged at · a parlay is one ${U} ticket.`, C.evPnl,
       [["moneyline", "+EV MONEYLINE"], ["spread", "+EV SPREAD"], ["prop", "+EV PROPS"], ["parlay", "+EV PARLAYS"]], s))}
     ${sec("Graded parlays", () => gradedParlaysSection(C.parlayRes, s))}${sec("+EV pick performance", () => evTrackSection(C.evRes, C.evPk))}
@@ -496,6 +507,15 @@ function trackSet(key, value) {
   if (["market", "league", "conf", "result", "sort", "q"].includes(key)) s.n = TRACK_PAGE;
   trackSync(s);
 }
+// The Record select: model picks / +EV picks / the pre-restart NFL archive. Only the +EV view needs different data (refetch); the
+// archive is the model view's rows scoped to before the restart (redraw from the cached load).
+function trackSetRecord(key) {
+  const s = trackState(), was = s.view;
+  s.view = key === "ev" ? "ev" : "model";
+  s.archive = key === "archive";
+  trackSync(s);
+  if (s.view !== was) render(); else trackRerender();
+}
 function wireTrackPage() {
   const root = document.getElementById("trk-root");
   if (!root) return;
@@ -507,22 +527,23 @@ function wireTrackPage() {
       const k = pill.dataset.key;
       switch (pill.dataset.pill) {
         case "trk-range": trackSet("range", k); trackRerender(); return;
-        case "trk-view": if (trackState().view !== k) { trackSet("view", k); render(); } return;
         case "trk-chart": trackSet("chart", k); trackRedraw("trk-cum"); return;
         case "trk-seg": trackSet("seg", k); trackRedraw("trk-segments"); return;
         case "trk-mkt": trackSet("market", k); trackRedraw("trk-filters", "trk-table"); return;
       }
     }
     if (t.closest("[data-trk-retry]")) { render(); return; }
-    if (t.closest("[data-trk-archive]")) { trackSet("archive", !trackState().archive); trackRerender(); return; }
+    if (t.closest("[data-trk-record-back]")) { trackSetRecord("model"); return; }
     if (t.closest("[data-trk-more]")) { trackSet("n", Math.min(TRACK_SHOW_MAX, trackState().n + TRACK_PAGE)); trackRedraw("trk-table"); return; }
     if (t.closest("[data-trk-reset]")) {
       const s = trackState();
       Object.assign(s, { market: "all", league: "", conf: "", result: "", sort: "recent", q: "", n: TRACK_PAGE });
-      trackSync(s); trackRedraw("trk-filters", "trk-table");
+      trackSync(s); trackRedraw("trk-filters", "trk-search", "trk-table");
     }
   });
   root.addEventListener("change", (e) => {
+    const rec = e.target.closest("select[data-trk-record]");
+    if (rec) { trackSetRecord(rec.value); return; }
     const sel = e.target.closest("select[data-trk]");
     if (!sel) return;
     trackSet(sel.dataset.trk, sel.value);
