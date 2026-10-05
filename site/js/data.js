@@ -242,3 +242,106 @@ function lineMoveInfo(m, p, splits) {
   const tickets = sp && finite(sp.ticket_pct) ? `${Math.round(+sp.ticket_pct)}% of tickets on ${m.market === "total" ? (m.side === "under" ? "Under" : "Over") : team}` : "";
   return { team, mu, title, chg, d, tickets };
 }
+
+/* ── Graded model picks (shared by Track Record and the sport pages) ─────────────────────────────────────────────────
+   Moved from track.js: trackRows turns prediction_accuracy rows into one row per graded market; trackClosing fetches the
+   moneyline closing prices of those games. Depend on app.js (sb), metrics.js (numOrNull, unitsFromPnl) and this file. */
+const TRACK_MARKETS = ["moneyline", "spread", "total"];
+const TRACK_CLOSING_CHUNK = 60;
+const TRACK_ACC_SELECT = "sport,game_pk,game_date,home_team_name,away_team_name,win_prob,predicted_winner,actual_winner,winner_correct,pred_margin,actual_margin,pred_total,actual_total,market_spread,market_total,spread_pick_correct,total_pick_correct";
+
+// Decimal odds -> American price (null when unusable or not above 1.00).
+function decToAmerican(dec) {
+  const d = numOrNull(dec);
+  if (d == null || d <= 1) return null;
+  return d >= 2 ? Math.round((d - 1) * 100) : -Math.round(100 / (d - 1));
+}
+// game_closing_prices rows ({game_pk, side, close_dec}) -> Map "game_pk|side" -> American price.
+function trackClosingMap(rows) {
+  const m = new Map();
+  for (const r of rows || []) {
+    const a = r ? decToAmerican(r.close_dec) : null;
+    if (a != null) m.set(`${r.game_pk}|${r.side}`, a);
+  }
+  return m;
+}
+const trackNum0 = (x) => (x === 0 ? 0 : x);   // never -0
+const trackGradeOf = (b) => (b === true ? "W" : b === false ? "L" : "P");
+
+// One row per graded pick of a graded game: moneyline (always), spread (when a market line is stored AND the model has a side), total
+// (likewise). A spread / total with no model pick (model exactly on the line, or no model numbers) is not a bet and gets no row,
+// like prediction_pnl's no-bet exclusion (R23). Confidence is the model's moneyline win probability, so only moneyline rows carry it. A game without actual_winner is ungraded and gives no rows (the same population as prediction_pnl).
+// prob = the model's favorite-side win probability (moneyline only; spread / total rows carry none). units = the matching
+// prediction_pnl row's pnl / 10, else null. `closing`: Map "game_pk|side" -> moneyline closing price (from trackClosingMap).
+function trackRows(accuracyRows, pnlRows, closing) {
+  const units = new Map();
+  for (const p of pnlRows || []) if (p && finite(p.pnl)) units.set(`${p.game_pk}|${p.market}`, unitsFromPnl(p.pnl));
+  const out = [];
+  for (const r of accuracyRows || []) {
+    if (!r || r.actual_winner == null) continue;
+    const wp = numOrNull(r.win_prob), conf = wp == null ? null : Math.max(wp, 1 - wp);
+    const am = numOrNull(r.actual_margin), at = numOrNull(r.actual_total);
+    const finalScore = `${am === 0 ? "Tie" : `${r.actual_winner}${am != null ? ` by ${Math.abs(am)}` : ""}`}${at != null ? ` · ${at} total` : ""}`;
+    const base = { date: r.game_date, sport: r.sport, game_pk: r.game_pk, home: r.home_team_name, away: r.away_team_name,
+      matchup: `${r.away_team_name} @ ${r.home_team_name}`, winner: r.actual_winner, finalScore };
+    const push = (market, side, pick, closingLine, modelLine, prob, grade) => out.push({ ...base, market, side, pick, closing: closingLine, modelLine, prob, conf: market === "moneyline" ? conf : null,
+      result: trackGradeOf(grade), won: grade === true ? true : grade === false ? false : null, units: units.get(`${r.game_pk}|${market}`) ?? null });
+    const mlSide = r.predicted_winner === r.home_team_name ? "home" : r.predicted_winner === r.away_team_name ? "away" : null;
+    push("moneyline", mlSide, r.predicted_winner ?? null, mlSide && closing && closing.has(`${r.game_pk}|${mlSide}`) ? closing.get(`${r.game_pk}|${mlSide}`) : null, null, conf, r.winner_correct);
+    const ms = numOrNull(r.market_spread), pm = numOrNull(r.pred_margin);
+    if (ms != null) {
+      const edge = pm == null ? null : pm + ms, side = edge == null || edge === 0 ? null : edge > 0 ? "home" : "away";
+      if (side) push("spread", side, side === "home" ? r.home_team_name : r.away_team_name,
+        trackNum0(side === "home" ? ms : -ms), trackNum0(side === "home" ? r05(-pm) : r05(pm)), null, r.spread_pick_correct);
+    }
+    const mt = numOrNull(r.market_total), pt = numOrNull(r.pred_total);
+    if (mt != null) {
+      const side = pt == null || pt === mt ? null : pt > mt ? "over" : "under";
+      if (side) push("total", side, side === "over" ? "Over" : "Under", mt, r05(pt), null, r.total_pick_correct);
+    }
+  }
+  const mkt = (r) => TRACK_MARKETS.indexOf(r.market);
+  return out.sort((a, b) => (a.date < b.date ? 1 : a.date > b.date ? -1 : (+b.game_pk - +a.game_pk) || mkt(a) - mkt(b)));
+}
+// Moneyline closing prices of the graded games, in parallel chunks of 60 game ids: the whole view scan takes 1.3-2.7s against the
+// 3s anon statement limit (a timeout would drop every price), a chunk answers in ~0.5s. A failed chunk leaves its games unpriced.
+async function trackClosing(gamePks) {
+  const ids = [...new Set((gamePks || []).filter((x) => x != null))], chunks = [];
+  for (let i = 0; i < ids.length; i += TRACK_CLOSING_CHUNK) chunks.push(ids.slice(i, i + TRACK_CLOSING_CHUNK));
+  const parts = await Promise.all(chunks.map((c) => sb(`game_closing_prices?market=eq.moneyline&game_pk=in.(${c.join(",")})&select=game_pk,side,close_dec`).catch(() => [])));
+  return parts.flat();
+}
+
+/* ── Seasons and weeks (NFL / CFB) ────────────────────────────────────────────────────────────────────────────────────
+   The tables carry no week column (power_rankings' week counts played weeks, not a game's week), so a game's week comes from
+   its ET date. Both leagues use Tuesday-to-Monday weeks (the new week starts the day after Monday night), which keeps a
+   Wednesday opener, Thursday / Friday games, the weekend and Monday night together.
+     NFL week 1 starts on the Tuesday after Labor Day (the Tuesday before the first Thursday game), weeks 1..22 (22 = Super Bowl).
+     CFB week 1 starts on the Tuesday before the Saturday of Labor Day weekend, so "Week 0" is the previous Tuesday-to-Monday
+       (the Aug opener Saturday), weeks 0..21 (bowls and the title game run into January).
+   The season is the calendar year of its opening; January / February games belong to the season that started the year before. */
+const WEEK_BOUNDS = { nfl: [1, 22], cfb: [0, 21] };
+const dayDiff = (a, b) => Math.round((Date.parse(`${a}T12:00:00Z`) - Date.parse(`${b}T12:00:00Z`)) / 864e5);
+// First Monday of September (YYYY-MM-DD).
+function laborDay(year) {
+  const dow = new Date(`${year}-09-01T12:00:00Z`).getUTCDay();
+  return addDays(`${year}-09-01`, (1 - dow + 7) % 7);
+}
+const seasonOf = (date) => (+String(date).slice(5, 7) >= 3 ? +String(date).slice(0, 4) : +String(date).slice(0, 4) - 1);
+// The Tuesday on which `week` of `season` starts.
+function weekStart(sport, season, week) {
+  const ld = laborDay(season), w1 = sport === "cfb" ? addDays(ld, -6) : addDays(ld, 1);
+  return addDays(w1, 7 * (week - 1));
+}
+// The week (a number, unclamped) a YYYY-MM-DD date falls in.
+function weekOf(sport, date) {
+  const season = seasonOf(date);
+  return Math.floor(dayDiff(date, weekStart(sport, season, 1)) / 7) + 1;
+}
+const clampWeek = (sport, w) => { const [lo, hi] = WEEK_BOUNDS[sport] || [1, 1]; return Math.min(hi, Math.max(lo, w)); };
+// "Oct 9 – Oct 13, 2025" (a single day: "Oct 13, 2025"; across a year: both years).
+function rangeLabel(from, to) {
+  if (!from) return "";
+  if (!to || to === from) return fullDate(from);
+  return from.slice(0, 4) === to.slice(0, 4) ? `${shortDate(from)} – ${fullDate(to)}` : `${fullDate(from)} – ${fullDate(to)}`;
+}

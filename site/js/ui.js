@@ -28,6 +28,8 @@ function uiBarPath(x, base, hgt, w) {
 const oddsStr = (o) => (!uiFin(o) ? "" : +o > 0 ? `+${+o}` : `${+o}`);
 const confPill = (tier) => (tier ? `<span class="ca-conf ${ctxEsc(tier)}">${ctxEsc(tier)}</span>` : "");
 const alphaCell = (s) => (uiFin(s) ? `<span class="ca-alpha-cell${+s >= 85 ? " hi" : ""}">${s}</span>` : "");
+// Result chip for a graded pick: "W" / "L" / "P" (push), coloured by .ca-res.W / .L / .P in theme.css. `title` = hover text (plain). "" when there is no grade.
+const resultChip = (result, title = "") => (result === "W" || result === "L" || result === "P" ? `<span class="ca-res ${result}"${title ? ` title="${ctxEsc(title)}"` : ""}>${result}</span>` : "");
 const BOOK_STYLE = { draftkings: ["DK", "#0B3D2E"], fanduel: ["FD", "#1493FF"], betmgm: ["MGM", "#B59A5B"], williamhill_us: ["CZR", "#173F35"],
   fanatics: ["FAN", "#D21F3C"], espnbet: ["ESPN", "#D00"], hardrockbet: ["HR", "#5A2D82"], thescore: ["SCR", "#1E5BFF"],
   bet365: ["365", "#027B5B"], ballybet: ["BAL", "#C8102E"], pinnacle: ["PIN", "#0E2238"], betrivers: ["BR", "#1B3B6F"] };

@@ -16,12 +16,11 @@
    evTrackSection, propAccuracySection, propGamesSection, propTrackSection, gradedParlaysSection, r05, pct1, pStr,
    render), metrics.js, ui.js, shell.js and data.js. */
 const TRACK_BREAKEVEN = 0.524;                       // -110 breakeven
-const TRACK_PAGE = 25, TRACK_SHOW_MAX = 1000, TRACK_ROWS_CAP = 1000, TRACK_CLOSING_CHUNK = 60;
+const TRACK_PAGE = 25, TRACK_SHOW_MAX = 1000, TRACK_ROWS_CAP = 1000;
 const TRACK_RANGES = [["7d", "7D"], ["30d", "30D"], ["season", "Season"], ["all", "All Time"]];
 const TRACK_CHARTS = [["overall", "Overall"], ["nfl", "NFL"], ["cfb", "CFB"], ["mlb", "MLB"], ["nba", "NBA"]];
 const TRACK_MARKET_PILLS = [["all", "All Predictions"], ["moneyline", "Moneyline"], ["spread", "Spread"], ["total", "Totals"]];
 const TRACK_MARKET_OPTS = [["all", "All Markets"], ["moneyline", "Moneyline"], ["spread", "Spread"], ["total", "Total"]];
-const TRACK_MARKETS = ["moneyline", "spread", "total"];
 const TRACK_MKT_LABEL = { moneyline: "Moneyline", spread: "Spread", total: "Total" };
 const TRACK_MKT_PLURAL = { moneyline: "Moneyline", spread: "Spreads", total: "Totals" };
 const TRACK_BANDS = [[0.5, 0.55], [0.55, 0.6], [0.6, 0.65], [0.65, 0.7], [0.7, 1.0001]];
@@ -40,63 +39,9 @@ function trackRecordOpts(starts) {
 const trackStartDay = (iso) => new Date(iso).toLocaleDateString("en-US", { timeZone: "America/New_York", month: "short", day: "numeric" });
 const TRACK_DEFAULT = { range: "all", archive: false, view: "model", chart: "overall", market: "all", league: "", conf: "", result: "", sort: "recent", q: "", seg: "market", n: TRACK_PAGE };
 const TRACK_PARAMS = ["range", "archive", "view", "chart", "market", "league", "conf", "result", "sort", "q", "seg", "n"];
-const TRACK_ACC_SELECT = "sport,game_pk,game_date,home_team_name,away_team_name,win_prob,predicted_winner,actual_winner,winner_correct,pred_margin,actual_margin,pred_total,actual_total,market_spread,market_total,spread_pick_correct,total_pick_correct";
 const TRACK_WIN = "#1E8E4E", TRACK_LOSS = "#A5BFEA", TRACK_PUSH = "#B9B3A5";
 
 /* ── pure helpers ─────────────────────────────────────────────────────── */
-// Decimal odds -> American price (null when unusable or not above 1.00).
-function decToAmerican(dec) {
-  const d = numOrNull(dec);
-  if (d == null || d <= 1) return null;
-  return d >= 2 ? Math.round((d - 1) * 100) : -Math.round(100 / (d - 1));
-}
-// game_closing_prices rows ({game_pk, side, close_dec}) -> Map "game_pk|side" -> American price.
-function trackClosingMap(rows) {
-  const m = new Map();
-  for (const r of rows || []) {
-    const a = r ? decToAmerican(r.close_dec) : null;
-    if (a != null) m.set(`${r.game_pk}|${r.side}`, a);
-  }
-  return m;
-}
-const trackNum0 = (x) => (x === 0 ? 0 : x);   // never -0
-const trackGradeOf = (b) => (b === true ? "W" : b === false ? "L" : "P");
-
-// One row per graded pick of a graded game: moneyline (always), spread (when a market line is stored AND the model has a side), total
-// (likewise). A spread / total with no model pick (model exactly on the line, or no model numbers) is not a bet and gets no row,
-// like prediction_pnl's no-bet exclusion (R23). Confidence is the model's moneyline win probability, so only moneyline rows carry it. A game without actual_winner is ungraded and gives no rows (the same population as prediction_pnl).
-// prob = the model's favorite-side win probability (moneyline only; spread / total rows carry none). units = the matching
-// prediction_pnl row's pnl / 10, else null. `closing`: Map "game_pk|side" -> moneyline closing price (from trackClosingMap).
-function trackRows(accuracyRows, pnlRows, closing) {
-  const units = new Map();
-  for (const p of pnlRows || []) if (p && finite(p.pnl)) units.set(`${p.game_pk}|${p.market}`, unitsFromPnl(p.pnl));
-  const out = [];
-  for (const r of accuracyRows || []) {
-    if (!r || r.actual_winner == null) continue;
-    const wp = numOrNull(r.win_prob), conf = wp == null ? null : Math.max(wp, 1 - wp);
-    const am = numOrNull(r.actual_margin), at = numOrNull(r.actual_total);
-    const finalScore = `${am === 0 ? "Tie" : `${r.actual_winner}${am != null ? ` by ${Math.abs(am)}` : ""}`}${at != null ? ` · ${at} total` : ""}`;
-    const base = { date: r.game_date, sport: r.sport, game_pk: r.game_pk, home: r.home_team_name, away: r.away_team_name,
-      matchup: `${r.away_team_name} @ ${r.home_team_name}`, winner: r.actual_winner, finalScore };
-    const push = (market, side, pick, closingLine, modelLine, prob, grade) => out.push({ ...base, market, side, pick, closing: closingLine, modelLine, prob, conf: market === "moneyline" ? conf : null,
-      result: trackGradeOf(grade), won: grade === true ? true : grade === false ? false : null, units: units.get(`${r.game_pk}|${market}`) ?? null });
-    const mlSide = r.predicted_winner === r.home_team_name ? "home" : r.predicted_winner === r.away_team_name ? "away" : null;
-    push("moneyline", mlSide, r.predicted_winner ?? null, mlSide && closing && closing.has(`${r.game_pk}|${mlSide}`) ? closing.get(`${r.game_pk}|${mlSide}`) : null, null, conf, r.winner_correct);
-    const ms = numOrNull(r.market_spread), pm = numOrNull(r.pred_margin);
-    if (ms != null) {
-      const edge = pm == null ? null : pm + ms, side = edge == null || edge === 0 ? null : edge > 0 ? "home" : "away";
-      if (side) push("spread", side, side === "home" ? r.home_team_name : r.away_team_name,
-        trackNum0(side === "home" ? ms : -ms), trackNum0(side === "home" ? r05(-pm) : r05(pm)), null, r.spread_pick_correct);
-    }
-    const mt = numOrNull(r.market_total), pt = numOrNull(r.pred_total);
-    if (mt != null) {
-      const side = pt == null || pt === mt ? null : pt > mt ? "over" : "under";
-      if (side) push("total", side, side === "over" ? "Over" : "Under", mt, r05(pt), null, r.total_pick_correct);
-    }
-  }
-  const mkt = (r) => TRACK_MARKETS.indexOf(r.market);
-  return out.sort((a, b) => (a.date < b.date ? 1 : a.date > b.date ? -1 : (+b.game_pk - +a.game_pk) || mkt(a) - mkt(b)));
-}
 
 // Date window [from, to] ending today (ET). Season = since Aug 1 of the season year; unknown range = All Time.
 function trackRange(range, today) {
@@ -234,14 +179,6 @@ function trackSync(s) {
 }
 
 /* ── data ─────────────────────────────────────────────────────────────── */
-// Moneyline closing prices of the graded games, in parallel chunks of 60 game ids: the whole view scan takes 1.3-2.7s against the
-// 3s anon statement limit (a timeout would drop every price), a chunk answers in ~0.5s. A failed chunk leaves its games unpriced.
-async function trackClosing(gamePks) {
-  const ids = [...new Set((gamePks || []).filter((x) => x != null))], chunks = [];
-  for (let i = 0; i < ids.length; i += TRACK_CLOSING_CHUNK) chunks.push(ids.slice(i, i + TRACK_CLOSING_CHUNK));
-  const parts = await Promise.all(chunks.map((c) => sb(`game_closing_prices?market=eq.moneyline&game_pk=in.(${c.join(",")})&select=game_pk,side,close_dec`).catch(() => [])));
-  return parts.flat();
-}
 // The record scope (track_record_start). trackRecordStarts() swallows errors into "no restarts", which would pull the archived
 // pre-restart rows into the published record, so this page loads it itself and fails closed.
 async function trackStarts() {

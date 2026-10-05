@@ -238,3 +238,10 @@ test("groupedBars: bar width / gap options widen the bars (defaults unchanged)",
   assert.equal(w({}), 2 * 26 + 6 + 30, "default: two 26px bars, 6px gap, 30px group gap");
   assert.equal(w({ bw: 40, bgap: 10, ggap: 50 }), 2 * 40 + 10 + 50);
 });
+
+test("resultChip: W / L / P chips with an escaped hover title, nothing for an ungraded pick", () => {
+  assert.equal(g.resultChip("W"), '<span class="ca-res W">W</span>');
+  assert.equal(g.resultChip("L", 'Lions "ML" <lost>'), '<span class="ca-res L" title="Lions &quot;ML&quot; &lt;lost&gt;">L</span>');
+  assert.equal(g.resultChip("P"), '<span class="ca-res P">P</span>');
+  assert.equal(g.resultChip(null), ""); assert.equal(g.resultChip("X"), "");
+});
