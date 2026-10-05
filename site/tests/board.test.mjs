@@ -556,6 +556,64 @@ test("search overlay: the header button opens it, typing lists escaped matches, 
   assert.equal(requested.filter((p) => p === "predictions_current").length, n, "the loaded index is reused within the refresh window");
 });
 
+// ---- the row cap ("Show all N games") -----------------------------------------------------------------------
+// 25 upcoming games (current week, Oct 1 - Oct 5), one graded game, kickoffs 10 minutes apart from Oct 5 06:00 ET (all inside the current week); the game number is in the home team name.
+const manyGames = (n, graded = 0) => Array.from({ length: n }, (_, i) => ({ sport: "nfl", game_pk: 100 + i, home_team_name: `Home ${i}`, away_team_name: `Away ${i}`, commence_time: new Date(Date.parse("2026-10-05T10:00:00Z") + i * 6e5).toISOString(),
+  game_date: "2026-10-05", home_win_prob: 0.5 + (i % 7) / 50, pred_home_score: 24, pred_away_score: 20 + (i % 3), market_spread: -3, market_total: 44, model_version: "nfl-sim-ml-v2" }));
+const gradedRow = (g) => ({ sport: "nfl", game_pk: g.game_pk, game_date: "2026-10-04", home_team_name: g.home_team_name, away_team_name: g.away_team_name, win_prob: 0.6, predicted_winner: g.home_team_name, actual_winner: g.home_team_name, winner_correct: true,
+  pred_margin: 5, actual_margin: 7, pred_total: 47, actual_total: 51, market_spread: -3, market_total: 44, spread_pick_correct: true, total_pick_correct: true });
+const rowsIn = (html) => (html.match(/<tr data-href=/g) || []).length;
+
+test("row cap: a table shows 20 rows in the current order and a full-width 'Show all N games' button; <= 20 rows show everything and no button", async () => {
+  const gs = manyGames(25), P = populated({ any: gs, cur: gs, acc: [] }), html = await P.G.buildBoardPage("nfl");
+  assert.equal(rowsIn(html), 20, "20 of 25");
+  assert.deepEqual(pks(html), gs.slice(0, 20).map((g) => String(g.game_pk)), "the first 20 by kickoff, order untouched");
+  assert.match(html, /<button type="button" class="ca-bd-more" data-board-more="up" aria-expanded="false">Show all 25 games<\/button>/);
+  assert.ok(html.indexOf("</table>") < html.indexOf("ca-bd-more"), "under the table");
+  const fit = await populated({ any: manyGames(20), cur: manyGames(20), acc: [] }).G.buildBoardPage("nfl");
+  assert.equal(rowsIn(fit), 20); assert.ok(!fit.includes("ca-bd-more"), "exactly 20: no button");
+  assert.ok(!(await populated().G.buildBoardPage("nfl")).includes("ca-bd-more"), "the usual week fits");
+});
+
+test("row cap: the toggle expands in place (label 'Show fewer'), collapses again, is not in the URL, and a new period starts collapsed", async () => {
+  const gs = manyGames(25), els = {}, loc = { search: "", href: "http://localhost/nfl.html" }, handlers = {};
+  const doc = { body: { dataset: { page: "nfl" }, appendChild() {}, classList: { add() {}, remove() {} } }, head: { appendChild() {} }, documentElement: {}, createElement: () => ({}),
+    querySelector: (sel) => (sel === ".ca-board" ? { addEventListener: (t, f) => { handlers[t] = f; } } : null), getElementById: (id) => (els[id] = els[id] || { id, outerHTML: "" }), querySelectorAll: () => [], addEventListener() {} };
+  const P = populated({ any: gs, cur: gs, acc: [], extra: { document: doc } }), G = P.G;
+  await G.buildBoardPage("nfl"); G.wireBoardPage();
+  const click = () => handlers.click({ target: { closest: (sel) => (sel === "[data-board-more]" ? { dataset: { boardMore: "up" } } : null) } });
+  click();
+  assert.equal(rowsIn(els["board-games"].outerHTML), 25, "all 25 after the click");
+  assert.ok(els["board-games"].outerHTML.includes('aria-expanded="true">Show fewer</button>') && els["board-games"].outerHTML.includes('id="board-games"'));
+  assert.equal(loc.search, "", "no URL state");
+  click();
+  assert.equal(rowsIn(els["board-games"].outerHTML), 20); assert.ok(els["board-games"].outerHTML.includes("Show all 25 games"));
+  click(); G.boardGoPeriod("nfl", 3, "2026-10-05");
+  assert.deepEqual({ ...G.boardState("nfl").more }, {}, "another week starts collapsed");
+});
+
+test("row cap: filters and sort run on ALL rows first, the cap trims afterwards; a mixed week caps the Final and the Upcoming table separately", async () => {
+  const gs = manyGames(25);
+  // team filter: game 23 is past the first 20 by kickoff, but the filter runs on all 25 so it is the one row and no button appears
+  const P = populated({ any: gs, cur: gs, acc: [], extra: {} }), D = await P.G.boardLoad("nfl", "games");
+  const set = (k, v) => P.G.boardSetFilter("nfl", k, v); set("team", "Home 23");
+  const one = P.G.boardGamesCard(D); assert.equal(rowsIn(one), 1); assert.ok(one.includes("game=123") && !one.includes("ca-bd-more"));
+  set("team", ""); set("sort", "alpha"); set("more", {});
+  const sorted = P.G.boardGamesCard(D), view = P.G.boardView(P.G.boardGames(D), D, { market: "all", team: "", time: "", sort: "alpha" }).map((g) => String(g.game_pk));
+  assert.deepEqual(pks(sorted), view.slice(0, 20), "the cap takes the top 20 of the SORTED list");
+  set("sort", "time");
+  // mixed: 22 graded + 24 upcoming
+  const fin = manyGames(46).slice(0, 22).map((g) => ({ ...g, game_date: "2026-10-04", commence_time: new Date(Date.parse("2026-10-04T17:00:00Z") + g.game_pk * 6e4).toISOString() })), up = manyGames(46).slice(22).map((g) => ({ ...g, game_pk: g.game_pk + 500 }));
+  const M = populated({ any: [...fin, ...up], cur: up, acc: fin.map(gradedRow) }), MD = await M.G.boardLoad("nfl", "games"), card = M.G.boardGamesCard(MD);
+  assert.equal(rowsIn(card), 40, "20 + 20");
+  assert.ok(card.includes("Final · 22") && card.includes("Upcoming · 24"), "section counts are the full counts");
+  assert.ok(card.includes('data-board-more="fin" aria-expanded="false">Show all 22 games') && card.includes('data-board-more="up" aria-expanded="false">Show all 24 games'), "one button per table");
+  M.G.boardSetFilter("nfl", "more", { fin: true });
+  const half = M.G.boardGamesCard(MD);
+  assert.equal(rowsIn(half), 42, "Final expanded (22) + Upcoming still 20");
+  assert.ok(half.includes("Show fewer") && half.includes("Show all 24 games"));
+});
+
 // ---- CSS contract --------------------------------------------------------------------------------
 test("CSS contract: every ca-* class the board, rankings and settings pages emit exists in theme.css", async () => {
   const css = fs.readFileSync(new URL("../css/theme.css", import.meta.url), "utf8");

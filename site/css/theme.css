@@ -724,6 +724,8 @@ a.ca-ev-pr:hover{background:#FBFAF6}
 .ca-bd-props{table-layout:auto}
 .ca-bd-props td,.ca-bd-props th{text-align:left}
 .ca-bd-em-moneyline [data-m=spread],.ca-bd-em-moneyline [data-m=total],.ca-bd-em-spread [data-m=moneyline],.ca-bd-em-spread [data-m=total],.ca-bd-em-total [data-m=moneyline],.ca-bd-em-total [data-m=spread]{opacity:.38}
+.ca-bd-more{display:block;width:100%;margin:8px 0 2px;padding:clamp(8px,.6vw,12px);border:1px solid var(--line);border-radius:8px;background:#F1EEE6;color:var(--ink);font:600 clamp(12px,.82vw,14px) var(--sans);cursor:pointer}
+.ca-bd-more:hover{background:#EAE6DA}
 /* Sport page, left column (js/pages/board-left.js): Season Performance, Model vs. Market, Market Intelligence, Key Insights */
 .ca-bl-card{padding:clamp(12px,1vw,18px);container-type:inline-size;min-width:0}
 .ca-board .ca-bl-card h2{font-size:clamp(14px,1.05vw,22px);white-space:nowrap}

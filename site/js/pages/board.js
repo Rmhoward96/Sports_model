@@ -31,7 +31,8 @@ const BOARD_SORTS = [["time", "Sort by: Start Time"], ["alpha", "Sort by: Alpha 
 const BOARD_PRED_SELECT = "sport,game_pk,game_date,home_team_name,away_team_name,home_win_prob,pred_home_score,pred_away_score,commence_time,market_spread,market_total,model_version";
 const BOARD_OWNED = ["week", "date", "view"];     // the query params this page owns; every other param is left alone
 const BOARD_DEFAULT = { week: null, date: null, view: "games" };
-const BOARD_FILTER_DEFAULT = { market: "all", team: "", time: "", sort: "time" };
+const BOARD_FILTER_DEFAULT = { market: "all", team: "", time: "", sort: "time", more: {} };     // more = which tables ("fin" / "up") are expanded past BOARD_CAP rows (this page view only, never in the URL)
+const BOARD_CAP = 20;                              // rows shown per table before "Show all N games"
 // Mount points for the cards of the left and right columns, top to bottom. A card registers BOARD_CARDS[id] = (D) => html.
 const BOARD_SLOTS = {
   left: ["board-season-perf", "board-model-market", "board-market-intel", "board-key-insights"],
@@ -193,6 +194,7 @@ function boardGoPeriod(sport, value, today) {
   if (per.kind === "week" ? !Number.isFinite(+value) : !boardIsDate(value)) return false;   // a value of the wrong kind never reaches the URL
   const v = per.kind === "week" ? clampWeek(sport, +value) : value;
   if (per.kind === "week") s.week = v === per.def ? null : v; else s.date = v === per.def ? null : v;
+  s.more = {};      // a new period starts collapsed
   boardSync(s);
   return true;
 }
@@ -363,6 +365,12 @@ function boardTools(D, games) {
   return `<div class="ca-bd-tools">${pills("board-market", items, active)}<div class="ca-bd-filters">${sel("team", s.team, [["", "All Teams"], ...teams.map((t) => [t, shortTeam(t, D.sport)])])}${sel("time", s.time, [["", "All Times"], ...times.map((t) => [t, t])])}${sel("sort", s.sort, BOARD_SORTS, "ca-bd-sortsel")}</div></div>`;
 }
 
+// The first BOARD_CAP rows of a table (in the current order) and the full-width toggle under it ("Show all N games" / "Show fewer"); no toggle when the table fits.
+function boardCap(rows, key, s) {
+  if (rows.length <= BOARD_CAP) return { rows, more: "" };
+  const open = !!(s.more && s.more[key]);
+  return { rows: open ? rows : rows.slice(0, BOARD_CAP), more: `<button type="button" class="ca-bd-more" data-board-more="${key}" aria-expanded="${open}">${open ? "Show fewer" : `Show all ${rows.length} games`}</button>` };
+}
 function boardGamesCard(D) {
   const s = boardState(D.sport), games = boardGames(D), h = boardHeading(D, games);
   if (!games.length && !LIVE_SPORTS.includes(D.sport)) h.sub = "";     // a paused / not-live sport: the empty state says why, the usual subtitle would contradict it
@@ -372,7 +380,10 @@ function boardGamesCard(D) {
     const rows = boardView(games, D, s), fin = rows.filter((g) => g.final), up = rows.filter((g) => !g.final);
     if (s.market === "props" && (D.opps || []).some((o) => o.kind === "prop")) body = boardPropsTable(rows, D);
     else if (!rows.length) body = emptyMsg("No games match these filters.");
-    else body = `${fin.length ? `${up.length ? `<p class="ca-bd-sec">Final · ${fin.length}</p>` : ""}<div class="ca-table-wrap">${boardFinalTable(fin, D, s)}</div>` : ""}${up.length ? `${fin.length ? `<p class="ca-bd-sec">Upcoming · ${up.length}</p>` : ""}<div class="ca-table-wrap">${boardUpcomingTable(up, D, s)}</div>` : ""}`;
+    else {
+      const fc = boardCap(fin, "fin", s), uc = boardCap(up, "up", s);     // filters and sort already ran on every row; the cap only trims what is shown
+      body = `${fin.length ? `${up.length ? `<p class="ca-bd-sec">Final · ${fin.length}</p>` : ""}<div class="ca-table-wrap">${boardFinalTable(fc.rows, D, s)}</div>${fc.more}` : ""}${up.length ? `${fin.length ? `<p class="ca-bd-sec">Upcoming · ${up.length}</p>` : ""}<div class="ca-table-wrap">${boardUpcomingTable(uc.rows, D, s)}</div>${uc.more}` : ""}`;
+    }
   }
   return `<section class="ca-card ca-board-card ca-bd-games" id="board-games"><div class="ca-bd-head"><h2>${ctxEsc(h.title)}</h2>${h.sub ? `<p>${ctxEsc(h.sub)}</p>` : ""}</div>${games.length ? boardTools(D, games) : ""}${body}</section>`;
 }
@@ -413,6 +424,8 @@ function wireBoardPage() {
     const D = window.__caBoardData;
     if (!D) return;
     const pill = e.target.closest("[data-pill]"), step = e.target.closest("[data-board-step]"), pick = e.target.closest(".ca-bd-daypick");
+    const more = e.target.closest("[data-board-more]");
+    if (more) { const st = boardState(D.sport); st.more = { ...st.more, [more.dataset.boardMore]: !(st.more && st.more[more.dataset.boardMore]) }; boardRedraw(); return; }
     if (pill && pill.dataset.pill === "board-market") { boardSetFilter(D.sport, "market", pill.dataset.key); boardRedraw(); return; }
     if (step && D.period && !step.disabled) { const to = +step.dataset.boardStep < 0 ? D.period.prev : D.period.next; if (to != null) boardGo(to); return; }
     if (pick && !e.target.matches("input")) { const inp = pick.querySelector("input"); try { inp.showPicker(); } catch { inp.focus(); } }
