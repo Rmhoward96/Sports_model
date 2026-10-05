@@ -130,7 +130,8 @@ test("boardLines: every line from the market favourite's side; edge = model minu
   assert.equal(L.mkt.spread, -4.5); assert.equal(L.mkt.ml, -210); assert.equal(L.mkt.total, 47.5);
   assert.ok(L.model.spread === -9 && L.model.ml === -233 && L.model.total === 49, "the model's spread is rounded to the half point (-8.8 -> -9)");
   assert.ok(Math.abs(L.edge.spread - 4.5) < 1e-9, "model margin 9 vs market 4.5: +4.5 points on the favourite");
-  assert.ok(Math.abs(L.edge.ml - (0.7 - 210 / 310) * 100) < 1e-9);
+  const pH = 210 / 310, pA = 100 / 280;
+  assert.ok(Math.abs(L.edge.ml - (0.7 - pH / (pH + pA)) * 100) < 1e-9, "ML edge vs the NO-VIG probability (-210 / +180 normalised: 61.9%, not the vigged 67.7%)"); assert.equal(L.mlVig, false);
   assert.ok(Math.abs(L.edge.total - 1.5) < 1e-9);
   // away favoured by the market (+2 home line) while the model prefers the home side: negative edge on the favourite
   const A = g.boardLines(G({ pred: { home_win_prob: 0.55, pred_home_score: 24, pred_away_score: 22, market_spread: 2, market_total: 50 } }), { mlBy: new Map([["7", { home_price: 120, away_price: -140 }]]) });
@@ -138,6 +139,10 @@ test("boardLines: every line from the market favourite's side; edge = model minu
   assert.equal(A.mkt.spread, -2, "the away favourite's line"); assert.equal(A.mkt.ml, -140);
   assert.ok(Math.abs(A.model.spread - 2) < 1e-9, "the model has the away team a 2-point underdog"); assert.equal(A.model.ml, 122, "fair price for 45% = +122");
   assert.ok(Math.abs(A.edge.spread - -4) < 1e-9 && A.edge.ml < 0 && Math.abs(A.edge.total - -4) < 1e-9);
+  // only one side priced: the vigged implied probability (flagged), never a made-up opposite price
+  const V = g.boardLines(G({ pred: { home_win_prob: 0.7, market_spread: -4.5 } }), { mlBy: new Map([["7", { home_price: -210, away_price: null }]]) });
+  assert.ok(Math.abs(V.edge.ml - (0.7 - 210 / 310) * 100) < 1e-9 && V.mlVig === true, "no price for the other side: vigged fallback, flagged");
+  assert.equal(g.boardLines(G({ pred: { home_win_prob: 0.7 } }), {}).mlVig, false, "no price at all: no edge, nothing to flag");
   // no market at all: the model's favourite, dashes for the market and the edge
   const N = g.boardLines(G({ pred: { home_win_prob: 0.4, pred_home_score: 20, pred_away_score: 24 } }), {});
   assert.equal(N.fav, "away"); assert.equal(N.mkt.spread, null); assert.equal(N.mkt.ml, null); assert.equal(N.edge.spread, null); assert.equal(N.edge.ml, null); assert.equal(N.edge.total, null);
@@ -162,9 +167,10 @@ test("boardScore / boardGames / boardView: scores from margin + total; graded ga
   const s = (o) => ({ market: "all", team: "", time: "", sort: "time", ...o });
   assert.deepEqual(g.boardView(games, D, s({ team: "H2" })).map((x) => x.game_pk), [2]);
   assert.deepEqual(g.boardView(games, D, s({ time: "Sun 1:00 PM" })).map((x) => x.game_pk), [2], "kickoff label filter (ET); a game with no kickoff time never matches");
-  assert.deepEqual(g.boardView(games, D, s({ sort: "edge", market: "spread" })).map((x) => x.game_pk)[0], 3, "sorted by the largest edge (only pk 3 has a spread edge)");
+  assert.deepEqual(g.boardView(games, D, s({ sort: "edge", market: "spread" })).map((x) => x.game_pk), [1, 9, 3, 2], "finished games stay in kickoff order (they show no edge); the upcoming ones sort by the largest edge (only pk 3 has a spread edge)");
   const withAlpha = { ...D, opps: [] }; games[3].opp = { alpha: 80 }; games[2].opp = { alpha: 90 };
-  assert.deepEqual(g.boardView(games, withAlpha, s({ sort: "alpha" })).slice(0, 2).map((x) => x.game_pk), [2, 3]);
+  assert.deepEqual(g.boardView(games, withAlpha, s({ sort: "alpha" })).map((x) => x.game_pk), [1, 9, 2, 3], "finished first by time, then the upcoming by alpha");
+  assert.deepEqual(g.boardView(games.filter((x) => x.final), withAlpha, s({ sort: "alpha" })).map((x) => x.game_pk), [1, 9], "a period with only finished games: Alpha Score / Edge sorts are a no-op, kickoff order");
 });
 
 // ---- populated render ----------------------------------------------------------------------------
@@ -293,7 +299,7 @@ test("upcoming rows: market ML / spread / total, the model's, the edge in green 
   const html = await populated().G.buildBoardPage("nfl"), up = tableOf(html, "ca-bd-up"), r = rowOf(up, 3);
   assert.ok(r.includes("-125") && r.includes("-1.5") && r.includes("46.5"), "market: best moneyline, spread on the favourite, total");
   assert.ok(r.includes("-122") && r.includes("-7</span>") && r.includes("47.5"), "model: fair ML for 55%, spread from the projected score (half point), total");
-  assert.ok(r.includes('<span class="pos">+5.5</span>') && r.includes('<span class="pos">+1.0</span>') && r.includes('<span class="neg">−0.6%</span>'), "edge = model minus market, coloured by sign"); 
+  assert.ok(r.includes('<span class="pos">+5.5</span>') && r.includes('<span class="pos">+1.0</span>') && r.includes('<span class="pos">+1.8%</span>'), "edge = model minus market (ML vs the no-vig price: -125 / +105 -> 53.2%), coloured by sign"); 
   assert.match(r, /class="ca-bd-alpha"[^>]*><span class="ca-alpha-cell/, "the game's best opportunity as the Alpha Score");
   assert.ok(r.includes('<a class="ca-go" href="game.html?sport=nfl&game=3"'), "View links to the game page");
   assert.match(r, /data-star-kind="games" data-star-id="3"/);
@@ -324,6 +330,21 @@ test("filters + sort selects: All Teams, All Times, Sort by Start Time (Alpha Sc
   const html = await populated().G.buildBoardPage("nfl");
   assert.ok(html.includes('<option value="" selected>All Teams</option>') && html.includes('<option value="" selected>All Times</option>'));
   assert.ok(html.includes('data-board="sort"') && html.includes('<option value="time" selected>Sort by: Start Time</option>') && html.includes("Sort by: Alpha Score") && html.includes("Sort by: Edge"));
+});
+
+test("sort select: Alpha Score / Edge are disabled (and the select reads Start Time) when every game of the period is final; a mixed week keeps them", async () => {
+  const mixed = await populated().G.buildBoardPage("nfl");
+  assert.ok(!/<option value="(alpha|edge)"[^>]* disabled/.test(mixed), "upcoming games to sort: nothing disabled");
+  const P = populated({ search: "?week=3" }), past = await P.G.buildBoardPage("nfl");
+  assert.ok(/<td class="ca-bd-final"/.test(past) && !/ca-bd-up/.test(past), "fixture: week 3 is all final");
+  assert.ok(/<option value="alpha" disabled[^>]*>Sort by: Alpha Score/.test(past) && /<option value="edge" disabled[^>]*>Sort by: Edge/.test(past) && !/<option value="time"[^>]* disabled/.test(past) && past.includes('<option value="time" selected>'));
+});
+
+test("kickoff cell keeps day and time as two spans with a space between (one line when the card is wide, two when narrow)", async () => {
+  const html = await populated().G.buildBoardPage("nfl"), r = rowOf(tableOf(html, "ca-bd-up"), 3);
+  assert.ok(/<span>Mon<\/span> <span>8:15 PM<\/span>/.test(r), r.slice(0, 600));
+  const css = fs.readFileSync(new URL("../css/theme.css", import.meta.url), "utf8");
+  assert.ok(/@container \(min-width:665px\)\{[^@]*\.ca-bd-up \.ca-bd-time span\{display:inline\}/.test(css), "wide card: Kickoff on one line");
 });
 
 test("empty states: a week with no games, MLB paused, NBA without a model", async () => {

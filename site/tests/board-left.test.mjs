@@ -330,3 +330,24 @@ test("Key Insights / Model vs. Market wording: \"this season\" only when the rec
   const plain = await populated().G.buildBoardPage("nfl");
   assert.ok(card(plain, "board-key-insights").includes("this season") && !card(plain, "board-key-insights").includes("published record"));
 });
+
+test("Model vs. Market and Key Insights name what they cover when the browsed period is not the current one (the data is not rescoped)", async () => {
+  const html = await populated({ search: "?week=3" }).G.buildBoardPage("nfl"), mm = card(html, "board-model-market");
+  assert.ok(mm.includes("Season record, not Week 3.") && /ca-bl-cap/.test(mm), text(mm));
+  assert.ok(card(await populated().G.buildBoardPage("nfl"), "board-model-market").indexOf(", not Week") < 0, "the current week: no caption");
+  const G = populated().G, per = { isCurrent: false, kind: "week", week: 3 }, starts = (iso) => new Map([["nfl", { starts_at: iso }]]);
+  assert.ok(G.blRecordNote({ period: per, sport: "nfl", today: "2026-10-05" }, { starts: starts("2026-09-29T17:00:00Z") }).includes("Published record, not Week 3."), "NFL record restarted after the season began: the same wording as the rows");
+  assert.ok(G.blRecordNote({ period: per, sport: "nfl", today: "2026-10-05" }, { starts: new Map() }).includes("Season record, not Week 3."));
+  assert.equal(G.blRecordNote({ period: { ...per, isCurrent: true }, sport: "nfl", today: "2026-10-05" }, { starts: new Map() }), "");
+  const st = [{ sport: "nfl", starts_at: "2026-09-25T17:00:00Z", model_version: "nfl-sim-ml-v2" }], past = await populated({ starts: st, search: "?week=3" }).G.buildBoardPage("nfl");
+  assert.ok(card(past, "board-model-market").includes("Published record, not Week 3."));
+});
+
+test("Season Performance W-L sub-line says 'no pushes' (not a game count that reads like a second record); Key Insights tooltip counts decided picks", async () => {
+  const sp = card(await populated().G.buildBoardPage("nfl"), "board-season-perf");
+  assert.ok(sp.includes("no pushes") && !/\d+ games</.test(sp), text(sp));
+  const G = populated().G, a = ACC.slice(0, 8), D = { sport: "nfl", today: "2026-10-05", period: { isCurrent: false, kind: "week", week: 3 }, left: { failed: {}, starts: new Map(), accRec: a, rec: G.trackRows(a, [], new Map()) } }, ki = G.blKeyInsights(D);
+  assert.ok(/title="[^"]*· 8 decided picks"/.test(ki) && !/· \d+ games"/.test(ki), "the tooltip's N is W + L, not games");
+  assert.ok(ki.includes("Season record, not Week 3."), "a past period says the card is the season record");
+  assert.ok(!G.blKeyInsights({ ...D, period: { ...D.period, isCurrent: true } }).includes(", not Week"));
+});

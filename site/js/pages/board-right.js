@@ -6,7 +6,7 @@
    a W / L / P chip from the graded results (ev_results / ev_prop_results). "model prob" of a game line is Pinnacle's no-vig price (R19).
    Betting Splits: nfl_/cfb_betting_splits_current for the games of the period (tickets and money); the card is hidden when none exist.
    Model Projections: the sport's graded picks of the published record (D.left.rec / accRec, Task B's memoised load) bucketed by the
-   model-minus-market edge (the centre table's Edge: ML in probability points, spread / total in points), hit rate = picks won / (won + lost);
+   model-minus-market edge (the centre table's Edge: ML in probability points vs the no-vig price, spread / total in points), hit rate = picks won / (won + lost);
    a Week / Season toggle picks the period. No per-pick units exist (prediction_pnl is $10 a bet and only daily aggregates are readable), so
    there is no Units column.
    Depends on app.js, metrics.js, ui.js, data.js, board.js (BOARD_*, boardGames, boardLines, boardName) and board-left.js (bl* card helpers). */
@@ -23,6 +23,8 @@ const BR_CHUNK = 60;
 const brKeeps = (o, key) => key === "all" || (key === "props" ? o.kind === "prop" : o.kind === "line" && o.market === key);
 // One opportunity's identity: a game line is (game, market, side), a prop adds the player and the line.
 const brKey = (o) => (o.kind === "prop" ? `${o.game_pk}|${o.playerName}|${o.market}|${o.line}|${o.side}` : `${o.sport}|${o.game_pk}|${o.market}|${o.side}`);
+// A pick whose game has started (commence in the past): it is no longer live; until its result lands it is "graded-pending".
+const brStarted = (o, now) => { const t = Date.parse(o.commence); return Number.isFinite(t) && t < now; };
 const brGrade = (won) => (won === true ? "W" : won === false ? "L" : "P");     // a graded row with no winner is a push (spread / total refunded)
 
 // The stored +EV picks of a period as opportunities with a tier (R9), each carrying `result` ("W" | "L" | "P" | null when not graded).
@@ -45,7 +47,9 @@ function brTopOpps(D) {
   const per = D.period, stored = ((D.right && D.right.stored) || []).filter((o) => { const d = o.commence ? etDateStr(o.commence) : ""; return d >= per.from && d <= per.to; });
   const byKey = new Map(stored.map((o) => [brKey(o), o])), seen = new Set();
   const live = (D.opps || []).map((o) => { seen.add(brKey(o)); const s = byKey.get(brKey(o)); return { ...o, result: s ? s.result : null }; });
-  return [...live, ...stored.filter((o) => !seen.has(brKey(o)))].sort((a, b) => b.alpha - a.alpha || b.evPct - a.evPct || String(a.game_pk).localeCompare(String(b.game_pk)));
+  const now = D.nowMs != null ? D.nowMs : Date.now(), done = (o) => brStarted(o, now);
+  // The current period ranks the edges still to be played first (a live edge before a finished one), then by alpha and EV.
+  return [...live, ...stored.filter((o) => !seen.has(brKey(o)))].sort((a, b) => (per.isCurrent ? done(a) - done(b) : 0) || b.alpha - a.alpha || b.evPct - a.evPct || String(a.game_pk).localeCompare(String(b.game_pk)));
 }
 // Which edge band an edge falls in (index into BR_BANDS; edges are rounded to a tenth so 5.0000001 is 5).
 const brBandOf = (e) => { const x = Math.round(e * 10) / 10; return BR_BANDS.findIndex(([, f]) => f(x)); };
@@ -88,7 +92,7 @@ async function brPicksLoad(D) {
   const sport = D.sport, per = D.period, win = `commence_time=gte.${addDays(per.from, -1)}T00:00:00Z&commence_time=lt.${addDays(per.to, 2)}T00:00:00Z`;
   const [lines, props] = await Promise.all([
     sbAll(`ev_picks?is_pick=eq.true&sport=eq.${sport}&${win}&select=sport,game_pk,market,side,matchup,commence_time,true_prob,ev_best,best_book,best_price,best_line_implied,created_at&order=created_at.asc,game_pk.asc,market.asc,side.asc,model_version.asc`),
-    sport === "nfl" ? sbAll(`ev_prop_picks?is_pick=eq.true&sport=eq.${sport}&${win}&select=sport,game_pk,player_id,player_name,market,side,line,model_version,matchup,commence_time,model_prob,ev_best,best_book,best_price,created_at&order=created_at.asc,game_pk.asc,player_id.asc,market.asc,line.asc,model_version.asc`) : [],
+    sport === "nfl" ? sbAll(`ev_prop_picks?is_pick=eq.true&sport=eq.${sport}&${win}&select=sport,game_pk,player_id,player_name,market,side,line,model_version,matchup,commence_time,model_prob,ev_best,best_book,best_price,created_at&order=created_at.asc,game_pk.asc,player_id.asc,market.asc,line.asc,side.asc,model_version.asc`) : [],
   ]);
   const chunks = (rows) => { const ids = [...new Set((rows || []).map((r) => r.game_pk).filter((x) => x != null))], out = []; for (let i = 0; i < ids.length; i += BR_CHUNK) out.push(ids.slice(i, i + BR_CHUNK)); return out; };
   const lineRes = (await Promise.all(chunks(lines).map((c) => sb(`ev_results?sport=eq.${sport}&game_pk=in.(${c.join(",")})&select=sport,game_pk,market,side,won`).catch(() => [])))).flat();
@@ -125,7 +129,8 @@ function brTopAlpha(D) {
     const none = all.length ? `No ${(BR_TA_PILLS.find(([k]) => k === key) || [])[1] || ""} edges in ${brPeriodWord(D)}.` : over ? `No +EV picks were stored for ${brPeriodWord(D)}.` : per.from > D.today ? `No +EV opportunities for ${brPeriodWord(D)} yet.` : "No +EV opportunities on the board right now.";
     return blCard(id, `${blHead(title, link)}${pl}${cap}${emptyMsg(none)}`, "ca-br-ta");
   }
-  const graded = rows.some((o) => o.result), word = { W: "Won", L: "Lost", P: "Push (stake refunded)" };
+  // A row with a result, or whose game already started (finished but not graded yet), gets the result column; the ungraded ones show a dash.
+  const now = D.nowMs != null ? D.nowMs : Date.now(), graded = rows.some((o) => o.result || brStarted(o, now)), word = { W: "Won", L: "Lost", P: "Push (stake refunded)" };
   const html = rows.map((o, i) => topAlphaRow(o, i, D.lineBy, { at: true, aux: graded ? (resultChip(o.result, `${word[o.result]} at the flagged price`) || `<span class="muted" title="Not graded yet">–</span>`) : "" })).join("");
   return blCard(id, `${blHead(title, link)}${pl}${cap}<div class="ca-br-rows">${html}</div>`, "ca-br-ta");
 }
@@ -168,7 +173,7 @@ function brProjections(D) {
   if (!L || L.failed.record) return blFailed(id, title);
   const per = D.period, st = brState().mp, mine = st.for === blKey(per), sc = blScopeOf(D, mine ? st.scope : null), market = BR_PROJ_MARKETS.some(([k]) => k === st.market) ? st.market : "spread";
   const d = brProjData(L, market, sc.from, sc.to), def = BR_PROJ_MARKETS.find(([k]) => k === market);
-  const tip = `Graded ${boardName(D.sport)} picks of the published record, grouped by how far the model's number was from the market's (${def[3] === "pp" ? "the model's win probability minus the market's closing probability, in percentage points" : "the model's line minus the market's line, in points"}; positive = the model likes the market favourite${market === "total" ? " / the Over" : ""} more than the market does). Hit rate = picks won / (won + lost); a push is not decided. Units are not shown: the stored P&L is $10 a bet in daily totals, so there is no per-pick profit.`;
+  const tip = `Graded ${boardName(D.sport)} picks of the published record, grouped by how far the model's number was from the market's (${def[3] === "pp" ? "the model's win probability minus the market's no-vig closing probability, in percentage points (the closing price with the bookmaker's margin removed using the other side's price; a game with only one side's closing price uses the vigged price, which makes the edge look smaller)" : "the model's line minus the market's line, in points"}; positive = the model likes the market favourite${market === "total" ? " / the Over" : ""} more than the market does). Hit rate = picks won / (won + lost); a push is not decided. Units are not shown: the stored P&L is $10 a bet in daily totals, so there is no per-pick profit.`;
   const head = `${blHead(title, `${brMsel("mp-market", BR_PROJ_MARKETS.map(([k, l]) => [k, l]), market)}${infoTip(tip)}`)}<div class="ca-bl-scope">${pills("br-mp", [["period", ctxEsc(blPeriodWord(per))], ["season", "Season"]], sc.key)}</div><p class="ca-bl-cap">${ctxEsc(sc.caption)}</p>`;
   if (!d.total.n) return blCard(id, `${head}${emptyMsg(d.picks ? `${d.picks} graded ${def[1]} pick${d.picks > 1 ? "s" : ""} in ${sc.word} have no market ${market === "moneyline" ? "closing price" : "line"} to measure an edge against.` : blNoPicksMsg(D, L, sc))}`, "ca-br-mp");
   const rec = (b) => `${b.w}-${b.l}${b.p ? `-${b.p}` : ""}`, hit = (b) => (b.pct == null ? "—" : `<span class="${b.pct > 0.5 ? "pos" : b.pct < 0.5 ? "neg" : ""}" title="${ctxEsc(`${rec(b)} (${b.n} games)`)}">${(b.pct * 100).toFixed(1)}%</span>`);

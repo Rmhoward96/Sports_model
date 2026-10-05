@@ -699,10 +699,15 @@ a.ca-ev-pr:hover{background:#FBFAF6}
   .ca-bd-sp i{display:block;font-size:.88em;line-height:1.1}
 }
 @container (max-width:660px){
-.ca-bd-up col:nth-child(1){width:15%}.ca-bd-up col:nth-child(2){width:9%}.ca-bd-up col:nth-child(3){width:7%}.ca-bd-up col:nth-child(4){width:8%}.ca-bd-up col:nth-child(5){width:5.5%}.ca-bd-up col:nth-child(6){width:7%}.ca-bd-up col:nth-child(7){width:8%}.ca-bd-up col:nth-child(8){width:5.5%}.ca-bd-up col:nth-child(9){width:6.5%}.ca-bd-up col:nth-child(10){width:6%}.ca-bd-up col:nth-child(11){width:6%}.ca-bd-up col:nth-child(12){width:10%}.ca-bd-up col:nth-child(13){width:6.5%}
+.ca-bd-up col:nth-child(1){width:15%}.ca-bd-up col:nth-child(2){width:9%}.ca-bd-up col:nth-child(3){width:7%}.ca-bd-up col:nth-child(4){width:8%}.ca-bd-up col:nth-child(5){width:5.5%}.ca-bd-up col:nth-child(6){width:7%}.ca-bd-up col:nth-child(7){width:8%}.ca-bd-up col:nth-child(8){width:5.5%}.ca-bd-up col:nth-child(9){width:8%}.ca-bd-up col:nth-child(10){width:6%}.ca-bd-up col:nth-child(11){width:6%}.ca-bd-up col:nth-child(12){width:8.5%}.ca-bd-up col:nth-child(13){width:6.5%}
 .ca-bd-fin col:nth-child(1){width:14.5%}.ca-bd-fin col:nth-child(2){width:7.5%}.ca-bd-fin col:nth-child(3){width:9%}.ca-bd-fin col:nth-child(4){width:7%}.ca-bd-fin col:nth-child(5){width:7.5%}.ca-bd-fin col:nth-child(6){width:5.5%}.ca-bd-fin col:nth-child(7){width:7%}.ca-bd-fin col:nth-child(8){width:7.5%}.ca-bd-fin col:nth-child(9){width:5.5%}.ca-bd-fin col:nth-child(10){width:8.5%}.ca-bd-fin col:nth-child(11){width:8.5%}.ca-bd-fin col:nth-child(12){width:7%}.ca-bd-fin col:nth-child(13){width:5%}
   .ca-bd-pair{flex-direction:column;align-items:flex-start;gap:2px}
   .ca-bd-side{gap:4px}
+}
+/* A wide centre card (content width >= 665px, i.e. a 1536px+ window: 673px at 1536, 846px at 1920; 630px at 1440 keeps the stacked forms): the matchup stays on one line ("BUF @ ATL", logos inline; the stacked form above is only for <= 660px) and the upcoming table's Kickoff reads "Sun 1:00 PM" on one line, so its column is widened at the matchup / alpha columns' expense. */
+@container (min-width:665px){
+.ca-bd-up col:nth-child(1){width:21%}.ca-bd-up col:nth-child(2){width:11%}.ca-bd-up col:nth-child(3){width:5.5%}.ca-bd-up col:nth-child(4){width:8.5%}.ca-bd-up col:nth-child(5){width:5%}.ca-bd-up col:nth-child(6){width:5.5%}.ca-bd-up col:nth-child(7){width:8.5%}.ca-bd-up col:nth-child(8){width:5%}.ca-bd-up col:nth-child(9){width:6.5%}.ca-bd-up col:nth-child(10){width:5.5%}.ca-bd-up col:nth-child(11){width:5.5%}.ca-bd-up col:nth-child(12){width:6.5%}.ca-bd-up col:nth-child(13){width:6%}
+  .ca-bd-up .ca-bd-time{white-space:nowrap}.ca-bd-up .ca-bd-time span{display:inline}
 }
 
 .ca-bd-pair i{font-style:normal;color:var(--muted);margin:0 1px}

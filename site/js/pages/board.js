@@ -16,7 +16,7 @@
    the Alpha Score. A week holding both shows the finished games first (their own table), then the rest.
    All lines are shown from the market favourite's side (the favourite by the spread, else the model's pick, else home): market
    ML / spread / total, the model's fair ML (from home_win_prob) / spread (pred_margin, else the projected score) / total, and the
-   Edge = model minus market: ML in probability points vs the best price's implied probability, spread in points on the
+   Edge = model minus market: ML in probability points vs the favourite's NO-VIG probability (its price normalised with the other side's price; the vigged implied probability when only one side has a price), spread in points on the
    favourite (model margin - market margin), total in points (model - market; + leans Over). The model's spread and total are
    rounded to the half point (modelLineStr / r05, the same as the game page), so the edge is exactly what the two columns show.
    NFL / CFB: "Power Rankings →" opens ?view=rankings, which renders the legacy sortable rankingsTable (app.js: rankingsCard,
@@ -93,7 +93,7 @@ function boardGames(D) {
 }
 
 // The market, the model and the edge of one game, all from the favourite's side. Missing numbers are null (shown as a dash).
-//   mkt = { ml (American price), spread (the favourite's line), total }, model = { ml (fair American), spread, total }, edge = { ml (prob pts), spread (pts), total (pts) }.
+//   mkt = { ml (American price), spread (the favourite's line), total }, model = { ml (fair American), spread, total }, edge = { ml (prob pts), spread (pts), total (pts) }, mlVig (the ML edge used the vigged price: no price for the other side).
 // A final game uses the graded row's model numbers and the closing prices (D.closing: "game_pk|side" -> American); an upcoming game
 // uses the projection and the best current prices (D.mlBy: game_pk -> game_moneylines_current row).
 function boardLines(g, D) {
@@ -121,9 +121,13 @@ function boardLines(g, D) {
   const modLine = fav && margin != null ? r05(-sign * margin) || 0 : null;     // the model's numbers are quoted to the half point everywhere (modelLineStr, game page), so the edge is exactly model - market as shown
   if (total != null) total = r05(total);
   const modMl = pFav != null && pFav > 0 && pFav < 1 ? probToAmerican(pFav) : null;
-  const edge = { ml: pFav != null && mktMl != null && Number.isFinite(americanToProb(mktMl)) ? (pFav - americanToProb(mktMl)) * 100 : null,
+  // The ML edge is against the NO-VIG probability of the favourite's price: normalised with the other side's price (proportional) when both exist, else the
+  // vigged implied probability (mlVig = true; the Model Projections ML tooltip says so).
+  const pf = mktMl == null ? NaN : americanToProb(mktMl), po = fav ? americanToProb(fav === "home" ? prices.away : prices.home) : NaN, devig = Number.isFinite(pf) && Number.isFinite(po) && pf + po > 0;
+  const mktProb = Number.isFinite(pf) ? (devig ? pf / (pf + po) : pf) : null;
+  const edge = { ml: pFav != null && mktProb != null ? (pFav - mktProb) * 100 : null,
     spread: mktLine != null && modLine != null ? mktLine - modLine : null, total: mktTotal != null && total != null ? total - mktTotal : null };
-  return { fav, favName, favAbbr: fav ? teamShort(favName, g.sport) : "", mkt: { ml: mktMl, spread: mktLine, total: mktTotal }, model: { ml: modMl, spread: modLine, total }, edge };
+  return { fav, favName, favAbbr: fav ? teamShort(favName, g.sport) : "", mkt: { ml: mktMl, spread: mktLine, total: mktTotal }, model: { ml: modMl, spread: modLine, total }, edge, mlVig: mktProb != null && !devig };
 }
 
 // Alpha Score of an upcoming game, or null when it cannot be computed. A game with a tiered +EV opportunity (R9) uses that
@@ -149,14 +153,17 @@ function boardAlpha(g, D) {
 const boardAlphaCell = (a) => (a.score >= 65 ? alphaCell(a.score) : `<span class="ca-alpha-cell lo">${a.score}</span>`);
 
 // Filters (team / kickoff label) then the sort. Edge sort = the largest |edge| of the selected market pill (all markets: the largest of the three).
+// Finished games have no Alpha Score and the Final table shows no edge, so they are always in kickoff order; the Alpha / Edge sorts only reorder the upcoming ones.
 function boardView(games, D, s) {
-  let rows = games.filter((g) => (!s.team || g.away === s.team || g.home === s.team) && (!s.time || kickLabel(g.commence) === s.time));
+  const rows = games.filter((g) => (!s.team || g.away === s.team || g.home === s.team) && (!s.time || kickLabel(g.commence) === s.time));
   const edgeOf = (g) => { const e = boardLines(g, D).edge, v = (s.market === "moneyline" ? [e.ml] : s.market === "spread" ? [e.spread] : s.market === "total" ? [e.total] : [e.ml, e.spread, e.total]).filter((x) => x != null);
     return v.length ? Math.max(...v.map(Math.abs)) : -1; };
   const alphaOf = (g) => { const a = boardAlpha(g, D); return a ? a.score : -1; };
-  if (s.sort === "alpha") rows = rows.slice().sort((a, b) => alphaOf(b) - alphaOf(a) || boardSortKey(a) - boardSortKey(b));
-  else if (s.sort === "edge") rows = rows.slice().sort((a, b) => edgeOf(b) - edgeOf(a) || boardSortKey(a) - boardSortKey(b));
-  return rows;
+  const fin = rows.filter((g) => g.final);
+  let up = rows.filter((g) => !g.final);
+  if (s.sort === "alpha") up = up.slice().sort((a, b) => alphaOf(b) - alphaOf(a) || boardSortKey(a) - boardSortKey(b));
+  else if (s.sort === "edge") up = up.slice().sort((a, b) => edgeOf(b) - edgeOf(a) || boardSortKey(a) - boardSortKey(b));
+  return [...fin, ...up];
 }
 // The final score "BUF 27 – ATL 20" parts from the graded margin (home - away) and total, null when they do not give whole scores.
 function boardScore(a) {
@@ -199,7 +206,6 @@ function boardGoPeriod(sport, value, today) {
   return true;
 }
 function boardSetFilter(sport, key, value) { boardState(sport)[key] = value; }
-function boardSetView(sport, view) { const s = boardState(sport); s.view = view; boardSync(s); }
 
 /* ── data ─────────────────────────────────────────────────────────────── */
 async function boardLoad(sport, view) {
@@ -259,8 +265,8 @@ function boardTitleRight(D, games) {
 }
 
 /* ── games card ───────────────────────────────────────────────────────── */
-// "Sun 1:00 PM" as two short lines (day, time) so the narrow Kickoff column never wraps mid-time.
-const boardKick = (iso) => { const k = kickLabel(iso), i = k.indexOf(" "); return !k ? boardDash : i < 0 ? ctxEsc(k) : `<span>${ctxEsc(k.slice(0, i))}</span><span>${ctxEsc(k.slice(i + 1))}</span>`; };
+// "Sun 1:00 PM" as two short lines (day, time) so the narrow Kickoff column never wraps mid-time; the wide card (theme.css, card content >= 665px) shows it as one line.
+const boardKick = (iso) => { const k = kickLabel(iso), i = k.indexOf(" "); return !k ? boardDash : i < 0 ? ctxEsc(k) : `<span>${ctxEsc(k.slice(0, i))}</span> <span>${ctxEsc(k.slice(i + 1))}</span>`; };
 // American price; 4-digit prices carry the exact price as a hover title, and a blowout's -100000 reads "-100k" so it never overflows its column.
 const boardOdds = (x) => (x == null ? boardDash : Math.abs(x) >= 10000 ? `<span title="${ctxEsc(oddsStr(x))}">${x < 0 ? "-" : "+"}${Math.round(Math.abs(x) / 1000)}k</span>` : Math.abs(x) >= 1000 ? `<span title="${ctxEsc(oddsStr(x))}">${oddsStr(x)}</span>` : oddsStr(x));
 const boardAbbr = (name, sport) => ctxEsc(teamShort(name, sport));
@@ -359,10 +365,12 @@ const boardStatusText = (D) => (D.lastProj ? `${boardName(D.sport)} model paused
 function boardTools(D, games) {
   const s = boardState(D.sport), propsOk = (D.opps || []).some((o) => o.kind === "prop");
   const items = BOARD_MARKETS.filter(([k]) => k !== "props" || propsOk), active = items.some(([k]) => k === s.market) ? s.market : "all";
-  const sel = (key, value, opts, cls = "") => `<select class="ca-select ca-bd-sel ${cls}" data-board="${key}" aria-label="${ctxEsc(opts[0][1])}">${opts.map(([k, l]) => `<option value="${ctxEsc(k)}"${k === value ? " selected" : ""}>${ctxEsc(l)}</option>`).join("")}</select>`;
+  const sel = (key, value, opts, cls = "") => `<select class="ca-select ca-bd-sel ${cls}" data-board="${key}" aria-label="${ctxEsc(opts[0][1])}">${opts.map(([k, l, off]) => `<option value="${ctxEsc(k)}"${k === value ? " selected" : ""}${off ? ` disabled title="Every game is final"` : ""}>${ctxEsc(l)}</option>`).join("")}</select>`;
   const teams = [...new Set(games.flatMap((g) => [g.away, g.home]).filter(Boolean))].sort((a, b) => shortTeam(a, D.sport).localeCompare(shortTeam(b, D.sport)));
   const times = [...new Set(games.map((g) => kickLabel(g.commence)).filter(Boolean))];
-  return `<div class="ca-bd-tools">${pills("board-market", items, active)}<div class="ca-bd-filters">${sel("team", s.team, [["", "All Teams"], ...teams.map((t) => [t, shortTeam(t, D.sport)])])}${sel("time", s.time, [["", "All Times"], ...times.map((t) => [t, t])])}${sel("sort", s.sort, BOARD_SORTS, "ca-bd-sortsel")}</div></div>`;
+  const allFinal = games.length > 0 && games.every((g) => g.final);     // nothing left to score: Alpha Score / Edge sorts are greyed out and the order is kickoff
+  const sortOpts = BOARD_SORTS.map(([k, l]) => [k, l, allFinal && k !== "time"]);
+  return `<div class="ca-bd-tools">${pills("board-market", items, active)}<div class="ca-bd-filters">${sel("team", s.team, [["", "All Teams"], ...teams.map((t) => [t, shortTeam(t, D.sport)])])}${sel("time", s.time, [["", "All Times"], ...times.map((t) => [t, t])])}${sel("sort", allFinal ? "time" : s.sort, sortOpts, "ca-bd-sortsel")}</div></div>`;
 }
 
 // The first BOARD_CAP rows of a table (in the current order) and the full-width toggle under it ("Show all N games" / "Show fewer"); no toggle when the table fits.

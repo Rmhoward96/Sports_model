@@ -299,3 +299,23 @@ test("CSS contract: the right-column rules exist (result chip cell, no-aux row, 
   assert.match(css, /@container \(max-width:330px\)\{\.ca-br-pills \.ca-bl-l\{display:none\}/, "short pill labels in a narrow rail");
   assert.match(css, /\.ca-br-table\{font-size:clamp\(/);
 });
+
+test("Top Alpha Edges, current week: a finished game with no result yet is graded-pending (a dash), not live; edges still to play rank first", async () => {
+  // game 3's pick (alpha higher than the live one) started on Oct 1-2 and has no stored result; game 4 kicks off after NOW
+  const live = [{ ...LIVE_OPP, game_pk: 3, matchup: `${A} @ ${H2}`, side: "away", commence_time: "2026-10-02T00:15:00Z", ev_best: 0.9, true_prob: 0.9 }, LIVE_OPP];
+  const html = await populated({ live, any: ANY, cur: [ANY[2], ANY[3]], results: [] }).G.buildBoardPage("nfl"), rows = rowsOf(card(html, IDS[0]));
+  assert.equal(rows.length, 2);
+  assert.ok(rows[0].includes("game=4") && rows[1].includes("game=3"), "the live edge first even though the finished one has the higher alpha");
+  assert.ok(rows[1].includes("Not graded yet") && !rows[1].includes("ca-res "), "finished, not graded: a dash");
+  // only finished, ungraded picks in the column: the result column still renders (a dash), the rows are not shown as live
+  const onlyDone = await populated({ live: [live[0]], any: ANY, cur: [ANY[2]], results: [] }).G.buildBoardPage("nfl"), od = rowsOf(card(onlyDone, IDS[0]));
+  assert.ok(od.length === 1 && od[0].includes("Not graded yet") && !od[0].includes("ca-ev-ta-noaux"), "no chip column missing");
+  // a past week keeps ranking by alpha only
+  const past = await populated({ search: "?week=3" }).G.buildBoardPage("nfl");
+  assert.ok(rowsOf(card(past, IDS[0]))[0].includes("Rec Yds"));
+});
+
+test("the stored +EV prop picks are read in a total order (side is part of the sort) so paged reads cannot skip or repeat rows", async () => {
+  const P = populated({ search: "?week=3" }); await P.G.buildBoardPage("nfl");
+  assert.ok(P.requested.some((u) => u.startsWith("ev_prop_picks") && u.includes("line.asc,side.asc,model_version.asc")), P.requested.filter((u) => u.startsWith("ev_prop_picks")).join("\n"));
+});

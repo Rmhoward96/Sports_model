@@ -252,6 +252,10 @@ const blHead = (title, right = "") => `<div class="ca-card-head ca-bl-head"><h2>
 const blEmpty = (id, title, msg) => blCard(id, `${blHead(title)}${emptyMsg(msg)}`);
 // Why a sport has no model, in one short sentence (the paused date is the newest stored projection, D.lastProj).
 const blNoModel = (D) => (D.lastProj ? `${boardName(D.sport)} model paused since ${shortDate(D.lastProj)}.` : D.sport === "mlb" ? "MLB model paused." : `No ${boardName(D.sport)} model yet.`);
+// A muted one-line caption under a card's title.
+const blCap = (text) => `<p class="ca-bl-cap">${ctxEsc(text)}</p>`;
+// Model vs. Market and Key Insights always cover the published record / season, whatever period is browsed: off the current period they say so.
+const blRecordNote = (D, L) => (D.period.isCurrent ? "" : blCap(`${blWhen(L, D.sport, D.today) === "in the published record" ? "Published record" : "Season record"}, not ${blPeriodWord(D.period)}.`));
 const blFailed = (id, title) => blEmpty(id, title, "This panel couldn't load.");
 
 function blSeasonPerf(D) {
@@ -266,7 +270,7 @@ function blSeasonPerf(D) {
   const pct = p.pct == null ? "—" : `${(p.pct * 100).toFixed(1)}%`;
   const bars = p.weeks.length > 1 ? miniBars(p.weeks, { w: 46, h: 30 }) : "";
   const boxes = [
-    statCard({ label: "W - L", value: `<span class="ca-bl-wl">${p.w} - ${p.l}</span><small class="${p.pct != null && p.pct >= 0.5 ? "pos" : ""}">${pct}</small>`, sub: p.p ? `${p.p} push${p.p > 1 ? "es" : ""}` : `${p.graded} games`,
+    statCard({ label: "W - L", value: `<span class="ca-bl-wl">${p.w} - ${p.l}</span><small class="${p.pct != null && p.pct >= 0.5 ? "pos" : ""}">${pct}</small>`, sub: p.p ? `${p.p} push${p.p > 1 ? "es" : ""}` : "no pushes",
       tip: "Moneyline, spread and total picks graded W or L (pushes do not count in the win %): the same record as Track Record's Performance by League." }),
     statCard({ label: "Units", value: p.units == null ? "—" : uStr(p.units), valueClass: p.units == null ? "" : signCls(p.units), sub: p.units == null ? "No bets priced" : `${p.bets} bets`,
       tip: "Profit at the price captured for each pick, 1 unit = $10 a bet (the Track Record profit tracker's source, prediction_pnl_daily)." }),
@@ -289,20 +293,21 @@ function blModelMarket(D) {
   if (!avail.length) return blEmpty(id, title, blLive(D) ? "No graded games with a market line yet." : `${blNoModel(D)} No graded ${boardName(D.sport)} games to compare with the market.`);
   const st = blState(), sel = avail.includes(st.mm) ? st.mm : avail[0], d = data[sel], m = BL_MVM[sel];
   const head = blHead(title, infoTip(sel === "props" ? m.tip : m.tip.replace("this season", blWhen(L, D.sport, D.today))));
-  if (!d.bins) return blCard(id, `${head}${blMmPills(D, data, sel)}${emptyMsg(`Not enough graded games yet: ${d.n} of ${BL_MIN_MVM} needed.`)}`);
+  const rn = blRecordNote(D, L);
+  if (!d.bins) return blCard(id, `${head}${rn}${blMmPills(D, data, sel)}${emptyMsg(`Not enough graded games yet: ${d.n} of ${BL_MIN_MVM} needed.`)}`);
   const dots = d.bins.map((b) => ({ x: b.x, y: b.y, n: b.n, title: `${b.n} ${sel === "props" ? "props" : "games"} · average gap ${signedStr(b.x, 1, m.unit)} · ${m.hit} ${b.y.toFixed(0)}% of the time` }));
   const isMl = sel === "moneyline", chart = scatterChart({ dots, line: d.bins.map((b) => ({ x: b.x, y: b.y })), base: isMl ? d.bins.map((b) => ({ x: b.x, y: b.m })) : null, flat: isMl ? null : 50 }, { h: 150, xUnit: sel === "props" ? "%" : "" });
   const legend = `<div class="ca-bl-legend"><span><i class="ca-bl-lg-ca"></i>CappingAlpha</span><span><i class="ca-bl-lg-mk"></i>Market</span></div>`;
   const note = `<p class="ca-bl-cap">${ctxEsc(`Share of ${sel === "props" ? "props" : "games"} where ${m.hit}, by the gap between the model and the market`)}</p>`;
   const edge = `<div class="ca-bl-edge"><span>Model Edge</span><b>${(+d.mean).toFixed(1)} ${ctxEsc(m.edgeWord)}</b></div>`;
-  return blCard(id, `${head}${blMmPills(D, data, sel)}${legend}${chart}${note}<div class="ca-bl-edgerow"><span class="muted">${d.n} graded ${sel === "props" ? "props" : "games"}</span>${edge}</div>`);
+  return blCard(id, `${head}${rn}${blMmPills(D, data, sel)}${legend}${chart}${note}<div class="ca-bl-edgerow"><span class="muted">${d.n} graded ${sel === "props" ? "props" : "games"}</span>${edge}</div>`);
 }
 
 function blMarketIntel(D) {
   const L = D.left, id = "board-market-intel", title = "Market Intelligence";
   if (!blLive(D)) return blEmpty(id, title, `${blNoModel(D)} No live ${boardName(D.sport)} market to read.`);
   if (!L || !L.pulse) return blFailed(id, title);
-  const per = D.period, note = per.isCurrent ? "" : `<p class="ca-bl-cap">The live market, not ${ctxEsc(blPeriodWord(per))}.</p>`;
+  const per = D.period, note = per.isCurrent ? "" : blCap(`The live market, not ${blPeriodWord(per)}.`);
   return blCard(id, `${blHead(title)}${note}<div class="ca-bl-pulse">${marketPulseRows(L.pulse)}</div>`, "ca-ev-rail-card");
 }
 
@@ -312,7 +317,7 @@ function blKeyInsights(D) {
   if (!blLive(D) && !L.accRec.length) return blEmpty(id, title, `${blNoModel(D)} No graded games to read insights from.`);
   const rows = blInsights(L, D.sport, blWhen(L, D.sport, D.today));
   if (!rows.length) return blLive(D) ? "" : blEmpty(id, title, `Not enough graded games yet (${BL_MIN_INSIGHT} needed).`);     // a live sport's card is hidden while no row has a sample of 8 games
-  return blCard(id, `${blHead(title)}${rows.map((r) => `<div class="ca-bl-in" data-insight="${ctxEsc(r.key)}"><span class="ca-bl-in-ic ca-bl-in-${ctxEsc(r.key)}">${BL_ICONS[r.icon]}</span><span class="ca-bl-in-t"><b>${ctxEsc(r.title)}</b><small title="${ctxEsc(`${r.stat} · ${r.n} games`)}">${ctxEsc(r.stat)}</small></span></div>`).join("")}`);
+  return blCard(id, `${blHead(title)}${blRecordNote(D, L)}${rows.map((r) => `<div class="ca-bl-in" data-insight="${ctxEsc(r.key)}"><span class="ca-bl-in-ic ca-bl-in-${ctxEsc(r.key)}">${BL_ICONS[r.icon]}</span><span class="ca-bl-in-t"><b>${ctxEsc(r.title)}</b><small title="${ctxEsc(`${r.stat} · ${r.n} decided picks`)}">${ctxEsc(r.stat)}</small></span></div>`).join("")}`);
 }
 
 BOARD_CARDS["board-season-perf"] = blSeasonPerf;
