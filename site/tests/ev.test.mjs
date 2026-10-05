@@ -279,7 +279,10 @@ test("R19: +EV table and Top Alpha rail mark game-line probabilities as the shar
   const rows = table.split("<tr data-href").slice(1);
   assert.match(rows.find((r) => r.includes("game=1")), /70\.0%<span class="ca-fair"[^>]*>fair<\/span>/);
   assert.ok(!rows.find((r) => r.includes("game=5")).includes("ca-fair"));
-  assert.ok(table.includes("model for props, sharp fair price for game lines") && !table.includes("Model projections, current odds"));
+  // E3: the subtitle is the short mockup line; the R19 wording lives in its (i) tooltip
+  assert.ok(table.includes("Model projections, current odds, and expected value across all sports."));
+  assert.match(table, /<span class="ca-info" title="[^"]*model probability for props, sharp fair price \(Pinnacle no-vig\) for game lines[^"]*"/);
+  assert.ok(!/<p[^>]*>[^<]*sharp fair price/.test(table), "the long R19 sentence is not visible subtitle text");
   const top = sect(html, "ev-top", "ev-pulse"), items = top.split('class="ca-ev-ta"').slice(1);
   assert.match(items.find((x) => x.includes("game=1") || x.includes("Chiefs")) || "", /fair<\/span> vs 50\.0%/);
   assert.ok(items.some((x) => x.includes("O&quot;Brien") && !x.includes("ca-fair")), "prop rail row: no marker");
@@ -292,4 +295,84 @@ test("R24: prop rows on the +EV table carry the player's star (shell-owned); gam
   assert.match(rows.find((r) => r.includes("game=5")), /<button class="ca-star" data-star-kind="players" data-star-id="O&quot;Brien &lt;i&gt;Zed&lt;\/i&gt;"/);
   assert.ok(rows.filter((r) => !r.includes("game=5")).every((r) => !r.includes("data-star-kind")), "line rows: no star");
   assert.ok(!/starToggle\(|starDelegate|data-star-kind/.test(require_src("js/pages/ev.js")), "no page-level star logic (R16)");
+});
+
+// ---- fidelity pass (E1-E6) -----------------------------------------------------------------------
+const idsIn = (html, ids) => ids.map((id) => html.indexOf(`id="${id}"`));
+const ascending = (a) => a.every((v, i) => v >= 0 && (i === 0 || v > a[i - 1]));
+
+test("E3: the +EV table has exactly the mockup's 13 columns, in order", async () => {
+  const { D } = populated();
+  const html = await D.buildEvPage();
+  const head = html.slice(html.indexOf('<table class="ca-table ca-dash-table ca-ev-table"'), html.indexOf("</thead>"));
+  const cols = [...head.matchAll(/<th[^>]*>([^<]*)<\/th>/g)].map((m) => m[1]);
+  assert.deepEqual(cols, ["#", "Sport", "Matchup / Player", "Market", "Best Odds", "Model Prob.", "Impl. Prob.", "Edge", "EV", "Alpha Score", "Confidence", "Game Time", "View"]);
+  const row = html.slice(html.indexOf("<tr data-href")).split("</tr>")[0];
+  assert.equal((row.match(/<td/g) || []).length, 13, "one cell per column");
+});
+
+test("E2: rail order is Top Alpha, Market Pulse, then EV Distribution + Performance by Edge Bucket as a side-by-side pair", async () => {
+  const { D } = populated();
+  const html = await D.buildEvPage();
+  assert.ok(ascending(idsIn(html, ["ev-rail", "ev-top", "ev-pulse", "ev-dist", "ev-buckets"])));
+  const rail = html.slice(html.indexOf('id="ev-rail"'));
+  const pair = rail.slice(rail.indexOf('<div class="ca-ev-pair">'));
+  assert.ok(pair.indexOf('id="ev-dist"') > 0 && pair.indexOf('id="ev-dist"') < pair.indexOf('id="ev-buckets"'), "the pair wrapper holds Distribution then Buckets");
+  assert.ok(rail.indexOf('<div class="ca-ev-pair">') > rail.indexOf('id="ev-pulse"'), "the pair sits below Market Pulse");
+  assert.ok(!rail.slice(0, rail.indexOf('<div class="ca-ev-pair">')).includes('id="ev-dist"'), "neither pair card is a full-width rail row");
+  const css = require_src("css/theme.css");
+  assert.match(css, /\.ca-ev-pair\{display:grid;grid-template-columns:minmax\(0,[.\d]+fr\) minmax\(0,[.\d]+fr\)/, "two columns");
+  assert.match(css, /\.ca-ev-main\{display:grid;grid-template-columns:minmax\(0,7fr\) minmax\(0,3fr\)/, "left ~70% / rail ~30%");
+});
+
+test("E4: filter card and a separate search card share one row; tabs + Sort By sit above the table inside the left column", async () => {
+  const { D } = populated();
+  const html = await D.buildEvPage();
+  const row = html.slice(html.indexOf('class="ca-ev-filterrow"'), html.indexOf('class="ca-ev-main"'));
+  assert.ok(ascending(idsIn(row, ["ev-filters", "ev-search"])), "filters then search, same row wrapper");
+  const filters = row.slice(row.indexOf('id="ev-filters"'), row.indexOf('id="ev-search"')), search = row.slice(row.indexOf('id="ev-search"'));
+  for (const l of ["Sport", "League", "Market Type", "Sportsbook", "Minimum Edge", "Confidence", "Date"]) assert.ok(filters.includes(`<span>${l}</span>`), l);
+  assert.ok(!filters.includes("data-ev-q"), "no search box inside the filter card");
+  assert.ok(search.includes("data-ev-q") && search.includes("Search teams, players, or games..."), "the search box is its own card");
+  assert.match(require_src("css/theme.css"), /\.ca-ev-filterrow\{display:grid;grid-template-columns:minmax\(0,74fr\) minmax\(0,26fr\)/);
+  const main = html.slice(html.indexOf('class="ca-ev-main"'));
+  const left = main.slice(0, main.indexOf('id="ev-rail"'));
+  assert.ok(ascending([left.indexOf('class="ca-ev-tabsrow"'), left.indexOf('id="ev-tabs"'), left.indexOf("Sort By"), left.indexOf('id="ev-table"')]), "tabs row (pills + Sort By) precedes the table card");
+  assert.ok(left.slice(left.indexOf('class="ca-ev-tabsrow"'), left.indexOf('id="ev-table"')).includes('data-ev="sort"'));
+  assert.ok(main.indexOf('id="ev-rail"') > left.indexOf('id="ev-table"'), "the rail is the right-hand sibling");
+});
+
+test("E5: Last Updated shows the newest pick build time (ET) when known, is hidden (refresh stays) when not", async () => {
+  const shown = await populated().D.buildEvPage();
+  assert.match(shown, /<div class="ca-ev-updated"><span>Last Updated<\/span><b>[A-Z][a-z]{2} \d{1,2}, \d{4} \d{1,2}:\d{2} [AP]M[^<]*<\/b><\/div>/);
+  assert.ok(shown.includes("data-ev-refresh"));
+  const hidden = await populated({ lastBuild: false }).D.buildEvPage();
+  assert.ok(!hidden.includes("Last Updated") && !hidden.includes("ca-ev-updated"), "no timestamp -> no block, no dash placeholder");
+  assert.ok(hidden.includes("data-ev-refresh"), "the refresh button stays");
+});
+
+test("E1/E6: stat sub-lines are one short line (long text in tooltips); Highest Edge is a single ellipsised line; rail rows keep rank / logos / edge box", async () => {
+  const { D } = populated();
+  const html = await D.buildEvPage();
+  const stats = html.slice(html.indexOf("ca-ev-stats"), html.indexOf('class="ca-ev-filterrow"'));
+  assert.equal((stats.match(/class="ca-card ca-stat"/g) || []).length, 5, "five stat cards");
+  assert.match(stats, /<span class="muted">7-4 · 12 graded<\/span>/, "Model Hit Rate sub = record + short count");
+  assert.match(stats, /<span class="ca-info" title="7-4 · 12 graded \+EV picks in the last 30 days/, "population in the (i)");
+  assert.match(stats, /\+41\.7%<small class="pos">\+5\.0u<\/small>/, "ROI with the units inline");
+  assert.ok(!stats.includes("graded +EV picks</span>"), "no long population sub-line");
+  const hi = stats.slice(stats.indexOf("Highest Edge"), stats.indexOf("Model Hit Rate"));
+  assert.equal((hi.match(/class="ca-ell"/g) || []).length, 1, "one ellipsised line");
+  assert.match(hi, /<span class="ca-ell">&quot;Chiefs&quot; ML vs\. &lt;b&gt;Crew&lt;\/b&gt;<\/span>/, "pick vs. opponent, escaped, one line");
+  const top = sect(html, "ev-top", "ev-pulse");
+  assert.ok(ascending([top.indexOf('class="ca-ev-rank"'), top.indexOf('class="ca-ev-logos"'), top.indexOf('class="ca-ev-ta-main"'), top.indexOf('class="ca-ev-ta-odds"'), top.indexOf('class="ca-ev-edge"')]));
+  assert.ok(top.includes("View All →") && sect(html, "ev-pulse", "ev-dist").includes("View All →"), "View All on both rail title rows");
+});
+
+test("E3 type scale: the +EV page uses the shared fluid tokens, not the old 24px / 12px overrides", () => {
+  const css = require_src("css/theme.css"), ev = css.slice(css.indexOf("/* +EV page"), css.indexOf("/* Game page"));
+  assert.ok(!/\.ca-ev \.ca-card h2\{font-size:24px\}/.test(css) && !/\.ca-ev-table\{font-size:12(\.5)?px\}/.test(ev));
+  assert.match(css, /\.ca-dash \.ca-card h2,\.ca-ev \.ca-card h2\{font-size:var\(--fs-card\)/);
+  assert.match(css, /\.ca-ev \.ca-dash-table\{font-size:var\(--fs-table\)/);
+  assert.match(css, /\.ca-dash-stats \.ca-stat-value,\.ca-ev-stats \.ca-stat-value\{font-size:var\(--fs-stat\)/);
+  assert.match(css, /#ev-table[^{]*\{[^}]*container-type|\.ca-ev-tablecard\{[^}]*container-type:inline-size/, "table card is a size container for the column-fitting queries");
 });

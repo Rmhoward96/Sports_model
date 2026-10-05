@@ -37,16 +37,18 @@ function bookBadge(key) {
 }
 // G2: text that does not fit a compact card moves into a native tooltip behind a small (i). `text` is plain text (escaped here).
 const infoTip = (text) => (text ? `<span class="ca-info" title="${ctxEsc(text)}" tabindex="0" role="img" aria-label="${ctxEsc(text)}">i</span>` : "");
-// Plain text of an HTML snippet, safe inside a double-quoted title="" attribute (tags stripped, quotes escaped).
-const uiTitleText = (html) => String(html).replace(/<[^>]*>/g, "").replace(/"/g, "&quot;").trim();
+// Plain text of an HTML snippet, safe inside a double-quoted title="" attribute (each tag becomes a space so neighbouring words do
+// not fuse, whitespace collapsed, quotes escaped).
+const uiTitleText = (html) => String(html).replace(/<[^>]*>/g, " ").replace(/\s+/g, " ").trim().replace(/"/g, "&quot;");
 // Stat-card label line: the (ellipsising) label text, then the optional (i) tooltip. The whole line carries its full text as a hover
 // title so a label cut short by a narrow card stays readable. `note` = muted suffix such as "(30D)".
-const statLabel = (label, note = "", tip = "") =>
-  `<div class="ca-stat-label" title="${uiTitleText(`${label}${note ? ` ${note}` : ""}`)}"><span class="ca-stat-lt">${label}${note ? ` <span class="muted">${note}</span>` : ""}</span>${infoTip(tip)}</div>`;
+// `noteShort` = a shorter note ("(30D)") that replaces `note` ("(Last 30 Days)") in a narrow card (container query on .ca-stat in theme.css).
+const statLabel = (label, note = "", tip = "", noteShort = "") =>
+  `<div class="ca-stat-label" title="${uiTitleText(`${label}${note ? ` ${note}` : ""}`)}"><span class="ca-stat-lt">${label}${note ? ` <span class="muted">${noteShort ? `<span class="ca-note-l">${note}</span><span class="ca-note-s">${noteShort}</span>` : note}</span>` : ""}</span>${infoTip(tip)}</div>`;
 // Compact stat card: label, big value and ONE short sub-line (ellipsised when long; its full text is the hover title). `tip` = optional
 // longer explanation, shown as the (i) tooltip next to the label.
-function statCard({ label, labelNote = "", value, valueClass = "", sub = "", subClass = "", visual = "", tip = "" }) {
-  return `<div class="ca-card ca-stat">${statLabel(label, labelNote, tip)}
+function statCard({ label, labelNote = "", labelNoteShort = "", value, valueClass = "", sub = "", subClass = "", visual = "", tip = "" }) {
+  return `<div class="ca-card ca-stat">${statLabel(label, labelNote, tip, labelNoteShort)}
     <div class="ca-stat-body"><div><div class="ca-stat-value ${valueClass}">${value}</div>${sub ? `<div class="ca-stat-sub ${subClass}" title="${uiTitleText(sub)}">${sub}</div>` : ""}</div>${visual ? `<div class="ca-stat-visual">${visual}</div>` : ""}</div></div>`;
 }
 function pills(name, items, active) {
@@ -176,7 +178,7 @@ function histogramChart(bins, { w = 520, h = 180 } = {}) {
   const out = bs.map((b, i) => {
     const x = i * slot + (slot - bw) / 2;
     return uiBar(x, base, +b.n / max * plot, bw, b.color, uiFmt(b.n))
-      + (i % every === 0 ? `<text class="ca-axis" x="${(x + bw / 2).toFixed(1)}" y="${h - 6}" text-anchor="middle">${ctxEsc(b.label)}</text>` : "");
+      + (i % every === 0 ? `<text class="ca-axis${i % 2 ? " ca-axis-alt" : ""}" x="${(x + bw / 2).toFixed(1)}" y="${h - 6}" text-anchor="middle">${ctxEsc(b.label)}</text>` : "");
   }).join("");
   return `<svg class="ca-hist" viewBox="0 0 ${w} ${h}" width="${w}" height="${h}"><line x1="0" x2="${w}" y1="${base}" y2="${base}" class="ca-grid-line"/>${out}</svg>`;
 }

@@ -136,6 +136,15 @@ test("statCard, pills, bookBadge", () => {
   assert.match(g.bookBadge("weird<book>"), /title="weird&lt;book&gt;"/);
 });
 
+test("uiTitleText: tags become spaces (no fused words), whitespace collapsed, quotes escaped", () => {
+  assert.equal(g.uiTitleText('Rec Yds</span><i>at</i>'), "Rec Yds at");
+  assert.equal(g.uiTitleText('<b>Rec</b><b>Yds</b>'), "Rec Yds");
+  assert.equal(g.uiTitleText('  Under   85.5 \n <span class="x">Rec Yds</span> '), "Under 85.5 Rec Yds");
+  assert.equal(g.uiTitleText('say "hi" <i>now</i>'), "say &quot;hi&quot; now");
+  const card = g.statCard({ label: "x", value: "1", sub: "Falco<small>ns</small> <i>at</i> Saints" });
+  assert.match(card, /class="ca-stat-sub " title="Falco ns at Saints"/);
+});
+
 const pct = (svg, cls) => [...svg.matchAll(new RegExp(`class="${cls}[^"]*" style="[^"]*?(?:top|left):(-?[\\d.]+)%`, "g"))].map((m) => +m[1]);
 const lineYs = (svg) => [...svg.matchAll(/[ML][\d.]+ ([\d.]+)/g)].map((m) => +m[1]);
 
