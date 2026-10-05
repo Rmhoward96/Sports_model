@@ -125,6 +125,9 @@ test("statCard, pills, bookBadge", () => {
   assert.match(tip, /<span class="ca-info" title="68-52 · 120 graded &lt;picks&gt;" tabindex="0"/, "long text moves into an escaped (i) tooltip next to the label");
   assert.match(tip, /class="ca-stat-sub " title="\+4% vs\. &quot;market&quot;"/, "the sub-line carries its full text as a hover title");
   assert.doesNotMatch(g.statCard({ label: "x", value: "1" }), /ca-info/);
+  // the label carries its own tag-stripped, escaped text as a title (readable when ellipsised); the (i) sits outside the ellipsised span
+  const lab = g.statCard({ label: "Live +EV <b>\"Opps\"</b>", labelNote: "(30D)", value: "1", tip: "t" });
+  assert.match(lab, /<div class="ca-stat-label" title="Live \+EV &quot;Opps&quot; \(30D\)"><span class="ca-stat-lt">Live \+EV <b>"Opps"<\/b> <span class="muted">\(30D\)<\/span><\/span><span class="ca-info"/);
   assert.equal(g.infoTip(""), "");
   const p = g.pills("sport", [["nfl", "NFL"], ["cfb", "CFB"]], "cfb");
   assert.match(p, /data-pill="sport" data-key="nfl"[^>]*aria-selected="false"/);

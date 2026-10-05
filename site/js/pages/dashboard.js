@@ -158,7 +158,7 @@ async function dashLoad(date) {
 /* ── stat cards ───────────────────────────────────────────────────────── */
 function dashStatGames(D) {
   const per = SPORTS.map((s) => [s, D.datePreds.filter((r) => r.sport === s).length]);
-  return `<div class="ca-card ca-stat ca-dash-stat"><div class="ca-stat-label">Games Tracked</div><div class="ca-stat-value">${per.reduce((t, [, n]) => t + n, 0)}</div>
+  return `<div class="ca-card ca-stat ca-dash-stat">${statLabel("Games Tracked")}<div class="ca-stat-value">${per.reduce((t, [, n]) => t + n, 0)}</div>
     <div class="ca-dash-gt">${per.map(([s, n]) => `<div class="ca-dash-gt-item"${!n && SPORT_STATUS[s] ? ` title="${ctxEsc(SPORT_STATUS[s])}"` : ""}>${leagueLogo(s)}<div><span>${SPORT_NAME[s]}</span><b>${n}</b></div></div>`).join("")}</div></div>`;
 }
 function dashStatLive(D) {
@@ -173,27 +173,31 @@ function dashStatBest(D) {
   const best = [...D.opps].filter((o) => finite(o.edgePp)).sort((a, b) => b.edgePp - a.edgePp)[0];
   if (!best) return statCard({ label: "Best Current Edge", value: "—", sub: "No +EV opportunities on this date." });
   const [away, home] = matchupSides(best.matchup);
-  const txt = best.kind === "prop" ? `${ctxEsc(best.playerName || "")}<br>${ctxEsc(pickLabel(best, D.lineBy))}` : `${ctxEsc(pickLabel(best, D.lineBy))}<br>${ctxEsc(shortMatchup(away, home, best.sport))}`;
+  // One line: logo, "Lions ML" / "Chris Olave Under 85.5 Rec Yds", "at", logo; ellipsised when long (the matchup is the hover title).
+  const txt = ctxEsc(oppLabel(best, D.lineBy));
   return statCard({ label: "Best Current Edge", value: pStr(best.edgePp), valueClass: signCls(best.edgePp),
-    sub: `<a class="ca-dash-be" href="${gameHref(best.sport, best.game_pk)}">${logoImg(away, best.sport)}<span>${txt}</span><i>at</i>${logoImg(home, best.sport)}</a>` });
+    sub: `<a class="ca-dash-be" href="${gameHref(best.sport, best.game_pk)}" title="${ctxEsc(`${oppLabel(best, D.lineBy)} · ${shortMatchup(away, home, best.sport)}`)}">${logoImg(away, best.sport)}<span>${txt}</span><i>at</i>${logoImg(home, best.sport)}</a>` });
 }
 const dashRecord = (p) => `${p.wins}-${p.losses}`;
 function dashStatHit(D) {
   const p = perfWindow(D.pnl, D.graded, addDays(D.date, -29), D.date), hr = p.hitRate;
-  const vs = p.vsMarket == null ? "" : `<span class="${signCls(p.vsMarket)}">${pStr(p.vsMarket)}</span> vs. market <span class="muted">(game lines)</span><br>`;
-  return statCard({ label: "Model Hit Rate", labelNote: "(30D)", value: hr == null ? "—" : `${(hr * 100).toFixed(1)}%`,
-    sub: hr == null ? "No graded +EV picks in 30 days." : `${vs}<span class="muted">${dashRecord(p)} · ${p.n} graded +EV picks</span>`,
+  // Sub-line: "+6.3% vs. market" only; the record and the population move into the (i) tooltip.
+  const sub = hr == null ? "No graded +EV picks in 30 days." : p.vsMarket == null ? `<span class="muted">${dashRecord(p)} record</span>`
+    : `<span class="${signCls(p.vsMarket)}">${pStr(p.vsMarket)}</span> vs. market`;
+  return statCard({ label: "Model Hit Rate", labelNote: "(30D)", value: hr == null ? "—" : `${(hr * 100).toFixed(1)}%`, sub,
+    tip: hr == null ? "" : `${dashRecord(p)} · ${p.n} graded +EV picks in the last 30 days. vs. market (game lines): hit rate minus the average implied probability of the flagged price, game-line picks only.`,
     visual: hr == null ? "" : donut(hr, { size: 66, stroke: 10 }) });
 }
 function dashStatUnits(D) {
   const from = addDays(D.date, -29), p = perfWindow(D.pnl, D.graded, from, D.date);
   return statCard({ label: "Units", labelNote: "(30D)", value: p.n ? uStr(p.units) : "—", valueClass: signCls(p.units),
-    sub: p.n ? `<span class="${signCls(p.roiPct)}">${pStr(p.roiPct)} ROI</span><br><span class="muted">${p.n} graded +EV picks</span>` : "No graded +EV picks in 30 days.",
+    sub: p.n ? `<span class="${signCls(p.roiPct)}">${pStr(p.roiPct)} ROI</span>` : "No graded +EV picks in 30 days.",
+    tip: p.n ? `${p.n} graded +EV picks in the last 30 days (all markets).` : "",
     visual: sparkline(dashCumUnits(p.rows, from, D.date).map((x) => x.units), { w: 72, h: 44 }) });
 }
 function dashStatSignals(D) {
   const tiers = [["HIGH", "High Conviction", "var(--green)"], ["STRONG", "Strong Value", "var(--blue)"], ["MEDIUM", "Medium Value", "var(--amber)"]];
-  return `<div class="ca-card ca-stat ca-dash-stat"><div class="ca-stat-label">Active Signals</div><div class="ca-dash-sig">${tiers.map(([t, l, col]) =>
+  return `<div class="ca-card ca-stat ca-dash-stat">${statLabel("Active Signals")}<div class="ca-dash-sig">${tiers.map(([t, l, col]) =>
     `<div class="ca-dash-sig-row"><i style="border-color:${col}"></i><b>${D.opps.filter((o) => o.tier === t).length}</b><span>${l}</span></div>`).join("")}</div></div>`;
 }
 const DASH_STATS = [["Games Tracked", dashStatGames], ["Live +EV Opportunities", dashStatLive], ["Best Current Edge", dashStatBest],
@@ -215,16 +219,20 @@ function dashOppsCard(D) {
   } else {
     const rows = list.map((o, i) => {
       const [away, home] = matchupSides(o.matchup);
-      const who = o.kind === "prop" ? `<span class="ca-team" title="${ctxEsc(shortMatchup(away, home, o.sport))}">${ctxEsc(o.playerName || "")}</span>`
-        : `<span class="ca-team">${oppLogo(o) || logoImg(away, o.sport)}${ctxEsc(shortMatchup(away, home, o.sport))}</span>`;
-      return `<tr data-href="${gameHref(o.sport, o.game_pk)}"><td class="muted">${i + 1}</td><td><span class="ca-team">${leagueLogo(o.sport)}${SPORT_NAME[o.sport] || ""}</span></td>
-        <td>${who}</td><td class="ca-dash-gtime">${kickLabel(o.commence)}</td><td><span class="ca-ell ca-dash-mkt" title="${ctxEsc(pickLabel(o, D.lineBy))}">${ctxEsc(pickLabel(o, D.lineBy))}</span></td><td><span class="ca-dash-odds">${bookBadge(o.book)}${oddsStr(o.odds)}</span></td>
+      // The kickoff time (no Game Time column any more) rides in the matchup cell's tooltip.
+      const mu = shortMatchup(away, home, o.sport), tip = ctxEsc(`${mu}${o.commence ? ` · ${kickLabel(o.commence)}` : ""}`);
+      const who = o.kind === "prop" ? `<span class="ca-team ca-dash-who" title="${tip}"><span class="ca-ell">${ctxEsc(o.playerName || "")}</span></span>`
+        : `<span class="ca-team ca-dash-who" title="${tip}">${oppLogo(o) || logoImg(away, o.sport)}<span class="ca-ell">${ctxEsc(mu)}</span></span>`;
+      return `<tr data-href="${gameHref(o.sport, o.game_pk)}"><td class="muted">${i + 1}</td><td><span class="ca-team" title="${ctxEsc(SPORT_NAME[o.sport] || "")}">${leagueLogo(o.sport)}<span class="ca-dash-sport-t">${SPORT_NAME[o.sport] || ""}</span></span></td>
+        <td>${who}</td><td><span class="ca-ell ca-dash-mkt" title="${ctxEsc(pickLabel(o, D.lineBy))}">${ctxEsc(pickLabel(o, D.lineBy))}</span></td><td><span class="ca-dash-odds">${bookBadge(o.book)}${oddsStr(o.odds)}</span></td>
         <td>${oppProb(o)}</td><td>${pct1(o.impliedProb)}</td><td class="${signCls(o.edgePp)} ca-b">${pStr(o.edgePp)}</td>
         <td>${alphaCell(o.alpha)}</td><td>${confPill(o.tier)}</td><td>${goLink(o.sport, o.game_pk)}</td></tr>`;
     }).join("");
-    body = `<div class="ca-table-wrap"><table class="ca-table ca-dash-table ca-dash-opps"><thead><tr><th>#</th><th>Sport</th><th>Matchup / Player</th><th>Game Time</th><th>Market</th><th>Best Odds</th>${oppProbTh()}<th>Market Prob.</th><th>Edge</th><th>Alpha Score</th><th>Confidence</th><th></th></tr></thead><tbody>${rows}</tbody></table></div>`;
+    body = `<div class="ca-table-wrap"><table class="ca-table ca-dash-table ca-dash-opps"><thead><tr><th>#</th><th>Sport</th><th>Matchup / Player</th><th>Market</th><th>Best Odds</th>${oppProbTh()}<th>Market Prob.</th><th>Edge</th><th>Alpha Score</th><th>Confidence</th><th></th></tr></thead><tbody>${rows}</tbody></table></div>`;
   }
-  return `<section class="ca-card ca-dash-card" id="dash-opps"><div class="ca-card-head"><h2>Best Opportunities Right Now</h2><p>${D.isToday ? "Top edges for the next 7 days" : "Top edges for this date"} — model for props, sharp fair price for game lines, sorted by expected value.</p><a class="ca-link" href="ev.html">View All →</a></div>
+  // One-line subtitle; the window and the R19 probability wording live in its tooltip.
+  const subTip = `${D.isToday ? "Top edges for the next 7 days" : "Top edges for this date"} — model for props, sharp fair price for game lines, sorted by expected value.`;
+  return `<section class="ca-card ca-dash-card" id="dash-opps"><div class="ca-card-head"><h2>Best Opportunities Right Now</h2><p title="${ctxEsc(subTip)}">Top model edges across all sports, sorted by expected value.</p>${infoTip(subTip)}<a class="ca-link" href="ev.html">View All →</a></div>
     <div class="ca-dash-pillrow">${sportPills}<span class="ca-dash-pillsep"></span>${kindPills}</div>${body}</section>`;
 }
 
@@ -275,11 +283,12 @@ function dashPerfCard(D) {
   const p = perfWindow(D.pnl, D.graded, from, D.date);
   const mini = (label, value, cls = "") => `<div class="ca-dash-mini"><span>${label}</span><b class="${cls}">${value}</b></div>`;
   const pts = dateAxisPoints(dashCumUnits(p.rows, from, D.date), (q) => q.units);
-  const chart = areaChart(pts, { h: 190, yTicks: 5 });
-  const cap = p.n ? `<p class="ca-dash-cap">${p.n} graded +EV picks (${dashRecord(p)}) · ROI, Units and Hit Rate cover the same bets${p.edgeN ? ` · Avg. Edge: ${p.edgeN} game-line picks with a flagged price` : ""}</p>` : "";
-  return `<section class="ca-card ca-dash-card" id="dash-perf"><div class="ca-card-head"><h2>Performance Snapshot</h2>${pills("dash-perf", [["7d", "7D"], ["30d", "30D"], ["season", "Season"]], w)}<a class="ca-link" href="track-record.html">View Track Record →</a></div>
+  const chart = areaChart(pts, { h: 140, yTicks: 4 });
+  // The population caption is a tooltip (i) beside the title.
+  const cap = p.n ? `${p.n} graded +EV picks (${dashRecord(p)}) · ROI, Units and Hit Rate cover the same bets${p.edgeN ? ` · Avg. Edge: ${p.edgeN} game-line picks with a flagged price` : ""}` : "";
+  return `<section class="ca-card ca-dash-card" id="dash-perf"><div class="ca-card-head"><h2>Performance Snapshot</h2>${infoTip(cap)}${pills("dash-perf", [["7d", "7D"], ["30d", "30D"], ["season", "Season"]], w)}<a class="ca-link" href="track-record.html">View Track Record →</a></div>
     <div class="ca-dash-minis">${mini("ROI", p.n ? pStr(p.roiPct) : "—", signCls(p.roiPct))}${mini("Units", p.n ? uStr(p.units) : "—", signCls(p.units))}${mini("Hit Rate", p.hitRate == null ? "—" : `${(p.hitRate * 100).toFixed(1)}%`)}${mini("Avg. Edge", p.avgEdge == null ? "—" : pStr(p.avgEdge), signCls(p.avgEdge))}</div>
-    ${cap}${chart || emptyMsg("No graded +EV picks in this window yet.")}</section>`;
+    ${chart || emptyMsg("No graded +EV picks in this window yet.")}</section>`;
 }
 
 /* ── Market Movers ────────────────────────────────────────────────────── */
@@ -340,11 +349,10 @@ function dashExpoCard(D) {
     : e.byMarket.filter((x) => x.staked > 0).map((x) => ({ label: x.label, pct: x.pct, units: x.units, color: DASH_MKT_COLOR[DASH_MKT_TYPES.findIndex(([l]) => l === x.label)] || "var(--muted)" }));
   const tabs = pills("dash-expo", [["sport", "By Sport"], ["market", "By Market Type"]], mode);
   const body = e.staked
-    ? `<div class="ca-dash-expo">${dashDonut(segs, { size: 96, stroke: 14, center: uStr(e.totalUnits), caption: "Total Units" })}${donutLegend(segs.map((s) => ({ label: s.label, pct: s.pct, value: uStr(s.units), color: s.color })))}</div>
-      <p class="ca-dash-cap">Graded +EV picks, last 30 days · ${e.staked} bets staked</p>
+    ? `<div class="ca-dash-expo">${dashDonut(segs, { size: 98, stroke: 14, center: uStr(e.totalUnits), caption: "Total Units" })}${donutLegend(segs.map((s) => ({ label: s.label, pct: s.pct, value: uStr(s.units), color: s.color })))}</div>
       <div class="ca-dash-mtx"><h3>Market Type Exposure</h3>${e.byMarket.map((x) => `<div class="ca-dash-mtx-row"><span>${x.label}</span><i><b style="width:${x.pct.toFixed(1)}%"></b></i><em>${Math.round(x.pct)}%</em></div>`).join("")}</div>`
     : emptyMsg("No graded +EV picks in the last 30 days.");
-  return `<section class="ca-card ca-dash-card" id="dash-expo"><div class="ca-card-head"><h2>Portfolio &amp; Exposure</h2></div><div class="ca-dash-tabs ca-dash-tabs-2">${tabs}</div>${body}</section>`;
+  return `<section class="ca-card ca-dash-card" id="dash-expo"><div class="ca-card-head"><h2>Portfolio &amp; Exposure</h2>${e.staked ? infoTip(`Graded +EV picks, last 30 days · ${e.staked} bets staked`) : ""}</div><div class="ca-dash-tabs ca-dash-tabs-2">${tabs}</div>${body}</section>`;
 }
 
 /* ── Watchlist ────────────────────────────────────────────────────────── */
@@ -401,10 +409,8 @@ async function buildDashboard() {
     <button class="ca-dn-btn" data-dash-date="${addDays(date, 1)}" aria-label="Next day">›</button></div>`;
   return `<div class="ca-dash">${pageTitle("Today at a Glance", "Key opportunities, performance, and model insights across all sports.", nav)}
     ${dashStatCards(D)}
-    <div class="ca-dash-main">
-      <div class="ca-dash-col">${dashCard("dash-opps", D)}<div class="ca-dash-sub ca-dash-sub-l">${dashCard("dash-perf", D)}${dashCard("dash-movers", D)}</div></div>
-      <div class="ca-dash-col">${dashCard("dash-slate", D)}<div class="ca-dash-sub ca-dash-sub-r">${dashCard("dash-expo", D)}${dashCard("watchlist", D)}</div></div>
-    </div></div>`;
+    <div class="ca-dash-top">${dashCard("dash-opps", D)}${dashCard("dash-slate", D)}</div>
+    <div class="ca-dash-bottom">${dashCard("dash-perf", D)}${dashCard("dash-movers", D)}${dashCard("dash-expo", D)}${dashCard("watchlist", D)}</div></div>`;
 }
 
 function dashGoDate(d) {

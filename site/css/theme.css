@@ -1,7 +1,9 @@
 :root{--bg:#F6F4EE;--card:#FFFFFF;--line:#E6E1D6;--ink:#14202E;--muted:#6B7280;--navy:#0E2238;
   --green:#1E8E4E;--green-tint:#E3F4E8;--red:#C8372D;--red-tint:#FBE5E3;--blue:#2563EB;--blue-tint:#E3ECFD;
   --amber:#B7791F;--amber-tint:#FCF0D9;--radius:12px;--serif:"Libre Caslon Text",Georgia,serif;
-  --sans:"Inter",system-ui,sans-serif;--shadow:0 1px 2px rgba(16,24,40,.04);--gutter:clamp(20px,3vw,64px)}
+  --sans:"Inter",system-ui,sans-serif;--shadow:0 1px 2px rgba(16,24,40,.04);--gutter:clamp(20px,3vw,64px);
+  /* G4 type scale: reaches the mockup sizes (card title 26, stat value 34, label 16, table 14) on wide screens and steps down so content still fits at 1280-1440 */
+  --fs-card:clamp(20px,1.36vw,26px);--fs-card-sm:clamp(16px,.95vw,19px);--fs-stat:clamp(28px,1.78vw,34px);--fs-label:clamp(13.5px,1vw,16px);--fs-table:clamp(12px,.8vw,14px)}
 *{box-sizing:border-box}
 html,body{margin:0;background:var(--bg);color:var(--ink);font:15px/1.45 var(--sans)}
 .num,td,.ca-stat-value{font-variant-numeric:tabular-nums}
@@ -34,10 +36,11 @@ a{color:inherit}
 .ca-card-head .ca-link{margin-left:auto;color:var(--blue);font-weight:600;text-decoration:none;font-size:14px}
 .ca-stats{display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:16px;margin-bottom:16px}
 .ca-stat{min-height:140px;padding:16px 18px;display:flex;flex-direction:column;min-width:0}
-.ca-stat-label{font-weight:600;font-size:16px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.ca-stat-label{display:flex;align-items:center;min-width:0;font-weight:600;font-size:16px}
+.ca-stat-lt{min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .ca-stat-value{font:700 34px/1.15 var(--serif);margin-top:6px}
 .ca-stat-sub{color:var(--muted);font-size:13px;margin-top:4px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
-.ca-stat-body{flex:1;min-width:0}.ca-stat-body>div:first-child{min-width:0}
+.ca-stat-body{flex:1;min-width:0;display:flex;align-items:flex-end;justify-content:space-between;gap:10px}.ca-stat-body>div:first-child{min-width:0}
 /* G2: moved detail text lives in a tooltip behind a small (i): infoTip() in ui.js */
 .ca-info{display:inline-grid;place-items:center;width:15px;height:15px;margin-left:6px;border:1px solid #B5B0A3;border-radius:50%;color:var(--muted);font:600 10px/1 var(--sans);font-style:normal;letter-spacing:0;text-transform:none;vertical-align:1px;cursor:help;flex:none}
 .ca-info:hover,.ca-info:focus-visible{color:var(--ink);border-color:var(--ink);outline:0}
@@ -80,7 +83,6 @@ footer{width:calc(100% - 2 * var(--gutter));margin:0 auto;padding:16px 0 32px;bo
 }
 /* UI components + charts (js/ui.js) */
 .ca-book{display:inline-grid;place-items:center;width:26px;height:26px;border-radius:6px;color:#fff;font:700 9px var(--sans)}
-.ca-stat-body{display:flex;align-items:flex-end;justify-content:space-between;gap:10px}
 .ca-axis{font:12px var(--sans);fill:var(--muted)}
 .ca-grid-line{stroke:#ECE8DF;stroke-width:1;vector-effect:non-scaling-stroke}
 .ca-chart{width:100%}
@@ -108,13 +110,18 @@ footer{width:calc(100% - 2 * var(--gutter));margin:0 auto;padding:16px 0 32px;bo
 .ca-dn-btn{width:42px;cursor:pointer;font-size:22px;line-height:1}
 .ca-dn-date{position:relative;display:inline-flex;align-items:center;gap:10px;padding:0 16px;cursor:pointer;min-width:200px;white-space:nowrap}
 .ca-dn-date input{position:absolute;inset:0;opacity:0;pointer-events:none;width:100%}
-.ca-dash .ca-card h2{font-size:24px}
+.ca-dash .ca-card h2{font-size:var(--fs-card);white-space:nowrap}
+.ca-dash-bottom .ca-card h2{font-size:var(--fs-card-sm)}
 .ca-dash-stats{margin-bottom:16px}
 @media (min-width:1280px){.ca-dash-stats{grid-template-columns:repeat(6,minmax(0,1fr))}}
-.ca-dash-stats .ca-stat{min-height:146px;padding:16px 18px;display:flex;flex-direction:column}
-.ca-dash-stats .ca-stat-body{flex:1;align-items:center}
-.ca-dash-stats .ca-stat-value{font-size:32px}
-.ca-dash-stats .ca-stat-sub{font-size:13px;line-height:1.35}
+.ca-dash-stats .ca-stat{position:relative;min-height:145px;padding:16px clamp(12px,1vw,18px);container-type:inline-size}
+.ca-dash-stats .ca-stat-label .ca-info{position:absolute;top:12px;right:12px;margin:0}
+.ca-dash-stats .ca-stat-label{font-size:var(--fs-label)}
+.ca-dash-stats .ca-stat-body{align-items:center}
+.ca-dash-stats .ca-stat-value{font-size:var(--fs-stat)}
+.ca-dash-stats .ca-stat-sub{font-size:clamp(12px,.88vw,13.5px);line-height:1.35}
+.ca-dash-stats .ca-stat-visual{flex:none}
+@container (max-width:200px){.ca-dash-stats .ca-stat-visual svg{max-width:54px;height:auto}.ca-dash-gt .ca-league{display:none}}
 .ca-dash-gt{display:flex;justify-content:space-between;gap:4px;margin-top:10px}
 .ca-dash-gt-item{display:flex;align-items:center;gap:4px}
 .ca-dash-gt .ca-league{width:17px;height:17px}
@@ -122,35 +129,38 @@ footer{width:calc(100% - 2 * var(--gutter));margin:0 auto;padding:16px 0 32px;bo
 .ca-dash-gt-item span{font-size:11px;color:var(--muted);font-weight:600}
 .ca-dash-gt-item b{font-size:14px}
 .ca-league{width:20px;height:20px;object-fit:contain;flex:none}
-.ca-dash-be{display:inline-flex;align-items:center;gap:8px;text-decoration:none;color:var(--muted);margin-top:4px}
-.ca-dash-be span{font-size:11px;line-height:1.3;color:var(--ink)}
-.ca-dash-be i{font-style:normal;font-size:12px}
-.ca-dash-be .tlogo{width:30px!important;height:30px!important;max-width:30px;max-height:30px;margin:0!important}
-.ca-dash-sig{display:grid;gap:10px;margin-top:12px}
-.ca-dash-sig-row{display:flex;align-items:center;gap:12px;font-size:14px}
+/* Best Current Edge: ONE line, logo + "Lions ML" + at + logo, ellipsised */
+.ca-dash-be{display:flex;align-items:center;gap:6px;min-width:0;max-width:100%;text-decoration:none;color:var(--muted);margin-top:4px}
+.ca-dash-be span{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--ink)}
+.ca-dash-be i{font-style:normal;flex:none}
+.ca-dash-be .tlogo{width:22px!important;height:22px!important;max-width:22px;max-height:22px;margin:0!important;flex:none}
+.ca-dash-sig{display:grid;gap:6px;margin-top:10px}
+.ca-dash-sig-row{display:flex;align-items:center;gap:clamp(8px,.8vw,12px);font-size:clamp(13px,.9vw,14px);white-space:nowrap}
 .ca-dash-sig-row i{width:13px;height:13px;border-radius:50%;border:3.5px solid;flex:none}
-.ca-dash-sig-row b{min-width:20px;font-size:17px}
-.ca-dash-sig-row span{color:var(--muted)}
-.ca-dash-main{display:grid;grid-template-columns:minmax(0,1.53fr) minmax(0,1fr);gap:16px;align-items:start}
-.ca-dash-col{display:grid;gap:16px;align-content:start;min-width:0}
-.ca-dash-sub{display:grid;gap:16px;align-items:stretch}
-.ca-dash-sub-l{grid-template-columns:minmax(0,1.08fr) minmax(0,1fr)}
-.ca-dash-sub-r{grid-template-columns:minmax(0,1fr) minmax(0,1fr)}
+.ca-dash-sig-row b{min-width:20px;font-size:16px}
+.ca-dash-sig-row span{color:var(--muted);min-width:0;overflow:hidden;text-overflow:ellipsis}
+/* Top row: Best Opportunities | Today's Slate; bottom row: four cards (31 / 27 / 21 / 21 %), all one height */
+.ca-dash-top{display:grid;grid-template-columns:minmax(0,1.64fr) minmax(0,1fr);gap:16px;align-items:stretch;margin-bottom:16px}
+.ca-dash-bottom{display:grid;grid-template-columns:minmax(0,1.48fr) minmax(0,1.29fr) minmax(0,1fr) minmax(0,1fr);gap:16px;align-items:stretch}
 .ca-dash-card{min-width:0}
-.ca-dash .ca-card-head{gap:12px 16px}
-.ca-dash .ca-card-head p{font-size:13px;flex:1 1 180px;min-width:0}
-.ca-dash-sub .ca-card{padding:16px}
-.ca-dash-sub .ca-card h2{font-size:20px}
-.ca-dash-sub .ca-card-head{gap:10px}
-.ca-dash-sub .ca-card-head .ca-pill{padding:5px 11px;font-size:13px}
-.ca-dash-sub .ca-card-head .ca-link{font-size:13px}
-.ca-dash .ca-card-head h2{white-space:nowrap}
+.ca-dash .ca-card-head{flex-wrap:nowrap;gap:12px 14px}
+.ca-dash .ca-card-head p{flex:1 1 0;min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;font-size:clamp(12.5px,.9vw,14px);cursor:help}
+.ca-dash .ca-card-head .ca-link{margin-left:auto;flex:none;white-space:nowrap;font-size:clamp(12.5px,.9vw,14px)}
+.ca-dash .ca-card-head .ca-info{margin-left:-6px}
+.ca-dash .ca-card-head .ca-pills{flex-wrap:nowrap;flex:none;gap:6px}
+.ca-dash .ca-card-head .ca-pill{padding:6px clamp(9px,.85vw,13px);font-size:clamp(12px,.86vw,13.5px)}
+.ca-dash-bottom .ca-card{padding:16px}
+.ca-dash-bottom .ca-card-head{margin-bottom:12px}
+/* Performance Snapshot head: title, pills and link share one row when the card is wide enough; otherwise the pills drop under the title */
+#dash-perf{container-type:inline-size}
+@container (max-width:620px){#dash-perf .ca-card-head{flex-wrap:wrap}#dash-perf .ca-card-head .ca-link{order:2}#dash-perf .ca-card-head .ca-pills{order:3;flex-basis:100%}}
+.ca-dash-bottom .ca-card-head .ca-pill{padding:5px clamp(7px,.7vw,11px);font-size:clamp(11.5px,.8vw,13px)}
 .ca-dash-pillrow{display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-bottom:14px}
-.ca-dash-pillsep{width:8px}
-.ca-dash .ca-pill{padding:7px 16px}
+.ca-dash-pillrow .ca-pill{padding:clamp(6px,.5vw,8px) clamp(12px,1.05vw,18px);font-size:clamp(12.5px,.9vw,14.5px)}
+.ca-dash-pillsep{width:clamp(8px,1.2vw,20px)}
 .ca-dash-tabs{margin-bottom:12px}
 .ca-dash-tabs .ca-pills{display:grid;grid-auto-flow:column;grid-auto-columns:1fr;gap:6px}
-.ca-dash-tabs .ca-pill{padding:7px 4px;font-size:12px;white-space:nowrap}
+.ca-dash-tabs .ca-pill{padding:7px 4px;font-size:clamp(11.5px,.8vw,13px);white-space:nowrap}
 .ca-dash-table{font-size:12px}
 .ca-dash-table th{padding:9px 5px;font-size:11.5px}
 .ca-dash-table th:first-child{border-top-left-radius:8px}.ca-dash-table th:last-child{border-top-right-radius:8px}
@@ -158,11 +168,6 @@ footer{width:calc(100% - 2 * var(--gutter));margin:0 auto;padding:16px 0 32px;bo
 .ca-dash-table th:first-child,.ca-dash-table td:first-child{padding-left:10px}
 .ca-dash-table .ca-conf{min-width:60px;padding:4px 5px;font-size:10.5px}
 .ca-ell{display:inline-block;max-width:100%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;vertical-align:middle}
-.ca-dash-slate .ca-dash-pair{max-width:162px;gap:5px}
-.ca-dash-slate td{padding-left:4px;padding-right:4px}
-.ca-dash-slate th{white-space:normal;line-height:1.2;vertical-align:bottom}
-#dash-slate,#dash-opps{padding-left:16px;padding-right:16px}.ca-dash-slate .ca-dash-pair .ca-ell{min-width:0}
-.ca-dash-mkt{max-width:128px}.ca-dash-slate .ca-dash-mkt{max-width:96px}
 .ca-dash-table tr[data-href]{cursor:pointer}
 .ca-dash-table tbody tr:hover{background:#FBFAF6}
 .ca-dash-table .tlogo{width:20px!important;height:20px!important;max-width:20px;max-height:20px;margin:0!important}
@@ -173,34 +178,69 @@ footer{width:calc(100% - 2 * var(--gutter));margin:0 auto;padding:16px 0 32px;bo
 .ca-b{font-weight:700}
 .ca-dash-odds{display:inline-flex;align-items:center;gap:6px}
 .ca-dash-odds .ca-book{width:22px;height:22px}
-.ca-dash-slate-wrap{max-height:372px;overflow-y:auto}
-.ca-dash-slate th{position:sticky;top:0;z-index:1}
 .ca-dash-pair .tlogo+.tlogo{margin-left:-2px!important}
-.ca-dash-dot{display:inline-block;width:8px;height:8px;border-radius:50%;margin-right:8px;vertical-align:1px}
+.ca-dash-dot{display:inline-block;width:8px;height:8px;border-radius:50%;margin-right:6px;vertical-align:1px}
 .ca-dash-dot.live{background:var(--red)}.ca-dash-dot.soon{background:var(--navy)}.ca-dash-dot.later{background:#E0A526}.ca-dash-dot.final{background:#B9B3A5}
-.ca-dash-cap{margin:0 0 10px;font-size:12px;line-height:1.4;color:var(--muted)}
 .ca-dash-gtime{white-space:nowrap;color:var(--muted)}
-.ca-dash-opps th{white-space:normal;line-height:1.2;vertical-align:bottom}
-.ca-dash-opps .ca-dash-mkt{max-width:112px}
-.ca-dash-actions{display:flex;align-items:center;gap:4px;justify-content:flex-end}
-.ca-dash-actions .ca-star{padding:0 2px}
-.ca-dash-minis{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:10px;margin-bottom:12px}
-.ca-dash-mini{border:1px solid var(--line);border-radius:10px;padding:10px 8px;text-align:center}
-.ca-dash-mini span{display:block;font-size:13px;color:var(--muted);font-weight:500}
-.ca-dash-mini b{display:block;font:700 22px/1.25 var(--serif);margin-top:4px;white-space:nowrap}
+/* Dashboard tables: 14px text at 1750px+, stepping down to 12px at 1440 (--fs-table); headers stay on one line */
+.ca-dash .ca-dash-table{font-size:var(--fs-table)}
+.ca-dash .ca-dash-table th{font-size:var(--fs-table);padding:10px 6px;line-height:1.2;white-space:nowrap}
+.ca-dash .ca-dash-table td{padding:8px 6px}
+.ca-dash .ca-dash-table th:first-child,.ca-dash .ca-dash-table td:first-child{padding-left:10px}
+.ca-dash .ca-dash-table .ca-conf{min-width:clamp(54px,4.2vw,76px);padding:4px 6px;font-size:clamp(10px,.7vw,11.5px)}
+.ca-dash .ca-dash-table .ca-alpha-cell{min-width:clamp(40px,3vw,52px);padding:4px 6px}
+.ca-dash .ca-dash-table .ca-go{width:30px;height:26px}
+.ca-dash .ca-dash-table .tlogo{width:clamp(18px,1.4vw,24px)!important;height:clamp(18px,1.4vw,24px)!important;max-width:24px;max-height:24px}
+.ca-dash .ca-dash-table .ca-team{gap:8px}
+.ca-dash-opps .ca-dash-who{max-width:clamp(140px,9.5vw,220px)}
+.ca-dash-who .ca-ell{min-width:0}
+.ca-dash-opps .ca-dash-mkt{max-width:clamp(100px,7vw,150px)}
+.ca-dash-slate{table-layout:fixed}
+.ca-dash-slate th:nth-child(1){width:18.5%}.ca-dash-slate th:nth-child(2){width:29.5%}.ca-dash-slate th:nth-child(3){width:17%}
+.ca-dash-slate th:nth-child(4){width:10%}.ca-dash-slate th:nth-child(5){width:11%}.ca-dash-slate th:nth-child(6){width:14%}
+.ca-dash .ca-dash-slate th,.ca-dash .ca-dash-slate td{padding-left:4px;padding-right:4px}
+.ca-dash .ca-dash-slate th:first-child,.ca-dash .ca-dash-slate td:first-child{padding-left:10px}
+.ca-dash .ca-dash-slate th{white-space:normal;vertical-align:bottom}
+.ca-dash-slate td{overflow:hidden;text-overflow:ellipsis}
+.ca-dash-slate .ca-dash-pair{max-width:100%;gap:5px}
+.ca-dash .ca-dash-slate .ca-alpha-cell{min-width:36px;padding:4px}
+.ca-dash-slate .ca-dash-pair .ca-ell{min-width:0}
+.ca-dash-slate .ca-dash-mkt{max-width:100%}
+.ca-dash-slate th:last-child,.ca-dash-slate td:last-child{padding-right:10px}
+.ca-dash-actions{text-align:right}
+.ca-dash-actions .ca-star{padding:0 1px;font-size:15px;vertical-align:middle}
+.ca-dash-slate-wrap{max-height:clamp(330px,26vw,440px);overflow-y:auto}
+.ca-dash-slate th{position:sticky;top:0;z-index:1}
+#dash-slate{display:flex;flex-direction:column;container-type:inline-size}
+#dash-opps{container-type:inline-size}
+/* narrower Opportunities card (1280-1700px viewports): league logo only, two-line headers, tighter cells so all 11 columns fit without a scrollbar */
+@container (max-width:940px){
+  .ca-dash-opps .ca-dash-sport-t{display:none}
+  .ca-dash .ca-dash-opps th{white-space:normal;vertical-align:bottom}
+  .ca-dash .ca-dash-opps th,.ca-dash .ca-dash-opps td{padding-left:4px;padding-right:4px}
+  .ca-dash-opps .ca-dash-who{max-width:150px}.ca-dash-opps .ca-dash-mkt{max-width:122px}
+  .ca-dash .ca-dash-opps .ca-conf{min-width:50px}
+}
+@container (max-width:760px){.ca-dash-opps .ca-book{display:none}.ca-dash-opps .ca-dash-who{max-width:118px}.ca-dash-opps .ca-dash-mkt{max-width:96px}.ca-dash .ca-dash-opps .ca-conf{min-width:46px;padding:4px}}
+@container (max-width:440px){#dash-slate .ca-card-head{flex-wrap:wrap}#dash-slate .ca-card-head .ca-link{order:2}#dash-slate .ca-card-head .ca-pills{order:3;flex-basis:100%}
+  .ca-dash-slate th:nth-child(1){width:18%}.ca-dash-slate th:nth-child(2){width:29%}.ca-dash-slate th:nth-child(3){width:17%}.ca-dash-slate th:nth-child(4){width:11%}.ca-dash-slate th:nth-child(5){width:11%}.ca-dash-slate th:nth-child(6){width:14%}.ca-dash .ca-dash-slate .ca-go{width:26px}}
+.ca-dash-minis{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:10px;margin-bottom:10px}
+.ca-dash-mini{border:1px solid var(--line);border-radius:10px;padding:8px 6px;text-align:center}
+.ca-dash-mini span{display:block;font-size:clamp(12px,.84vw,14px);color:var(--muted);font-weight:500}
+.ca-dash-mini b{display:block;font:700 clamp(18px,1.3vw,24px)/1.25 var(--serif);margin-top:2px;white-space:nowrap}
 .ca-dash-mvlist{display:grid}
-.ca-dash-mv{display:grid;grid-template-columns:34px minmax(0,1fr) auto;gap:12px;align-items:center;padding:8px 2px;border-bottom:1px solid #F0ECE3;text-decoration:none;color:var(--ink)}
+.ca-dash-mv{display:grid;grid-template-columns:30px minmax(0,1fr) auto;gap:10px;align-items:center;padding:4px 2px;border-bottom:1px solid #F0ECE3;text-decoration:none;color:var(--ink)}
 .ca-dash-mv:last-child{border-bottom:0}
 .ca-dash-mv:hover{background:#FBFAF6}
 .ca-dash-mv-ic{display:grid;place-items:center;color:var(--navy)}
-.ca-dash-mv-ic .tlogo,.ca-dash-mv-ic .ca-league{width:26px!important;height:26px!important;max-width:26px;max-height:26px;margin:0!important}
+.ca-dash-mv-ic .tlogo,.ca-dash-mv-ic .ca-league{width:24px!important;height:24px!important;max-width:24px;max-height:24px;margin:0!important}
 .ca-dash-mv-main{min-width:0}
-.ca-dash-mv-main b{display:block;font-size:14px;font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.ca-dash-mv-main b{display:block;font-size:clamp(12.5px,.9vw,14px);font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .ca-dash-mv-main small,.ca-dash-mv-r small{display:block;font-size:12px;color:var(--muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .ca-dash-mv-r{text-align:right}
-.ca-dash-mv-r b{font-size:14px;white-space:nowrap}
-.ca-dash-expo{display:flex;align-items:center;gap:10px;margin:4px 0 16px}
-.ca-dash-expo .ca-donut-legend{flex:1;min-width:0;font-size:12px;gap:8px}
+.ca-dash-mv-r b{font-size:clamp(12.5px,.9vw,14px);white-space:nowrap}
+.ca-dash-expo{display:flex;align-items:center;gap:12px;margin:0 0 10px}
+.ca-dash-expo .ca-donut-legend{flex:1;min-width:0;font-size:clamp(12px,.86vw,13.5px);gap:7px}
 .ca-dash-expo .ca-dl-row{gap:5px}
 .ca-dash-expo .ca-dl-pct{min-width:30px}
 .ca-dash-expo .ca-dl-val{min-width:38px;text-align:right}
@@ -211,31 +251,24 @@ footer{width:calc(100% - 2 * var(--gutter));margin:0 auto;padding:16px 0 32px;bo
 .ca-dash-donut-c{position:absolute;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center;text-align:center}
 .ca-dash-donut-c b{font:700 18px/1.1 var(--serif)}
 .ca-dash-donut-c span{font-size:11px;color:var(--muted)}
-.ca-dash-mtx h3{font-size:14px;margin:0 0 10px}
-.ca-dash-mtx-row{display:grid;grid-template-columns:82px minmax(0,1fr) 34px;gap:10px;align-items:center;font-size:13px;margin-bottom:8px}
+.ca-dash-mtx h3{font-size:clamp(13px,.95vw,15px);margin:0 0 8px}
+.ca-dash-mtx-row{display:grid;grid-template-columns:78px minmax(0,1fr) 34px;gap:8px;align-items:center;white-space:nowrap;font-size:clamp(12px,.86vw,13.5px);margin-bottom:5px}
 .ca-dash-mtx-row i{height:10px;background:#E9E5DB;border-radius:5px;overflow:hidden}
 .ca-dash-mtx-row i b{display:block;height:100%;background:var(--navy);border-radius:5px}
 .ca-dash-mtx-row em{font-style:normal;text-align:right;font-weight:600}
 .ca-dash-wl{display:grid}
-.ca-dash-wl-row{display:grid;grid-template-columns:20px minmax(0,1fr) auto;gap:8px;align-items:center;font-size:13px;padding:6px 0;border-bottom:1px solid #F0ECE3}
+.ca-dash-wl-row{display:grid;grid-template-columns:20px minmax(0,1fr) auto;gap:8px;align-items:center;font-size:clamp(12px,.86vw,13.5px);padding:6px 0;border-bottom:1px solid #F0ECE3}
 .ca-dash-wl-row:last-child{border-bottom:0}
 .ca-dash-wl-row a{text-decoration:none;min-width:0}
 .ca-dash-wl-row a b,.ca-dash-wl-row a small{display:block;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .ca-dash-wl-row a b{font-weight:600}
-.ca-dash-wl-row a small{font-size:12px;color:var(--muted)}
-.ca-dash-wl-row span{font-size:12px;white-space:nowrap}
+.ca-dash-wl-row a small{font-size:.92em;color:var(--muted)}
+.ca-dash-wl-row span{font-size:.92em;white-space:nowrap}
 .ca-dash-wl-row .ca-star{padding:0}
-@media (max-width:1399px){
-  .ca-dash-stats .ca-stat{padding:14px}
-  .ca-dash-stats .ca-stat-value{font-size:27px}
-  .ca-dash-stats .ca-stat-visual svg{max-width:58px;height:auto}
-  .ca-dash-gt .ca-league{display:none}
-  .ca-dash-tabs .ca-pill{font-size:11px;padding:6px 2px}
-  .ca-dash-expo{flex-wrap:wrap;justify-content:center}
-  .ca-dash-expo .ca-donut-legend{flex:1 1 100%}
-  .ca-dash-sub .ca-card h2{font-size:18px}
-}
-@media (max-width:1180px){.ca-dash-main{grid-template-columns:minmax(0,1fr)}}
+#watchlist{container-type:inline-size}
+/* wide enough: "Lions @ Chiefs   Lions ML +128   Sun 4:25 PM" on one line */
+@container (min-width:330px){.ca-dash-wl-row a{display:flex;gap:10px;align-items:baseline}.ca-dash-wl-row a b{flex:0 1 auto}.ca-dash-wl-row a small{flex:1 1 0;min-width:0}}
+@media (max-width:1180px){.ca-dash-top{grid-template-columns:minmax(0,1fr)}.ca-dash-bottom{grid-template-columns:repeat(2,minmax(0,1fr))}.ca-dash .ca-card-head{flex-wrap:wrap}}
 /* +EV page (js/pages/ev.js) */
 .ca-ev .ca-card h2{font-size:24px}
 .ca-ev-updated{display:flex;flex-direction:column;align-items:flex-end;font-size:13px;line-height:1.3;color:var(--muted)}

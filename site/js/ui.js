@@ -37,12 +37,17 @@ function bookBadge(key) {
 }
 // G2: text that does not fit a compact card moves into a native tooltip behind a small (i). `text` is plain text (escaped here).
 const infoTip = (text) => (text ? `<span class="ca-info" title="${ctxEsc(text)}" tabindex="0" role="img" aria-label="${ctxEsc(text)}">i</span>` : "");
+// Plain text of an HTML snippet, safe inside a double-quoted title="" attribute (tags stripped, quotes escaped).
+const uiTitleText = (html) => String(html).replace(/<[^>]*>/g, "").replace(/"/g, "&quot;").trim();
+// Stat-card label line: the (ellipsising) label text, then the optional (i) tooltip. The whole line carries its full text as a hover
+// title so a label cut short by a narrow card stays readable. `note` = muted suffix such as "(30D)".
+const statLabel = (label, note = "", tip = "") =>
+  `<div class="ca-stat-label" title="${uiTitleText(`${label}${note ? ` ${note}` : ""}`)}"><span class="ca-stat-lt">${label}${note ? ` <span class="muted">${note}</span>` : ""}</span>${infoTip(tip)}</div>`;
 // Compact stat card: label, big value and ONE short sub-line (ellipsised when long; its full text is the hover title). `tip` = optional
 // longer explanation, shown as the (i) tooltip next to the label.
 function statCard({ label, labelNote = "", value, valueClass = "", sub = "", subClass = "", visual = "", tip = "" }) {
-  const subTitle = String(sub).replace(/<[^>]*>/g, "").replace(/"/g, "&quot;").trim();
-  return `<div class="ca-card ca-stat"><div class="ca-stat-label">${label}${labelNote ? ` <span class="muted">${labelNote}</span>` : ""}${infoTip(tip)}</div>
-    <div class="ca-stat-body"><div><div class="ca-stat-value ${valueClass}">${value}</div>${sub ? `<div class="ca-stat-sub ${subClass}" title="${subTitle}">${sub}</div>` : ""}</div>${visual ? `<div class="ca-stat-visual">${visual}</div>` : ""}</div></div>`;
+  return `<div class="ca-card ca-stat">${statLabel(label, labelNote, tip)}
+    <div class="ca-stat-body"><div><div class="ca-stat-value ${valueClass}">${value}</div>${sub ? `<div class="ca-stat-sub ${subClass}" title="${uiTitleText(sub)}">${sub}</div>` : ""}</div>${visual ? `<div class="ca-stat-visual">${visual}</div>` : ""}</div></div>`;
 }
 function pills(name, items, active) {
   return `<div class="ca-pills" role="tablist">${items.map(([k, l]) => `<button class="ca-pill${k === active ? " on" : ""}" data-pill="${ctxEsc(name)}" data-key="${ctxEsc(k)}" role="tab" aria-selected="${k === active}">${l}</button>`).join("")}</div>`;
