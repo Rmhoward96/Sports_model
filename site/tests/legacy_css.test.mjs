@@ -9,3 +9,9 @@ test("legacy injected CSS uses theme tokens, not dark-theme colors", () => {
   }
   assert.ok(!fs.existsSync(new URL("../styles.css", import.meta.url)), "styles.css should be deleted");
 });
+
+test("theme.css carries no rules for classes nothing renders (.ca-ev-pill, .ca-grid, .ca-section-title)", () => {
+  const css = fs.readFileSync(new URL("../css/theme.css", import.meta.url), "utf8");
+  for (const dead of [".ca-ev-pill", ".ca-grid{", ".ca-section-title"]) assert.ok(!css.includes(dead), `${dead} still styled`);
+  assert.ok(css.includes(".ca-grid-line"), "the chart grid-line rule stays");
+});

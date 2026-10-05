@@ -6,7 +6,9 @@ test("app.js loads without running the page (boot moved to js/boot.js)", () => {
   const g = loadScripts(["app.js", "js/boot.js"], { page: "dashboard" });
   assert.equal(typeof g.render, "function");
   assert.equal(typeof g.boot, "function");
-  assert.equal(g.fmtOdds(120), "+120");
+  assert.equal(g.pStr(1.25), "+1.3%");
+  assert.equal(g.fmtOdds, undefined, "unused formatter removed");
+  assert.equal(typeof g.sbAll, "function");
 });
 
 import fs from "node:fs";

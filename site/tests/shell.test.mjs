@@ -23,6 +23,18 @@ test("watchlist toggles and persists", () => {
   assert.equal(g.watchlistHas("games", "401"), false);
 });
 
+test("watchlistGet: non-array stored values become empty lists, valid lists survive; junk JSON resets", () => {
+  const storage = new Map([["ca-watchlist", JSON.stringify({ games: "401", teams: 5, players: ["Josh Allen", 7] })]]);
+  const g = load(storage);
+  assert.deepEqual(g.watchlistGet(), { games: [], teams: [], players: ["Josh Allen", "7"] }, "a string is not spread into characters; numbers become ids");
+  assert.equal(g.watchlistHas("games", "4"), false);
+  assert.equal(g.watchlistToggle("games", "401"), true);
+  assert.deepEqual(JSON.parse(storage.get("ca-watchlist")), { games: ["401"], teams: [], players: ["Josh Allen", "7"] });
+  const bad = load(new Map([["ca-watchlist", "{not json"]]));
+  assert.deepEqual(bad.watchlistGet(), { games: [], teams: [], players: [] });
+  assert.deepEqual(load(new Map([["ca-watchlist", "null"]])).watchlistGet(), { games: [], teams: [], players: [] });
+});
+
 test("watchlist survives a throwing storage", () => {
   const g = load();
   g.localStorage.setItem = () => { throw new Error("blocked"); };
@@ -81,7 +93,7 @@ test("starDelegate toggles for a star target, ignores other clicks", () => {
   assert.equal(g.starDelegate(ev({ closest: () => null }), doc), false);
   assert.equal(g.starDelegate(ev(null), doc), false);
   assert.equal(prevented, 1);
-  assert.equal(typeof g.wireStars, "function"); g.wireStars(); // compatibility no-op
+  assert.equal(g.wireStars, undefined, "the no-op wireStars is gone: stars are only the delegated listener");
 });
 
 test("rowDelegate: a row click navigates; clicks on links, buttons and stars (inside the row) do not", () => {

@@ -37,7 +37,6 @@ async function sbAll(pathAndQuery, { pageSize = SB_PAGE, maxPages = SB_MAX_PAGES
 }
 
 /* ── Formatters + mappers ─────────────────────────────────────────────── */
-const fmtOdds = (o) => (o > 0 ? `+${o}` : `${o}`);
 const pct1 = (x) => (x == null ? "—" : `${(x * 100).toFixed(1)}%`);
 const timeET = (iso) =>
   iso ? new Date(iso).toLocaleTimeString("en-US",

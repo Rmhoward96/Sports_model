@@ -117,7 +117,7 @@ test("donutLegend: one row per labelled row, escapes text, empty renders nothing
   assert.equal(g.donutLegend([]), "");
   assert.equal(g.donutLegend(null), "");
 });
-test("statCard, pills, bookBadge, teamCell", () => {
+test("statCard, pills, bookBadge", () => {
   const card = g.statCard({ label: "ROI", value: "+4.2%", valueClass: "pos", sub: "30d", visual: "<i></i>" });
   assert.match(card, /ca-stat-value pos">\+4\.2%</); assert.match(card, /ca-stat-visual/);
   assert.doesNotMatch(g.statCard({ label: "x", value: "1" }), /ca-stat-visual|ca-stat-sub/);
@@ -126,8 +126,6 @@ test("statCard, pills, bookBadge, teamCell", () => {
   assert.match(p, /ca-pill on" data-pill="sport" data-key="cfb"[^>]*aria-selected="true"/);
   assert.match(g.bookBadge("draftkings"), />DK</);
   assert.match(g.bookBadge("weird<book>"), /title="weird&lt;book&gt;"/);
-  assert.match(g.teamCell("Kansas City Chiefs", "nfl"), /class="ca-team">.*Kansas City Chiefs</);
-  assert.match(g.teamCell("A<B", "nfl"), /A&lt;B/);
 });
 
 const pct = (svg, cls) => [...svg.matchAll(new RegExp(`class="${cls}[^"]*" style="[^"]*?(?:top|left):(-?[\\d.]+)%`, "g"))].map((m) => +m[1]);

@@ -26,8 +26,8 @@ const dashState = window.__caDash || (window.__caDash = { op: "all", kind: "all"
 // Exposure over graded bets since `sinceDate`: shares = bets staked (graded count n), units = P&L.
 // Rows whose market is not explicitly classified are left out (console.warn once per market).
 // Game Lines / Player Props / Totals always list; Parlays only when present.
-function dashExposure(evPnlRows, predPnlRows, sinceDate) {
-  const all = [...(evPnlRows || []), ...(predPnlRows || [])].filter((r) => r && r.game_date >= sinceDate && finite(r.n) && +r.n > 0);
+function dashExposure(evPnlRows, sinceDate) {
+  const all = (evPnlRows || []).filter((r) => r && r.game_date >= sinceDate && finite(r.n) && +r.n > 0);
   const rows = all.filter((r) => {
     if (dashMktType(r.market)) return true;
     if (!dashWarned.has(r.market)) { dashWarned.add(r.market); console.warn(`dashboard: ignoring unclassified market "${r.market}" in exposure`); }
@@ -147,7 +147,7 @@ async function dashLoad(date) {
     opps, tiered,
     boardOpps: dashBoardOpps(tiered, date, nowMs, isToday),  // separate list for the Best Opportunities card
     counts7: dailyCounts(hist || [], (r) => r.date, 7, date),
-    pnl, expo: dashExposure(pnl, [], addDays(date, -29)),
+    pnl, expo: dashExposure(pnl, addDays(date, -29)),
     graded: gradedLinePicks(results, picks, starts).filter((r) => r.date <= date),
     moves: (moves || []).filter((m) => onDate(m.commence_time)),
     gaps: (pickRows || []).filter((r) => onDate(r.commence_time) && finite(r.soft_vs_sharp_gap) && +r.soft_vs_sharp_gap > 0)

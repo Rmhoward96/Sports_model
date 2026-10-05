@@ -35,7 +35,6 @@ function bookBadge(key) {
   const [abbr, color] = BOOK_STYLE[String(key || "").toLowerCase()] || [String(key || "?").slice(0, 3).toUpperCase(), "#5B6675"];
   return `<span class="ca-book" title="${ctxEsc(key)}" style="background:${color}">${ctxEsc(abbr)}</span>`;
 }
-const teamCell = (name, sport) => `<span class="ca-team">${logoImg(name, sport)}${ctxEsc(name)}</span>`;
 function statCard({ label, labelNote = "", value, valueClass = "", sub = "", subClass = "", visual = "" }) {
   return `<div class="ca-card ca-stat"><div class="ca-stat-label">${label}${labelNote ? ` <span class="muted">${labelNote}</span>` : ""}</div>
     <div class="ca-stat-body"><div><div class="ca-stat-value ${valueClass}">${value}</div>${sub ? `<div class="ca-stat-sub ${subClass}">${sub}</div>` : ""}</div>${visual ? `<div class="ca-stat-visual">${visual}</div>` : ""}</div></div>`;

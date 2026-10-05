@@ -32,7 +32,8 @@ function watchlistGet() {
   try {
     const raw = JSON.parse(localStorage.getItem(WATCH_KEY) || "null");
     const ok = raw && typeof raw === "object" ? raw : {};
-    return { games: [...(ok.games || [])], teams: [...(ok.teams || [])], players: [...(ok.players || [])] };
+    const list = (v) => (Array.isArray(v) ? v.map(String) : []);   // a non-array stored value (a string, a number) is an empty list
+    return { games: list(ok.games), teams: list(ok.teams), players: list(ok.players) };
   } catch { return { games: [], teams: [], players: [] }; }
 }
 function watchlistSave(w) {
@@ -73,8 +74,6 @@ function starDelegate(e, doc = document) {
   starToggle(b.dataset.starKind, b.dataset.starId, doc);
   return true;
 }
-// Kept for compatibility: stars are handled by the one delegated listener bound in wireShell.
-function wireStars() {}
 // Rows with data-href are clickable (any page); clicks on links, buttons and stars keep their own behaviour.
 function rowDelegate(e, go = (url) => { location.href = url; }) {
   const t = e.target, tr = t && t.closest ? t.closest("tr[data-href]") : null;

@@ -1,5 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import fs from "node:fs";
 import { loadScripts } from "./load.mjs";
 const g = loadScripts(["app.js", "js/metrics.js", "js/ui.js", "js/shell.js", "js/data.js", "js/pages/dashboard.js", "js/boot.js"]);
 
@@ -18,7 +19,7 @@ test("slate keeps one row per game: the highest-alpha opportunity", () => {
 test("exposure shares sum to 100 and use graded bet counts", () => {
   const ev = [{ game_date: "2026-09-20", sport: "cfb", market: "moneyline", n: 6, wins: 3, losses: 3, pushes: 0, pnl: 10 },
               { game_date: "2026-09-21", sport: "nfl", market: "prop", n: 4, wins: 2, losses: 2, pushes: 0, pnl: -5 }];
-  const e = g.dashExposure(ev, [], "2026-09-01");
+  const e = g.dashExposure(ev, "2026-09-01");
   assert.deepEqual(e.bySport.map((x) => [x.sport, x.pct]), [["cfb", 60], ["nfl", 40]]);
   assert.equal(Math.round(e.bySport.reduce((s, x) => s + x.pct, 0)), 100);
 });
@@ -36,18 +37,19 @@ test("slate: an opportunity only attaches to the game of its own sport; same-gam
   assert.deepEqual(g.slateRows(null, null), []);
 });
 
-test("exposure: window cut, prediction rows count, market types, P&L units beside each slice", () => {
+test("exposure: window cut, every graded row counts, market types, P&L units beside each slice", () => {
   const ev = [{ game_date: "2026-08-01", sport: "nfl", market: "spread", n: 50, wins: 25, losses: 25, pushes: 0, pnl: 0 },   // before the window
               { game_date: "2026-09-20", sport: "cfb", market: "spread", n: 2, wins: 2, losses: 0, pushes: 0, pnl: 20 }];
   const pred = [{ game_date: "2026-09-20", sport: "cfb", market: "total", n: 3, wins: 1, losses: 2, pushes: 0, pnl: -10 },
                 { game_date: "2026-09-21", sport: "nfl", market: "moneyline", n: 5, wins: 5, losses: 0, pushes: 0, pnl: 30 }];
-  const e = g.dashExposure(ev, pred, "2026-09-01");
+  const e = g.dashExposure([...ev, ...pred], "2026-09-01");
   assert.deepEqual(e.bySport.map((x) => [x.sport, x.staked, x.pct]), [["cfb", 5, 50], ["nfl", 5, 50]]);
   assert.equal(e.bySport.find((x) => x.sport === "cfb").units, 1);    // (20 - 10) / 10
   assert.equal(e.totalUnits, 4);
   assert.equal(e.staked, 10);
   assert.deepEqual(e.byMarket.map((x) => [x.label, x.pct]), [["Game Lines", 70], ["Player Props", 0], ["Totals", 30]]);
-  const none = g.dashExposure([], [], "2026-09-01");
+  const none = g.dashExposure([], "2026-09-01");
+  assert.match(fs.readFileSync(new URL("../js/pages/dashboard.js", import.meta.url), "utf8"), /function dashExposure\(evPnlRows, sinceDate\)/, "no dead predPnlRows parameter");
   assert.deepEqual(none.bySport, []); assert.equal(none.staked, 0);
   assert.ok(none.byMarket.every((x) => x.pct === 0));
 });
@@ -178,11 +180,11 @@ test("exposure classes are explicit: parlays are their own row (only when presen
               { game_date: "2026-09-20", sport: "nfl", market: "rec_yds", n: 1, wins: 1, losses: 0, pushes: 0, pnl: 10 },
               { game_date: "2026-09-20", sport: "nfl", market: "parlay", n: 1, wins: 0, losses: 1, pushes: 0, pnl: -10 },
               { game_date: "2026-09-20", sport: "nfl", market: "mystery", n: 50, wins: 50, losses: 0, pushes: 0, pnl: 500 }];
-  const e = D.dashExposure(ev, [], "2026-09-01");
+  const e = D.dashExposure(ev, "2026-09-01");
   assert.deepEqual(e.byMarket.map((x) => [x.label, x.staked]), [["Game Lines", 4], ["Player Props", 3], ["Totals", 0], ["Parlays", 1]]);
   assert.equal(e.staked, 8, "the unknown market is not counted anywhere");
   assert.equal(q.logs.warn.length, 1); assert.match(q.logs.warn[0], /mystery/);
-  const noParlay = D.dashExposure(ev.slice(0, 2), [], "2026-09-01");
+  const noParlay = D.dashExposure(ev.slice(0, 2), "2026-09-01");
   assert.deepEqual(noParlay.byMarket.map((x) => x.label), ["Game Lines", "Player Props", "Totals"]);
 });
 
@@ -254,6 +256,7 @@ function populated({ search = "", watch = null, predH = 0 } = {}) {
     else if (path === "ev_prop_picks_current") rows = q.includes("sport=eq.nfl") ? props : [];
     else if (path === "ev_pnl_daily") rows = evPnl;
     else if (path === "ev_results") rows = results;
+    // iso(-0.01): flagged 36 seconds ago, so the pick stays inside today's ET day even when the suite runs just after midnight
     else if (path === "ev_picks") rows = q.includes("created_at=gte") ? [{ sport: "nfl", game_pk: 1, market: "moneyline", side: "home", created_at: iso(-0.01) }] : [gradedPick(11), gradedPick(12)];
     return { ok: true, json: async () => rows };
   };
