@@ -578,14 +578,14 @@ const parlayLegs = (legs) => {
 const parlayLegLabel = (leg, sport) => {
   const [away, home] = String(leg.matchup || " @ ").split(" @ ");
   const team = leg.market === "total" ? (leg.side === "over" ? "Over" : "Under")
-    : `${logoImg(leg.side === "home" ? home : away, sport)}${leg.side === "home" ? home : away}`;
+    : `${logoImg(leg.side === "home" ? home : away, sport)}${ctxEsc(leg.side === "home" ? home : away)}`;
   const mkt = leg.market === "moneyline" ? "ML" : leg.market === "spread" ? "spread" : "";
   return `<li>${team} ${mkt} <span class="ev-leg-price">${evPrice(leg.price)}</span></li>`;
 };
 const parlayCard = (p) => {
   const legs = parlayLegs(p.legs);
   return `<article class="parlay-card">
-    <div class="parlay-head"><b>${p.n_legs}-leg parlay</b><span class="parlay-price">${evPrice(p.parlay_price)} <small>${evBookName(p.book)}</small></span></div>
+    <div class="parlay-head"><b>${ctxEsc(p.n_legs)}-leg parlay</b><span class="parlay-price">${evPrice(p.parlay_price)} <small>${ctxEsc(evBookName(p.book))}</small></span></div>
     <ol class="parlay-legs">${legs.map((l) => parlayLegLabel(l, p.sport)).join("")}</ol>
     <div class="parlay-foot"><span class="ev-good">${evSigned(p.ev)} EV</span><small>hit prob ${evPctVal(p.true_prob)} · legs must all win</small></div>
   </article>`;
@@ -627,9 +627,9 @@ function evTrackSection(results, picks) {
     const p = byKey.get(key(r)) || {};
     const price = (am) => (am == null ? "—" : am > 0 ? `+${am}` : `${am}`);
     const badge = r.won == null ? "—" : `<span class="${r.won ? "win" : "loss"}">${r.won ? "✓" : "✗"}</span>`;
-    return `<tr data-league="${r.sport}"><td><b>${logoPair(p.matchup || "", r.sport)}${p.matchup || `${r.sport.toUpperCase()} ${r.game_pk}`}</b><small>${String(r.sport).toUpperCase()}</small></td>
-      <td class="pick">${p.matchup ? evSideLabel({ ...p }) : `${r.market} · ${r.side}`}</td>
-      <td><b>${price(p.best_price)}</b> <b class="ev-book">${evBookName(p.best_book)}</b></td>
+    return `<tr data-league="${ctxEsc(r.sport)}"><td><b>${logoPair(p.matchup || "", r.sport)}${ctxEsc(p.matchup || `${String(r.sport).toUpperCase()} ${r.game_pk}`)}</b><small>${ctxEsc(String(r.sport).toUpperCase())}</small></td>
+      <td class="pick">${p.matchup ? evSideLabel({ ...p }) : ctxEsc(`${r.market} · ${r.side}`)}</td>
+      <td><b>${price(p.best_price)}</b> <b class="ev-book">${ctxEsc(evBookName(p.best_book))}</b></td>
       <td class="${evCls(p.ev_best)}">${evSigned(p.ev_best)}</td>
       <td>${badge}</td>
       <td class="${evCls(r.clv)}">${evSigned(r.clv)}</td></tr>`;
@@ -650,12 +650,12 @@ function gradedParlaysSection(rows, s = getSettings()) {
   const head = `<div class="section-title"><div><h2>Graded parlays <span style="font-size:.6em;opacity:.6">${unitLabel(s)} per ticket</span></h2><p>Every best +EV parlay once it's decided (any losing leg, or every leg settled) · ✓ won · ✗ lost · P push (the leg drops out and the ticket pays on the rest).</p></div></div>`;
   if (!rows.length)
     return `<section class="section">${head}<div class="ev-empty"><b>No graded parlays yet — tickets grade once it's decided (any losing leg, or every leg settled).</b></div></section>`;
-  const mark = (res) => `<span class="pc-mark ${res || ""}">${res === "win" ? "✓" : res === "loss" ? "✗" : res === "push" ? "P" : "—"}</span>`;
+  const mark = (res) => `<span class="pc-mark ${ctxEsc(res || "")}">${res === "win" ? "✓" : res === "loss" ? "✗" : res === "push" ? "P" : "—"}</span>`;
   const day = (iso) => iso ? new Date(iso).toLocaleDateString("en-US", { timeZone: "America/New_York", weekday: "short", month: "short", day: "numeric" }) : "";
   const card = (r) => {
     const legs = parlayLegs(r.legs);
-    const leg = (l) => `<li class="pc-leg"><span><b>${mark(l.result)}${bpLegLogo(l)}${l.label || "—"}</b><small>${l.matchup || ""}</small></span><span class="pc-odds"><b>${evPrice(l.price)}</b></span></li>`;
-    return `<article class="parlay-card"><div class="pc-head"><span><b>${evPrice(r.parlay_price)} @ ${evBookName(r.book)} <span class="pc-res ${r.result || ""}">${String(r.result || "—").toUpperCase()}</span></b><small>${day(r.first_commence)} · ${legs.length} legs</small></span><strong class="${pnlCls(+r.pnl)}">${money((+r.pnl || 0) * k)}</strong></div><ol class="pc-legs">${legs.map(leg).join("")}</ol></article>`;
+    const leg = (l) => `<li class="pc-leg"><span><b>${mark(l.result)}${bpLegLogo(l)}${ctxEsc(l.label || "—")}</b><small>${ctxEsc(l.matchup || "")}</small></span><span class="pc-odds"><b>${evPrice(l.price)}</b></span></li>`;
+    return `<article class="parlay-card"><div class="pc-head"><span><b>${evPrice(r.parlay_price)} @ ${ctxEsc(evBookName(r.book))} <span class="pc-res ${ctxEsc(r.result || "")}">${ctxEsc(String(r.result || "—").toUpperCase())}</span></b><small>${day(r.first_commence)} · ${legs.length} legs</small></span><strong class="${pnlCls(+r.pnl)}">${money((+r.pnl || 0) * k)}</strong></div><ol class="pc-legs">${legs.map(leg).join("")}</ol></article>`;
   };
   return `<section class="section">${head}<div class="parlay-grid">${rows.map(card).join("")}</div></section>`;
 }
@@ -676,7 +676,7 @@ function propTrackSection(results) {
   const roi = profits.length ? `${(profits.reduce((s, x) => s + x, 0) / profits.length * 100).toFixed(1)}%` : "—";
   const badge = (res) => res == null ? "—" : `<span class="${res === "win" ? "win" : res === "loss" ? "loss" : ""}">${res === "win" ? "✓" : res === "loss" ? "✗" : "P"}</span>`;
   const rowsHtml = graded.map((r) => `<tr>
-      <td><b>${r.player_name || "—"}</b><small>${propMktLabel(r.market)}</small></td>
+      <td><b>${ctxEsc(r.player_name || "—")}</b><small>${ctxEsc(propMktLabel(r.market))}</small></td>
       <td class="pick">${propPickLabel(r)}</td>
       <td>${r.actual != null ? (+r.actual).toFixed(1) : "—"}</td>
       <td>${badge(r.result)}</td>
@@ -747,15 +747,15 @@ const bpKick = (iso) => iso ? `${new Date(iso).toLocaleDateString("en-US", { tim
 const evSortAttrs = (ev, american, book, prob) => {
   const dec = american == null || +american === 0 ? 0 : (+american > 0 ? 1 + american / 100 : 1 + 100 / -american);
   const conf = prob == null || !Number.isFinite(+prob) ? -1 : +prob;
-  return `data-sev="${ev == null ? -1 : +ev}" data-sodds="${dec}" data-sbook="${evBookName(book)}" data-sconf="${conf}"`;
+  return `data-sev="${ev == null ? -1 : +ev}" data-sodds="${dec}" data-sbook="${ctxEsc(evBookName(book))}" data-sconf="${conf}"`;
 };
 // Unit stake label: "$10", "$12.50".
 const unitLabel = (s) => `$${Number.isInteger(s.unit) ? s.unit : s.unit.toFixed(2)}`;
 function bestParlayCard(p, s) {
   const legs = parlayLegs(p.legs), dec = p.parlay_dec == null ? NaN : +p.parlay_dec;   // +null would be 0
-  const leg = (l) => `<li class="pc-leg"><span><b>${bpLegLogo(l)}${l.label || "—"}</b><small>${l.matchup || ""}${l.commence_time ? ` · ${bpKick(l.commence_time)}` : ""}</small></span><span class="pc-odds"><b>${evPrice(l.price)}</b><small>${evPctVal(l.prob)} win</small></span></li>`;
+  const leg = (l) => `<li class="pc-leg"><span><b>${bpLegLogo(l)}${ctxEsc(l.label || "—")}</b><small>${ctxEsc(l.matchup || "")}${l.commence_time ? ` · ${bpKick(l.commence_time)}` : ""}</small></span><span class="pc-odds"><b>${evPrice(l.price)}</b><small>${evPctVal(l.prob)} win</small></span></li>`;
   const k = kellyStake(p.true_prob, p.parlay_price, s);
-  return `<article class="parlay-card" ${evSortAttrs(p.ev, p.parlay_price, p.book, p.true_prob)}><div class="pc-head"><span><b>${evPrice(p.parlay_price)} @ ${evBookName(p.book)}</b><small><span class="${evCls(+p.ev)}">EV ${evSigned(+p.ev)}</span> · win ${evPctVal(p.true_prob)}</small></span>${Number.isFinite(dec) && dec > 1 ? `<strong>${unitLabel(s)} to win $${(10 * (dec - 1) * unitScale(s)).toFixed(2)}</strong>` : ""}</div>${k ? `<div class="pc-kelly">Kelly ${fmtKelly(k)}</div>` : ""}<ol class="pc-legs">${legs.map(leg).join("")}</ol></article>`;
+  return `<article class="parlay-card" ${evSortAttrs(p.ev, p.parlay_price, p.book, p.true_prob)}><div class="pc-head"><span><b>${evPrice(p.parlay_price)} @ ${ctxEsc(evBookName(p.book))}</b><small><span class="${evCls(+p.ev)}">EV ${evSigned(+p.ev)}</span> · win ${evPctVal(p.true_prob)}</small></span>${Number.isFinite(dec) && dec > 1 ? `<strong>${unitLabel(s)} to win $${(10 * (dec - 1) * unitScale(s)).toFixed(2)}</strong>` : ""}</div>${k ? `<div class="pc-kelly">Kelly ${fmtKelly(k)}</div>` : ""}<ol class="pc-legs">${legs.map(leg).join("")}</ol></article>`;
 }
 function bestParlaysSection(parlays, s) {
   const body = parlays.length
@@ -879,7 +879,7 @@ function propGamesWeek(key, s = getSettings()) {
   if (!games.length) return `<p style="opacity:.6;padding:16px">No graded prop games this week.</p>`;
   return games.map((g) => {
     const ev = +g.ev_n ? ` · +EV ${g.ev_wins}-${g.ev_losses} <b class="${pnlCls(+g.ev_pnl)}">${money((+g.ev_pnl || 0) * k)}</b>` : "";
-    return `<div class="pg-game" data-game="${g.game_pk}"><button class="pg-head"><span><b>${g.matchup || `Game ${g.game_pk}`}</b><small>${g.n} props · leans ${g.hits}-${g.misses}${+g.pushes ? `-${g.pushes}` : ""}${ev}</small></span><strong class="${pnlCls(+g.pnl)}">${money((+g.pnl || 0) * k)}</strong></button><div class="pg-detail" hidden></div></div>`;
+    return `<div class="pg-game" data-game="${ctxEsc(g.game_pk)}"><button class="pg-head"><span><b>${ctxEsc(g.matchup || `Game ${g.game_pk}`)}</b><small>${g.n} props · leans ${g.hits}-${g.misses}${+g.pushes ? `-${g.pushes}` : ""}${ev}</small></span><strong class="${pnlCls(+g.pnl)}">${money((+g.pnl || 0) * k)}</strong></button><div class="pg-detail" hidden></div></div>`;
   }).join("");
 }
 function propGameDetail(rows, s = getSettings()) {
@@ -889,8 +889,8 @@ function propGameDetail(rows, s = getSettings()) {
   const num = (x) => (x == null ? "—" : Math.round(x));   // yards & counts are whole numbers
   const badge = (res) => res === "hit" ? `<span class="win">✓</span>` : res === "miss" ? `<span class="loss">✗</span>` : `<span>P</span>`;
   const body = rows.map((r) => `<tr>
-      <td><b>${r.player_name || "—"}</b><small>${r.team || ""}</small></td>
-      <td>${propMktLabel(r.market)}${r.ev_side ? ` <span class="prop-ev">+EV ${r.ev_side === "over" ? "o" : "u"}</span>` : ""}</td>
+      <td><b>${ctxEsc(r.player_name || "—")}</b><small>${ctxEsc(r.team || "")}</small></td>
+      <td>${ctxEsc(propMktLabel(r.market))}${r.ev_side ? ` <span class="prop-ev">+EV ${r.ev_side === "over" ? "o" : "u"}</span>` : ""}</td>
       <td>${r.line != null ? (+r.line).toFixed(1) : "—"}</td>
       <td>${r.projection != null ? (+r.projection).toFixed(1) : "—"}</td>
       <td class="pick">${r.lean === "over" ? "Over" : "Under"} ${fmtAm(r.bet_price)}</td>
@@ -918,7 +918,7 @@ function wirePropGames() {
     box.classList.toggle("open", !detail.hidden);
     if (!detail.hidden && !detail.dataset.loaded) {
       detail.innerHTML = `<p style="opacity:.6;padding:12px">Loading…</p>`;
-      const rows = await sb(`nfl_prop_pnl?game_pk=eq.${box.dataset.game}&order=market.asc,player_name.asc`).catch(() => []);
+      const rows = await sb(`nfl_prop_pnl?game_pk=eq.${encodeURIComponent(box.dataset.game)}&order=market.asc,player_name.asc`).catch(() => []);
       detail.innerHTML = propGameDetail(rows, s);
       detail.dataset.loaded = "1";
     }
@@ -2078,7 +2078,7 @@ async function render() {
     if (BOARD_PAGES.includes(page)) wireBoardPage();
     window.scrollTo(0, scrollY);
   } catch (e) {
-    shell.innerHTML = siteHeader("") + `<div class="ca-page"><main><section class="section"><div class="section-title"><h2>Couldn’t load data</h2></div><p style="opacity:.7">${e.message}</p></section></main></div>` + footer(); wireShell();
+    shell.innerHTML = siteHeader("") + `<div class="ca-page"><main><section class="section"><div class="section-title"><h2>Couldn’t load data</h2></div><p style="opacity:.7">${ctxEsc(e && e.message)}</p></section></main></div>` + footer(); wireShell();
     console.error(e);
   }
 }
