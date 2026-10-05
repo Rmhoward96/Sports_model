@@ -55,11 +55,7 @@ function trackScope(rows, { range = "all", archive = false } = {}, today) {
   const { from, to } = trackRange(range, today);
   return (rows || []).filter((r) => r && (r.inRecord !== false) !== !!archive && r.date >= from && r.date <= to);
 }
-// Win % = W / (W + L): a push is not decided.
-function trackTally(rows) {
-  const rs = rows || [], w = rs.filter((r) => r.result === "W").length, l = rs.filter((r) => r.result === "L").length, p = rs.filter((r) => r.result === "P").length;
-  return { w, l, p, n: rs.length, pct: w + l ? w / (w + l) : null };
-}
+// trackTally (W-L-P + win %) lives in data.js: the sport pages' Season Performance uses the very same tally.
 // Share of spread / total picks on the right side of the closing line, and how far that is above the 52.4% breakeven (pp).
 function trackAccuracyVsLine(rows) {
   const t = trackTally((rows || []).filter((r) => r && (r.market === "spread" || r.market === "total")));
@@ -179,14 +175,7 @@ function trackSync(s) {
 }
 
 /* ── data ─────────────────────────────────────────────────────────────── */
-// The record scope (track_record_start). trackRecordStarts() swallows errors into "no restarts", which would pull the archived
-// pre-restart rows into the published record, so this page loads it itself and fails closed.
-async function trackStarts() {
-  try {
-    const rows = await sb("track_record_start?select=sport,starts_at,model_version");
-    return { starts: new Map((rows || []).map((r) => [r.sport, r])), failed: false };
-  } catch (e) { console.error("track record: track_record_start failed to load", e); return { starts: new Map(), failed: true }; }
-}
+// trackStarts() (the record scope, fails closed) lives in data.js: the sport pages use it too.
 const TRACK_ERRORS = { scope: "Couldn't load the record scope — try again.", picks: "Couldn't load graded picks." };
 async function trackLoad() {
   const today = etDateStr(new Date().toISOString());

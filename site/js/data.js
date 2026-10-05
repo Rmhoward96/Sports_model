@@ -303,6 +303,11 @@ function trackRows(accuracyRows, pnlRows, closing) {
   const mkt = (r) => TRACK_MARKETS.indexOf(r.market);
   return out.sort((a, b) => (a.date < b.date ? 1 : a.date > b.date ? -1 : (+b.game_pk - +a.game_pk) || mkt(a) - mkt(b)));
 }
+// Win % = W / (W + L): a push is not decided.
+function trackTally(rows) {
+  const rs = rows || [], w = rs.filter((r) => r.result === "W").length, l = rs.filter((r) => r.result === "L").length, p = rs.filter((r) => r.result === "P").length;
+  return { w, l, p, n: rs.length, pct: w + l ? w / (w + l) : null };
+}
 // Moneyline closing prices of the graded games, in parallel chunks of 60 game ids: the whole view scan takes 1.3-2.7s against the
 // 3s anon statement limit (a timeout would drop every price), a chunk answers in ~0.5s. A failed chunk leaves its games unpriced.
 async function trackClosing(gamePks) {
@@ -310,6 +315,15 @@ async function trackClosing(gamePks) {
   for (let i = 0; i < ids.length; i += TRACK_CLOSING_CHUNK) chunks.push(ids.slice(i, i + TRACK_CLOSING_CHUNK));
   const parts = await Promise.all(chunks.map((c) => sb(`game_closing_prices?market=eq.moneyline&game_pk=in.(${c.join(",")})&select=game_pk,side,close_dec`).catch(() => [])));
   return parts.flat();
+}
+
+// The record scope (track_record_start). trackRecordStarts() swallows errors into "no restarts", which would pull the archived
+// pre-restart rows into the published record, so the record pages load it themselves and fail closed.
+async function trackStarts() {
+  try {
+    const rows = await sb("track_record_start?select=sport,starts_at,model_version");
+    return { starts: new Map((rows || []).map((r) => [r.sport, r])), failed: false };
+  } catch (e) { console.error("track record: track_record_start failed to load", e); return { starts: new Map(), failed: true }; }
 }
 
 /* ── Seasons and weeks (NFL / CFB) ────────────────────────────────────────────────────────────────────────────────────
@@ -345,3 +359,59 @@ function rangeLabel(from, to) {
   if (!to || to === from) return fullDate(from);
   return from.slice(0, 4) === to.slice(0, 4) ? `${shortDate(from)} – ${fullDate(to)}` : `${fullDate(from)} – ${fullDate(to)}`;
 }
+
+/* ── Market Pulse rows (the +EV rail and the sport pages' Market Intelligence card) ─────────────────────────────────────
+   Moved from ev.js: the four rows (Biggest Line Move, Highest Confidence Edge, Most Mispriced Total, Average Market Divergence).
+   D = { preds (current predictions rows), moves (loadLineMoves), splits, opps (tiered opportunities), lineBy, nowMs, graded
+   (graded +EV picks, gradedLinePicks), today }; scope a sport by passing only that sport's rows. Depends on ui.js icons. */
+// Mean closing-line value (in %) of graded picks whose game day is in [from, to].
+function marketMeanClv(rows, from, to) {
+  const v = (rows || []).filter((r) => r && r.date >= from && r.date <= to && finite(r.clv)).map((r) => +r.clv * 100);
+  return v.length ? { pct: v.reduce((s, x) => s + x, 0) / v.length, n: v.length } : null;
+}
+// The UPCOMING game (kickoff after nowMs; unknown kickoff = unverifiable, skipped) whose model total is furthest from
+// the market total (unrounded model total).
+function marketMispricedTotal(preds, nowMs = Date.now()) {
+  let best = null;
+  for (const r of preds || []) {
+    if (!r || !(timeMs(r.commence_time) > nowMs) || !finite(r.pred_home_score) || !finite(r.pred_away_score) || !finite(r.market_total)) continue;
+    const model = +r.pred_home_score + +r.pred_away_score, diff = model - +r.market_total;
+    if (!best || Math.abs(diff) > Math.abs(best.diff)) best = { pred: r, market: +r.market_total, model, diff };
+  }
+  return best;
+}
+
+function marketPulseRow(icon, title, sub, val, valCls, valSub, href) {
+  return `<a class="ca-ev-pr" href="${href}"><span class="ca-ev-pr-ic">${icon}</span><span class="ca-ev-pr-main"><b>${title}</b><small class="ca-ell" title="${uiTitleText(sub)}">${sub}</small></span><span class="ca-ev-pr-r"><b class="${valCls}">${val}</b><small>${valSub}</small></span></a>`;
+}
+function marketPulseRows(D) {
+  const rows = [];
+  const byPk = new Map(D.preds.map((r) => [String(r.game_pk), r]));
+  const mv = D.moves.map((m) => [m, byPk.get(String(m.game_pk))]).find(([, p]) => p);
+  if (mv) {
+    const info = lineMoveInfo(mv[0], mv[1], D.splits);
+    rows.push(marketPulseRow(ICON_TREND, "Biggest Line Move", ctxEsc(info.title), info.chg, signCls(info.d), ctxEsc(info.tickets), gameHref(mv[1].sport, mv[1].game_pk)));
+  } else rows.push(`<div class="ca-ev-pr ca-ev-pr-empty"><span class="ca-ev-pr-ic">${ICON_TREND}</span><span class="ca-ev-pr-main"><b>Biggest Line Move</b><small>No line moves captured yet.</small></span></div>`);
+  const top = [...D.opps].sort((a, b) => b.alpha - a.alpha || b.evPct - a.evPct)[0];
+  rows.push(top ? marketPulseRow(ICON_CLOCK, "Highest Confidence Edge", ctxEsc(`${oppLabel(top, D.lineBy)} (${oddsStr(top.odds)})`), pStr(top.edgePp), "pos", `Alpha Score: ${top.alpha}`, gameHref(top.sport, top.game_pk))
+    : `<div class="ca-ev-pr ca-ev-pr-empty"><span class="ca-ev-pr-ic">${ICON_CLOCK}</span><span class="ca-ev-pr-main"><b>Highest Confidence Edge</b><small>No +EV opportunities on the board.</small></span></div>`);
+  const tot = marketMispricedTotal(D.preds, D.nowMs);
+  if (tot) {
+    const p = tot.pred;
+    rows.push(marketPulseRow(ICON_CLOCK, "Most Mispriced Total", ctxEsc(`${shortMatchup(p.away_team_name, p.home_team_name, p.sport)} O/U ${tot.market}`), `${signedStr(tot.diff, 1)} pts`, signCls(tot.diff), `Model: ${tot.model.toFixed(1)}`, gameHref(p.sport, p.game_pk)));
+  } else rows.push(`<div class="ca-ev-pr ca-ev-pr-empty"><span class="ca-ev-pr-ic">${ICON_CLOCK}</span><span class="ca-ev-pr-main"><b>Most Mispriced Total</b><small>No model totals vs. market totals yet.</small></span></div>`);
+  const clv = marketMeanClv(D.graded, addDays(D.today, -6), D.today);
+  rows.push(clv ? marketPulseRow(ICON_WAVE, "Average Market Divergence", `Graded +EV picks this week (${clv.n})`, pStr(clv.pct), signCls(clv.pct), "vs. closing lines", "track-record.html")
+    : `<div class="ca-ev-pr ca-ev-pr-empty"><span class="ca-ev-pr-ic">${ICON_WAVE}</span><span class="ca-ev-pr-main"><b>Average Market Divergence</b><small>No graded +EV picks this week yet.</small></span></div>`);
+  return rows.join("");
+}
+
+/* ── NFL divisions (same map as src/sportsmodel/nfl/trends.py, keyed by the site's team code: teamShort(name, "nfl")) ─── */
+const NFL_DIVISION = {
+  ...Object.fromEntries(["BUF", "MIA", "NE", "NYJ"].map((t) => [t, "AFC East"])), ...Object.fromEntries(["BAL", "CIN", "CLE", "PIT"].map((t) => [t, "AFC North"])),
+  ...Object.fromEntries(["HOU", "IND", "JAX", "TEN"].map((t) => [t, "AFC South"])), ...Object.fromEntries(["DEN", "KC", "LV", "LAC"].map((t) => [t, "AFC West"])),
+  ...Object.fromEntries(["DAL", "NYG", "PHI", "WSH"].map((t) => [t, "NFC East"])), ...Object.fromEntries(["CHI", "DET", "GB", "MIN"].map((t) => [t, "NFC North"])),
+  ...Object.fromEntries(["ATL", "CAR", "NO", "TB"].map((t) => [t, "NFC South"])), ...Object.fromEntries(["ARI", "LAR", "SF", "SEA"].map((t) => [t, "NFC West"])),
+};
+// The division of an NFL team name ("Buffalo Bills" -> "AFC East"), "" when unknown.
+const nflDivision = (name) => NFL_DIVISION[teamShort(name, "nfl")] || "";

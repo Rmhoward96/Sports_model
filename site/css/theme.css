@@ -721,6 +721,56 @@ a.ca-ev-pr:hover{background:#FBFAF6}
 .ca-bd-props{table-layout:auto}
 .ca-bd-props td,.ca-bd-props th{text-align:left}
 .ca-bd-em-moneyline [data-m=spread],.ca-bd-em-moneyline [data-m=total],.ca-bd-em-spread [data-m=moneyline],.ca-bd-em-spread [data-m=total],.ca-bd-em-total [data-m=moneyline],.ca-bd-em-total [data-m=spread]{opacity:.38}
+/* Sport page, left column (js/pages/board-left.js): Season Performance, Model vs. Market, Market Intelligence, Key Insights */
+.ca-bl-card{padding:clamp(12px,1vw,18px);container-type:inline-size;min-width:0}
+.ca-board .ca-bl-card h2{font-size:clamp(14px,1.05vw,22px);white-space:nowrap}
+.ca-bl-head{margin-bottom:8px;gap:2px 8px}
+.ca-bl-head .ca-link{font-size:clamp(11.5px,.8vw,14px);white-space:nowrap}
+.ca-bl-head .ca-info{margin-left:auto;flex:none}
+.ca-bl-card .ca-empty{padding:2px 0 4px;margin:0;font-size:clamp(12px,.82vw,14px);line-height:1.4}
+.ca-bl-cap{margin:2px 0 8px;color:var(--muted);font-size:clamp(11px,.76vw,13px);line-height:1.35}
+.ca-bl-scope{margin:2px 0 6px}.ca-bl-scope .ca-pills{gap:6px;flex-wrap:nowrap}
+.ca-bl-scope .ca-pill,.ca-bl-pills .ca-pill{padding:clamp(5px,.42vw,8px) clamp(7px,.5vw,12px);font-size:clamp(10.5px,.7vw,13px);white-space:nowrap}
+.ca-bl-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:clamp(6px,.6vw,10px)}
+.ca-bl-grid .ca-stat{min-height:0;padding:clamp(8px,.7vw,12px) clamp(9px,.8vw,14px);box-shadow:none;container-type:inline-size}
+.ca-bl-grid .ca-stat-label{font-size:clamp(11px,.78vw,14px);font-weight:500}
+.ca-bl-grid .ca-stat-label .ca-info{margin-left:4px}
+.ca-bl-grid .ca-stat-value{font-size:clamp(18px,1.4vw,28px);margin-top:3px}
+.ca-bl-wl{white-space:nowrap;margin-right:clamp(4px,.4vw,8px)}
+.ca-bl-grid .ca-stat-value small{display:inline-block;white-space:nowrap;font:600 clamp(11px,.78vw,15px) var(--sans)}
+.ca-bl-grid .ca-stat-sub{font-size:clamp(10.5px,.72vw,12.5px);margin-top:2px}
+.ca-bl-grid .ca-stat-body{align-items:flex-end}
+.ca-bl-grid .ca-stat-visual{flex:none}
+@container (max-width:118px){.ca-bl-grid .ca-stat-visual{display:none}}
+.ca-bl-pills{margin:4px 0 8px}.ca-bl-pills .ca-pills{gap:clamp(4px,.4vw,6px)}
+.ca-bl-s{display:none}
+@container (max-width:285px){.ca-bl-l{display:none}.ca-bl-s{display:inline}}
+@container (max-width:340px){.ca-bl-v{display:none}}
+.ca-bl-legend{display:flex;gap:clamp(10px,1vw,18px);justify-content:center;margin:2px 0 6px;font-size:clamp(11px,.76vw,13px);color:var(--muted)}
+.ca-bl-legend i{display:inline-block;width:9px;height:9px;border-radius:50%;margin-right:5px}
+.ca-bl-lg-ca{background:var(--navy)}.ca-bl-lg-mk{background:#9AA3AE}
+.ca-scatter .ca-plot{left:clamp(30px,2.5vw,40px);right:8px;top:6px;bottom:22px}
+.ca-scatter .ca-yl,.ca-scatter .ca-xl{font-size:clamp(10px,.7vw,12px)}
+.ca-sc-dot{width:var(--r,10px);height:var(--r,10px);background:var(--navy);box-shadow:0 0 0 2px #fff;cursor:help}
+.ca-bl-edgerow{display:flex;align-items:center;justify-content:space-between;gap:8px;margin-top:6px;font-size:clamp(11px,.76vw,13px)}
+.ca-bl-edge{display:flex;flex-direction:column;align-items:flex-end;background:var(--green-tint);border-radius:8px;padding:clamp(5px,.45vw,9px) clamp(9px,.8vw,14px);line-height:1.2}
+.ca-bl-edge span{font-size:clamp(10.5px,.72vw,12.5px);color:var(--muted)}
+.ca-bl-edge b{font-size:clamp(13px,.95vw,18px);color:var(--green);white-space:nowrap}
+.ca-bl-pulse .ca-ev-pr{padding:clamp(7px,.6vw,10px) 0}
+.ca-bl-pulse .ca-ev-pr-main b{font-size:clamp(12px,.82vw,15px)}
+.ca-bl-pulse .ca-ev-pr-r b{font-size:clamp(12.5px,.88vw,16px)}
+.ca-bl-pulse .ca-ev-pr-main small,.ca-bl-pulse .ca-ev-pr-r small{font-size:clamp(10.5px,.72vw,12.5px)}
+.ca-bl-pulse .ca-ev-pr{grid-template-columns:clamp(22px,1.7vw,32px) minmax(0,1fr) auto}
+.ca-bl-pulse .ca-ev-pr-ic svg{width:clamp(18px,1.4vw,24px);height:auto}
+.ca-bl-in{display:flex;align-items:center;gap:clamp(8px,.8vw,14px);padding:clamp(6px,.55vw,10px) 0;border-bottom:1px solid #F0ECE3}
+.ca-bl-in:last-child{border-bottom:0}
+.ca-bl-in-ic{flex:none;display:grid;place-items:center;width:clamp(30px,2.2vw,42px);height:clamp(30px,2.2vw,42px);border-radius:50%}
+.ca-bl-in-ic svg{width:clamp(16px,1.2vw,22px);height:auto}
+.ca-bl-in-homefav{background:var(--red-tint);color:var(--red)}.ca-bl-in-unders{background:var(--blue-tint);color:var(--blue)}.ca-bl-in-overs{background:var(--green-tint);color:var(--green)}
+.ca-bl-in-group{background:var(--amber-tint);color:var(--amber)}.ca-bl-in-short{background:var(--blue-tint);color:var(--blue)}
+.ca-bl-in-t{min-width:0}
+.ca-bl-in-t b{display:block;font-size:clamp(12.5px,.88vw,16px);font-weight:600}
+.ca-bl-in-t small{display:block;color:var(--muted);font-size:clamp(11px,.76vw,13.5px);line-height:1.3}
 /* Power Rankings (the legacy rankingsTable, restyled; app.js rankingsCard) */
 .ca-pills a.ca-pill{display:inline-block;text-decoration:none}
 .ca-rk-card{padding:18px 16px;min-width:0}

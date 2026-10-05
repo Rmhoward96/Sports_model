@@ -198,6 +198,29 @@ function lineChart(series, xLabels, { w, h = 260, yTicks = 5, unit = "" } = {}) 
   return `<div class="ca-linechart">${F.render(lines, isolated)}${legend ? `<div class="ca-legend">${legend}</div>` : ""}</div>`;
 }
 
+// Binned scatter: `dots` [{x, y, n, title}] are the observed points (HTML dots sized by n, so they stay round), `line` [{x, y}] an
+// optional solid trend through them, `base` [{x, y}] an optional dashed baseline (or `flat` = a y value drawn as a dashed line across the whole width). x is spread over a symmetric domain [-M, M] (M
+// rounded up to a 1 / 2 / 5 step, ticks from uiNiceTicks), y over [yLo, yHi] with `yTicks` value labels. Non-finite points are
+// skipped; no finite dot -> "". Text and dots are HTML spans positioned by percentage, the SVG (grid, lines) is stretched.
+function scatterChart({ dots, line, base, flat } = {}, { h = 150, yLo = 0, yHi = 100, yTicks = [0, 25, 50, 75, 100], yUnit = "%", xUnit = "", xCount = 5 } = {}) {
+  const ds = (Array.isArray(dots) ? dots : []).filter((d) => d && uiFin(d.x) && uiFin(d.y));
+  if (!ds.length) return "";
+  const ln = (Array.isArray(line) ? line : []).filter((d) => d && uiFin(d.x) && uiFin(d.y)), bs = (Array.isArray(base) ? base : []).filter((d) => d && uiFin(d.x) && uiFin(d.y));
+  const reach = Math.max(...[...ds, ...ln, ...bs].map((d) => Math.abs(+d.x)), 0) * 1.12 || 1, nt = uiNiceTicks(-reach, reach, xCount), M = Math.max(Math.abs(nt.lo), Math.abs(nt.hi));
+  const X = (v) => (+v + M) / (2 * M) * 100, Y = (v) => (yHi - clip(+v, yLo, yHi)) / (yHi - yLo) * 100;
+  const path = (pts) => pts.map((p, i) => `${i ? "L" : "M"}${(X(p.x) * 10).toFixed(1)} ${Y(p.y).toFixed(2)}`).join(" ");
+  const grid = yTicks.map((t) => `<line x1="0" x2="1000" y1="${Y(t).toFixed(2)}" y2="${Y(t).toFixed(2)}" class="ca-grid-line"/>`).join("");
+  const zero = `<line x1="${(X(0) * 10).toFixed(1)}" x2="${(X(0) * 10).toFixed(1)}" y1="0" y2="100" class="ca-grid-line"/>`;
+  const flatLine = uiFin(flat) ? `<path d="M0 ${Y(flat).toFixed(2)} L1000 ${Y(flat).toFixed(2)}" fill="none" stroke="#9AA3AE" stroke-width="1.5" stroke-dasharray="5 4" vector-effect="non-scaling-stroke"/>` : "";
+  const lines = flatLine + (bs.length > 1 ? `<path d="${path(bs)}" fill="none" stroke="#9AA3AE" stroke-width="1.5" stroke-dasharray="5 4" vector-effect="non-scaling-stroke"/>` : "")
+    + (ln.length > 1 ? `<path d="${path(ln)}" fill="none" stroke="var(--navy)" stroke-width="1.5" vector-effect="non-scaling-stroke" stroke-linejoin="round"/>` : "");
+  const yl = yTicks.map((t) => `<span class="ca-yl" style="top:${Y(t).toFixed(2)}%">${uiClean(String(t))}${ctxEsc(yUnit)}</span>`).join("");
+  const xl = nt.ticks.filter((t) => t.v >= -M - 1e-9 && t.v <= M + 1e-9).map((t) => `<span class="ca-xl" style="left:${X(t.v).toFixed(2)}%">${t.v > 0 ? "+" : ""}${t.text}${ctxEsc(xUnit)}</span>`).join("");
+  const nMax = Math.max(...ds.map((d) => (uiFin(d.n) ? +d.n : 1)), 1);
+  const dot = ds.map((d) => `<span class="ca-dot ca-sc-dot" style="left:${X(d.x).toFixed(2)}%;top:${Y(d.y).toFixed(2)}%;--r:${(8 + 6 * Math.sqrt((uiFin(d.n) ? +d.n : 1) / nMax)).toFixed(1)}px"${d.title ? ` title="${ctxEsc(d.title)}"` : ""}></span>`).join("");
+  return `<div class="ca-chart ca-scatter" style="position:relative;height:${h}px"><div class="ca-plot"><svg viewBox="0 0 1000 100" preserveAspectRatio="none">${grid}${zero}${lines}</svg>${yl}${xl}${dot}</div></div>`;
+}
+
 function donutLegend(rows) {
   const rs = (Array.isArray(rows) ? rows : []).filter((r) => r && r.label != null && r.label !== "");
   if (!rs.length) return "";
