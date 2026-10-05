@@ -23,10 +23,8 @@ async function sb(pathAndQuery) {
 }
 
 /* ── Formatters + mappers ─────────────────────────────────────────────── */
-const GAME_MARKETS = new Set(["moneyline", "spread", "total"]);
 const fmtOdds = (o) => (o > 0 ? `+${o}` : `${o}`);
 const pct1 = (x) => (x == null ? "—" : `${(x * 100).toFixed(1)}%`);
-const evp = (x) => (x == null ? "—" : `${x * 100 >= 0 ? "+" : ""}${(x * 100).toFixed(1)}%`);
 const timeET = (iso) =>
   iso ? new Date(iso).toLocaleTimeString("en-US",
     { timeZone: "America/New_York", hour: "numeric", minute: "2-digit" }) + " ET" : "";
@@ -411,11 +409,6 @@ function logoPair(matchup, sport) {
   const [away, home] = String(matchup).split(" @ ");
   return logoImg(away, sport) + logoImg(home, sport);
 }
-function pickLogo(label, sport) {  // the team the pick is on (game lines); "" for totals
-  const names = sport === "nfl" ? NFL_TEAM_ABBR : sport === "cfb" ? CFB_TEAM_ID : TEAM_ABBR;
-  for (const nm in names) if (String(label).startsWith(nm)) return logoImg(nm, sport);
-  return "";
-}
 
 // CFB mascots that are TWO words, so stripping them leaves the school name
 // ("Alabama Crimson Tide" -> "Alabama"); everything else strips one word.
@@ -445,49 +438,17 @@ function teamShort(name, sport) {
   const a = TEAM_ABBR[name]; return a ? a.toUpperCase() : String(name);  // mlb
 }
 
-const gameRow = (r) => [logoPair(r.matchup, r.sport) + r.matchup, timeET(r.commence_time), r.market_label,
-  pickLogo(r.pick_label, r.sport) + r.pick_label, fmtOdds(r.odds), pct1(r.model_prob), evp(r.ev), r.book];
-const propRow = (r) => [logoImg(r.team, r.sport) + r.player_name, `${r.team || ""} · ${r.matchup}`, r.market_label,
-  r.pick_label, fmtOdds(r.odds), pct1(r.model_prob), evp(r.ev), r.book];
 
-/* ── Presentational templates (unchanged visuals) ─────────────────────── */
-const nav = () => `<header class="site-header"><a class="brand" href="index.html" aria-label="CappingAlpha home"><span class="brand-wordmark">Capping<span class="brand-alpha"><img src="public/capping-alpha-mark-white.png" alt="alpha"></span>lpha</span></a><nav aria-label="Primary navigation"><a class="${page === 'dashboard' ? 'active' : ''}" href="index.html">Dashboard</a><a class="${page === 'cfb' ? 'active' : ''}" href="cfb.html">CFB</a><a class="${page === 'nfl' ? 'active' : ''}" href="nfl.html">NFL</a><a class="${page === 'rankings' ? 'active' : ''}" href="rankings.html">Rankings</a><a class="${page === 'ev' ? 'active' : ''}" href="ev.html">+EV</a><a class="${page === 'track' ? 'active' : ''}" href="track-record.html">Track Record</a><a class="${page === 'settings' ? 'active' : ''}" href="settings.html">Settings</a></nav><div class="live-status"><span></span>PREDICTIONS · LIVE</div></header>`;
+/* ── Presentational helpers ─────────────────────────────────────────── */
 const footer = () => `<footer>CappingAlpha model outputs are for informational purposes. Bet responsibly · 21+</footer>`;
 const stat = (a, b, c, d = "") => `<article><span>${a}</span><strong class="${d}">${b}</strong><small>${c}</small></article>`;
-const table = (rows, game = false) => rows.length
-  ? `<div class="table-wrap"><table><thead><tr><th>${game ? "MATCHUP" : "PLAYER"}</th><th>MARKET</th><th>PICK</th><th>ODDS</th><th>MODEL</th><th>EV</th><th>BOOK</th></tr></thead><tbody>${rows.map(r => `<tr><td><b>${r[0]}</b><small>${r[1]}</small></td><td>${r[2]}</td><td class="pick">${r[3]}</td><td>${r[4]}</td><td><b>${r[5]}</b></td><td><span class="ev">${r[6]} EV</span></td><td>${r[7]}</td></tr>`).join("")}</tbody></table></div>`
-  : `<div class="table-wrap"><p style="padding:24px;opacity:.6">No qualifying plays on the board yet — they post as odds are captured near game time.</p></div>`;
-const edge = (name, meta, ev, items) => `<article class="edge-card"><div class="matchup"><div><h3>${name}</h3><p>${meta}</p></div><span>${ev} EV</span></div>${items.map(x => `<div class="market"><small>${x[0]}</small><b>${x[1]}</b><strong>${x[2]}</strong><i style="width:${x[3]}%"></i><p>${x[4]} <span>vs ${x[5]}</span></p><em>${x[6]}<br><u>${x[7]}</u></em></div>`).join("")}</article>`;
 
-/* ── Aggregation from track_record_segments ───────────────────────────── */
-function agg(segs) {
-  const W = segs.reduce((s, r) => s + (+r.wins || 0), 0);
-  const L = segs.reduce((s, r) => s + (+r.losses || 0), 0);
-  const P = segs.reduce((s, r) => s + (+r.pushes || 0), 0);
-  const U = segs.reduce((s, r) => s + (+r.units || 0), 0);
-  const n = W + L + P;
-  const clvNum = segs.reduce((s, r) => s + (+r.avg_clv || 0) * ((+r.wins || 0) + (+r.losses || 0) + (+r.pushes || 0)), 0);
-  return {
-    record: `${W}-${L}-${P}`,
-    units: uStr(U),
-    roi: pStr(n ? (U / n) * 100 : 0),
-    winrate: pStr(W + L ? (W / (W + L)) * 100 : 0),
-    clv: n ? pStr(clvNum / n) : "—",
-    n,
-  };
-}
-
-/* ── Page builders ────────────────────────────────────────────────────── */
+/* ── Model lines: winner / score / spread / total helpers ─────────────── */
 // Prediction tool: confidence = how far the win prob is from a coin flip.
 const conf = (wp) => Math.max(wp, 1 - wp);
 const confPct = (wp) => `${(conf(wp) * 100).toFixed(0)}%`;
 const predWinner = (r) => (r.home_win_prob >= 0.5 ? r.home_team_name : r.away_team_name);
 const projScore = (r) => (r.pred_away_score == null || r.pred_home_score == null) ? "—" : `${Math.round(r.pred_away_score)}–${Math.round(r.pred_home_score)}`;
-// Score flanked by each team's logo on its own side (away logo · away–home · home logo),
-// for the predictions table's PROJECTED column. Kept separate from projScore so the
-// confidence-card caption stays logo-free (it already shows logos in its title).
-const projScoreLogos = (r) =>
-  `${logoImg(r.away_team_name, r.sport)}${Math.round(r.pred_away_score)}–${Math.round(r.pred_home_score)}${logoImg(r.home_team_name, r.sport)}`;
 const matchupOf = (r) => `${r.away_team_name} @ ${r.home_team_name}`;
 
 // The model's line for each market (home-team perspective; the matchup shows away @ home).
@@ -497,13 +458,6 @@ const homeSpread = (r) => {                                       // model sprea
   return m > 0 ? `-${m}` : m < 0 ? `+${-m}` : "PK";
 };
 const modelTotal = (r) => r05(r.pred_home_score + r.pred_away_score).toFixed(1);
-const mlFromProb = (p) => {                                       // model fair moneyline from a win prob
-  p = Math.min(Math.max(p, 0.001), 0.999);
-  const o = Math.min(Math.round(p >= 0.5 ? 100 * p / (1 - p) : 100 * (1 - p) / p), 9999);
-  return p >= 0.5 ? `-${o}` : `+${o}`;                            // cap at ±9999 (books don't post beyond)
-};
-const homeML = (r) => mlFromProb(r.home_win_prob);               // model fair ML, home team
-const awayML = (r) => mlFromProb(1 - r.home_win_prob);           // model fair ML, away team
 // The model's LEAN vs the Vegas line (ESPN pre-game). market_spread is the HOME
 // line (home favored -> negative). The model leans whichever side its projected
 // margin beats: pred_margin + market_spread > 0 -> take home, else the away dog.
@@ -538,7 +492,6 @@ async function predictions(sport) {
   return rows.map((r) => ({ ...r, c: conf(r.home_win_prob), sport }))
              .sort((a, b) => key(a).localeCompare(key(b)));
 }
-async function gradedPreds(q) { return sb(`prediction_accuracy?${q}`); }
 
 /* ── +EV board (sharp-vs-best-line) ────────────────────────────────────── */
 // Base true probability = the Pinnacle no-vig line (empirically the sharpest
@@ -597,22 +550,6 @@ const PROP_MKT = { rush_yds: "Rush Yds", rec_yds: "Rec Yds", receptions: "Recept
 const propMktLabel = (m) => PROP_MKT[m] || m;
 const propPickLabel = (r) => `${r.side === "over" ? "Over" : "Under"} ${r.line != null ? (+r.line).toFixed(1) : "—"}`;
 
-function propsSection(rows) {
-  const picks = (rows || []).filter((r) => r.is_pick).sort((a, b) => (b.ev_best ?? -1) - (a.ev_best ?? -1));
-  const body = picks.length
-    ? `<div class="table-wrap"><table class="ev-table"><thead><tr>
-        <th>PLAYER</th><th>PROP</th><th>PICK</th><th>MODEL %</th><th>MARKET %</th><th>BEST PRICE · EV</th></tr></thead>
-        <tbody>${picks.map((r) => `<tr class="ev-pick-row">
-          <td><b>${r.player_name || "—"}</b><small>${r.matchup || ""} · ${timeET(r.commence_time)}</small></td>
-          <td>${propMktLabel(r.market)}</td>
-          <td class="pick">${propPickLabel(r)}</td>
-          <td><b>${evPctVal(r.model_prob)}</b></td>
-          <td>${evPctVal(r.market_prob)}<small>no-vig</small></td>
-          <td><b>${evPrice(r.best_price)}</b> <b class="ev-book">${evBookName(r.best_book)}</b><br><span class="${evCls(r.ev_best)}">${evSigned(r.ev_best)}</span></td>
-        </tr>`).join("")}</tbody></table></div>`
-    : `<div class="ev-empty"><b>No +EV player props on the board right now.</b><p>Props appear for players the sim projects as featured (projected-usage gate) whose distribution beats a book's posted line. Rush &amp; receiving yards and receptions only; calibrated walk-forward, edge judged by forward CLV.</p></div>`;
-  return `<section class="section"><div class="section-title"><div><h2>+EV player props <span style="font-size:.6em;opacity:.6">NFL · sim</span></h2><p>Sim projection vs the book prop line · <em>projected-featured only · assistive · not a proven edge</em></p></div><div class="page-head-stat"><span>+EV PROPS</span><strong>${picks.length}</strong><small>on the board</small></div></div>${body}</section>`;
-}
 
 // Auto-parlays: juiced-favorite legs (straight price <= -250) recombined into a
 // single +EV plus-money ticket. legs is a JSONB array on ev_parlays_current.
@@ -780,14 +717,6 @@ async function evBestLines() {
   const rows = await sb("ev_best_lines?select=game_pk,market,side,line").catch(() => []);
   return new Map(rows.map((r) => [`${r.game_pk}|${r.market}|${r.side}`, r.line == null ? null : +r.line]));
 }
-// The bet as you'd place it: "Packers -3.5", "Over 43.5", "Falcons ML".
-function evGamePick(r, line) {
-  const [away, home] = String(r.matchup || " @ ").split(" @ ");
-  if (r.market === "total") return `${r.side === "over" ? "Over" : "Under"}${line == null ? "" : ` ${line}`}`;
-  const team = r.side === "home" ? home : away;
-  const tail = r.market === "moneyline" ? " ML" : line == null ? " spread" : line === 0 ? " PK" : ` ${line > 0 ? "+" : ""}${line}`;
-  return `${logoImg(team, r.sport)}${team}${tail}`;
-}
 // Best +EV parlays (ev_best_parlays_current): 3 legs, one per game, each ≥55%
 // to win and +EV at the SAME book, so the ticket can actually be placed there.
 // Legs carry their own label/price/prob; legs may arrive as a JSON string.
@@ -820,163 +749,6 @@ function bestParlaysSection(parlays, s) {
     ? `<div class="parlay-grid">${parlays.map((p) => bestParlayCard(p, s)).join("")}</div>`
     : `<div class="ev-empty"><b>No +EV parlays right now — needs 3 legs (≥55% win probability, one per game) that are all +EV at the same book.</b></div>`;
   return `<section class="section" data-evsec="parlays"><div class="section-title"><div><h2>Parlays</h2><p>Three +EV legs, one per game, each ≥55% to win, all priced at one book · win % = every leg hitting · <em>all legs must win</em>.</p></div></div>${body}</section>`;
-}
-// Per-book prices for each current +EV pick (ev_pick_prices_current,
-// db/migration_settings_prices.sql) so the page can re-price at the user's
-// books. Missing view → [] → every pick keeps its own best book.
-async function evPickPrices() { return sb("ev_pick_prices_current?select=*").catch(() => []); }
-const evPriceKey = (kind, r) => (kind === "prop"
-  ? `prop|${r.game_pk}|${r.player_id}|${r.market}|${r.side}` : `game|${r.game_pk}|${r.market}|${r.side}`);
-function evPricesMap(rows) {
-  const m = new Map();
-  for (const r of rows || []) {
-    let p = r.prices;
-    if (typeof p === "string") { try { p = JSON.parse(p); } catch { p = null; } }
-    if (p && typeof p === "object" && Object.keys(p).length) m.set(evPriceKey(r.kind, r), p);
-  }
-  return m;
-}
-// Re-price one +EV pick at the user's books: the best (highest decimal) price
-// among the selected books in its per-book map, or the pick's own best book
-// when the map has no entry for it. EV = prob × dec − 1 at that price. The
-// board's gates apply per book: a price whose EV is above EV_CEILING is a
-// stale-line artifact and a game straight at MAX_STRAIGHT_JUICE or worse is
-// never listed -- such a book is skipped and the next-best selected book used.
-// The chosen price must then clear the board's floor (game EV > 1%, prop EV >
-// 0) and the user's min EV; otherwise null. Pure: settings + prices come in as
-// arguments. probKey: true_prob (game) / model_prob (prop).
-const EV_CEILING = 0.25, EV_GAME_MIN = 0.01, MAX_STRAIGHT_JUICE = -250;   // serving/board.py, ev_pilot.py
-function repricePick(pick, pricesMap, s, probKey) {
-  const prob = pick ? +pick[probKey] : NaN;
-  if (pick?.[probKey] == null || !(prob > 0 && prob < 1)) return null;
-  const kind = pick.kind || (pick.player_id != null ? "prop" : "game");
-  const prices = (pricesMap && pricesMap.get(evPriceKey(kind, pick)))
-    || (pick.best_book != null && pick.best_price != null ? { [pick.best_book]: pick.best_price } : {});
-  let best = null;
-  for (const [book, am] of Object.entries(prices)) {
-    const a = +am;
-    if (am == null || !Number.isFinite(a) || (a > -100 && a < 100) || !bookSelected(book, s)) continue;
-    if (kind === "game" && a <= MAX_STRAIGHT_JUICE) continue;
-    const dec = a > 0 ? 1 + a / 100 : 1 + 100 / -a, ev = prob * dec - 1;
-    if (ev > EV_CEILING) continue;
-    // Ties keep the board's own best book.
-    if (!best || dec > best.dec || (dec === best.dec && book === pick.best_book)) best = { book, price: a, dec, ev };
-  }
-  if (!best) return null;
-  const ev = best.ev;
-  if (!(ev > (kind === "game" ? EV_GAME_MIN : 0)) || ev < s.minEv / 100) return null;
-  return { book: best.book, price: best.price, ev };
-}
-// True when the user's books / min EV narrow the board (unit, bankroll and
-// Kelly only change stakes, not which picks show).
-const evFiltered = (s) => s.books.length !== US_BOOKS.length || s.minEv > 0;
-async function buildEv() {
-  const s = getSettings();
-  const [nfl, cfb, props, parlaysAll, priceRows] = await Promise.all([
-    evCurrent("nfl").catch(() => []), evCurrent("cfb").catch(() => []), evPropsCurrent("nfl"), evBestParlays(), evPickPrices(),
-  ]);
-  const priceMap = evPricesMap(priceRows);
-  // Each shown pick carries rp = its re-priced {book, price, ev} and prob.
-  const reprice = (rows, probKey) => rows.filter((r) => r.is_pick)
-    .map((r) => { const rp = repricePick(r, priceMap, s, probKey); return rp && { ...r, rp, prob: +r[probKey] }; })
-    .filter(Boolean).sort((a, b) => b.rp.ev - a.rp.ev);
-  const games = reprice([...nfl.map((r) => ({ ...r, sport: "nfl" })), ...cfb.map((r) => ({ ...r, sport: "cfb" }))], "true_prob");
-  const lineBy = await evBestLines();
-  const propPicks = reprice(props || [], "model_prob");
-  const parlays = (parlaysAll || []).filter((p) => bookSelected(p.book, s) && +p.ev >= s.minEv / 100);
-  const nN = games.filter((r) => r.sport === "nfl").length, nC = games.length - nN;
-  const gameLink = (r) => `game.html?sport=${r.sport}&game=${r.game_pk}`;
-  const kellyTd = (r) => `<td><b>${fmtKelly(kellyStake(r.prob, r.rp.price, s))}</b></td>`;
-  const gameRows = games.map((r) => `<tr class="ev-pick-row" data-evsport="${r.sport}" data-evmkt="${r.market}" ${evSortAttrs(r.rp.ev, r.rp.price, r.rp.book, r.prob)}>
-      <td><a href="${gameLink(r)}"><b>${logoPair(r.matchup, r.sport)}${r.matchup}</b></a><small>${r.sport.toUpperCase()} · ${timeET(r.commence_time)}</small></td>
-      <td class="pick">${evGamePick(r, lineBy.get(`${r.game_pk}|${r.market}|${r.side}`) ?? null)}</td>
-      <td><b>${evPrice(r.rp.price)}</b> <b class="ev-book">${evBookName(r.rp.book)}</b></td>
-      <td class="${evCls(r.rp.ev)}"><b>${evSigned(r.rp.ev)}</b></td>
-      <td><b>${evPctVal(r.true_prob)}</b><small>vs ${evPctVal(r.best_line_implied)} market</small></td>${kellyTd(r)}</tr>`).join("");
-  const emptyGames = `<div class="ev-empty"><b>No +EV game lines right now.</b><p>Every game's best available price is within the vig of the sharp line — that's a pass, not a miss.</p></div>`;
-  const gameTable = games.length
-    ? `<div class="table-wrap"><table class="ev-table"><thead><tr><th>MATCHUP</th><th>PICK</th><th>BEST BOOK</th><th>EV</th><th>MODEL %</th><th>KELLY</th></tr></thead><tbody>${gameRows}</tbody></table></div><div class="ev-empty ev-filter-empty" hidden><b>No +EV game lines match this filter right now.</b></div>`
-    : emptyGames;
-  const propRows = propPicks.map((r) => `<tr class="ev-pick-row" data-evsport="nfl" data-evmkt="prop" ${evSortAttrs(r.rp.ev, r.rp.price, r.rp.book, r.prob)}>
-      <td><a href="game.html?sport=nfl&game=${r.game_pk}"><b>${r.player_name || "—"}</b></a><small>${r.matchup || ""} · ${timeET(r.commence_time)}</small></td>
-      <td class="pick">${propMktLabel(r.market)} · ${propPickLabel(r)}</td>
-      <td><b>${evPrice(r.rp.price)}</b> <b class="ev-book">${evBookName(r.rp.book)}</b></td>
-      <td class="${evCls(r.rp.ev)}"><b>${evSigned(r.rp.ev)}</b></td>
-      <td><b>${evPctVal(r.model_prob)}</b><small>vs ${evPctVal(r.market_prob)} market</small></td>${kellyTd(r)}</tr>`).join("");
-  const propTable = propPicks.length
-    ? `<div class="table-wrap"><table class="ev-table"><thead><tr><th>PLAYER</th><th>PICK</th><th>BEST BOOK</th><th>EV</th><th>SIM %</th><th>KELLY</th></tr></thead><tbody>${propRows}</tbody></table></div>`
-    : `<div class="ev-empty"><b>No +EV player props right now.</b><p>Props appear when the sim's distribution beats a book's posted line for a player it projects as featured.</p></div>`;
-  const total = games.length + propPicks.length;
-  const evs = [...games.map((r) => r.rp.ev), ...propPicks.map((r) => r.rp.ev)];
-  const nb = s.books.length;
-  const note = evFiltered(s)
-    ? `<div class="ev-settings-note">Filtered by your settings: ${nb} book${nb === 1 ? "" : "s"}${s.minEv > 0 ? ` · min EV ${s.minEv.toFixed(1)}%` : ""} · <a href="settings.html">Change</a></div>` : "";
-  const chipRow = (key, label, opts) => `<div class="track-league-filter ev-filter" data-evgroup="${key}" role="group" aria-label="${label}">${opts
-    .map(([k, l]) => `<button data-evf="${k}" class="${k === evFilterState[key] ? "selected" : ""}">${l}</button>`).join("")}</div>`;
-  const chips = chipRow("league", "League", [["all", "All"], ["nfl", "NFL"], ["cfb", "CFB"]])
-    + chipRow("market", "Bet type", [["all", "All bets"], ["moneyline", "ML"], ["spread", "Spread"], ["total", "Total"], ["prop", "Props"]]);
-  return `<main><section class="page-heading"><div><p class="eyebrow">+EV BOARD</p><h1>+EV picks</h1><p>Every +EV bet on the board — NFL &amp; CFB game lines and NFL player props — with the best book, its price and line. Filter by league and bet type; sort by EV, odds, sportsbook or confidence. <em>Assistive · not a proven edge.</em></p>${note}</div><div class="page-head-stat"><span>+EV PICKS</span><strong>${total}</strong><small>on the board</small></div></section>
-    <section class="compact-stats">${stat("NFL GAME LINES", nN, "+EV picks")}${stat("CFB GAME LINES", nC, "+EV picks", "blue")}${stat("PLAYER PROPS", propPicks.length, "NFL · sim", "cyan")}${stat("TOP EV", evs.length ? evSigned(Math.max(...evs)) : "—", `best on the board · ${parlays.length} parlay${parlays.length === 1 ? "" : "s"}`)}</section>
-    <div class="ev-toolbar"><div class="ev-filters">${chips}</div>
-      <label class="ev-sort">Sort by <select id="ev-sort"><option value="ev">EV: High to Low</option><option value="odds">Odds: High to Low</option><option value="book">Sportsbook: A to Z</option><option value="conf">Confidence: High to Low</option></select></label></div>
-    ${bestParlaysSection(parlays, s)}
-    <section class="section" data-evsec="games"><div class="section-title"><div><h2>Game lines <span style="font-size:.6em;opacity:.6">NFL · CFB</span></h2><p>Best available price vs the sharp line · model % = true probability vs the best price's implied %.</p></div></div>${gameTable}</section>
-    <section class="section" data-evsec="props"><div class="section-title"><div><h2>Player props <span style="font-size:.6em;opacity:.6">NFL · sim</span></h2><p>Sim distribution vs the book line · sim % vs the no-vig market %.</p></div></div>${propTable}</section>
-    <div class="ev-empty ev-none" hidden><b>No +EV picks match this filter.</b><p>Player props are NFL only.</p></div></main>`;
-}
-// Reorder every +EV list (parlay cards, game-line rows, prop rows) in place.
-// Ties fall back to EV, high to low. The choice is remembered per browser.
-function sortEvPage(mode) {
-  const num = (el, k) => +el.dataset[k] || 0;
-  const cmp = {
-    ev: (a, b) => num(b, "sev") - num(a, "sev"),
-    odds: (a, b) => num(b, "sodds") - num(a, "sodds") || num(b, "sev") - num(a, "sev"),
-    book: (a, b) => (a.dataset.sbook || "").localeCompare(b.dataset.sbook || "") || num(b, "sev") - num(a, "sev"),
-    conf: (a, b) => num(b, "sconf") - num(a, "sconf") || num(b, "sev") - num(a, "sev"),
-  }[mode] || ((a, b) => num(b, "sev") - num(a, "sev"));
-  document.querySelectorAll('[data-evsec] tbody, [data-evsec] .parlay-grid').forEach((box) => {
-    [...box.children].filter((el) => el.dataset.sev != null).sort(cmp).forEach((el) => box.appendChild(el));
-  });
-}
-function wireEvPage() {
-  const sel = document.getElementById("ev-sort");
-  if (sel) {
-    let saved = null;
-    try { saved = localStorage.getItem("ca-ev-sort"); } catch {}
-    if (saved && [...sel.options].some((o) => o.value === saved)) { sel.value = saved; sortEvPage(saved); }
-    sel.addEventListener("change", () => {
-      sortEvPage(sel.value);
-      try { localStorage.setItem("ca-ev-sort", sel.value); } catch {}
-    });
-  }
-  const bar = document.querySelector(".ev-filters"); if (!bar) return;
-  bar.addEventListener("click", (e) => {
-    const b = e.target.closest("[data-evgroup] button[data-evf]"); if (!b) return;
-    const group = b.closest("[data-evgroup]");
-    group.querySelectorAll("button").forEach((x) => x.classList.toggle("selected", x === b));
-    evFilterState[group.dataset.evgroup] = b.dataset.evf;
-    applyEvFilter();
-  });
-  applyEvFilter();   // re-apply the kept choice after the periodic re-render
-}
-// League (All/NFL/CFB) × bet type (All/ML/Spread/Total/Props). Kept in memory
-// so the 5-minute re-render doesn't reset it; a page load starts at All.
-const evFilterState = { league: "all", market: "all" };
-function applyEvFilter() {
-  const { league, market } = evFilterState;
-  const gs = document.querySelector('[data-evsec="games"]'), ps = document.querySelector('[data-evsec="props"]');
-  if (!gs || !ps) return;
-  const rowOk = (tr) => (league === "all" || tr.dataset.evsport === league) && (market === "all" || tr.dataset.evmkt === market);
-  gs.hidden = market === "prop";
-  ps.hidden = league === "cfb" || (market !== "all" && market !== "prop");   // props are NFL only
-  const pp = document.querySelector('[data-evsec="parlays"]');
-  if (pp) pp.hidden = league !== "all" || market !== "all";   // tickets mix leagues + bet types, so they only fit All
-  const rows = [...gs.querySelectorAll("tr[data-evmkt]")];
-  rows.forEach((tr) => { tr.hidden = !rowOk(tr); });
-  const empty = gs.querySelector(".ev-filter-empty");
-  if (empty) empty.hidden = !rows.length || rows.some((tr) => !tr.hidden);
-  const none = document.querySelector(".ev-none");
-  if (none) none.hidden = !(gs.hidden && ps.hidden);
 }
 
 /* ── Profit trackers (a unit per bet) ──────────────────────────────────── */
@@ -1140,33 +912,9 @@ function wirePropGames() {
   });
 }
 
-// accuracy summary from graded prediction rows
-function accSummary(graded) {
-  const dec = graded.filter((g) => g.actual_winner != null);
-  const correct = dec.filter((g) => g.winner_correct).length;
-  return {
-    n: dec.length,
-    acc: dec.length ? `${(correct / dec.length * 100).toFixed(1)}%` : "—",
-    record: `${correct}-${dec.length - correct}`,
-    mae: dec.length ? (dec.reduce((s, g) => s + (+g.margin_error || 0), 0) / dec.length).toFixed(1) : "—",
-  };
-}
 
-const predTable = (rows) => rows.length
-  ? `<div class="table-wrap"><table><thead><tr><th>MATCHUP</th><th>DATE</th><th>SPREAD</th><th>TOTAL</th><th>MONEYLINE</th><th>PROJECTED</th><th>CONF</th></tr></thead><tbody>${rows.map((r) => `<tr><td><b>${logoPair(matchupOf(r), r.sport)}${matchupOf(r)}</b><small>lean vs the line · model number below</small></td><td>${(r.game_date || "").slice(5)}${r.commence_time ? `<small>${timeET(r.commence_time)}</small>` : ""}</td><td class="pick">${spreadLean(r)}<small>model ${homeSpread(r)}</small></td><td class="pick">${totalLean(r)}<small>model ${modelTotal(r)}</small></td><td>${homeML(r)}</td><td class="proj">${projScoreLogos(r)}</td><td><b>${confPct(r.home_win_prob)}</b></td></tr>`).join("")}</tbody></table></div>`
-  : `<div class="table-wrap"><p style="padding:24px;opacity:.6">No predictions posted yet — they publish ahead of each week's games.</p></div>`;
 
-const confCard = (r) => `<article class="edge-card"><div class="matchup"><div><h3>${logoPair(matchupOf(r), r.sport)}${matchupOf(r)}</h3><p>${r.sport.toUpperCase()} · ${(r.game_date || "").slice(5)}</p></div><span>${confPct(r.home_win_prob)}</span></div><div class="market"><small>PREDICTED WINNER · ${projScore(r)}</small><b>${predWinner(r)}</b><strong>${homeSpread(r)} · O/U ${modelTotal(r)}</strong><i style="width:${(conf(r.home_win_prob) * 100).toFixed(0)}%"></i><p>model spread & total · ML ${homeML(r)} (home)</p></div></article>`;
 
-async function buildDash() {
-  // Simplified landing: hero + clickable game lists per league. No predictions
-  // or edges here -- those live on each game's detail page (game.html).
-  const [nflP, cfbP, mls] = await Promise.all([predictions("nfl"), predictions("cfb"), gameMoneylines()]);
-  const s = getSettings();
-  return `<main><section class="hero"><div class="grid-surface"></div><div class="hero-content"><p class="eyebrow">LIVE PREDICTIONS</p><h1>Predict the game, <em>not the market.</em></h1><p class="hero-copy">Tap any game for its predicted score, predictions, +EV picks and projected player props.</p><div class="actions"><a class="button primary" href="nfl.html">NFL games</a><a class="button secondary" href="cfb.html">CFB games</a></div></div></section>
-    <section class="section"><div class="section-title"><div><h2>NFL games</h2></div><a href="nfl.html">All NFL →</a></div>${gameList(nflP, "nfl", "No upcoming NFL games right now.", mls, s)}</section>
-    <section class="section"><div class="section-title"><div><h2>CFB games</h2></div><a href="cfb.html">All CFB →</a></div>${gameList(cfbP, "cfb", "No upcoming CFB games right now.", mls, s)}</section></main>`;
-}
 
 /* ── Game detail page (game.html?sport=<s>&game=<game_pk>) ─────────────── */
 function gameParams() {
@@ -1326,7 +1074,7 @@ function distMean(dist) {
 
 // Wire the interactive game-sim charts after render() sets innerHTML: tab
 // switching + line inputs for the game chart, and click-to-open per-player
-// distribution. All state lives on window.__caGameSim (set by buildGame).
+// distribution. All state lives on window.__caGameSim (set by buildGamePage in js/pages/game.js).
 function wireGameSim() {
   const view = document.querySelector(".game-view");
   if (!view) return;
@@ -1749,146 +1497,6 @@ function historySection(hist, power, r, awayCol, homeCol, sport) {
     <div class="trends-grid">${col("away")}${col("home")}</div></section>`;
 }
 
-async function buildGame() {
-  const { sport, game } = gameParams();
-  const backList = `<a class="back-link" href="${sport}.html">← All ${sport.toUpperCase()} games</a>`;
-  if (!game) return `<main><section class="section">${backList}<h2>No game selected</h2></section></main>`;
-  // Read by game_pk from the BASE tables, not the upcoming-only `_current`
-  // views: once a game kicks off it drops out of those views, but a detail
-  // page should keep showing its projections forever. `predictions_any` is the
-  // latest prediction per game with NO date floor (falls back to
-  // predictions_current if the view isn't deployed yet); `prediction_accuracy`
-  // carries the graded final result once the game is over.
-  // NFL also reads the served sim version (nfl_sim_serving, one row) so the raw
-  // nfl_player_sim / nfl_sim reads below show that version's rows. The
-  // "Model: ML vN" label on the prediction block comes from `r.model_version`
-  // (predictions_any/predictions_current expose it as their last column) --
-  // that's the version of the row actually displayed and graded, not a
-  // separate lookup. Undefined until the model_version migration runs, which
-  // just means no label.
-  const isNfl = sport === "nfl";
-  const [predsAny, predsCur, evRows, accRows, servedVersion] = await Promise.all([
-    sb(`predictions_any?sport=eq.${sport}&game_pk=eq.${game}`).catch(() => []),
-    sb(`predictions_current?sport=eq.${sport}&game_pk=eq.${game}`).catch(() => []),
-    sb(`ev_picks?sport=eq.${sport}&game_pk=eq.${game}`).catch(() => []),
-    sb(`prediction_accuracy?sport=eq.${sport}&game_pk=eq.${game}`).catch(() => []),
-    isNfl ? nflServedSimVersion() : Promise.resolve(null),
-  ]);
-  const r = predsAny[0] || predsCur[0];
-  const actual = accRows[0] || null;
-  if (!r) return `<main><section class="section">${backList}<h2>Game not found</h2><p style="opacity:.6">No prediction is on record for this game.</p></section></main>`;
-  r.sport = sport;
-  let sims = [], props = [], simRows = [], playerActuals = [], splits = [], lines = [];
-  if (isNfl) {
-    // Served-version filter; when the served read failed (null) fall back to
-    // the newest rows of any version (the pre-serving-table behavior). Also,
-    // when the STRICT filter comes back empty -- a pre-switch game whose
-    // nfl_sim / nfl_player_sim rows only exist under an earlier version --
-    // retry without the filter so those games keep showing what they have,
-    // deduped the same way.
-    const mv = simVersionFilter(servedVersion);
-    const simRead = async (table) => {
-      const rows = await sb(`${table}?game_pk=eq.${game}${mv}&order=created_at.desc`).catch(() => []);
-      if (rows.length || !mv) return rows;
-      return sb(`${table}?game_pk=eq.${game}&order=created_at.desc`).catch(() => []);
-    };
-    [sims, props, simRows, playerActuals, lines] = await Promise.all([
-      simRead("nfl_player_sim").then(dedupLatest),
-      sb(`ev_prop_picks?sport=eq.nfl&game_pk=eq.${game}`).catch(() => []),
-      simRead("nfl_sim"),
-      sb(`nfl_player_actuals?game_pk=eq.${game}`).catch(() => []),
-      sb(`nfl_prop_lines?game_pk=eq.${game}`).catch(() => []),
-    ]);
-  }
-  // Public betting splits: per-sport table (nfl_betting_splits_current /
-  // cfb_betting_splits_current). Missing table/view -> caught -> [] -> hidden.
-  // Betting trends: newest-season Action Network records per team
-  // (team_betting_records, names quoted inside in.()) + NFL situational trends
-  // (nfl_game_trends). Missing tables -> caught -> [] -> Trends empty state.
-  // Team context (descriptive): history + matchup grades for this game, then the
-  // current power rank of both teams (ids from those rows; the pooled FCS team is
-  // never ranked). Missing tables -> caught -> [] -> sections hidden.
-  let trendRecs = [], trendSits = [], ctxHist = [], ctxGrades = [], ctxPower = [];
-  if (sport === "nfl" || sport === "cfb") {
-    const q = (n) => `"${encodeURIComponent(n)}"`;
-    [splits, trendRecs, trendSits, ctxHist, ctxGrades] = await Promise.all([
-      sb(`${sport}_betting_splits_current?game_pk=eq.${game}`).catch(() => []),
-      sb(`team_betting_records?sport=eq.${sport}&team_name=in.(${q(r.away_team_name)},${q(r.home_team_name)})&order=season.desc`).catch(() => []),
-      sport === "nfl" ? sb(`nfl_game_trends?game_pk=eq.${game}`).catch(() => []) : Promise.resolve([]),
-      sb(`team_history?sport=eq.${sport}&game_pk=eq.${game}`).catch(() => []),
-      sb(`matchup_grades?sport=eq.${sport}&game_pk=eq.${game}`).catch(() => []),
-    ]);
-    const codes = [...new Set([...ctxHist, ...ctxGrades].map((x) => x.team).filter((t) => t && t !== "FCS"))];
-    if (ctxHist.length && codes.length)
-      ctxPower = await sb(`power_rankings_current?sport=eq.${sport}&team=in.(${codes.map((c) => q(String(c))).join(",")})`).catch(() => []);
-  }
-  // Player pmf map for the interactive per-player distribution panel.
-  const playerMap = {};
-  (sims || []).forEach((s) => {
-    if (!playerMap[s.player_id]) playerMap[s.player_id] = { name: s.name, pos: s.pos, team: s.team, markets: {} };
-    const d = distParse(s.dist);
-    if (d) { d.__mean = s.mean; playerMap[s.player_id].markets[s.market] = d; }
-  });
-  window.__caGameSim = { players: playerMap };
-  // Apple Sports-style hero: the AWAY team's color lives on the LEFT, the HOME
-  // team's on the RIGHT, as two soft radial blobs that slowly drift/scale so the
-  // gradient is alive, not static. They overlap in the middle for the mesh look.
-  // Section accents below stay tinted with the home color on the dark page bg.
-  const { away: awayCol, home: homeCol } = gameTeamColors(r.away_team_name, r.home_team_name, sport);
-  const accent = homeCol;
-  // Share the hero's team colors with the sim charts so bars match each team's
-  // score-side color in the hero board (away = left, home = right).
-  window.__caGameSim = Object.assign(window.__caGameSim || {}, {
-    awayCol, homeCol, awayTeam: r.away_team_name, homeTeam: r.home_team_name,
-  });
-  const theme = `<style>
-    .game-view .game-hero{position:relative;overflow:hidden;border:0;border-radius:0 0 20px 20px;padding:28px 16px 22px;min-height:200px;background:#0a0f16;box-shadow:inset 0 -52px 60px -30px #080d13}
-    .game-view .game-hero::before,.game-view .game-hero::after{content:"";position:absolute;top:50%;width:78%;height:210%;border-radius:50%;filter:blur(64px);opacity:.6;z-index:0;pointer-events:none}
-    .game-view .game-hero::before{left:-20%;background:radial-gradient(circle at center, ${awayCol} 0%, transparent 68%);animation:caBlobAway 16s ease-in-out infinite alternate}
-    .game-view .game-hero::after{right:-20%;background:radial-gradient(circle at center, ${homeCol} 0%, transparent 68%);animation:caBlobHome 19s ease-in-out infinite alternate}
-    .game-view .game-hero > *{position:relative;z-index:1}
-    .game-view .game-hero .eyebrow,.game-view .game-hero .back-link{color:#e6edf4}
-    .game-view .game-score,.game-view .game-hero h1{color:#fff;text-shadow:0 2px 16px rgba(0,0,0,.6)}
-    .game-view .game-hero .game-winner,.game-view .game-hero .final-line{color:#eef3f9;text-shadow:0 1px 12px rgba(0,0,0,.55)}
-    @keyframes caBlobAway{0%{transform:translate(-4%,-50%) scale(1)}50%{transform:translate(9%,-58%) scale(1.18)}100%{transform:translate(2%,-44%) scale(1.06)}}
-    @keyframes caBlobHome{0%{transform:translate(4%,-50%) scale(1.08)}50%{transform:translate(-9%,-42%) scale(1.22)}100%{transform:translate(-2%,-58%) scale(1)}}
-    @media (prefers-reduced-motion: reduce){.game-view .game-hero::before,.game-view .game-hero::after{animation:none}}
-    .game-view .section-title h2{border-left:3px solid ${accent};padding-left:11px}
-    .game-view .compact-stats article{border-top:2px solid ${accent}66}
-  </style>`;
-  // Final result banner (present once graded): both scores are recovered from
-  // the stored home margin + total — home=(total+margin)/2, away=(total-margin)/2.
-  let finalLine = "";
-  if (actual && actual.actual_total != null && actual.actual_margin != null) {
-    const ah = Math.round((actual.actual_total + actual.actual_margin) / 2);
-    const aa = Math.round((actual.actual_total - actual.actual_margin) / 2);
-    const w = actual.actual_winner || (actual.actual_margin >= 0 ? r.home_team_name : r.away_team_name);
-    const call = actual.winner_correct == null ? ""
-      : ` · <span class="${actual.winner_correct ? "call-ok" : "call-miss"}">model ${actual.winner_correct ? "called it ✓" : "missed ✗"}</span>`;
-    finalLine = `<p class="final-line">Final · ${r.away_team_name} ${aa} – ${ah} ${r.home_team_name} · winner <b>${w}</b>${call}</p>`;
-  }
-  const hero = `<section class="game-hero">${backList}<p class="eyebrow">${sport.toUpperCase()} · ${timeET(r.commence_time)}</p><div class="game-score">${projScoreLogos(r)}</div><h1>${matchupOf(r)}</h1><p class="game-winner">Projected winner: <b>${predWinner(r)}</b> · ${confPct(r.home_win_prob)} confidence</p>${finalLine}</section>`;
-  // NFL: one prediction block (winner, win %, projected score, spread/total
-  // leans; the actual result beside each once graded). CFB keeps its cards.
-  const predictionsSec = isNfl
-    ? nflPredictionSection(r, actual, mlModelTag(r.model_version))
-    : `<section class="section"><div class="section-title"><h2>Predictions</h2></div><section class="compact-stats">${stat('PROJECTED WINNER', predWinner(r), `${confPct(r.home_win_prob)} confidence`)}${stat('MODEL SPREAD', spreadLean(r), `model ${homeSpread(r)}`, 'blue')}${stat('MODEL TOTAL', totalLean(r), `model ${modelTotal(r)}`, 'cyan')}${stat('PROJECTED SCORE', projScore(r), matchupOf(r))}</section></section>`;
-  const simVisualSec = sport === "nfl" ? gameSimVisual(simRows[0], r.away_team_name, r.home_team_name, awayCol, homeCol) : "";
-  const boxSec = sport === "nfl" ? boxscoreSection(sims, r) : "";
-  const splitsSec = (sport === "nfl" || sport === "cfb") ? splitsSection(splits, r, awayCol, homeCol) : "";
-  const trendsSec = (sport === "nfl" || sport === "cfb")
-    ? trendsSection(r.away_team_name, r.home_team_name, trendRecs, trendSits, awayCol, homeCol, r.market_spread, sport) : "";
-  const matchupSec = (sport === "nfl" || sport === "cfb") ? matchupSection(ctxGrades, r, awayCol, homeCol, sport) : "";
-  const historySec = (sport === "nfl" || sport === "cfb") ? historySection(ctxHist, ctxPower, r, awayCol, homeCol, sport) : "";
-  const evSec = evSection(evRows.map((x) => ({ ...x, sport })));
-  // Label the props section from the rows actually shown, not the served
-  // version: once the R2 fallback below serves rows of any version, the served
-  // version and the shown rows' version can differ, and a false "ML v1" label
-  // must not appear on non-ML rows.
-  const shownSimVersion = (sims[0] && sims[0].model_version) || null;
-  const propsSec = isNfl ? propsProjectionSection(sims, props, playerActuals, lines, mlModelTag(shownSimVersion)) : "";
-  return `<main class="game-view">${theme}${hero}${predictionsSec}${splitsSec}${matchupSec}${historySec}${trendsSec}${simVisualSec}${boxSec}${evSec}${propsSec}</main>`;
-}
 
 // The sim version the site serves: the single row of nfl_sim_serving (anon
 // readable). null when the read fails or the table is empty -> callers fall
@@ -1983,38 +1591,8 @@ function tileBest(prices, viewPrice, viewBook, s) {
   return best;
 }
 
-// A game card: away team on top, home below, each with its logo + short name and
-// the best moneyline at the user's books + that book's logo; kickoff time along
-// the bottom. With no price at any of the user's books, the model's fair line
-// shows instead, dimmed and labelled. Cards flow into a responsive grid (gameList).
-const gameLinkRow = (r, sport, mls, s = getSettings()) => {
-  const m = mls && mls.get(String(r.game_pk));
-  const price = (best, fair) => best
-    ? `<span class="gc-ml">${evPrice(best.am)}${bookLogo(best.book)}</span>`
-    : `<span class="gc-ml gc-model" title="Model fair line — none of your selected books have priced this yet">${fair}<small>model</small></span>`;
-  const side = (k) => (m ? tileBest(m[`${k}_prices`], m[`${k}_price`], m[`${k}_book`], s) : null);
-  const teamRow = (name, ml) =>
-    `<div class="gc-row"><span class="gc-team">${logoImg(name, sport)}<b>${teamShort(name, sport)}</b></span>${ml}</div>`;
-  return `<a class="game-card" href="game.html?sport=${sport}&game=${r.game_pk}">
-    ${teamRow(r.away_team_name, price(side("away"), awayML(r)))}
-    ${teamRow(r.home_team_name, price(side("home"), homeML(r)))}
-    <div class="gc-time">${timeET(r.commence_time)}</div></a>`;
-};
 
-const gameList = (preds, sport, empty, mls, s = getSettings()) =>
-  preds.length ? `<div class="game-grid">${preds.map((r) => gameLinkRow(r, sport, mls, s)).join("")}</div>`
-               : `<p style="opacity:.6">${empty}</p>`;
 
-async function buildLeague(sport) {
-  const [preds, mls] = await Promise.all([predictions(sport), gameMoneylines()]);
-  const name = sport.toUpperCase(), s = getSettings();
-  return `<main><section class="page-heading"><div><p class="eyebrow">${name}</p><h1>${name} games</h1><p>Tap a game for the predicted score, predictions, +EV picks and projected player props.</p></div><div class="page-head-stat"><span>GAMES</span><strong>${preds.length}</strong><small>this week</small></div></section>${gameList(preds, sport, `No upcoming ${name} games right now.`, mls, s)}</main>`;
-}
-
-/* ── Power rankings page (rankings.html?sport=nfl|cfb) ────────────────────
-   power_rankings_current = the latest (season, week) per sport. Sortable
-   columns + (CFB) a conference filter; the view state lives on
-   window.__caRank so the 5-minute re-render keeps the user's sort/filter. */
 const CFB_CONF = { 1: "ACC", 4: "Big 12", 5: "Big Ten", 8: "SEC", 9: "Pac-12", 12: "C-USA", 15: "MAC",
   17: "Mountain West", 18: "FBS Independents", 37: "Sun Belt", 151: "American" };
 const rkConfId = (c) => (c == null || c === "" ? null : String(c).replace(/\.0+$/, ""));
@@ -2190,106 +1768,9 @@ function wireSettings() {
   sync(getSettings());
 }
 
-function chartPath(vals) {
-  if (vals.length < 2) return "";
-  const max = Math.max(...vals, 0), min = Math.min(...vals, 0), range = max - min || 1;
-  const pts = vals.map((v, i) => [i / (vals.length - 1) * 1000, 250 - ((v - min) / range) * 240]);
-  const line = "M" + pts.map((p) => `${p[0].toFixed(0)} ${p[1].toFixed(0)}`).join(" L");
-  const [endX, endY] = pts.at(-1);
-  return `<path d="${line}" fill="none" stroke="var(--blue)" stroke-width="4" stroke-linecap="round" stroke-linejoin="round" vector-effect="non-scaling-stroke"/><circle cx="${endX.toFixed(0)}" cy="${endY.toFixed(0)}" r="6" fill="var(--blue)"/>`;
-}
 
-const spreadFromMargin = (m) => { if (m == null) return "—"; const v = r05(m); return v > 0 ? `-${v}` : v < 0 ? `+${-v}` : "PK"; };
 const fmtLine = (x) => x > 0 ? `+${x}` : x < 0 ? `${x}` : "PK";
-// The side the model took against the closing market spread, shown from that
-// side's perspective (team logo + its line). market_spread is the HOME line;
-// pred_margin + market_spread > 0 means the model's projection covers the home
-// side. Falls back to the model's own line when no market line was captured.
-const spreadPick = (r) => {
-  if (r.market_spread == null || r.pred_margin == null) return spreadFromMargin(r.pred_margin);
-  // Rounded-margin comparison (matches the displayed model number); a model that
-  // lands on the line reads PK rather than flipping to the dog. See spreadLean.
-  const edge = r05(r.pred_margin) + r.market_spread;
-  if (Math.abs(edge) < 0.25) return "PK";
-  const likesHome = edge > 0;
-  const team = likesHome ? r.home_team_name : r.away_team_name;
-  const line = likesHome ? r.market_spread : -r.market_spread;
-  return `${logoImg(team, r.sport)}${fmtLine(line)}`;
-};
-// The model's Over/Under lean against the closing market total (not its own number).
-const totalPick = (r) => {
-  if (r.market_total == null || r.pred_total == null)
-    return r.pred_total != null ? (+r.pred_total).toFixed(1) : "—";
-  return `${r.pred_total > r.market_total ? "Over" : "Under"} ${(+r.market_total).toFixed(1)}`;
-};
 
-// ==== Track record: league -> week -> games ================================
-// A "football week" buckets Thu–Mon games (incl. Monday Night) together: the
-// Tuesday on/before the game date. Returns YYYY-MM-DD of that Tuesday.
-function footballWeekStart(dateStr) {
-  const d = new Date(`${dateStr}T12:00:00Z`);
-  const delta = (d.getUTCDay() - 2 + 7) % 7; // 2 = Tuesday
-  d.setUTCDate(d.getUTCDate() - delta);
-  return d.toISOString().slice(0, 10);
-}
-// Attach a per-sport ordinal week number (_week) to each graded row, numbering
-// each sport's distinct football-weeks 1..N in date order. Returns
-// {sport: [weekStart, ...]} so callers know how many weeks each sport has.
-function attachTrackWeeks(rows) {
-  const startsBySport = {};
-  rows.forEach((r) => {
-    const s = footballWeekStart(r.game_date);
-    r._wkStart = s;
-    (startsBySport[r.sport] = startsBySport[r.sport] || new Set()).add(s);
-  });
-  const orderBySport = {};
-  Object.entries(startsBySport).forEach(([sp, set]) => { orderBySport[sp] = [...set].sort(); });
-  rows.forEach((r) => { r._week = orderBySport[r.sport].indexOf(r._wkStart) + 1; });
-  return orderBySport;
-}
-function trackRowHtml(r) {
-  const badge = (ok) => ok == null ? "—" : `<span class="${ok ? "win" : "loss"}">${ok ? "✓" : "✗"}</span>`;
-  const fin = (g) => { const h = (g.actual_total + g.actual_margin) / 2, a = (g.actual_total - g.actual_margin) / 2; return `${Math.round(a)}–${Math.round(h)}`; };
-  return `<tr><td>${(r.game_date || "").slice(5)}</td><td><b>${logoPair(`${r.away_team_name} @ ${r.home_team_name}`, r.sport)}${r.away_team_name} @ ${r.home_team_name}</b></td><td>${badge(r.winner_correct)} ${logoImg(r.predicted_winner, r.sport)}${r.predicted_winner}</td><td><b>${r.win_prob != null ? confPct(r.win_prob) : "—"}</b></td><td>${badge(r.spread_pick_correct)} ${spreadPick(r)}</td><td>${badge(r.total_pick_correct)} ${totalPick(r)}</td><td>${fin(r)}</td></tr>`;
-}
-function trackWeekButtons(sport, activeWeek) {
-  const n = ((window.__caTrack || {}).weeksBySport?.[sport] || []).length;
-  if (!n) return `<span style="opacity:.6;font-size:13px">No graded weeks yet</span>`;
-  const weeks = []; for (let w = 1; w <= n; w++) weeks.push(w); // oldest first (Week 1 leftmost)
-  return weeks.map((w) => `<button class="${w === activeWeek ? "selected" : ""}" data-week="${w}">Week ${w}</button>`).join("");
-}
-function trackWeekTable(sport, week) {
-  const rows = ((window.__caTrack || {}).rows || []).filter((r) => r.sport === sport && r._week === week);
-  if (!rows.length) return `<p style="opacity:.6;padding:16px">No graded games for this week yet.</p>`;
-  const wl = (key) => { const d = rows.filter((r) => r[key] != null); const w = d.filter((r) => r[key]).length; return d.length ? `${w}-${d.length - w}` : "—"; };
-  const rec = `<div class="week-record"><b>Week ${week}</b> · ${rows.length} games · ${wl("winner_correct")} ML · ${wl("spread_pick_correct")} ATS · ${wl("total_pick_correct")} O/U</div>`;
-  const body = [...rows].sort((a, b) => (a.game_date < b.game_date ? 1 : -1)).map(trackRowHtml).join("");
-  return `${rec}<div class="table-wrap"><table><thead><tr><th>DATE</th><th>MATCHUP</th><th>MONEYLINE</th><th>CONF</th><th>SPREAD</th><th>TOTAL</th><th>FINAL</th></tr></thead><tbody>${body}</tbody></table></div>`;
-}
-// Wire the track league/week drill-down after render() sets innerHTML.
-function wireTrack(restoreLeague, restoreWeek) {
-  const t = window.__caTrack; if (!t) return;
-  const lf = document.querySelector(".track-league-filter"); if (!lf) return;
-  const wf = document.querySelector(".track-week-filter");
-  const body = document.querySelector(".track-week-body");
-  const pick = (sport, week) => {
-    if (!sport || !(t.weeksBySport[sport] || []).length) sport = t.defaultSport;
-    const n = (t.weeksBySport[sport] || []).length;
-    const wk = week && week <= n ? week : n; // default = latest week
-    lf.querySelectorAll("button").forEach((b) => b.classList.toggle("selected", b.dataset.league === sport));
-    wf.innerHTML = trackWeekButtons(sport, wk);
-    body.innerHTML = trackWeekTable(sport, wk);
-  };
-  lf.querySelectorAll("button").forEach((b) => b.addEventListener("click", () => pick(b.dataset.league)));
-  wf.addEventListener("click", (e) => {
-    const b = e.target.closest("button[data-week]"); if (!b) return;
-    const sport = lf.querySelector("button.selected")?.dataset.league || t.defaultSport;
-    wf.querySelectorAll("button").forEach((x) => x.classList.remove("selected"));
-    b.classList.add("selected");
-    body.innerHTML = trackWeekTable(sport, +b.dataset.week);
-  });
-  pick(restoreLeague, restoreWeek);
-}
 
 // Per-sport track-record restart (table track_record_start): a sport's rows
 // before its starts_at are archived -- kept in the database and its *_all views
@@ -2307,63 +1788,6 @@ function inTrackRecord(starts, sport, when) {
   return /^\d{4}-\d{2}-\d{2}$/.test(when) ? when >= etDateStr(s.starts_at) : new Date(when) >= new Date(s.starts_at);
 }
 
-async function buildTrack() {
-  window.__caPnl = [];
-  let [tiers, graded, evRes, evPk, propRes, propGradeRows, predPnl, evPnl, propGames, parlayRes, starts] = await Promise.all([
-    sb("accuracy_by_confidence?select=*"),
-    sb("prediction_accuracy?order=game_date.desc&limit=300&select=sport,game_date,home_team_name,away_team_name,win_prob,predicted_winner,actual_winner,winner_correct,pred_margin,actual_margin,margin_error,pred_total,actual_total,total_error,market_spread,market_total,spread_pick_correct,total_pick_correct"),
-    evResultsRows().catch(() => []),
-    evGradedPicks().catch(() => []),
-    propResultsRows(),
-    propLineGradesRows(),
-    sb("prediction_pnl_daily?select=*").catch(() => []),
-    sb("ev_pnl_daily?select=*").catch(() => []),
-    sb("nfl_prop_pnl_by_game?select=*&order=commence_time.asc").catch(() => []),
-    parlayResultsRows(),
-    trackRecordStarts(),
-  ]);
-  // Archived (pre-restart) rows are cut from the raw tables; the record views are cut server-side.
-  const pickKick = new Map((evPk || []).map((p) => [`${p.sport}|${p.game_pk}|${p.market}|${p.side}`, p.commence_time]));
-  graded = (graded || []).filter((g) => inTrackRecord(starts, g.sport, g.game_date));
-  evRes = (evRes || []).filter((r) => inTrackRecord(starts, r.sport, pickKick.get(`${r.sport}|${r.game_pk}|${r.market}|${r.side}`) || r.graded_at));
-  propRes = (propRes || []).filter((r) => inTrackRecord(starts, r.sport || "nfl", r.commence_time));
-  parlayRes = (parlayRes || []).filter((r) => inTrackRecord(starts, r.sport || "nfl", r.first_commence));
-  const nflStart = starts.get("nfl");
-  const restartNote = nflStart
-    ? `NFL record restarted with ${nflStart.model_version === "nfl-sim-ml-v2" ? "the ML v2 model" : nflStart.model_version} on ${new Date(nflStart.starts_at).toLocaleDateString("en-US", { timeZone: "America/New_York", month: "short", day: "numeric", year: "numeric" })}; earlier NFL results are archived for comparison.`
-    : "NFL predictions switched to the ML model on Sep 28, 2026; earlier games were graded against the previous model.";
-  const dec = graded.filter((g) => g.actual_winner != null);
-  const s = getSettings(), U = unitLabel(s);
-  // Group the graded games by football week, per sport, for the drill-down.
-  const weeksBySport = attachTrackWeeks(dec);
-  const latest = [...dec].sort((a, b) => (a.game_date < b.game_date ? 1 : -1))[0];
-  const defaultSport = (latest && weeksBySport[latest.sport]) ? latest.sport
-    : (weeksBySport.nfl ? "nfl" : Object.keys(weeksBySport)[0]);
-  window.__caTrack = { rows: dec, weeksBySport, defaultSport };
-  const all = accSummary(graded);
-  const hitPct = (key) => { const d = dec.filter((g) => g[key] != null); return d.length ? `${(d.filter((g) => g[key]).length / d.length * 100).toFixed(1)}%` : "—"; };
-  const spreadPct = hitPct("spread_pick_correct"), totalPct = hitPct("total_pick_correct");
-  const totMae = dec.filter((g) => g.total_error != null);
-  const totMaeStr = totMae.length ? (totMae.reduce((s, g) => s + +g.total_error, 0) / totMae.length).toFixed(1) : "—";
-  // cumulative winner-accuracy % over time (oldest -> newest)
-  let n = 0, c = 0;
-  const series = [...dec].reverse().map((g) => { n++; if (g.winner_correct) c++; return { value: c / n * 100, label: g.game_date }; });
-  const chart = chartPath(series.map((r) => r.value));
-  window.__cappingAlphaChartSeries = series;
-  const tierRows = [...tiers]
-    .sort((x, y) => (x.sport > y.sport ? 1 : x.sport < y.sport ? -1 : (y.conf_tier > x.conf_tier ? 1 : -1)))
-    .map((t) => `<div><b>${String(t.sport).toUpperCase()} · ${t.conf_tier}%</b><span>${t.games} games</span><strong>${t.winner_pct}% ML</strong><em>${t.spread_ats_pct}% ATS · ${t.total_pick_pct}% O/U</em></div>`).join("")
-    || `<div><b>—</b><span>no graded games yet</span></div>`;
-  // League -> week drill-down (fills .track-week-filter / .track-week-body via
-  // wireTrack after render) so the page shows one league + one week at a time.
-  const LG = { cfb: "CFB", nfl: "NFL" };
-  const leagues = ["cfb", "nfl"].filter((s) => (weeksBySport[s] || []).length);
-  const leagueBtns = leagues.map((s) => `<button data-league="${s}">${LG[s]}</button>`).join("");
-  const gradedTable = dec.length
-    ? `<div class="track-league-filter">${leagueBtns}</div><div class="track-week-filter"></div><div class="track-week-body"></div>`
-    : `<p style="opacity:.6">No graded predictions yet — accuracy posts after games settle.</p>`;
-  return `<main><section class="page-heading"><div><p class="eyebrow">PREDICTION ACCURACY</p><h1>Accuracy record</h1><p>Every model prediction is graded against the final — moneyline (winner), spread (did the model's pick cover the closing line), and total (did the model's over/under lean beat the closing line).</p><div class="ev-settings-note">${restartNote}</div></div><div class="page-head-stat"><span>MONEYLINE ACCURACY</span><strong class="blue">${all.acc}</strong><small>${all.n} graded games</small></div></section><div class="ev-toggle"><button data-view="predictions" class="selected">Predictions accuracy</button><button data-view="ev">+EV picks</button></div><div data-evview="predictions"><section class="compact-stats">${stat('MONEYLINE (WINNER)', all.acc, `${all.record} · ${all.n} games`)}${stat('SPREAD (ATS)', spreadPct, 'model pick vs the line', 'blue')}${stat('TOTAL (O/U)', totalPct, `model lean vs the line · ±${totMaeStr} pts`, 'cyan')}${stat('AVG MARGIN ERROR', all.mae, 'points off the result')}</section>${pnlSection(`Profit tracker <span style="font-size:.6em;opacity:.6">${U} per bet</span>`, `What ${U} on every model pick would have made — moneyline (predicted winner), spread &amp; total picks — at the closing price (median across books). Spread/total with no captured price assume −110.`, predPnl, [["moneyline", "MONEYLINE"], ["spread", "SPREAD"], ["total", "TOTAL"]], s)}<section class="section chart-card"><div class="section-title"><div><h2>Moneyline accuracy</h2><p>Cumulative · all games</p></div><div class="chart-legend"><span></span>Accuracy %</div></div><div class="chart"><svg viewBox="0 0 1000 260" preserveAspectRatio="none"><defs><linearGradient id="fill" x1="0" x2="0" y1="0" y2="1"><stop stop-color="var(--blue)" stop-opacity=".22"/><stop offset="1" stop-color="var(--blue)" stop-opacity="0"/></linearGradient></defs>${chart}</svg>${chart ? "" : '<p style="opacity:.6;padding:20px">Chart fills in once graded results accumulate.</p>'}</div></section><section class="record-grid section"><article><h2>Accuracy by confidence</h2><div class="league-performance">${tierRows}</div></article></section><section class="section"><div class="section-title"><div><h2>Graded games by week</h2><p>Pick a league, then a week — moneyline vs the final, spread & total vs the closing line.</p></div></div>${gradedTable}</section></div><div data-evview="ev" hidden>${pnlSection(`+EV profit tracker <span style="font-size:.6em;opacity:.6">${U} per bet</span>`, `What ${U} on every graded +EV pick would have made, at the price it was flagged at · a parlay is one ${U} ticket.`, evPnl, [["moneyline", "+EV MONEYLINE"], ["spread", "+EV SPREAD"], ["prop", "+EV PROPS"], ["parlay", "+EV PARLAYS"]], s)}${gradedParlaysSection(parlayRes, s)}${evTrackSection(evRes, evPk)}${propAccuracySection(propGradeRows)}${propGamesSection(propGames, s)}${propTrackSection(propRes)}</div></main>`;
-}
 
 /* ── Render ───────────────────────────────────────────────────────────── */
 const REFRESH_MS = 5 * 60 * 1000;  // auto-pull fresh Supabase data every 5 minutes
@@ -2697,14 +2121,8 @@ function injectStylesOnce() {  // one-time; re-renders must not keep appending <
 const BOARD_PAGES = ["nfl", "cfb", "mlb", "nba"];
 async function render() {
   const shell = document.querySelector(".page-shell");
-  // preserve scroll + active filter so the 5-min refresh isn't disruptive
+  // preserve scroll so the 5-min refresh isn't disruptive (each page keeps its own tab/filter/sort state)
   const scrollY = window.scrollY;
-  const selMarket = document.querySelector(".filter-bar button.selected")?.dataset.filter;
-  const selLeague = document.querySelector(".league-filter button.selected")?.dataset.league;
-  // Preserve the track drill-down (league + week) across the periodic re-render.
-  const selTrackLeague = document.querySelector(".track-league-filter button.selected")?.dataset.league;
-  const selTrackWeekRaw = document.querySelector(".track-week-filter button.selected")?.dataset.week;
-  const selTrackWeek = selTrackWeekRaw ? +selTrackWeekRaw : null;
   try {
     if (CONFIG.SUPABASE_URL.includes("YOUR-PROJECT")) {
       throw new Error("Set CONFIG.SUPABASE_URL and CONFIG.SUPABASE_ANON_KEY at the top of app.js.");
@@ -2717,7 +2135,7 @@ async function render() {
     else if (page === "settings") body = buildSettings();
     else if (page === "rankings") body = await buildRankings();
     else if (BOARD_PAGES.includes(page)) body = await buildBoardPage(page);
-    else body = await buildLeague(page); // legacy league page (unreachable now; Task 12 deletes it)
+    else throw new Error(`Unknown page: ${page}`);
     shell.innerHTML = siteHeader(page === "rankings" || page === "settings" ? "" : page) + `<div class="ca-page">${body}</div>` + footer(); wireShell();
     if (page === "dashboard") wireDashboard();
     if (page === "game") wireGamePage();
@@ -2726,209 +2144,9 @@ async function render() {
     if (page === "settings") wireSettings();
     if (page === "rankings") wireRankings();
     if (BOARD_PAGES.includes(page)) wireBoardPage();
-    const chartSvg = document.querySelector(".chart svg");
-    const chartSeries = window.__cappingAlphaChartSeries || [];
-    if (chartSvg && chartSeries.length >= 2) {
-      const chartWrap = chartSvg.closest(".chart");
-      const values = chartSeries.map((point) => point.value);
-      const max = Math.max(...values, 0), min = Math.min(...values, 0), range = max - min || 1;
-      const svgNode = (tag, attrs) => {
-        const node = document.createElementNS("http://www.w3.org/2000/svg", tag);
-        Object.entries(attrs).forEach(([key, value]) => node.setAttribute(key, value));
-        return node;
-      };
-      const guide = svgNode("line", { x1: 0, x2: 0, y1: 0, y2: 260, stroke: "#2563EB", "stroke-width": 1, "stroke-dasharray": "4 4", visibility: "hidden" });
-      const marker = svgNode("circle", { cx: 0, cy: 0, r: 6, fill: "#2563EB", stroke: "#fff", "stroke-width": 2, visibility: "hidden" });
-      chartSvg.append(guide, marker);
-      const tooltip = document.createElement("div");
-      tooltip.className = "chart-tooltip";
-      tooltip.hidden = true;
-      chartWrap.appendChild(tooltip);
-      const updateChartHover = (event) => {
-        const rect = chartSvg.getBoundingClientRect();
-        const ratio = Math.max(0, Math.min(1, (event.clientX - rect.left) / rect.width));
-        const index = Math.round(ratio * (chartSeries.length - 1));
-        const point = chartSeries[index];
-        const x = index / (chartSeries.length - 1) * 1000;
-        const y = 250 - ((point.value - min) / range) * 240;
-        guide.setAttribute("x1", x); guide.setAttribute("x2", x); guide.setAttribute("visibility", "visible");
-        marker.setAttribute("cx", x); marker.setAttribute("cy", y); marker.setAttribute("visibility", "visible");
-        tooltip.innerHTML = `<strong>${point.value.toFixed(1)}%</strong><span>${point.label || ""}</span>`;
-        tooltip.style.left = `${index / (chartSeries.length - 1) * 100}%`;
-        tooltip.style.top = `${y / 260 * 100}%`;
-        tooltip.hidden = false;
-      };
-      const clearChartHover = () => { guide.setAttribute("visibility", "hidden"); marker.setAttribute("visibility", "hidden"); tooltip.hidden = true; };
-      chartSvg.addEventListener("pointermove", updateChartHover);
-      chartSvg.addEventListener("pointerleave", clearChartHover);
-      chartSvg.addEventListener("pointerdown", updateChartHover);
-      document.head.insertAdjacentHTML("beforeend", `<style>
-        .chart svg{cursor:crosshair}.chart-tooltip{position:absolute;z-index:2;transform:translate(-50%,-112%);min-width:112px;padding:8px 10px;border:1px solid #3d82d0;border-radius:5px;background:#101b28;color:#e9f3ff;box-shadow:0 8px 24px rgba(0,0,0,.3);pointer-events:none;text-align:center;font-size:11px}.chart-tooltip strong{display:block;color:#69a8ff;font-size:13px}.chart-tooltip span{display:block;color:#98a8b8;margin-top:3px;font-size:10px}
-      </style>`);
-    }
-
-    const filterBar = document.querySelector(".filter-bar");
-    if (filterBar) {
-      const filtersBySport = {
-        mlb: ["All", "Moneyline", "Spread", "Total", "Hits", "Total Bases", "Hits + Runs + RBIs", "Strikeouts", "Hits Allowed", "Outs Recorded"],
-        nfl: ["All", "Moneyline", "Spread", "Total", "Pass Yards", "Pass TDs", "Rush Yards", "Receiving Yards", "Receptions"],
-        nba: ["All", "Moneyline", "Spread", "Total", "Points", "Rebounds", "Assists", "3PT Made", "Steals + Blocks"],
-      };
-      filterBar.classList.add("market-filters");
-      filterBar.innerHTML = (filtersBySport[page] || ["All"]).map((label, index) =>
-        `<button class="${index === 0 ? "selected" : ""}" data-filter="${label.toLowerCase()}">${label}</button>`
-      ).join("");
-      filterBar.querySelectorAll("button").forEach((button) => button.addEventListener("click", () => {
-        filterBar.querySelectorAll("button").forEach((item) => item.classList.remove("selected"));
-        button.classList.add("selected");
-        const filter = button.dataset.filter;
-        document.querySelectorAll("table tbody tr").forEach((row) => {
-          const market = row.cells[1]?.textContent.trim().toLowerCase();
-          row.hidden = filter !== "all" && market !== filter;
-        });
-      }));
-    }
-
-    const leagueBar = document.querySelector(".league-filter");
-    if (leagueBar) {
-      leagueBar.querySelectorAll("button").forEach((b) => b.addEventListener("click", () => {
-        leagueBar.querySelectorAll("button").forEach((x) => x.classList.remove("selected"));
-        b.classList.add("selected");
-        const lg = b.dataset.league;
-        document.querySelectorAll("table tbody tr[data-league]").forEach((row) => {
-          row.hidden = lg !== "all" && row.dataset.league !== lg;
-        });
-      }));
-    }
-
-    const edgeCarousel = document.querySelector(".edge-grid");
-    if (edgeCarousel) edgeCarousel.classList.add("edge-carousel");
-
-    // Predictions ↔ +EV toggle (used on league pages AND the track page):
-    // show/hide containers marked [data-evview]; persist the choice.
-    const evToggleBar = document.querySelector(".ev-toggle");
-    if (evToggleBar) {
-      const views = document.querySelectorAll("[data-evview]");
-      const showView = (view) => {
-        if (!views.length) return;
-        views.forEach((el) => { el.hidden = el.dataset.evview !== view; });
-        evToggleBar.querySelectorAll("button").forEach((x) =>
-          x.classList.toggle("selected", x.dataset.view === view));
-        try { localStorage.setItem("cappingAlphaLeagueView", view); } catch (_) {}
-      };
-      evToggleBar.querySelectorAll("button").forEach((b) =>
-        b.addEventListener("click", () => showView(b.dataset.view)));
-      let saved = "predictions";
-      try { saved = localStorage.getItem("cappingAlphaLeagueView") || "predictions"; } catch (_) {}
-      showView(saved);
-    }
-
-    // re-apply the filter the user had selected before the refresh
-    if (selMarket && filterBar) {
-      const b = [...filterBar.querySelectorAll("button")].find((x) => x.dataset.filter === selMarket);
-      if (b) b.click();
-    }
-    if (selLeague && leagueBar) {
-      const b = [...leagueBar.querySelectorAll("button")].find((x) => x.dataset.league === selLeague);
-      if (b) b.click();
-    }
     window.scrollTo(0, scrollY);
   } catch (e) {
     shell.innerHTML = siteHeader("") + `<div class="ca-page"><main><section class="section"><div class="section-title"><h2>Couldn’t load data</h2></div><p style="opacity:.7">${e.message}</p></section></main></div>` + footer(); wireShell();
     console.error(e);
   }
 }
-
-/* ── Animated blue/black gradient background (WebGL, all pages) ─────────────
-   Vanilla port of the Velaris simplex-noise shader: a fixed full-viewport
-   canvas mounted behind all content. Degrades silently to the CSS fallback
-   background (see injectStylesOnce) when WebGL is unavailable. */
-const BG_VERT = `attribute vec2 position;varying vec2 vUv;void main(){vUv=position*0.5+0.5;gl_Position=vec4(position,0.0,1.0);}`;
-const BG_FRAG = `precision highp float;varying vec2 vUv;
-uniform vec2 u_resolution;uniform float u_time;uniform float u_grain;uniform vec3 u_colors[4];uniform vec3 u_bg;
-vec3 permute(vec3 x){return mod(((x*34.0)+1.0)*x,289.0);}
-float snoise(vec2 v){const vec4 C=vec4(0.211324865405187,0.366025403784439,-0.577350269189626,0.024390243902439);
-vec2 i=floor(v+dot(v,C.yy));vec2 x0=v-i+dot(i,C.xx);vec2 i1=(x0.x>x0.y)?vec2(1.0,0.0):vec2(0.0,1.0);
-vec4 x12=x0.xyxy+C.xxzz;x12.xy-=i1;i=mod(i,289.0);
-vec3 p=permute(permute(i.y+vec3(0.0,i1.y,1.0))+i.x+vec3(0.0,i1.x,1.0));
-vec3 m=max(0.5-vec3(dot(x0,x0),dot(x12.xy,x12.xy),dot(x12.zw,x12.zw)),0.0);m=m*m;m=m*m;
-vec3 x=2.0*fract(p*C.www)-1.0;vec3 h=abs(x)-0.5;vec3 ox=floor(x+0.5);vec3 a0=x-ox;
-m*=1.79284291400159-0.85373472095314*(a0*a0+h*h);vec3 g;g.x=a0.x*x0.x+h.x*x0.y;g.yz=a0.yz*x12.xz+h.yz*x12.yw;
-return 130.0*dot(m,g);}
-void main(){vec2 uv=vUv;float ratio=u_resolution.x/u_resolution.y;vec2 p=uv-0.5;p.x*=ratio;
-float t=u_time*0.1;
-float n1=snoise(p*0.4+vec2(t*0.2,-t*0.3));
-float n2=snoise(p*0.55+vec2(-t*0.15,t*0.25)+n1*0.25);
-float n3=snoise(p*0.75+vec2(t*0.1,-t*0.2)+n2*0.2);
-vec3 col=u_bg;float dist=length(p)*1.5;float vignette=1.0-smoothstep(0.3,1.2,dist);
-col=mix(col,u_colors[0],smoothstep(-0.2,0.5,n1)*0.85);
-col=mix(col,u_colors[1],smoothstep(-0.1,0.6,n2)*0.7);
-col=mix(col,u_colors[2],smoothstep(-0.3,0.4,n3)*0.6);
-col=mix(col,u_colors[3],smoothstep(0.0,0.7,n1*n2)*0.5);
-float glow=smoothstep(0.8,0.0,dist)*0.3;col+=u_colors[1]*glow;
-col=mix(col*0.2,col,vignette);
-float grain=fract(sin(dot(uv,vec2(12.9898,78.233)))*43758.5453+u_time);
-col+=(grain-0.5)*u_grain*0.1;gl_FragColor=vec4(col,1.0);}`;
-
-// Blue -> deep-navy -> black, matching the site's blue accents on a dark base.
-const BG_COLORS = ["#1e63d6", "#2f7bf0", "#0a1b3f", "#000000"];
-const BG_BASE = "#03060d";
-
-function mountGradientBackground({ bg = BG_BASE, colors = BG_COLORS, speed = 1.4, grain = 0.25 } = {}) {
-  return; // dark gradient retired by the light redesign (code below kept until Task 3 cleanup)
-  if (document.getElementById("ca-bg")) return;
-  const hexToRgb = (hex) => {
-    const h = hex.replace("#", "");
-    return [parseInt(h.slice(0, 2), 16) / 255, parseInt(h.slice(2, 4), 16) / 255, parseInt(h.slice(4, 6), 16) / 255];
-  };
-  const canvas = document.createElement("canvas");
-  canvas.id = "ca-bg";
-  document.body.insertBefore(canvas, document.body.firstChild);
-  const gl = canvas.getContext("webgl") || canvas.getContext("experimental-webgl");
-  if (!gl) { canvas.remove(); return; }   // CSS fallback bg takes over
-
-  const sh = (type, src) => { const s = gl.createShader(type); gl.shaderSource(s, src); gl.compileShader(s); return s; };
-  const program = gl.createProgram();
-  gl.attachShader(program, sh(gl.VERTEX_SHADER, BG_VERT));
-  gl.attachShader(program, sh(gl.FRAGMENT_SHADER, BG_FRAG));
-  gl.linkProgram(program); gl.useProgram(program);
-
-  const buf = gl.createBuffer();
-  gl.bindBuffer(gl.ARRAY_BUFFER, buf);
-  gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([-1, -1, 1, -1, -1, 1, 1, 1]), gl.STATIC_DRAW);
-  const posLoc = gl.getAttribLocation(program, "position");
-  gl.enableVertexAttribArray(posLoc);
-  gl.vertexAttribPointer(posLoc, 2, gl.FLOAT, false, 0, 0);
-
-  const L = {
-    res: gl.getUniformLocation(program, "u_resolution"),
-    time: gl.getUniformLocation(program, "u_time"),
-    grain: gl.getUniformLocation(program, "u_grain"),
-    colors: gl.getUniformLocation(program, "u_colors"),
-    bg: gl.getUniformLocation(program, "u_bg"),
-  };
-  const colorFlat = new Float32Array(colors.slice(0, 4).flatMap(hexToRgb));
-  const bgRgb = hexToRgb(bg);
-
-  const resize = () => {
-    const dpr = Math.min(window.devicePixelRatio || 1, 2);
-    canvas.width = Math.floor(window.innerWidth * dpr);
-    canvas.height = Math.floor(window.innerHeight * dpr);
-    gl.viewport(0, 0, canvas.width, canvas.height);
-  };
-  resize();
-  window.addEventListener("resize", resize);
-
-  const reduce = window.matchMedia && window.matchMedia("(prefers-reduced-motion: reduce)").matches;
-  const draw = (ms) => {
-    gl.uniform2f(L.res, canvas.width, canvas.height);
-    gl.uniform1f(L.time, ms * 0.001 * speed);
-    gl.uniform1f(L.grain, grain);
-    gl.uniform3fv(L.colors, colorFlat);
-    gl.uniform3f(L.bg, bgRgb[0], bgRgb[1], bgRgb[2]);
-    gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
-    if (!reduce) requestAnimationFrame(draw);
-  };
-  requestAnimationFrame(draw);   // reduced-motion: renders one static frame
-}
-
