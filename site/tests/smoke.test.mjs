@@ -19,6 +19,8 @@ test("every page loads the scripts in order with the current cache key", () => {
     const srcs = [...html.matchAll(/<script src="([^"?]+)\?v=([^"]+)"/g)];
     assert.deepEqual(srcs.map((m) => m[1]), order, f);
     assert.ok(srcs.every((m) => m[2] === srcs[0][2]), `${f}: one cache key`);
+    assert.equal(srcs[0][2], "20261005a", `${f}: the current cache key`);
+    assert.match(html, /css\/theme\.css\?v=20261005a"/, `${f}: theme.css carries the same key`);
     assert.match(html, /css\/theme\.css/); assert.doesNotMatch(html, /styles\.css/);
   }
 });
