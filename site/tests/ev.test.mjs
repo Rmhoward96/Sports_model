@@ -67,9 +67,9 @@ test("daily units, daily mean edge and mean CLV over a date window", () => {
   const graded = [{ date: "2026-10-04", edgePp: 4 }, { date: "2026-10-04", edgePp: 8 }, { date: "2026-10-05", edgePp: null }, { date: "2026-10-03", edgePp: 2 }];
   const e = g.evxEdgeByDay(graded, 3, "2026-10-05");
   assert.deepEqual(e.map((x) => [x.date, x.v]), [["2026-10-03", 2], ["2026-10-04", 6], ["2026-10-05", null]]);
-  const clv = g.evxMeanClv([{ date: "2026-10-04", clv: 0.04 }, { date: "2026-10-05", clv: -0.01 }, { date: "2026-10-05", clv: null }, { date: "2026-09-01", clv: 0.5 }], "2026-09-29", "2026-10-05");
+  const clv = g.marketMeanClv([{ date: "2026-10-04", clv: 0.04 }, { date: "2026-10-05", clv: -0.01 }, { date: "2026-10-05", clv: null }, { date: "2026-09-01", clv: 0.5 }], "2026-09-29", "2026-10-05");
   assert.equal(clv.n, 2); assert.ok(Math.abs(clv.pct - 1.5) < 1e-9);
-  assert.equal(g.evxMeanClv([], "2026-09-29", "2026-10-05"), null);
+  assert.equal(g.marketMeanClv([], "2026-09-29", "2026-10-05"), null);
 });
 
 test("EV distribution bins and the most-mispriced total", () => {
@@ -82,10 +82,10 @@ test("EV distribution bins and the most-mispriced total", () => {
                  { sport: "nfl", game_pk: 3, home_team_name: "E", away_team_name: "F", pred_home_score: 20, pred_away_score: 20, market_total: null, commence_time: future },
                  { sport: "nfl", game_pk: 4, home_team_name: "G", away_team_name: "H", pred_home_score: 10, pred_away_score: 10, market_total: 60, commence_time: past },   // already started: the biggest gap, must be excluded
                  { sport: "nfl", game_pk: 5, home_team_name: "I", away_team_name: "J", pred_home_score: 10, pred_away_score: 10, market_total: 60 }];   // unknown kickoff: unverifiable, excluded
-  const m = g.evxMispricedTotal(preds, NOW);
+  const m = g.marketMispricedTotal(preds, NOW);
   assert.equal(m.pred.game_pk, 2); assert.equal(m.market, 47); assert.equal(m.model, 40); assert.equal(m.diff, -7);
-  assert.equal(g.evxMispricedTotal(preds.slice(3), NOW), null, "only started / undated games -> nothing to show");
-  assert.equal(g.evxMispricedTotal([]), null);
+  assert.equal(g.marketMispricedTotal(preds.slice(3), NOW), null, "only started / undated games -> nothing to show");
+  assert.equal(g.marketMispricedTotal([]), null);
 });
 
 test("lineMoveInfo: spread, total, moneyline text, ticket split", () => {

@@ -76,28 +76,11 @@ function evxEdgeByDay(graded, days, today) {
     return { date, v: v.length ? v.reduce((s, x) => s + x, 0) / v.length : null };
   });
 }
-// Mean closing-line value (in %) of graded picks whose game day is in [from, to].
-function evxMeanClv(rows, from, to) {
-  const v = (rows || []).filter((r) => r && r.date >= from && r.date <= to && finite(r.clv)).map((r) => +r.clv * 100);
-  return v.length ? { pct: v.reduce((s, x) => s + x, 0) / v.length, n: v.length } : null;
-}
 // EV% distribution of the listed opportunities: red below 0, green above.
 function evxBins(opps) {
   const edges = [-Infinity, -5, 0, 5, 10, 15, Infinity], labels = ["<-5", "-5–0", "0–5", "5–10", "10–15", ">15"];
   return histogram((opps || []).map((o) => o.evPct), edges).map((b, i) => ({ label: labels[i], n: b.n, color: b.hi <= 0 ? "var(--red)" : "var(--green)" }));
 }
-// The UPCOMING game (kickoff after nowMs; unknown kickoff = unverifiable, skipped) whose model total is furthest from
-// the market total (unrounded model total).
-function evxMispricedTotal(preds, nowMs = Date.now()) {
-  let best = null;
-  for (const r of preds || []) {
-    if (!r || !(timeMs(r.commence_time) > nowMs) || !finite(r.pred_home_score) || !finite(r.pred_away_score) || !finite(r.market_total)) continue;
-    const model = +r.pred_home_score + +r.pred_away_score, diff = model - +r.market_total;
-    if (!best || Math.abs(diff) > Math.abs(best.diff)) best = { pred: r, market: +r.market_total, model, diff };
-  }
-  return best;
-}
-
 /* ── filter state <-> URL ─────────────────────────────────────────────── */
 function evxParse(search) {
   let p;
@@ -258,34 +241,11 @@ function evxTableCard(D) {
 /* ── right rail ───────────────────────────────────────────────────────── */
 function evxTopAlpha(D) {
   const top = [...D.opps].sort((a, b) => b.alpha - a.alpha || b.evPct - a.evPct).slice(0, 5);
-  const rows = top.map((o, i) => `<a class="ca-ev-ta" href="${gameHref(o.sport, o.game_pk)}"><span class="ca-ev-rank">#${i + 1}</span><span class="ca-ev-logos">${logoPair(o.matchup, o.sport)}</span>
-    <span class="ca-ev-ta-main"><b class="ca-ell">${ctxEsc(oppLabel(o, D.lineBy))}</b><small>${oppProb(o)} vs ${pct1(o.impliedProb)}</small></span>
-    <span class="ca-ev-ta-odds">${oddsStr(o.odds)}</span><span class="ca-ev-edge"><b>${pStr(o.edgePp)}</b>Edge</span></a>`).join("");
+  const rows = top.map((o, i) => topAlphaRow(o, i, D.lineBy)).join("");
   return `<section class="ca-card ca-ev-rail-card" id="ev-top"><div class="ca-card-head"><h2>Top Alpha Opportunities</h2><a class="ca-link" href="ev.html?sort=alpha">View All →</a></div>${rows || emptyMsg("No +EV opportunities on the board.")}</section>`;
 }
-function evxPulseRow(icon, title, sub, val, valCls, valSub, href) {
-  return `<a class="ca-ev-pr" href="${href}"><span class="ca-ev-pr-ic">${icon}</span><span class="ca-ev-pr-main"><b>${title}</b><small class="ca-ell">${sub}</small></span><span class="ca-ev-pr-r"><b class="${valCls}">${val}</b><small>${valSub}</small></span></a>`;
-}
 function evxPulse(D) {
-  const rows = [];
-  const byPk = new Map(D.preds.map((r) => [String(r.game_pk), r]));
-  const mv = D.moves.map((m) => [m, byPk.get(String(m.game_pk))]).find(([, p]) => p);
-  if (mv) {
-    const info = lineMoveInfo(mv[0], mv[1], D.splits);
-    rows.push(evxPulseRow(ICON_TREND, "Biggest Line Move", ctxEsc(info.title), info.chg, signCls(info.d), ctxEsc(info.tickets), gameHref(mv[1].sport, mv[1].game_pk)));
-  } else rows.push(`<div class="ca-ev-pr ca-ev-pr-empty"><span class="ca-ev-pr-ic">${ICON_TREND}</span><span class="ca-ev-pr-main"><b>Biggest Line Move</b><small>No line moves captured yet.</small></span></div>`);
-  const top = [...D.opps].sort((a, b) => b.alpha - a.alpha || b.evPct - a.evPct)[0];
-  rows.push(top ? evxPulseRow(ICON_CLOCK, "Highest Confidence Edge", ctxEsc(`${oppLabel(top, D.lineBy)} (${oddsStr(top.odds)})`), pStr(top.edgePp), "pos", `Alpha Score: ${top.alpha}`, gameHref(top.sport, top.game_pk))
-    : `<div class="ca-ev-pr ca-ev-pr-empty"><span class="ca-ev-pr-ic">${ICON_CLOCK}</span><span class="ca-ev-pr-main"><b>Highest Confidence Edge</b><small>No +EV opportunities on the board.</small></span></div>`);
-  const tot = evxMispricedTotal(D.preds, D.nowMs);
-  if (tot) {
-    const p = tot.pred;
-    rows.push(evxPulseRow(ICON_CLOCK, "Most Mispriced Total", ctxEsc(`${shortMatchup(p.away_team_name, p.home_team_name, p.sport)} O/U ${tot.market}`), `${signedStr(tot.diff, 1)} pts`, signCls(tot.diff), `Model: ${tot.model.toFixed(1)}`, gameHref(p.sport, p.game_pk)));
-  } else rows.push(`<div class="ca-ev-pr ca-ev-pr-empty"><span class="ca-ev-pr-ic">${ICON_CLOCK}</span><span class="ca-ev-pr-main"><b>Most Mispriced Total</b><small>No model totals vs. market totals yet.</small></span></div>`);
-  const clv = evxMeanClv(D.graded, addDays(D.today, -6), D.today);
-  rows.push(clv ? evxPulseRow(ICON_WAVE, "Average Market Divergence", `Graded +EV picks this week (${clv.n})`, pStr(clv.pct), signCls(clv.pct), "vs. closing lines", "track-record.html")
-    : `<div class="ca-ev-pr ca-ev-pr-empty"><span class="ca-ev-pr-ic">${ICON_WAVE}</span><span class="ca-ev-pr-main"><b>Average Market Divergence</b><small>No graded +EV picks this week yet.</small></span></div>`);
-  return `<section class="ca-card ca-ev-rail-card" id="ev-pulse"><div class="ca-card-head"><h2>Market Pulse</h2><a class="ca-link" href="index.html">View All →</a></div>${rows.join("")}</section>`;
+  return `<section class="ca-card ca-ev-rail-card" id="ev-pulse"><div class="ca-card-head"><h2>Market Pulse</h2><a class="ca-link" href="index.html">View All →</a></div>${marketPulseRows(D)}</section>`;
 }
 function evxDist(D) {
   const chart = histogramChart(evxBins(D.opps), { w: 170, h: 150 });

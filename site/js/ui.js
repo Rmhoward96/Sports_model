@@ -28,6 +28,8 @@ function uiBarPath(x, base, hgt, w) {
 const oddsStr = (o) => (!uiFin(o) ? "" : +o > 0 ? `+${+o}` : `${+o}`);
 const confPill = (tier) => (tier ? `<span class="ca-conf ${ctxEsc(tier)}">${ctxEsc(tier)}</span>` : "");
 const alphaCell = (s) => (uiFin(s) ? `<span class="ca-alpha-cell${+s >= 85 ? " hi" : ""}">${s}</span>` : "");
+// Result chip for a graded pick: "W" / "L" / "P" (push), coloured by .ca-res.W / .L / .P in theme.css. `title` = hover text (plain). "" when there is no grade.
+const resultChip = (result, title = "") => (result === "W" || result === "L" || result === "P" ? `<span class="ca-res ${result}"${title ? ` title="${ctxEsc(title)}"` : ""}>${result}</span>` : "");
 const BOOK_STYLE = { draftkings: ["DK", "#0B3D2E"], fanduel: ["FD", "#1493FF"], betmgm: ["MGM", "#B59A5B"], williamhill_us: ["CZR", "#173F35"],
   fanatics: ["FAN", "#D21F3C"], espnbet: ["ESPN", "#D00"], hardrockbet: ["HR", "#5A2D82"], thescore: ["SCR", "#1E5BFF"],
   bet365: ["365", "#027B5B"], ballybet: ["BAL", "#C8102E"], pinnacle: ["PIN", "#0E2238"], betrivers: ["BR", "#1B3B6F"] };
@@ -75,11 +77,12 @@ function miniBars(values, { w = 70, h = 40, color = "var(--green)" } = {}) {
   return `<svg class="ca-minibars" viewBox="0 0 ${w} ${h}" width="${w}" height="${h}">${rects}</svg>`;
 }
 
-function donut(f, { size = 78, stroke = 10, color = "var(--navy)" } = {}) {
+// `track` = the colour of the rest of the ring (default the neutral grey; a team colour makes a two-colour split), `cap` = the arc end style.
+function donut(f, { size = 78, stroke = 10, color = "var(--navy)", track = "#E9E5DB", cap = "round" } = {}) {
   if (!uiFin(f)) return "";
   const r = (size - stroke) / 2, C = 2 * Math.PI * r, x = Math.max(0, Math.min(1, +f)), c = size / 2;
-  const arc = x > 0 ? `<circle cx="${c}" cy="${c}" r="${r}" fill="none" stroke="${ctxEsc(color)}" stroke-width="${stroke}" stroke-dasharray="${(C * x).toFixed(2)} ${(C * (1 - x)).toFixed(2)}" transform="rotate(-90 ${c} ${c})" stroke-linecap="round"/>` : "";
-  return `<svg class="ca-donut" viewBox="0 0 ${size} ${size}" width="${size}" height="${size}"><circle cx="${c}" cy="${c}" r="${r}" fill="none" stroke="#E9E5DB" stroke-width="${stroke}"/>${arc}</svg>`;
+  const arc = x > 0 ? `<circle cx="${c}" cy="${c}" r="${r}" fill="none" stroke="${ctxEsc(color)}" stroke-width="${stroke}" stroke-dasharray="${(C * x).toFixed(2)} ${(C * (1 - x)).toFixed(2)}" transform="rotate(-90 ${c} ${c})" stroke-linecap="${ctxEsc(cap)}"/>` : "";
+  return `<svg class="ca-donut" viewBox="0 0 ${size} ${size}" width="${size}" height="${size}"><circle cx="${c}" cy="${c}" r="${r}" fill="none" stroke="${ctxEsc(track)}" stroke-width="${stroke}"/>${arc}</svg>`;
 }
 
 // Shared axis scaffold for areaChart / lineChart. The SVG (grid, fill, lines) is stretched with
@@ -194,6 +197,31 @@ function lineChart(series, xLabels, { w, h = 260, yTicks = 5, unit = "" } = {}) 
   const isolated = ss.map((s) => uiSegments(s.values).filter((sg) => sg.length === 1).map((sg) => F.dot(sg[0].i, sg[0].v, s.color, true)).join("")).join("");
   const legend = ss.filter((s) => s.label != null).map((s) => `<span class="ca-legend-item"><i style="background:${ctxEsc(s.color)}"></i>${ctxEsc(s.label)}</span>`).join("");
   return `<div class="ca-linechart">${F.render(lines, isolated)}${legend ? `<div class="ca-legend">${legend}</div>` : ""}</div>`;
+}
+
+// Binned scatter: `dots` [{x, y, n, title}] are the observed points (HTML dots sized by n, so they stay round), `line` [{x, y}] an
+// optional solid trend through them, `base` [{x, y}] an optional dashed baseline (or `flat` = a y value drawn as a dashed line across the whole width). x is spread over a symmetric domain [-M, M] (M
+// rounded up to a 1 / 2 / 5 step, ticks from uiNiceTicks), y over [yLo, yHi] with `yTicks` value labels. Non-finite points are
+// skipped; no finite dot -> "". Text and dots are HTML spans positioned by percentage, the SVG (grid, lines) is stretched.
+function scatterChart({ dots, line, base, flat } = {}, { h = 150, yLo = 0, yHi = 100, yTicks = [0, 25, 50, 75, 100], yUnit = "%", xUnit = "", xCount = 5 } = {}) {
+  const ds = (Array.isArray(dots) ? dots : []).filter((d) => d && uiFin(d.x) && uiFin(d.y));
+  if (!ds.length) return "";
+  const ln = (Array.isArray(line) ? line : []).filter((d) => d && uiFin(d.x) && uiFin(d.y)), bs = (Array.isArray(base) ? base : []).filter((d) => d && uiFin(d.x) && uiFin(d.y));
+  const reach = Math.max(...[...ds, ...ln, ...bs].map((d) => Math.abs(+d.x)), 0) * 1.12 || 1, nt = uiNiceTicks(-reach, reach, xCount), M = Math.max(Math.abs(nt.lo), Math.abs(nt.hi));
+  const X = (v) => (+v + M) / (2 * M) * 100, Y = (v) => (yHi - clip(+v, yLo, yHi)) / (yHi - yLo) * 100;
+  const path = (pts) => pts.map((p, i) => `${i ? "L" : "M"}${(X(p.x) * 10).toFixed(1)} ${Y(p.y).toFixed(2)}`).join(" ");
+  const grid = yTicks.map((t) => `<line x1="0" x2="1000" y1="${Y(t).toFixed(2)}" y2="${Y(t).toFixed(2)}" class="ca-grid-line"/>`).join("");
+  const zero = `<line x1="${(X(0) * 10).toFixed(1)}" x2="${(X(0) * 10).toFixed(1)}" y1="0" y2="100" class="ca-grid-line"/>`;
+  const flatLine = uiFin(flat) ? `<path d="M0 ${Y(flat).toFixed(2)} L1000 ${Y(flat).toFixed(2)}" fill="none" stroke="#9AA3AE" stroke-width="1.5" stroke-dasharray="5 4" vector-effect="non-scaling-stroke"/>` : "";
+  const lines = flatLine + (bs.length > 1 ? `<path d="${path(bs)}" fill="none" stroke="#9AA3AE" stroke-width="1.5" stroke-dasharray="5 4" vector-effect="non-scaling-stroke"/>` : "")
+    + (ln.length > 1 ? `<path d="${path(ln)}" fill="none" stroke="var(--navy)" stroke-width="1.5" vector-effect="non-scaling-stroke" stroke-linejoin="round"/>` : "");
+  const yl = yTicks.map((t) => `<span class="ca-yl" style="top:${Y(t).toFixed(2)}%">${uiClean(String(t))}${ctxEsc(yUnit)}</span>`).join("");
+  const xt = nt.ticks.filter((t) => t.v >= -M - 1e-9 && t.v <= M + 1e-9);
+  // the outermost labels hang inward (start / end aligned) so no label leaves the plot box
+  const xl = xt.map((t, i) => `<span class="ca-xl${i === 0 ? " ca-xl-start" : i === xt.length - 1 ? " ca-xl-end" : ""}" style="left:${X(t.v).toFixed(2)}%">${t.v > 0 ? "+" : ""}${t.text}${ctxEsc(xUnit)}</span>`).join("");
+  const nMax = Math.max(...ds.map((d) => (uiFin(d.n) ? +d.n : 1)), 1);
+  const dot = ds.map((d) => `<span class="ca-dot ca-sc-dot" style="left:${X(d.x).toFixed(2)}%;top:${Y(d.y).toFixed(2)}%;--r:${(8 + 6 * Math.sqrt((uiFin(d.n) ? +d.n : 1) / nMax)).toFixed(1)}px"${d.title ? ` title="${ctxEsc(d.title)}"` : ""}></span>`).join("");
+  return `<div class="ca-chart ca-scatter" style="position:relative;height:${h}px"><div class="ca-plot"><svg viewBox="0 0 1000 100" preserveAspectRatio="none">${grid}${zero}${lines}</svg>${yl}${xl}${dot}</div></div>`;
 }
 
 function donutLegend(rows) {
