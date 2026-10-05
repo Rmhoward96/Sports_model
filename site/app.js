@@ -21,6 +21,20 @@ async function sb(pathAndQuery) {
   if (!res.ok) throw new Error(`Supabase ${res.status}: ${await res.text()}`);
   return res.json();
 }
+// PostgREST clamps every read at 1,000 rows (max-rows) and silently keeps only the FIRST 1,000 of the ordering, so a
+// long read pages with limit/offset until a short page. `pathAndQuery` must carry a TOTAL order (`order=` ending on
+// unique columns) so pages neither overlap nor skip rows. Stops at `maxPages` and warns: only then can rows be missing.
+const SB_PAGE = 1000, SB_MAX_PAGES = 20;
+async function sbAll(pathAndQuery, { pageSize = SB_PAGE, maxPages = SB_MAX_PAGES } = {}) {
+  const out = [];
+  for (let i = 0; i < maxPages; i++) {
+    const rows = (await sb(`${pathAndQuery}&limit=${pageSize}&offset=${i * pageSize}`)) || [];
+    out.push(...rows);
+    if (rows.length < pageSize) return out;
+  }
+  console.warn(`sbAll: hit the ${maxPages}-page cap (${maxPages * pageSize} rows) on ${String(pathAndQuery).split("?")[0]}; later rows are missing`);
+  return out;
+}
 
 /* ── Formatters + mappers ─────────────────────────────────────────────── */
 const fmtOdds = (o) => (o > 0 ? `+${o}` : `${o}`);
@@ -587,11 +601,10 @@ function parlaySection(parlays) {
 // value vs the Pinnacle close (the honest scoreboard).
 async function evResultsRows() { return sb("ev_results?order=graded_at.desc&limit=1000"); }
 // A pick can have several rebuild rows: keep the LATEST (max created_at) per (sport, game_pk, market, side)
-// so the price shown is deterministic. If the 4000-row cap is hit, older picks may be missing -> warn.
-const EV_PICKS_CAP = 4000;
+// so the price shown is deterministic. Every pick row is read (sbAll pages past PostgREST's 1,000-row clamp);
+// the order ends on the primary key so the pages are stable.
 async function evGradedPicks() {
-  const rows = await sb(`ev_picks?is_pick=eq.true&select=sport,game_pk,market,side,matchup,commence_time,true_prob,base_prob,ev_best,best_book,best_price,pinnacle_price,created_at&order=created_at.asc&limit=${EV_PICKS_CAP}`);
-  if ((rows || []).length >= EV_PICKS_CAP) console.warn(`evGradedPicks: hit the ${EV_PICKS_CAP}-row cap; older graded picks may be missing prices`);
+  const rows = await sbAll("ev_picks?is_pick=eq.true&select=sport,game_pk,market,side,matchup,commence_time,true_prob,base_prob,ev_best,best_book,best_price,pinnacle_price,created_at&order=created_at.asc,sport.asc,game_pk.asc,market.asc,side.asc,model_version.asc");
   const latest = new Map();
   for (const r of rows || []) {
     const k = `${r.sport}|${r.game_pk}|${r.market}|${r.side}`, prev = latest.get(k);

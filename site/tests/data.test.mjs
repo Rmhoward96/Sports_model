@@ -104,7 +104,7 @@ test("loadEvHistory: window-edge rebuilds not counted, first date kept, ET dates
   const out = await L.loadEvHistory(8);
   assert.deepEqual(out.map((r) => r.date).sort(), ["2026-09-26", "2026-10-01"]);
   assert.ok(out.every((r) => r.kind === "line" && r.sport === "nfl"));
-  assert.ok(urls.every((u) => u.includes("order=created_at.asc") && u.includes("limit=10000")));
+  assert.ok(urls.every((u) => u.includes("order=created_at.asc") && u.endsWith("&limit=1000&offset=0") && !u.includes("limit=10000")), "paged by sbAll");
   const since = decodeURIComponent(urls[0].match(/created_at=gte\.([^&]+)/)[1]);
   assert.equal(since, new Date(NOW - 22 * 864e5).toISOString(), "lookback is days + 14");
 });
@@ -135,4 +135,38 @@ test("shortDate / fullDate / dateAxisPoints: calendar labels never shift, sparse
   const labelled = pts.map((p, i) => (p.x ? i : -1)).filter((i) => i >= 0);
   assert.ok(labelled.every((i, k) => k === 0 || i - labelled[k - 1] >= 2), "no two labels collide");
   assert.deepEqual(g.dateAxisPoints(null, (q) => q), []);
+});
+
+test("sbAll pages past PostgREST's 1,000-row clamp: 2,350 rows arrive in three requests, in order", async () => {
+  const all = Array.from({ length: 2350 }, (_, i) => ({ id: i }));
+  const urls = [], warns = [];
+  const L = loadScripts(["app.js", "js/metrics.js", "js/shell.js", "js/data.js", "js/boot.js"], { globals: {
+    console: { ...console, warn: (...a) => warns.push(a.join(" ")) },
+    fetch: async (url) => {
+      urls.push(url);
+      const u = new URL(url), limit = Math.min(1000, +u.searchParams.get("limit")), off = +u.searchParams.get("offset");   // the server clamps at 1,000
+      return { ok: true, json: async () => all.slice(off, off + limit) };
+    } } });
+  const rows = await L.sbAll("ev_picks?is_pick=eq.true&order=created_at.asc,game_pk.asc");
+  assert.equal(rows.length, 2350);
+  assert.deepEqual(rows.map((r) => r.id), all.map((r) => r.id), "no row skipped or repeated");
+  assert.deepEqual(urls.map((u) => new URL(u).searchParams.get("offset")), ["0", "1000", "2000"]);
+  assert.ok(urls.every((u) => new URL(u).searchParams.get("limit") === "1000" && u.includes("order=created_at.asc,game_pk.asc")));
+  assert.equal(warns.length, 0);
+  // exactly 1,000 rows: one more (empty) page confirms the end
+  urls.length = 0;
+  const L2 = loadScripts(["app.js", "js/metrics.js", "js/shell.js", "js/data.js", "js/boot.js"], { globals: {
+    fetch: async (url) => { urls.push(url); const off = +new URL(url).searchParams.get("offset"); return { ok: true, json: async () => all.slice(0, 1000).slice(off, off + 1000) }; } } });
+  assert.equal((await L2.sbAll("x?order=id.asc")).length, 1000);
+  assert.equal(urls.length, 2);
+});
+
+test("sbAll warns only when its page cap is hit", async () => {
+  const warns = [];
+  const L = loadScripts(["app.js", "js/metrics.js", "js/shell.js", "js/data.js", "js/boot.js"], { globals: {
+    console: { ...console, warn: (...a) => warns.push(a.join(" ")) },
+    fetch: async () => ({ ok: true, json: async () => Array.from({ length: 1000 }, (_, i) => ({ i })) }) } });
+  const rows = await L.sbAll("ev_prop_picks?order=created_at.asc", { maxPages: 3 });
+  assert.equal(rows.length, 3000);
+  assert.equal(warns.length, 1); assert.match(warns[0], /3-page cap/); assert.match(warns[0], /ev_prop_picks/);
 });

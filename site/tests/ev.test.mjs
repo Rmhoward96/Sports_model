@@ -134,8 +134,8 @@ function populated({ search = "", moves = [], lastBuild = true } = {}) {
     else if (path === "ev_pnl_daily") rows = evPnl;
     else if (path === "ev_results") rows = results;
     else if (path === "ev_prop_results") rows = propRes;
-    else if (path === "ev_prop_picks") rows = q.includes("select=created_at") ? (lastBuild ? [{ created_at: iso(-1) }] : []) : q.includes("limit=10000") ? [] : propPk;
-    else if (path === "ev_picks") rows = q.includes("select=created_at") ? (lastBuild ? [{ created_at: iso(-1) }] : []) : q.includes("limit=10000") ? [{ sport: "nfl", game_pk: 1, market: "moneyline", side: "home", created_at: iso(-1) }] : [gradedPick(11), gradedPick(12)];
+    else if (path === "ev_prop_picks") rows = q.includes("select=created_at") ? (lastBuild ? [{ created_at: iso(-1) }] : []) : q.includes("created_at=gte") ? [] : propPk;
+    else if (path === "ev_picks") rows = q.includes("select=created_at") ? (lastBuild ? [{ created_at: iso(-1) }] : []) : q.includes("created_at=gte") ? [{ sport: "nfl", game_pk: 1, market: "moneyline", side: "home", created_at: iso(-1) }] : [gradedPick(11), gradedPick(12)];
     else if (path === "line_moves_current") { if (moves === 404) return { ok: false, status: 404, text: async () => "not found", json: async () => ({}) }; rows = moves.map((m) => m(iso)); }
     return { ok: true, json: async () => rows };
   };
@@ -243,13 +243,21 @@ test("evxSet writes the changed filter into the URL (history.replaceState) and m
   assert.equal(new URL(calls[2]).search, "?sport=cfb");
 });
 
-test("ev_prop_picks 4000-row cap warns (same as evGradedPicks)", async () => {
-  const warns = [];
-  const big = Array.from({ length: 4000 }, (_, i) => ({ game_pk: i, player_id: "p", market: "rec_yds", line: 1, model_version: "v", best_price: -110, created_at: "2026-09-30T00:00:00Z" }));
+test("ev_prop_picks prices are read page by page past the 1,000-row clamp (no 4000 cap, no warning)", async () => {
+  const warns = [], offsets = [];
+  const all = Array.from({ length: 2350 }, (_, i) => ({ game_pk: i, player_id: "p", market: "rec_yds", line: 1, model_version: "v", best_price: -110, created_at: "2026-09-30T00:00:00Z" }));
   const E = loadScripts(FILES, { page: "ev", globals: { console: { ...console, warn: (...a) => warns.push(a.join(" ")) },
-    fetch: async (u) => ({ ok: true, json: async () => (urlParts(u).path === "ev_prop_picks" && u.includes("limit=4000") ? big : []) }) } });
+    fetch: async (u) => {
+      const { path, q } = urlParts(u);
+      if (path !== "ev_prop_picks" || q.includes("select=created_at") || q.includes("created_at=gte")) return { ok: true, json: async () => [] };
+      const off = +q.match(/offset=(\d+)/)[1]; offsets.push(off);
+      assert.match(q, /order=created_at\.asc,game_pk\.asc,player_id\.asc,market\.asc,line\.asc,model_version\.asc&limit=1000&offset=/);
+      return { ok: true, json: async () => all.slice(off, off + 1000) };
+    } } });
   await E.buildEvPage();
-  assert.equal(warns.filter((w) => /ev_prop_picks/.test(w) && /4000/.test(w)).length, 1);
+  assert.deepEqual(offsets, [0, 1000, 2000]);
+  assert.equal(warns.length, 0);
+  assert.ok(!require_src("js/pages/ev.js").includes("4000"), "the old cap constant is gone");
 });
 
 test("Edge Bucket rows show the sample size n; clicking rows is handled once by the shell", async () => {

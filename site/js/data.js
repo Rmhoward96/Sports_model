@@ -1,6 +1,6 @@
 /* Data layer for the redesign: one Opportunity model (game lines + props) scored with
    the Alpha Score, plus line moves, splits and +EV history. Fetchers never throw:
-   a missing view/table yields empty data and the panel hides. */
+   a missing view/table yields empty data and the panel hides. Reads go through app.js sb / sbAll (paged). */
 const SPORTS = ["nfl", "cfb", "mlb", "nba"];
 const LIVE_SPORTS = ["nfl", "cfb"];
 const SPORT_STATUS = { mlb: "MLB model paused (last projections Aug 31, 2026)", nba: "NBA model not live yet" };
@@ -70,11 +70,11 @@ function latestSplitMap(rows) {
 
 async function loadEvHistory(days) {
   // Look back `days + 14` so a pick first flagged before the window but rebuilt inside it is not counted as new.
+  // The date filter bounds the read; sbAll pages through it (PostgREST returns at most 1,000 rows per request).
   const since = new Date(Date.now() - (days + 14) * 864e5).toISOString();
-  const q = "&order=created_at.asc&limit=10000";
   const [lines, props] = await Promise.all([
-    sb(`ev_picks?is_pick=eq.true&created_at=gte.${since}&select=sport,game_pk,market,side,created_at${q}`).catch(() => []),
-    sb(`ev_prop_picks?is_pick=eq.true&created_at=gte.${since}&select=sport,game_pk,player_id,player_name,market,side,created_at${q}`).catch(() => []),
+    sbAll(`ev_picks?is_pick=eq.true&created_at=gte.${since}&select=sport,game_pk,market,side,created_at&order=created_at.asc,sport.asc,game_pk.asc,market.asc,side.asc,model_version.asc`).catch(() => []),
+    sbAll(`ev_prop_picks?is_pick=eq.true&created_at=gte.${since}&select=sport,game_pk,player_id,player_name,market,side,created_at&order=created_at.asc,game_pk.asc,player_id.asc,market.asc,line.asc,model_version.asc`).catch(() => []),
   ]);
   const first = new Map();
   const add = (r, kind) => {
@@ -90,7 +90,7 @@ async function loadEvHistory(days) {
 }
 
 /* ── Shared page helpers (used by more than one page) ─────────────────────
-   Depend on app.js (etDateStr, inTrackRecord, bpKick, logoImg, CFB_2W_MASCOTS, ctxEsc), metrics.js and ui.js. */
+   Depend on app.js (pct1, etDateStr, inTrackRecord, bpKick, logoImg, CFB_2W_MASCOTS, ctxEsc), metrics.js and ui.js. */
 const SPORT_NAME = { nfl: "NFL", cfb: "CFB", mlb: "MLB", nba: "NBA" };
 const LEAGUE_LOGO = { nfl: "teamlogos/leagues/500/nfl", cfb: "espn/misc_logos/500/ncaa_football", mlb: "teamlogos/leagues/500/mlb", nba: "teamlogos/leagues/500/nba" };
 const addDays = (d, n) => new Date(Date.parse(`${d}T12:00:00Z`) + n * 864e5).toISOString().slice(0, 10);

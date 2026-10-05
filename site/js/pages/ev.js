@@ -4,14 +4,13 @@
    5-minute re-render. The stat cards and the right rail describe the whole board; the filters narrow the table and
    the tab counts. Performance numbers (Model Hit Rate 30D, ROI 30D, Performance by Edge Bucket, Average Market
    Divergence) all come from ONE population: graded +EV picks (ev_pnl_daily / ev_results + ev_prop_results).
-   Depends on app.js (sb, predictions, evBestLines, evResultsRows, evGradedPicks, propResultsRows, evBestParlays,
+   Depends on app.js (sb, sbAll, predictions, evBestLines, evResultsRows, evGradedPicks, propResultsRows, evBestParlays,
    evParlaysCurrent, bestParlaysSection, parlaySection, bookSelected, getSettings, trackRecordStarts,
    inTrackRecord, etDateStr, timeET, logoImg, logoPair, evBookName, ctxEsc, pStr, uStr, pct1, render),
    metrics.js, ui.js, shell.js and data.js. */
 const EV_TIERS = ["HIGH", "STRONG", "MEDIUM"];
 const EV_SORTS = [["edge", "Highest Edge"], ["ev", "Highest EV"], ["alpha", "Alpha Score"], ["time", "Game Time"]];
 const EV_DATES = [["", "All Dates"], ["today", "Today"], ["tomorrow", "Tomorrow"], ["week", "This Week"]];
-const EV_PROP_PICKS_CAP = 4000;
 const EV_MIN_EDGES = [0, 2, 5, 10];
 const EV_DEFAULT = { sport: "", market: "", book: "", minEdge: 0, tier: "", date: "", q: "", kind: "all", sort: "edge" };
 const EV_PARAMS = [["sport", "sport"], ["market", "market"], ["book", "book"], ["minEdge", "min"], ["tier", "conf"], ["date", "date"], ["q", "q"], ["kind", "tab"], ["sort", "sort"]];
@@ -148,10 +147,8 @@ async function evxLoad() {
     evResultsRows().catch(() => []),
     evGradedPicks().catch(() => []),
     propResultsRows().catch(() => []),
-    sb(`ev_prop_picks?is_pick=eq.true&select=game_pk,player_id,market,line,model_version,best_price,created_at&order=created_at.asc&limit=${EV_PROP_PICKS_CAP}`).then((rows) => {
-      if ((rows || []).length >= EV_PROP_PICKS_CAP) console.warn(`+EV page: hit the ${EV_PROP_PICKS_CAP}-row cap on ev_prop_picks; older graded props may be missing prices`);
-      return rows;
-    }).catch(() => []),
+    // every prop pick's stored price (graded props join on it): paged past PostgREST's 1,000-row clamp, order ends on the primary key
+    sbAll("ev_prop_picks?is_pick=eq.true&select=game_pk,player_id,market,line,model_version,best_price,created_at&order=created_at.asc,game_pk.asc,player_id.asc,market.asc,line.asc,model_version.asc").catch(() => []),
     trackRecordStarts().catch(() => new Map()),
     loadLineMoves().catch(() => []),
     loadSplits().catch(() => new Map()),

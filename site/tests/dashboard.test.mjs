@@ -188,7 +188,7 @@ test("exposure classes are explicit: parlays are their own row (only when presen
 
 // ---- deterministic pick price ----------------------------------------------------------------
 const urlParts = (url) => { const u = new URL(url); return { path: u.pathname.split("/").pop(), q: u.search }; };
-test("evGradedPicks keeps the LATEST rebuild per pick, asks for created_at order, warns at the 4000-row cap", async () => {
+test("evGradedPicks keeps the LATEST rebuild per pick, reads every page in a total created_at order, no cap warning", async () => {
   const q = quiet(); const urls = [];
   const row = (k, price, at) => ({ sport: "nfl", game_pk: 1, market: "moneyline", side: "home", best_price: price, created_at: at, ...k });
   const rows = [row({}, 120, "2026-09-30T12:00:00Z"), row({}, 100, "2026-09-30T08:00:00Z"), row({ side: "away" }, -110, "2026-09-30T09:00:00Z")];   // unordered on purpose
@@ -196,12 +196,16 @@ test("evGradedPicks keeps the LATEST rebuild per pick, asks for created_at order
   const picks = await D.evGradedPicks();
   assert.equal(picks.length, 2);
   assert.equal(picks.find((p) => p.side === "home").best_price, 120);
-  assert.match(urls[0], /order=created_at\.asc/); assert.match(urls[0], /created_at/);
+  assert.match(urls[0], /order=created_at\.asc,sport\.asc,game_pk\.asc,market\.asc,side\.asc,model_version\.asc/, "ties broken by the primary key");
+  assert.match(urls[0], /&limit=1000&offset=0$/); assert.equal(urls.length, 1, "a short first page ends the read");
+  assert.doesNotMatch(urls[0], /limit=4000/);
   assert.equal(q.logs.warn.length, 0);
-  const big = Array.from({ length: 4000 }, (_, i) => row({ game_pk: i }, 100, "2026-09-30T08:00:00Z"));
-  const D2 = loadScripts(FILES, { globals: { console: q.console, fetch: async () => ({ ok: true, json: async () => big }) } });
-  await D2.evGradedPicks();
-  assert.equal(q.logs.warn.length, 1); assert.match(q.logs.warn[0], /4000/);
+  // 1,500 pick rows: two pages, the newest rows (page 2) are kept
+  const all = Array.from({ length: 1500 }, (_, i) => row({ game_pk: i }, 100 + i, "2026-09-30T08:00:00Z"));
+  const D2 = loadScripts(FILES, { globals: { console: q.console, fetch: async (u) => { const off = +u.match(/offset=(\d+)/)[1]; return { ok: true, json: async () => all.slice(off, off + 1000) }; } } });
+  const p2 = await D2.evGradedPicks();
+  assert.equal(p2.length, 1500); assert.ok(p2.some((p) => p.game_pk === 1499));
+  assert.equal(q.logs.warn.length, 0);
 });
 
 test("gradedLinePicks: the latest-created pick row sets the price whatever the input order", () => {
@@ -250,7 +254,7 @@ function populated({ search = "", watch = null, predH = 0 } = {}) {
     else if (path === "ev_prop_picks_current") rows = q.includes("sport=eq.nfl") ? props : [];
     else if (path === "ev_pnl_daily") rows = evPnl;
     else if (path === "ev_results") rows = results;
-    else if (path === "ev_picks") rows = q.includes("limit=10000") ? [{ sport: "nfl", game_pk: 1, market: "moneyline", side: "home", created_at: iso(-0.01) }] : [gradedPick(11), gradedPick(12)];
+    else if (path === "ev_picks") rows = q.includes("created_at=gte") ? [{ sport: "nfl", game_pk: 1, market: "moneyline", side: "home", created_at: iso(-0.01) }] : [gradedPick(11), gradedPick(12)];
     return { ok: true, json: async () => rows };
   };
   const storage = new Map(); if (watch) storage.set("ca-watchlist", JSON.stringify(watch));
