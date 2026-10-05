@@ -84,7 +84,10 @@ const gmLabel = (pred, market, side, line) => pickLabel({ kind: "line", sport: p
 const gmImplied = (r) => { const p = finite(r.best_line_implied) ? +r.best_line_implied : americanToProb(r.best_price); return Number.isFinite(p) ? p : null; };
 
 // The MODEL's probabilities (never ev_picks.true_prob, which is Pinnacle's no-vig line): the margin / total distributions
-// of the prediction row when it carries them, else of the NFL sim row; null parts when neither has a distribution.
+// of the prediction row when it carries them (predictions_any.margin_dist / total_dist, db/migration_site_redesign_a.sql),
+// else of the NFL sim row; null parts when neither has a distribution. Sign convention: margin = HOME minus AWAY points
+// ({kind:"margin", offset, pmf}, pmf[i] = P(margin = i - offset)), as the CFB / NFL writers emit it
+// (sportsmodel.nfl.gameline.build_gameline: home_win_prob = P(margin > 0)); gmOdds' cover math assumes exactly that.
 function gmDists(pred, sim) {
   const get = (k) => { for (const src of [pred, sim]) { const d = src && distParse(src[k]); if (d && Array.isArray(d.pmf)) return d; } return null; };
   return { margin: get("margin_dist"), total: get("total_dist") };
