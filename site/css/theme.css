@@ -241,8 +241,8 @@ a{color:inherit}
 .ca-ev-hi .ca-ell{display:block;color:var(--ink);font-weight:600;font-size:13px}
 .ca-ev-hi small.ca-ell{color:var(--muted);font-weight:400;font-size:12px}
 .ca-ev-hi small{display:block;font-size:12px}
-.ca-filters{display:grid;grid-template-columns:minmax(0,1fr) 340px;gap:18px;align-items:end;margin-bottom:16px;padding:16px 20px}
-.ca-fgrid{display:grid;grid-template-columns:repeat(7,minmax(0,1fr));gap:12px}
+.ca-ev-filters{display:grid;grid-template-columns:minmax(0,1fr) 340px;gap:18px;align-items:end;margin-bottom:16px;padding:16px 20px}
+.ca-ev-fgrid{display:grid;grid-template-columns:repeat(7,minmax(0,1fr));gap:12px}
 .ca-f{display:flex;flex-direction:column;gap:6px;min-width:0;font-size:13px;color:var(--ink)}
 .ca-f span{color:var(--muted);font-weight:500}
 .ca-f .ca-select{width:100%;min-width:0;height:40px;padding:0 6px;background:#fff;font-size:13px}
@@ -310,10 +310,10 @@ a.ca-ev-pr:hover{background:#FBFAF6}
 .ca-ev-bt th{padding:6px 6px;font-size:12px;background:transparent;white-space:nowrap}
 .ca-ev-bt td{padding:8px 6px;white-space:nowrap}
 .ca-ev-bt th:not(:first-child),.ca-ev-bt td:not(:first-child){text-align:right}
-.ca-ev-cap{margin:8px 0 0;font-size:11px;line-height:1.35;color:var(--muted)}
+.ca-cap{margin:8px 0 0;font-size:11px;line-height:1.35;color:var(--muted)}
 .ca-ev-legacy{margin-top:20px}
 @media (max-width:1399px){.ca-ev-main{grid-template-columns:minmax(0,1fr) 348px}.ca-ev-table{font-size:12px}.ca-ev-mkt{max-width:92px}.ca-ev-who,.ca-ev-table .ca-team .ca-ell{max-width:100px}.ca-ev-table .ca-conf{min-width:54px}.ca-ev-table th:first-child,.ca-ev-table td:first-child{padding-left:6px}.ca-ev-ta{grid-template-columns:40px auto minmax(0,1fr) auto 60px}.ca-ev-stats .ca-stat{padding:14px}.ca-ev-stats .ca-stat-value{font-size:27px}.ca-ev-stats .ca-stat-visual svg{max-width:58px;height:auto}.ca-ev-pill{font-size:14px}}
-@media (max-width:1180px){.ca-ev-main{grid-template-columns:minmax(0,1fr)}.ca-fgrid{grid-template-columns:repeat(4,minmax(0,1fr))}.ca-filters{grid-template-columns:minmax(0,1fr)}}
+@media (max-width:1180px){.ca-ev-main{grid-template-columns:minmax(0,1fr)}.ca-ev-fgrid{grid-template-columns:repeat(4,minmax(0,1fr))}.ca-ev-filters{grid-template-columns:minmax(0,1fr)}}
 /* Game page (js/pages/game.js) */
 .ca-gm-hero{position:relative;overflow:hidden;border-radius:14px;color:#fff;padding:18px 28px 24px;margin-bottom:16px;
   background:radial-gradient(ellipse 38% 55% at 14% -6%,rgba(160,196,236,.42),transparent 70%),radial-gradient(ellipse 38% 55% at 86% -6%,rgba(160,196,236,.36),transparent 70%),
@@ -408,6 +408,7 @@ a.ca-ev-pr:hover{background:#FBFAF6}
 .ca-trk-sub{display:flex;align-items:center;gap:16px;flex-wrap:wrap;margin:-6px 0 16px}
 .ca-trk-sub .ca-pill{padding:7px 16px;font-size:13px}
 .ca-trk-note{margin:0;color:var(--muted);font-size:13px}
+.ca-trk-error{padding:24px}
 .ca-trk-banner{margin:0 0 16px;padding:12px 16px;border:1px solid #EBD6A6;border-radius:10px;background:var(--amber-tint);color:#6B4A12;font-size:14px}
 .ca-trk-banner .ca-link{background:none;border:0;padding:0;margin-left:6px;color:var(--blue);font:600 14px var(--sans);cursor:pointer;text-decoration:underline}
 .ca-trk-stats{margin-bottom:16px}

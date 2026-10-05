@@ -43,7 +43,7 @@ export function loadScripts(files, { page = "dashboard", storage = new Map(), gl
   Object.assign(ctx, globals);       // test stubs (e.g. fetch) override the defaults
   ctx.window = ctx;
   ctx.__CA_TEST__ = true;            // js/boot.js skips boot() in tests
-  ctx.document = fakeDom(page);
+  ctx.document = globals.document || fakeDom(page);   // a test may pass its own document
   vm.createContext(ctx);
   // Classic scripts share one global scope: concatenate so top-level const/let are visible to later files.
   const src = files.map((f) => fs.readFileSync(path.join(SITE, f), "utf8")).join("\n;\n");

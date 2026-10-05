@@ -55,8 +55,9 @@ function trackClosingMap(rows) {
 const trackNum0 = (x) => (x === 0 ? 0 : x);   // never -0
 const trackGradeOf = (b) => (b === true ? "W" : b === false ? "L" : "P");
 
-// One row per graded pick of a graded game: moneyline (always), spread (when a market line is stored), total (when a market
-// total is stored). A game without actual_winner is ungraded and gives no rows (the same population as prediction_pnl).
+// One row per graded pick of a graded game: moneyline (always), spread (when a market line is stored AND the model has a side), total
+// (likewise). A spread / total with no model pick (model exactly on the line, or no model numbers) is not a bet and gets no row,
+// like prediction_pnl's no-bet exclusion (R23). Confidence is the model's moneyline win probability, so only moneyline rows carry it. A game without actual_winner is ungraded and gives no rows (the same population as prediction_pnl).
 // prob = the model's favorite-side win probability (moneyline only; spread / total rows carry none). units = the matching
 // prediction_pnl row's pnl / 10, else null. `closing`: Map "game_pk|side" -> moneyline closing price (from trackClosingMap).
 function trackRows(accuracyRows, pnlRows, closing) {
@@ -69,21 +70,21 @@ function trackRows(accuracyRows, pnlRows, closing) {
     const am = numOrNull(r.actual_margin), at = numOrNull(r.actual_total);
     const finalScore = `${am === 0 ? "Tie" : `${r.actual_winner}${am != null ? ` by ${Math.abs(am)}` : ""}`}${at != null ? ` · ${at} total` : ""}`;
     const base = { date: r.game_date, sport: r.sport, game_pk: r.game_pk, home: r.home_team_name, away: r.away_team_name,
-      matchup: `${r.away_team_name} @ ${r.home_team_name}`, winner: r.actual_winner, conf, finalScore };
-    const push = (market, side, pick, closingLine, modelLine, prob, grade) => out.push({ ...base, market, side, pick, closing: closingLine, modelLine, prob,
+      matchup: `${r.away_team_name} @ ${r.home_team_name}`, winner: r.actual_winner, finalScore };
+    const push = (market, side, pick, closingLine, modelLine, prob, grade) => out.push({ ...base, market, side, pick, closing: closingLine, modelLine, prob, conf: market === "moneyline" ? conf : null,
       result: trackGradeOf(grade), won: grade === true ? true : grade === false ? false : null, units: units.get(`${r.game_pk}|${market}`) ?? null });
     const mlSide = r.predicted_winner === r.home_team_name ? "home" : r.predicted_winner === r.away_team_name ? "away" : null;
     push("moneyline", mlSide, r.predicted_winner ?? null, mlSide && closing && closing.has(`${r.game_pk}|${mlSide}`) ? closing.get(`${r.game_pk}|${mlSide}`) : null, null, conf, r.winner_correct);
     const ms = numOrNull(r.market_spread), pm = numOrNull(r.pred_margin);
     if (ms != null) {
       const edge = pm == null ? null : pm + ms, side = edge == null || edge === 0 ? null : edge > 0 ? "home" : "away";
-      push("spread", side, side === "home" ? r.home_team_name : side === "away" ? r.away_team_name : null,
-        side ? trackNum0(side === "home" ? ms : -ms) : null, side ? trackNum0(side === "home" ? r05(-pm) : r05(pm)) : null, null, r.spread_pick_correct);
+      if (side) push("spread", side, side === "home" ? r.home_team_name : r.away_team_name,
+        trackNum0(side === "home" ? ms : -ms), trackNum0(side === "home" ? r05(-pm) : r05(pm)), null, r.spread_pick_correct);
     }
     const mt = numOrNull(r.market_total), pt = numOrNull(r.pred_total);
     if (mt != null) {
       const side = pt == null || pt === mt ? null : pt > mt ? "over" : "under";
-      push("total", side, side === "over" ? "Over" : side === "under" ? "Under" : null, side ? mt : null, side ? r05(pt) : null, null, r.total_pick_correct);
+      if (side) push("total", side, side === "over" ? "Over" : "Under", mt, r05(pt), null, r.total_pick_correct);
     }
   }
   const mkt = (r) => TRACK_MARKETS.indexOf(r.market);
@@ -132,7 +133,7 @@ function trackFilter(rows, f = {}) {
   const out = (rows || []).filter((r) => r
     && (!f.market || f.market === "all" || r.market === f.market)
     && (!f.league || r.sport === f.league)
-    && (!f.conf || (band >= 0 && trackBandIdx(r.conf) === band))
+    && (!f.conf || (band >= 0 && r.market === "moneyline" && trackBandIdx(r.conf) === band))
     && (!f.result || r.result === f.result)
     && (!q || `${r.matchup || ""} ${r.pick || ""} ${r.sport || ""}`.toLowerCase().includes(q)));
   const byDate = (a, b) => (a.date < b.date ? 1 : a.date > b.date ? -1 : 0);
@@ -142,7 +143,7 @@ function trackFilter(rows, f = {}) {
 // Win % per segment ("market" | "league" | "confidence"), decided picks only, best first (ties: more decided picks).
 function trackSegments(rows, kind) {
   const defs = kind === "league" ? SPORTS.map((s) => [s, SPORT_NAME[s], (r) => r.sport === s])
-    : kind === "confidence" ? TRACK_BANDS.map((b, i) => [TRACK_BAND_KEYS[i], TRACK_BAND_LABELS[i], (r) => trackBandIdx(r.conf) === i])
+    : kind === "confidence" ? TRACK_BANDS.map((b, i) => [TRACK_BAND_KEYS[i], TRACK_BAND_LABELS[i], (r) => r.market === "moneyline" && trackBandIdx(r.conf) === i])
     : TRACK_MARKETS.map((m) => [m, TRACK_MKT_PLURAL[m], (r) => r.market === m]);
   return defs.map(([key, label, test]) => ({ key, label, ...trackTally((rows || []).filter((r) => r && test(r))) }))
     .filter((s) => s.w + s.l > 0).sort((a, b) => b.pct - a.pct || b.w + b.l - (a.w + a.l));
@@ -191,7 +192,9 @@ const trackWeekStart = (d) => addDays(d, -((new Date(`${d}T12:00:00Z`).getUTCDay
 function trackWeekly(rows) {
   const by = new Map();
   for (const r of rows || []) if (r && r.date) { const k = trackWeekStart(r.date); (by.get(k) || by.set(k, []).get(k)).push(r); }
-  return [...by.keys()].sort().map((week) => ({ week, ...trackTally(by.get(week)) }));
+  const keys = [...by.keys()].sort(), out = [];
+  for (let w = keys[0]; keys.length && w <= keys[keys.length - 1]; w = addDays(w, 7)) out.push({ week: w, ...trackTally(by.get(w)) });   // empty weeks stay (n = 0) so bars never shift
+  return out;
 }
 
 /* ── filter state <-> URL ─────────────────────────────────────────────── */
@@ -232,17 +235,30 @@ async function trackClosing(gamePks) {
   const parts = await Promise.all(chunks.map((c) => sb(`game_closing_prices?market=eq.moneyline&game_pk=in.(${c.join(",")})&select=game_pk,side,close_dec`).catch(() => [])));
   return parts.flat();
 }
+// The record scope (track_record_start). trackRecordStarts() swallows errors into "no restarts", which would pull the archived
+// pre-restart rows into the published record, so this page loads it itself and fails closed.
+async function trackStarts() {
+  try {
+    const rows = await sb("track_record_start?select=sport,starts_at,model_version");
+    return { starts: new Map((rows || []).map((r) => [r.sport, r])), failed: false };
+  } catch (e) { console.error("track record: track_record_start failed to load", e); return { starts: new Map(), failed: true }; }
+}
+const TRACK_ERRORS = { scope: "Couldn't load the record scope — try again.", picks: "Couldn't load graded picks." };
 async function trackLoad() {
   const today = etDateStr(new Date().toISOString());
-  const [acc, starts, predPnl] = await Promise.all([
-    sb(`prediction_accuracy?actual_winner=not.is.null&order=game_date.desc&limit=${TRACK_ROWS_CAP}&select=${TRACK_ACC_SELECT}`).catch(() => []),
-    trackRecordStarts().catch(() => new Map()),
+  let picksFailed = false;
+  const [acc, scope, predPnl] = await Promise.all([
+    sb(`prediction_accuracy?actual_winner=not.is.null&order=game_date.desc&limit=${TRACK_ROWS_CAP}&select=${TRACK_ACC_SELECT}`).catch((e) => { picksFailed = true; console.error("track record: prediction_accuracy failed to load", e); return []; }),
+    trackStarts(),
     sb("prediction_pnl_daily?select=*").catch(() => []),
   ]);
-  if ((acc || []).length >= TRACK_ROWS_CAP) console.warn(`track record: hit the ${TRACK_ROWS_CAP}-row cap on prediction_accuracy; older graded games may be missing`);
+  const error = scope.failed ? "scope" : picksFailed ? "picks" : null, starts = scope.starts;
+  if (error) return { today, rows: [], starts, predPnl: [], error, capped: false };
+  const capped = (acc || []).length >= TRACK_ROWS_CAP;
+  if (capped) console.warn(`track record: hit the ${TRACK_ROWS_CAP}-row cap on prediction_accuracy; older graded games may be missing`);
   const closingRows = await trackClosing((acc || []).map((r) => r.game_pk));
   const rows = trackRows(acc, [], trackClosingMap(closingRows)).map((r) => ({ ...r, inRecord: inTrackRecord(starts, r.sport, r.date) }));
-  return { today, rows, starts, predPnl: predPnl || [] };
+  return { today, rows, starts, predPnl: predPnl || [], error: null, capped };
 }
 // One render context: the cached load plus the URL state and the rows inside range / record.
 const trackCtx = (D) => { const s = trackState(); return { ...D, s, scope: trackScope(D.rows, s, D.today) }; };
@@ -272,7 +288,7 @@ const trackClosingText = (r) => (r.closing == null ? "—" : r.market === "money
 function trackStatRecord(C) {
   const t = trackTally(C.scope);
   if (!t.n) return statCard({ label: "OVERALL RECORD", value: "—", sub: "No graded picks in this range." });
-  const weeks = trackWeekly(C.scope).slice(-10).map((w) => (w.pct == null ? null : w.pct * 100)), bars = miniBars(weeks, { w: 70, h: 44 });
+  const weeks = trackWeekly(C.scope).slice(-10).map((w) => (w.pct == null ? 0 : w.pct * 100)), bars = miniBars(weeks, { w: 70, h: 44 });
   const rec = `<span class="ca-trk-rec">${[["W", t.w], ["L", t.l], ["P", t.p]].map(([k, v]) => `<span><b>${v}</b><em>${k}</em></span>`).join("<i>-</i>")}</span>`;
   return statCard({ label: "OVERALL RECORD", value: `${rec}<small class="${t.pct != null && t.pct >= 0.5 ? "pos" : ""}">${trackPct(t.pct)}</small>`,
     visual: bars ? `<span title="Win % by week">${bars}</span>` : "" });
@@ -334,7 +350,7 @@ function trackFilterCard(C) {
   const s = C.s, leagues = [["", "All Leagues"], ...SPORTS.map((x) => [x, trackSportName(x)])];
   return `<section class="ca-card ca-trk-filters" id="trk-filters">${pills("trk-mkt", TRACK_MARKET_PILLS, s.market)}
     <div class="ca-trk-fgrid">${selectField("data-trk", "league", "League", leagues, s.league)}${selectField("data-trk", "market", "Market Type", TRACK_MARKET_OPTS, s.market)}
-    ${selectField("data-trk", "conf", "Confidence", TRACK_CONF_OPTS, s.conf)}${selectField("data-trk", "result", "Result", TRACK_RESULT_OPTS, s.result)}
+    ${selectField("data-trk", "conf", `<span title="The model's win probability: applies to moneyline picks only">Confidence (ML)</span>`, TRACK_CONF_OPTS, s.conf)}${selectField("data-trk", "result", "Result", TRACK_RESULT_OPTS, s.result)}
     ${selectField("data-trk", "sort", "Sort By", TRACK_SORTS, s.sort)}</div>
     ${searchField("data-trk-q", s.q, "Search teams, players, or games...", "Search teams, players, or games")}</section>`;
 }
@@ -363,13 +379,13 @@ function trackTableCard(C) {
 function trackSegmentsCard(C) {
   const segs = trackSegments(C.scope, C.s.seg).slice(0, 6);
   const rows = segs.map((x) => `<div class="ca-trk-sg"><span>${ctxEsc(x.label)}</span><b class="${x.pct >= 0.5 ? "pos" : "neg"}">${trackPct(x.pct)}</b><span class="muted">${trackRec(x)}</span></div>`).join("");
-  return `<section class="ca-card ca-trk-rail-card" id="trk-segments"><div class="ca-card-head"><h2>Best Performing Segments</h2></div><div class="ca-dash-tabs">${pills("trk-seg", TRACK_SEGS, C.s.seg)}</div>${rows || emptyMsg("No decided picks in this range yet.")}</section>`;
+  return `<section class="ca-card ca-trk-rail-card" id="trk-segments"><div class="ca-card-head"><h2>Best Performing Segments</h2></div><div class="ca-dash-tabs">${pills("trk-seg", TRACK_SEGS, C.s.seg)}</div>${rows || emptyMsg("No decided picks in this range yet.")}${C.s.seg === "confidence" && rows ? `<p class="ca-cap">Moneyline picks only: confidence is the model's win probability.</p>` : ""}</section>`;
 }
 function trackModelCard(C) {
   const m = trackModelCalibration(C.scope);
   const row = (label, value, extra = "") => `<div class="ca-trk-mc${extra ? "" : " solo"}"><span>${label}</span><b>${value}</b>${extra}</div>`;
   const body = m ? `${row("Brier Score", m.brier.toFixed(3), `<em class="ca-trk-verdict ${m.chip === "Well Calibrated" ? "ok" : "off"}">${m.chip}</em>`)}${row("Predicted Avg. Confidence", trackPct(m.predicted))}${row("Actual Hit Rate", trackPct(m.actual))}${row("Calibration Difference", signedStr(m.diff, 1, "%"))}
-    <p class="ca-ev-cap">${m.n} graded moneyline picks · lower Brier is better · well calibrated = within 3 points.</p>` : emptyMsg("No graded moneyline picks in this range yet.");
+    <p class="ca-cap">${m.n} graded moneyline picks · lower Brier is better · well calibrated = within 3 points.</p>` : emptyMsg("No graded moneyline picks in this range yet.");
   return `<section class="ca-card ca-trk-rail-card" id="trk-model"><div class="ca-card-head"><h2>Model Calibration</h2></div>${body}</section>`;
 }
 // The model picks' profit tracker (prediction_pnl_daily, already cut at the record start); not offered for the archive.
@@ -403,9 +419,15 @@ function trackNote(C) {
   const when = st ? new Date(st.starts_at).toLocaleDateString("en-US", { timeZone: "America/New_York", month: "short", day: "numeric", year: "numeric" }) : "";
   const note = st ? `NFL record restarted with ${st.model_version === "nfl-sim-ml-v2" ? "the ML v2 model" : ctxEsc(st.model_version)} on ${when}; earlier NFL results are archived for comparison.`
     : "NFL predictions switched to the ML model on Sep 28, 2026; earlier games were graded against the previous model.";
-  return `<div class="ca-trk-sub">${pills("trk-view", TRACK_VIEWS, C.s.view)}<p class="ca-trk-note">${note}</p></div>`;
+  return `<div class="ca-trk-sub">${pills("trk-view", TRACK_VIEWS, C.s.view)}<p class="ca-trk-note">${note}</p>${C.capped ? `<p class="ca-trk-note ca-trk-capnote">Showing the most recent ${TRACK_ROWS_CAP.toLocaleString("en-US")} graded games.</p>` : ""}</div>`;
+}
+// A failed load renders no record numbers at all: one notice card (with a retry) under the title.
+function trackErrorHtml(C) {
+  return `${trackTitle(C)}<div class="ca-trk-sub">${pills("trk-view", TRACK_VIEWS, C.s.view)}</div>
+    <section class="ca-card ca-trk-error" id="trk-error" role="alert"><p class="ca-empty">${ctxEsc(TRACK_ERRORS[C.error])}</p><p class="ca-trk-reset"><button class="ca-btn" data-trk-retry>Try again</button></p></section>`;
 }
 function trackModelHtml(C) {
+  if (C.error) return trackErrorHtml(C);
   const banner = C.s.archive ? `<p class="ca-trk-banner">Showing archived pre-restart NFL results (the earlier model). They are kept for comparison and are not part of the published record. <button class="ca-link" data-trk-archive>Back to the record</button></p>` : "";
   return `${trackTitle(C)}${trackNote(C)}${banner}
     <div class="ca-stats ca-trk-stats">${["trk-record", "trk-line", "trk-total", "trk-streak", "trk-avg"].map((id) => trackCard(id, C)).join("")}</div>
@@ -418,18 +440,21 @@ function trackModelHtml(C) {
 
 // +EV view data: the legacy track sources, cut to the published record exactly as the legacy page did.
 async function trackEvLoad() {
-  const [evRes, evPk, propRes, propGradeRows, evPnl, propGames, parlayRes, starts] = await Promise.all([
+  const [evRes, evPk, propRes, propGradeRows, evPnl, propGames, parlayRes, scope] = await Promise.all([
     evResultsRows().catch(() => []), evGradedPicks().catch(() => []), propResultsRows(), propLineGradesRows(),
     sb("ev_pnl_daily?select=*").catch(() => []), sb("nfl_prop_pnl_by_game?select=*&order=commence_time.asc").catch(() => []),
-    parlayResultsRows(), trackRecordStarts().catch(() => new Map()),
+    parlayResultsRows(), trackStarts(),
   ]);
+  const starts = scope.starts;
+  if (scope.failed) return { today: etDateStr(new Date().toISOString()), starts, scope: [], error: "scope" };
   const pickKick = new Map((evPk || []).map((p) => [`${p.sport}|${p.game_pk}|${p.market}|${p.side}`, p.commence_time]));
-  return { today: etDateStr(new Date().toISOString()), starts, evPk: evPk || [], evPnl: evPnl || [], propGradeRows: propGradeRows || [], propGames: propGames || [], scope: [],
+  return { today: etDateStr(new Date().toISOString()), starts, evPk: evPk || [], evPnl: evPnl || [], propGradeRows: propGradeRows || [], propGames: propGames || [], scope: [], error: null,
     evRes: (evRes || []).filter((r) => inTrackRecord(starts, r.sport, pickKick.get(`${r.sport}|${r.game_pk}|${r.market}|${r.side}`) || r.graded_at)),
     propRes: (propRes || []).filter((r) => inTrackRecord(starts, r.sport || "nfl", r.commence_time)),
     parlayRes: (parlayRes || []).filter((r) => inTrackRecord(starts, r.sport || "nfl", r.first_commence)) };
 }
 function trackEvHtml(C) {
+  if (C.error) return trackErrorHtml(C);
   const s = getSettings(), U = unitLabel(s), sec = (name, fn) => safeCard(name, fn, C, "ca-card");
   return `${trackTitle(C)}${trackNote(C)}<div class="ca-trk-legacy">
     ${sec("+EV profit tracker", () => pnlSection(`+EV profit tracker <span style="font-size:.6em;opacity:.6">${U} per bet</span>`, `What ${U} on every graded +EV pick would have made, at the price it was flagged at · a parlay is one ${U} ticket.`, C.evPnl,
@@ -485,6 +510,7 @@ function wireTrackPage() {
         case "trk-mkt": trackSet("market", k); trackRedraw("trk-filters", "trk-table"); return;
       }
     }
+    if (t.closest("[data-trk-retry]")) { render(); return; }
     if (t.closest("[data-trk-archive]")) { trackSet("archive", !trackState().archive); trackRerender(); return; }
     if (t.closest("[data-trk-more]")) { trackSet("n", Math.min(TRACK_SHOW_MAX, trackState().n + TRACK_PAGE)); trackRedraw("trk-table"); return; }
     if (t.closest("[data-trk-reset]")) {

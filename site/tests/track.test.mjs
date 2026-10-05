@@ -40,7 +40,7 @@ test("trackRows: away favorite probability, spread/total pick sides, model numbe
   assert.equal(tot.pick, "Over"); assert.equal(tot.side, "over"); assert.equal(tot.closing, 46.5); assert.equal(tot.modelLine, 52.5);
   assert.equal(tot.result, "W");
   assert.equal(sp.prob, null, "the prediction carries no cover probability: never invented"); assert.equal(tot.prob, null);
-  assert.ok(Math.abs(sp.conf - 0.6) < 1e-12, "confidence is the game's model confidence on every row");
+  assert.equal(sp.conf, null, "confidence is the moneyline win probability: spread / total rows carry none"); assert.equal(tot.conf, null);
   assert.equal(ml.won, true); assert.equal(sp.won, false);
   const home = g.trackRows([A({ win_prob: 0.7, predicted_winner: "Kansas City Chiefs", pred_margin: 8, market_spread: -3.5, pred_total: 40, winner_correct: false, actual_winner: "Detroit Lions" })], []);
   assert.equal(home[0].result, "L"); assert.ok(Math.abs(home[0].prob - 0.7) < 1e-12); assert.equal(home[0].side, "home");
@@ -51,18 +51,20 @@ test("trackRows: away favorite probability, spread/total pick sides, model numbe
   assert.equal(rows[rows.length - 1].date, "2026-10-03", "newest first");
 });
 
-test("trackRows: ungraded games are skipped, no-pick-side lines keep a null pick, missing numbers never leak NaN / undefined", () => {
+test("trackRows: ungraded games are skipped; a spread / total with no model pick is not a bet (R23) and gets no row; no NaN / undefined", () => {
   assert.deepEqual(g.trackRows([A({ actual_winner: null, winner_correct: null })], []), []);
   assert.deepEqual(g.trackRows(null, null), []);
-  const noPick = g.trackRows([A({ pred_margin: -1.5, market_spread: 1.5, pred_total: 46.5, market_total: 46.5 })], []);   // exactly on the line: no side
-  assert.equal(noPick[1].pick, null); assert.equal(noPick[1].closing, null); assert.equal(noPick[1].modelLine, null);
-  assert.equal(noPick[2].pick, null);
+  const onLine = g.trackRows([A({ pred_margin: -1.5, market_spread: 1.5, pred_total: 46.5, market_total: 46.5 })], []);   // model exactly on both lines
+  assert.deepEqual(onLine.map((r) => r.market), ["moneyline"], "no pick side: no spread / total row");
+  const oneSided = g.trackRows([A({ pred_margin: -1.5, market_spread: 1.5, pred_total: 50, market_total: 46.5 })], []);
+  assert.deepEqual(oneSided.map((r) => r.market), ["moneyline", "total"], "each market stands on its own");
   const sparse = g.trackRows([A({ pred_margin: null, pred_total: null, actual_margin: null, actual_total: null, win_prob: null, winner_correct: null })], []);
-  assert.deepEqual(sparse.map((r) => r.market), ["moneyline", "spread", "total"]);
+  assert.deepEqual(sparse.map((r) => r.market), ["moneyline"], "missing model numbers: no spread / total picks");
   assert.equal(sparse[0].prob, null); assert.equal(sparse[0].conf, null); assert.equal(sparse[0].result, "P", "an unknowable moneyline grade is a push, never a win");
-  assert.equal(sparse[1].pick, null); assert.equal(sparse[2].pick, null);
-  assert.ok(!/NaN|undefined|null/.test(JSON.stringify(sparse.map((r) => r.finalScore))), "finalScore never leaks NaN / undefined");
-  assert.equal(sparse[0].finalScore, "Detroit Lions");
+  assert.ok(!/NaN|undefined|null/.test(sparse[0].finalScore)); assert.equal(sparse[0].finalScore, "Detroit Lions");
+  const noLines = g.trackRows([A({ market_spread: null, market_total: null })], []);
+  assert.deepEqual(noLines.map((r) => r.market), ["moneyline"]);
+  assert.ok(onLine.every((r) => r.pick != null), "every spread / total row has a pick");
 });
 
 test("finalScore text: winner by margin, total, ties", () => {
@@ -120,36 +122,38 @@ test("tally + accuracy vs the closing line (spread / total only) and +X vs the 5
 
 test("table filters: league, market, confidence band, result, search; sort recent / confidence", () => {
   const rows = [R("W", "2026-10-04", { sport: "nfl", market: "moneyline", conf: 0.72, matchup: "Detroit Lions @ Kansas City Chiefs", pick: "Detroit Lions" }),
-    R("L", "2026-10-03", { sport: "cfb", market: "spread", conf: 0.52, matchup: "Oklahoma @ Texas", pick: "Texas" }),
-    R("P", "2026-10-02", { sport: "cfb", market: "total", conf: 0.61, matchup: "Ohio State @ Oregon", pick: "Over" }),
+    R("L", "2026-10-03", { sport: "cfb", market: "moneyline", conf: 0.52, matchup: "Oklahoma @ Texas", pick: "Texas" }),
+    R("P", "2026-10-02", { sport: "cfb", market: "total", conf: null, matchup: "Ohio State @ Oregon", pick: "Over" }),
+    R("W", "2026-10-01", { sport: "cfb", market: "spread", conf: null, matchup: "Boise @ Fresno", pick: "Boise" }),
     R("W", "2026-10-05", { sport: "mlb", market: "moneyline", conf: null, matchup: "Yankees @ Blue Jays", pick: "Yankees" })];
   const f = (o) => g.trackFilter(rows, { market: "all", league: "", conf: "", result: "", q: "", sort: "recent", ...o }).map((r) => r.pick);
-  assert.deepEqual(f({}), ["Yankees", "Detroit Lions", "Texas", "Over"]);
-  assert.deepEqual(f({ league: "cfb" }), ["Texas", "Over"]);
-  assert.deepEqual(f({ market: "moneyline" }), ["Yankees", "Detroit Lions"]);
+  assert.deepEqual(f({}), ["Yankees", "Detroit Lions", "Texas", "Over", "Boise"]);
+  assert.deepEqual(f({ league: "cfb" }), ["Texas", "Over", "Boise"]);
+  assert.deepEqual(f({ market: "moneyline" }), ["Yankees", "Detroit Lions", "Texas"]);
   assert.deepEqual(f({ market: "total" }), ["Over"]);
   assert.deepEqual(f({ conf: "70+" }), ["Detroit Lions"]);
   assert.deepEqual(f({ conf: "50-55" }), ["Texas"]);
-  assert.deepEqual(f({ conf: "60-65" }), ["Over"]);
+  assert.deepEqual(f({ conf: "60-65" }), [], "the Confidence filter is moneyline-only: spread / total rows have no confidence");
   assert.deepEqual(f({ result: "L" }), ["Texas"]);
   assert.deepEqual(f({ result: "P" }), ["Over"]);
   assert.deepEqual(f({ q: "  OHIO " }), ["Over"]);
   assert.deepEqual(f({ q: "lions" }), ["Detroit Lions"]);
-  assert.deepEqual(f({ sort: "conf" }), ["Detroit Lions", "Over", "Texas", "Yankees"], "highest confidence first, unknown last");
+  assert.deepEqual(f({ sort: "conf" }), ["Detroit Lions", "Texas", "Yankees", "Over", "Boise"], "highest confidence first; unknown last (then most recent first)");
   assert.equal(g.trackFilter(null, {}).length, 0);
 });
 
 test("segments: win % over decided picks by market / league / confidence, best first", () => {
   const rows = [R("W", "2026-10-04", { market: "moneyline", sport: "nfl", conf: 0.72 }), R("W", "2026-10-04", { market: "moneyline", sport: "nfl", conf: 0.72 }), R("L", "2026-10-04", { market: "moneyline", sport: "nfl", conf: 0.72 }),
-    R("W", "2026-10-04", { market: "spread", sport: "cfb", conf: 0.52 }), R("P", "2026-10-04", { market: "spread", sport: "cfb", conf: 0.52 }),
-    R("L", "2026-10-04", { market: "total", sport: "cfb", conf: 0.56 }), R("L", "2026-10-04", { market: "total", sport: "cfb", conf: null })];
+    R("W", "2026-10-04", { market: "spread", sport: "cfb", conf: null }), R("P", "2026-10-04", { market: "spread", sport: "cfb", conf: null }),
+    R("L", "2026-10-04", { market: "total", sport: "cfb", conf: null }), R("L", "2026-10-04", { market: "total", sport: "cfb", conf: null }),
+    R("W", "2026-10-04", { market: "moneyline", sport: "cfb", conf: 0.52 }), R("L", "2026-10-04", { market: "moneyline", sport: "cfb", conf: 0.56 })];
   const m = g.trackSegments(rows, "market");
-  assert.deepEqual(m.map((s) => [s.label, s.w, s.l, s.p]), [["Spreads", 1, 0, 1], ["Moneyline", 2, 1, 0], ["Totals", 0, 2, 0]]);
-  assert.ok(Math.abs(m[1].pct - 2 / 3) < 1e-12); assert.equal(m[0].n, 2);
+  assert.deepEqual(m.map((s) => [s.label, s.w, s.l, s.p]), [["Spreads", 1, 0, 1], ["Moneyline", 3, 2, 0], ["Totals", 0, 2, 0]]);
+  assert.ok(Math.abs(m[1].pct - 3 / 5) < 1e-12); assert.equal(m[0].n, 2);
   const lg = g.trackSegments(rows, "league");
-  assert.deepEqual(lg.map((s) => [s.label, s.w, s.l, s.p]), [["NFL", 2, 1, 0], ["CFB", 1, 2, 1]]);
+  assert.deepEqual(lg.map((s) => [s.label, s.w, s.l, s.p]), [["NFL", 2, 1, 0], ["CFB", 2, 3, 1]]);
   const cf = g.trackSegments(rows, "confidence");
-  assert.deepEqual(cf.map((s) => [s.label, s.w, s.l, s.p]), [["50–55%", 1, 0, 1], ["70%+", 2, 1, 0], ["55–60%", 0, 1, 0]], "best win % first; unknown-confidence picks fall in no band");
+  assert.deepEqual(cf.map((s) => [s.label, s.w, s.l, s.p]), [["50–55%", 1, 0, 0], ["70%+", 2, 1, 0], ["55–60%", 0, 1, 0]], "moneyline picks only (spread / total rows have no confidence); best win % first");
   assert.deepEqual(g.trackSegments([], "market"), []);
   assert.deepEqual(g.trackSegments([R("P")], "market"), [], "a segment with no decided pick has no win %");
 });
@@ -228,6 +232,9 @@ test("weekly buckets (Mon-Sun): record and win % per week, oldest first", () => 
   assert.deepEqual(w.map((x) => [x.week, x.w, x.l, x.n]), [["2026-09-21", 0, 1, 1], ["2026-09-28", 2, 0, 2], ["2026-10-05", 1, 1, 2]]);
   assert.equal(w[0].pct, 0); assert.equal(w[1].pct, 1);
   assert.deepEqual(g.trackWeekly([]), []);
+  const gap = g.trackWeekly([R("W", "2026-09-14"), R("L", "2026-09-30")]);
+  assert.deepEqual(gap.map((x) => [x.week, x.n]), [["2026-09-14", 1], ["2026-09-21", 0], ["2026-09-28", 1]], "empty weeks stay in the series so mini bars never shift");
+  assert.equal(gap[1].pct, null);
 });
 
 test("URL state: parse, defaults, only non-defaults serialize, junk falls back", () => {
@@ -247,7 +254,7 @@ test("URL state: parse, defaults, only non-defaults serialize, junk falls back",
 const EVIL_HOME = `Texas <b>Crew</b>`, EVIL_AWAY = `Oklahoma "Sooners" <i>Zed</i>`;
 const dayOff = (n) => new Date(Date.now() + n * 864e5).toISOString().slice(0, 10);
 const urlParts = (u) => { const [p, q = ""] = String(u).replace(/^.*\/rest\/v1\//, "").split("?"); return { path: p, q }; };
-function populated({ search = "", acc, closing, starts } = {}) {
+function populated({ search = "", acc, closing, starts, fail = [], quiet = null, document } = {}) {
   const accRows = acc || [
     A({ sport: "cfb", game_pk: 1, game_date: dayOff(-1), home_team_name: EVIL_HOME, away_team_name: EVIL_AWAY, predicted_winner: EVIL_HOME, actual_winner: EVIL_HOME, win_prob: 0.62, winner_correct: true, pred_margin: 6, actual_margin: 10, market_spread: -3.5, spread_pick_correct: true, pred_total: 55, market_total: 54.5, actual_total: 60, total_pick_correct: true }),
     A({ sport: "cfb", game_pk: 2, game_date: dayOff(-2), home_team_name: "Ohio State", away_team_name: "Oregon", predicted_winner: "Oregon", actual_winner: "Ohio State", win_prob: 0.45, winner_correct: false, pred_margin: -2, actual_margin: 3, market_spread: -1, spread_pick_correct: false, pred_total: 50, market_total: 50.5, actual_total: 45, total_pick_correct: true }),
@@ -257,6 +264,7 @@ function populated({ search = "", acc, closing, starts } = {}) {
   const requested = [];
   const fetch = async (url) => {
     const { path, q } = urlParts(url); requested.push(path + (q ? `?${q}` : ""));
+    if (fail.includes(path)) return { ok: false, status: 500, text: async () => "boom", json: async () => ({}) };
     let rows = [];
     if (path === "prediction_accuracy") rows = accRows;
     else if (path === "game_closing_prices") rows = closing || [{ game_pk: 1, side: "home", close_dec: 1.6 }];
@@ -265,7 +273,7 @@ function populated({ search = "", acc, closing, starts } = {}) {
     return { ok: true, json: async () => rows };
   };
   const T = loadScripts(["app.js", "js/metrics.js", "js/ui.js", "js/shell.js", "js/data.js", "js/pages/track.js", "js/boot.js"],
-    { page: "track", globals: { fetch, location: { search, href: `http://localhost/track-record.html${search}` } } });
+    { page: "track", globals: { fetch, ...(quiet ? { console: quiet } : {}), ...(document ? { document } : {}), location: { search, href: `http://localhost/track-record.html${search}` } } });
   return { T, requested };
 }
 const clean = (html) => html.replace(/\bnull\b(?=[^<]*>)/g, "");
@@ -406,4 +414,132 @@ test("state survives the 5-minute re-render: a second buildTrackPage keeps the U
   assert.match(a, /class="ca-pill on" data-pill="trk-seg" data-key="league"/);
   assert.match(a, /class="ca-pill on" data-pill="trk-chart" data-key="cfb"/);
   assert.match(a, /<option value="cfb" selected>/);
+});
+
+/* ── fix round 1 ──────────────────────────────────────────────────────── */
+const loud = () => { const errors = []; return { errors, console: { ...console, error: (...a) => errors.push(a.map(String).join(" ")), warn() {} } }; };
+
+test("fail closed: a failed track_record_start renders a notice and NO record numbers (archived rows never enter the record)", async () => {
+  const q = loud();
+  const { T } = populated({ fail: ["track_record_start"], quiet: q.console });
+  const html = await T.buildTrackPage();
+  assert.ok(html.includes("Couldn&#39;t load the record scope") || html.includes("Couldn't load the record scope — try again."), "scope notice");
+  assert.match(html, /id="trk-error"/); assert.match(html, /data-trk-retry/);
+  assert.ok(!html.includes("OVERALL RECORD") && !html.includes("Lions @ Chiefs") && !html.includes("Dolphins @ Bills") && !html.includes("<tbody>"), "no record numbers, no rows (archived NFL rows would be among them)");
+  assert.ok(q.errors.some((e) => e.includes("track_record_start")), "console.error");
+  assert.ok(!/NaN|undefined/.test(clean(html)));
+  const arc = await populated({ fail: ["track_record_start"], quiet: q.console, search: "?archive=1" }).T.buildTrackPage();
+  assert.ok(arc.includes("Couldn't load the record scope") && !arc.includes("<tbody>"), "the archive view fails closed too");
+});
+
+test("a failed prediction_accuracy shows 'Couldn't load graded picks.' (not the empty-record message) and logs", async () => {
+  const q = loud();
+  const html = await populated({ fail: ["prediction_accuracy"], quiet: q.console }).T.buildTrackPage();
+  assert.ok(html.includes("Couldn't load graded picks."));
+  assert.ok(!html.includes("No graded picks in this range yet") && !html.includes("OVERALL RECORD"));
+  assert.ok(q.errors.some((e) => e.includes("prediction_accuracy")));
+  const both = await populated({ fail: ["prediction_accuracy", "track_record_start"], quiet: q.console }).T.buildTrackPage();
+  assert.ok(both.includes("Couldn't load the record scope"), "scope failure wins");
+  const ok = await populated({ quiet: q.console }).T.buildTrackPage();
+  assert.ok(!ok.includes("Couldn't load"), "healthy page has no notice");
+});
+
+test("+EV view fails closed on a failed track_record_start too", async () => {
+  const q = loud();
+  const html = await populated({ search: "?view=ev", fail: ["track_record_start"], quiet: q.console }).T.buildTrackPage();
+  assert.ok(html.includes("Couldn't load the record scope") && !html.includes("+EV profit tracker") && !html.includes("+EV pick performance"));
+});
+
+test("the 1,000-row cap on prediction_accuracy is announced on the page", async () => {
+  const many = Array.from({ length: 1000 }, (_, i) => A({ sport: "cfb", game_pk: 5000 + i, game_date: dayOff(-1) }));
+  const q = loud();
+  const html = await populated({ acc: many, quiet: q.console }).T.buildTrackPage();
+  assert.ok(html.includes("Showing the most recent 1,000 graded games."));
+  assert.ok(!(await populated().T.buildTrackPage()).includes("most recent 1,000"));
+});
+
+test("mini bars keep empty weeks as zero-height slots (the bars do not shift)", async () => {
+  const acc = [A({ sport: "cfb", game_pk: 1, game_date: dayOff(-1) }), A({ sport: "cfb", game_pk: 2, game_date: dayOff(-22) })];
+  const html = await populated({ acc, starts: [] }).T.buildTrackPage();
+  const total = html.slice(html.indexOf("TOTAL PREDICTIONS"), html.indexOf("CURRENT STREAK"));
+  assert.ok((total.match(/<rect /g) || []).length >= 4, "three-plus weeks apart: the gap weeks are bars too");
+});
+
+// A tiny document: just enough for wireTrackPage's delegated handlers, with every redraw recorded.
+function fakeTrackDoc() {
+  const handlers = {}, root = { innerHTML: "", addEventListener: (t, f) => { handlers[t] = f; }, querySelector: () => ({}) }, els = {};
+  const doc = { body: { dataset: { page: "track" }, appendChild() {}, classList: { add() {}, remove() {} } }, head: { appendChild() {} }, documentElement: {}, createElement: () => ({}),
+    getElementById: (id) => (id === "trk-root" ? root : (els[id] = els[id] || { id, outerHTML: "" })), querySelector: () => null, querySelectorAll: () => [], addEventListener() {} };
+  return { doc, handlers, root, els };
+}
+const hit = (map) => ({ target: { closest: (sel) => map[sel] || null, matches: (sel) => !!map[`matches:${sel}`], value: map.value } });
+
+test("interaction: range, archive, filters, Show more and the URL (non-default values only)", async () => {
+  const D = fakeTrackDoc(), urls = [];
+  const many = Array.from({ length: 20 }, (_, i) => A({ sport: "cfb", game_pk: 700 + i, game_date: dayOff(-1 - (i % 5)) }));
+  const T2 = loadScripts(["app.js", "js/metrics.js", "js/ui.js", "js/shell.js", "js/data.js", "js/pages/track.js", "js/boot.js"], { page: "track", globals: {
+    document: D.doc, location: { search: "", href: "http://localhost/track-record.html" }, history: { replaceState: (a, b, u) => urls.push(u) },
+    fetch: async (url) => { const { path } = urlParts(url); return { ok: true, json: async () => (path === "prediction_accuracy" ? many : path === "track_record_start" ? [] : []) }; } } });
+  const html = await T2.buildTrackPage();
+  assert.ok(html.includes('id="trk-root"'));
+  T2.wireTrackPage();
+  const last = () => new URL(urls[urls.length - 1]);
+  // range pill: state + URL + full redraw from the cached load
+  D.handlers.click(hit({ "[data-pill]": { dataset: { pill: "trk-range", key: "7d" } } }));
+  assert.equal(last().searchParams.get("range"), "7d"); assert.equal([...last().searchParams.keys()].join(), "range", "non-default values only");
+  assert.match(D.root.innerHTML, /class="ca-pill on" data-pill="trk-range" data-key="7d"/);
+  // archive toggle
+  D.handlers.click(hit({ "[data-trk-archive]": {} }));
+  assert.equal(last().searchParams.get("archive"), "1"); assert.deepEqual([...last().searchParams.keys()].sort(), ["archive", "range"]);
+  assert.match(D.root.innerHTML, /archived pre-restart/);
+  D.handlers.click(hit({ "[data-trk-archive]": {} }));
+  assert.equal(last().searchParams.has("archive"), false, "toggling back removes the param");
+  D.handlers.click(hit({ "[data-pill]": { dataset: { pill: "trk-range", key: "all" } } }));
+  assert.equal(last().search, "", "everything back to default: a clean URL");
+  // a select change redraws the filters + table cards only and resets the page size
+  D.handlers.change({ target: { closest: (sel) => (sel === "select[data-trk]" ? { dataset: { trk: "league" }, value: "cfb" } : null) } });
+  assert.equal(last().searchParams.get("league"), "cfb");
+  assert.ok(D.els["trk-filters"].outerHTML.includes('<option value="cfb" selected>') && D.els["trk-table"].outerHTML.includes("<tbody>"));
+  // Show more
+  D.handlers.click(hit({ "[data-trk-more]": {} }));
+  assert.equal(last().searchParams.get("n"), "50"); assert.equal((D.els["trk-table"].outerHTML.match(/<tr data-href/g) || []).length, 50);
+  D.handlers.click(hit({ "[data-trk-more]": {} }));
+  assert.equal(last().searchParams.get("n"), "75");
+  assert.ok(!D.els["trk-table"].outerHTML.includes("data-trk-more"), "all 60 shown");
+  // a filter change goes back to the first page
+  D.handlers.change({ target: { closest: (sel) => (sel === "select[data-trk]" ? { dataset: { trk: "result" }, value: "W" } : null) } });
+  assert.equal(last().searchParams.has("n"), false); assert.equal(last().searchParams.get("result"), "W");
+  // search typing redraws the table only
+  const before = D.els["trk-filters"].outerHTML;
+  D.handlers.input({ target: { matches: (sel) => sel === "[data-trk-q]", value: "detroit" } });
+  assert.equal(last().searchParams.get("q"), "detroit"); assert.equal(D.els["trk-filters"].outerHTML, before, "the search box is not re-rendered while typing");
+  // pills + reset
+  D.handlers.click(hit({ "[data-pill]": { dataset: { pill: "trk-mkt", key: "spread" } } }));
+  assert.equal(last().searchParams.get("market"), "spread");
+  D.handlers.click(hit({ "[data-pill]": { dataset: { pill: "trk-chart", key: "cfb" } } }));
+  assert.equal(last().searchParams.get("chart"), "cfb"); assert.ok(D.els["trk-cum"].outerHTML.includes("Cumulative"));
+  D.handlers.click(hit({ "[data-trk-reset]": {} }));
+  assert.deepEqual([...last().searchParams.keys()], ["chart"], "reset clears the filters only");
+});
+
+test("CSS contract: every ca-* class the +EV and Track Record filter bars emit exists in theme.css (no dangling renames)", async () => {
+  const fs = await import("node:fs");
+  const css = fs.readFileSync(new URL("../css/theme.css", import.meta.url), "utf8");
+  const classesIn = (html) => [...new Set([...html.matchAll(/class="([^"]*)"/g)].flatMap((m) => m[1].split(/\s+/)).filter((c) => /^ca-/.test(c)))];
+  const hooks = new Set(["ca-minibars", "ca-spark", "ca-donut", "ca-bar"]);   // SVG hook classes from ui.js, deliberately unstyled
+  const defined = (c, strict) => new RegExp(`${strict ? "(^|\\n|,)" : ""}\\.${c}(?![\\w-])`).test(css);
+  // strict: a top-level rule (a class that is only in a media-query override is a dangling rename); loose: anywhere in the CSS
+  const missing = (html, strict = true) => classesIn(html).filter((c) => !hooks.has(c) && !defined(c, strict));
+  const trk = (await populated().T.buildTrackPage());
+  const bar = trk.slice(trk.indexOf('class="ca-card ca-trk-filters"'), trk.indexOf('id="trk-table"'));
+  assert.ok(classesIn(bar).length >= 6, "found the filter bar classes");
+  assert.deepEqual(missing(bar), [], "track filter bar classes are all styled");
+  const E = loadScripts(["app.js", "js/metrics.js", "js/ui.js", "js/shell.js", "js/data.js", "js/pages/ev.js", "js/boot.js"], { page: "ev", globals: { fetch: async () => ({ ok: true, json: async () => [] }) } });
+  const ev = await E.buildEvPage();
+  const evBar = ev.slice(ev.indexOf('class="ca-card ca-ev-filters"'), ev.indexOf('class="ca-ev-main"'));
+  assert.ok(classesIn(evBar).includes("ca-ev-filters") && classesIn(evBar).includes("ca-ev-fgrid"), "the +EV bar emits its own grid classes");
+  assert.deepEqual(missing(evBar), [], "+EV filter bar classes are all styled");
+  assert.deepEqual(missing(trk, false), [], "every ca-* class on the Track Record page appears in the CSS");
+  assert.deepEqual(missing(ev, false), [], "every ca-* class on the +EV page appears in the CSS");
+  assert.ok(!/\.ca-ev-f[ {.]|\.ca-ev-search|\.ca-ev-cap/.test(css), "no dead CSS for the renamed shared classes");
 });

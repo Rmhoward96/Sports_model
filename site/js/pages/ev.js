@@ -294,7 +294,7 @@ function evxBuckets(D) {
     ? `<table class="ca-table ca-ev-bt"><thead><tr><th>Edge Range</th><th>n</th><th>Hits</th><th>ROI</th><th>Units</th></tr></thead><tbody>${b.map((x) => x.n
       ? `<tr title="${x.hits} of ${x.n} graded picks"><td>${ctxEsc(x.label)}</td><td class="muted">${x.n}</td><td>${Math.round(x.hits / x.n * 100)}%</td><td class="${signCls(x.roiPct)} ca-b">${pStr(x.roiPct)}</td><td class="${signCls(x.units)} ca-b">${uStr(x.units)}</td></tr>`
       : `<tr class="muted"><td>${ctxEsc(x.label)}</td><td>0</td><td>—</td><td>—</td><td>—</td></tr>`).join("")}</tbody></table>
-      <p class="ca-ev-cap">${rows.length} graded +EV picks (game lines + props) with a stored flagged price and edge.</p>`
+      <p class="ca-cap">${rows.length} graded +EV picks (game lines + props) with a stored flagged price and edge.</p>`
     : emptyMsg("No graded +EV picks with a flagged price yet.");
   return `<section class="ca-card ca-ev-rail-card" id="ev-buckets"><div class="ca-card-head"><h2>Performance by Edge Bucket</h2></div>${body}</section>`;
 }
