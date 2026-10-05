@@ -215,7 +215,9 @@ function scatterChart({ dots, line, base, flat } = {}, { h = 150, yLo = 0, yHi =
   const lines = flatLine + (bs.length > 1 ? `<path d="${path(bs)}" fill="none" stroke="#9AA3AE" stroke-width="1.5" stroke-dasharray="5 4" vector-effect="non-scaling-stroke"/>` : "")
     + (ln.length > 1 ? `<path d="${path(ln)}" fill="none" stroke="var(--navy)" stroke-width="1.5" vector-effect="non-scaling-stroke" stroke-linejoin="round"/>` : "");
   const yl = yTicks.map((t) => `<span class="ca-yl" style="top:${Y(t).toFixed(2)}%">${uiClean(String(t))}${ctxEsc(yUnit)}</span>`).join("");
-  const xl = nt.ticks.filter((t) => t.v >= -M - 1e-9 && t.v <= M + 1e-9).map((t) => `<span class="ca-xl" style="left:${X(t.v).toFixed(2)}%">${t.v > 0 ? "+" : ""}${t.text}${ctxEsc(xUnit)}</span>`).join("");
+  const xt = nt.ticks.filter((t) => t.v >= -M - 1e-9 && t.v <= M + 1e-9);
+  // the outermost labels hang inward (start / end aligned) so no label leaves the plot box
+  const xl = xt.map((t, i) => `<span class="ca-xl${i === 0 ? " ca-xl-start" : i === xt.length - 1 ? " ca-xl-end" : ""}" style="left:${X(t.v).toFixed(2)}%">${t.v > 0 ? "+" : ""}${t.text}${ctxEsc(xUnit)}</span>`).join("");
   const nMax = Math.max(...ds.map((d) => (uiFin(d.n) ? +d.n : 1)), 1);
   const dot = ds.map((d) => `<span class="ca-dot ca-sc-dot" style="left:${X(d.x).toFixed(2)}%;top:${Y(d.y).toFixed(2)}%;--r:${(8 + 6 * Math.sqrt((uiFin(d.n) ? +d.n : 1) / nMax)).toFixed(1)}px"${d.title ? ` title="${ctxEsc(d.title)}"` : ""}></span>`).join("");
   return `<div class="ca-chart ca-scatter" style="position:relative;height:${h}px"><div class="ca-plot"><svg viewBox="0 0 1000 100" preserveAspectRatio="none">${grid}${zero}${lines}</svg>${yl}${xl}${dot}</div></div>`;

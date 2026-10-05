@@ -192,7 +192,7 @@ test("Model vs. Market pills: only the markets with data; Player Props is hidden
   P.G.blSetMarket("total"); assert.ok(P.G.blModelMarket(D).includes("Share of games where the game went over"));
 });
 
-test("Key Insights threshold: a row needs 8 graded games; the card is hidden while no row qualifies; rows name their sample", async () => {
+test("Key Insights threshold: a row needs 8 decided picks (pushes do not count); the card is hidden while no row qualifies; rows name their sample", async () => {
   const G = populated().G, mk = (n) => ({ accRec: ACC.slice(0, n), rec: G.trackRows(ACC.slice(0, n), [], new Map()) });
   assert.deepEqual(G.blInsights(mk(7), "nfl"), [], "7 games: no group reaches 8");
   const by = Object.fromEntries(G.blInsights(mk(8), "nfl").map((r) => [r.key, r]));
@@ -200,6 +200,11 @@ test("Key Insights threshold: a row needs 8 graded games; the card is hidden whi
   assert.ok(by.overs && by.overs.n === 8 && !by.unders && !by.group && !by.short, "over picks qualify too; nothing else has 8 games");
   assert.equal(by.homefav.pct, 5 / 8, "the home side covered (home margin +7) in games 1, 2, 4, 5, 7 of the first 8");
   assert.equal(by.homefav.stat, "Model spread picks 5-3 (63%) this season");
+  // the sample counts decided picks: a push is neither a win nor a loss
+  const push = (n) => { const a = ACC.slice(0, n).map((x, i) => (i === 0 ? { ...x, actual_margin: 3, spread_pick_correct: null } : x)); return { accRec: a, rec: G.trackRows(a, [], new Map()) }; };
+  assert.equal(G.blInsights(push(8), "nfl").find((r) => r.key === "homefav"), undefined, "8 spread picks with a push: only 7 decided, no row");
+  const p9 = G.blInsights(push(9), "nfl").find((r) => r.key === "homefav");
+  assert.ok(p9 && p9.n === 8 && p9.stat === "Model spread picks 6-2-1 (75%) this season", JSON.stringify(p9));
   const l = G.blInsights(mk(12), "nfl");
   assert.ok(l.length <= 4 && l.every((r) => r.n >= 8));
   assert.ok(l.every((r, i) => !i || Math.abs(l[i - 1].pct - 0.5) >= Math.abs(r.pct - 0.5) - 1e-9), "ordered by distance from 50%");
@@ -311,4 +316,17 @@ test("interaction: the Model vs. Market pill and the Week / Season toggle redraw
   assert.ok(els["board-season-perf"].outerHTML.includes("<h2>Week 3 Performance</h2>"));
   G.blClick({ target: { closest: () => null } }); G.blClick({ target: {} });
   assert.equal(requested.length, fetched, "no refetch");
+});
+
+test("Key Insights / Model vs. Market wording: \"this season\" only when the record starts with the season; a later record start (NFL restart) says \"in the published record\"", async () => {
+  const G = populated().G, starts = (iso) => new Map([["nfl", { starts_at: iso }]]);
+  assert.equal(G.blWhen({ starts: new Map() }, "nfl", "2026-10-05"), "this season");
+  assert.equal(G.blWhen({ starts: starts("2026-09-29T17:00:00Z") }, "nfl", "2026-10-05"), "in the published record");
+  assert.equal(G.blWhen({ starts: starts("2026-07-01T17:00:00Z") }, "nfl", "2026-10-05"), "this season", "a record that starts before the season does not shorten it");
+  assert.match(G.blInsights({ accRec: ACC, rec: G.trackRows(ACC, [], new Map()) }, "nfl", "in the published record")[0].stat, /in the published record$/);
+  const st = [{ sport: "nfl", starts_at: "2026-09-25T17:00:00Z", model_version: "nfl-sim-ml-v2" }], html = await populated({ starts: st }).G.buildBoardPage("nfl");
+  assert.ok(card(html, "board-key-insights").includes("in the published record") && !card(html, "board-key-insights").includes("this season"));
+  assert.ok(card(html, "board-model-market").includes("over every graded game in the published record"), "the (i) says it too");
+  const plain = await populated().G.buildBoardPage("nfl");
+  assert.ok(card(plain, "board-key-insights").includes("this season") && !card(plain, "board-key-insights").includes("published record"));
 });

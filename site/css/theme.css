@@ -695,6 +695,7 @@ a.ca-ev-pr:hover{background:#FBFAF6}
   .ca-board-table td,.ca-board-table th{padding-left:1px;padding-right:1px}
   .ca-board-table td:first-child,.ca-board-table th:first-child{padding-left:9px}
   .ca-board-table .ca-bd-pk{display:block;max-width:100%;margin:0 0 1px;font-size:.88em;line-height:1.1}
+  .ca-board-table th.ca-bd-sub{font-size:.86em}
   .ca-bd-sp i{display:block;font-size:.88em;line-height:1.1}
 }
 @container (max-width:660px){
@@ -713,6 +714,8 @@ a.ca-ev-pr:hover{background:#FBFAF6}
 .ca-bd-fin .ca-bd-final{line-height:1.3}.ca-bd-up .ca-bd-alpha{white-space:nowrap}.ca-bd-final span{display:block;white-space:nowrap}.ca-bd-final .ca-bd-win{font-weight:700}
 .ca-bd-res{white-space:nowrap}
 .ca-bd-pk{display:inline-block;max-width:calc(100% - 1.9em);overflow:hidden;text-overflow:ellipsis;vertical-align:bottom;margin-right:.3em;color:var(--muted);font-weight:600}
+/* the graded table's result cells always stack the pick over its W / L / P chip: beside the chip a 4-5 letter abbreviation (WAKE, M-OH, NMSU) was clipped to "WAK…" even at 1920 */
+.ca-bd-fin .ca-bd-res .ca-bd-pk{display:block;max-width:100%;margin:0 0 1px;font-size:.88em;line-height:1.1}
 .ca-bd-go{text-align:center}
 .ca-board-table .ca-go{width:clamp(22px,1.5vw,28px);height:clamp(22px,1.5vw,26px);font-size:.95em}
 .ca-bd-mkt{max-width:100%;font-weight:600}
@@ -745,11 +748,12 @@ a.ca-ev-pr:hover{background:#FBFAF6}
 .ca-bl-pills{margin:4px 0 8px}.ca-bl-pills .ca-pills{gap:clamp(4px,.4vw,6px)}
 .ca-bl-s{display:none}
 @container (max-width:285px){.ca-bl-l{display:none}.ca-bl-s{display:inline}}
-@container (max-width:340px){.ca-bl-v{display:none}}
+@container (max-width:420px){.ca-bl-v{display:none}}
+@container (max-width:285px){.ca-bl-head{flex-wrap:nowrap}.ca-board .ca-bl-card .ca-bl-head h2{font-size:13.5px}.ca-bl-head .ca-link{font-size:10.5px}}
 .ca-bl-legend{display:flex;gap:clamp(10px,1vw,18px);justify-content:center;margin:2px 0 6px;font-size:clamp(11px,.76vw,13px);color:var(--muted)}
 .ca-bl-legend i{display:inline-block;width:9px;height:9px;border-radius:50%;margin-right:5px}
 .ca-bl-lg-ca{background:var(--navy)}.ca-bl-lg-mk{background:#9AA3AE}
-.ca-scatter .ca-plot{left:clamp(30px,2.5vw,40px);right:8px;top:6px;bottom:22px}
+.ca-scatter .ca-plot{left:clamp(30px,2.5vw,40px);right:clamp(14px,1.1vw,20px);top:6px;bottom:22px}
 .ca-scatter .ca-yl,.ca-scatter .ca-xl{font-size:clamp(10px,.7vw,12px)}
 .ca-sc-dot{width:var(--r,10px);height:var(--r,10px);background:var(--navy);box-shadow:0 0 0 2px #fff;cursor:help}
 .ca-bl-edgerow{display:flex;align-items:center;justify-content:space-between;gap:8px;margin-top:6px;font-size:clamp(11px,.76vw,13px)}

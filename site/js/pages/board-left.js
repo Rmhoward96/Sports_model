@@ -13,7 +13,7 @@
    Depends on app.js (sb, sbAll, predictions, evBestLines, evResultsRows, evGradedPicks, trackRecordStarts, inTrackRecord, pnlAgg, uStr, pStr, pct1,
    numOrNull, CFB_TEAM_ID, rkConfId), metrics.js, ui.js and data.js, and board.js (BOARD_*, boardStatusText, boardName). */
 const BL_MIN_MVM = 10;      // fewer graded points than this -> the Model vs. Market empty state
-const BL_MIN_INSIGHT = 8;   // a Key Insights row needs at least this many graded games
+const BL_MIN_INSIGHT = 8;   // a Key Insights row needs at least this many DECIDED picks (wins + losses, pushes do not count)
 const BL_TTL = 60000;
 const BL_SHORT_REST = 5;    // NFL: a team with this many days (or fewer) since its last game is on a short week
 const BL_MM = [["spread", "Spread", "Spread"], ["moneyline", "Moneyline", "ML"], ["total", "Total", "Total"], ["props", "Player Props", "Props"]];
@@ -126,6 +126,11 @@ function blMvmData(L) {
   return out;
 }
 
+// "this season", or "in the published record" when the sport's record starts after the season does (NFL: restarted Sep 29).
+function blWhen(L, sport, today) {
+  const st = L && L.starts && L.starts.get ? L.starts.get(sport) : null, since = st && st.starts_at ? etDateStr(st.starts_at) : "";
+  return since && since > blSeasonStart(sport, today) ? "in the published record" : "this season";
+}
 // ── Key Insights ──
 const blIcon = (paths) => `<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">${paths}</svg>`;
 const BL_ICONS = { home: blIcon(`<path d="M3 11l9-8 9 8"/><path d="M5 10v10h14V10"/><path d="M10 20v-6h4v6"/>`), under: blIcon(`<path d="M3 7l6 6 4-4 8 8"/><path d="M15 17h6v-6"/>`),
@@ -143,28 +148,28 @@ function blGameInfo(L, r, sport) {
   if (rest) { const v = [rest.home, rest.away].filter((x) => x != null); short = v.length ? v.some((x) => x <= BL_SHORT_REST) : null; }
   return { homeFav: ms == null || ms === 0 ? null : ms < 0, group, short };
 }
-// Up to four rows [{ key, icon, title, stat, n, pct }] from the sport's graded record; a row needs a sample of >= BL_MIN_INSIGHT games.
+// Up to four rows [{ key, icon, title, stat, n, pct }] from the sport's graded record; a row needs a sample of >= BL_MIN_INSIGHT decided picks.
 // "Home favorites" = the model's spread picks in games the home team was favoured; Unders / Overs = the model's total picks on that side;
 // Divisional / Conference = the model's moneyline accuracy in games between division / conference rivals; Short-week unders (NFL) = under picks
 // when a team had <= 5 days of rest (needs team_game_log). Rows are ordered by how far the hit rate is from 50%.
-function blInsights(L, sport) {
+function blInsights(L, sport, when = "this season") {
   const info = new Map((L.accRec || []).map((r) => [String(r.game_pk), blGameInfo(L, r, sport)]));
   const picks = (L.rec || []).filter((r) => info.has(String(r.game_pk)));
   const rec = (t) => `${t.w}-${t.l}${t.p ? `-${t.p}` : ""}`, pc = (t) => `${Math.round(t.pct * 100)}%`;
   const word = (t, up, down, flat) => (t.pct >= 0.55 ? up : t.pct <= 0.45 ? down : flat);
   const defs = [
-    ["homefav", "home", (r) => r.market === "spread" && info.get(String(r.game_pk)).homeFav === true, (t) => ["Home favorites", `Model spread picks ${rec(t)} (${pc(t)}) this season`]],
-    ["unders", "under", (r) => r.market === "total" && r.side === "under", (t) => [word(t, "Unders performing", "Unders struggling", "Unders"), `${pc(t)} hit rate (${rec(t)}) this season`]],
-    ["overs", "over", (r) => r.market === "total" && r.side === "over", (t) => [word(t, "Overs performing", "Overs struggling", "Overs"), `${pc(t)} hit rate (${rec(t)}) this season`]],
+    ["homefav", "home", (r) => r.market === "spread" && info.get(String(r.game_pk)).homeFav === true, (t) => ["Home favorites", `Model spread picks ${rec(t)} (${pc(t)}) ${when}`]],
+    ["unders", "under", (r) => r.market === "total" && r.side === "under", (t) => [word(t, "Unders performing", "Unders struggling", "Unders"), `${pc(t)} hit rate (${rec(t)}) ${when}`]],
+    ["overs", "over", (r) => r.market === "total" && r.side === "over", (t) => [word(t, "Overs performing", "Overs struggling", "Overs"), `${pc(t)} hit rate (${rec(t)}) ${when}`]],
   ];
   if (sport === "nfl" || sport === "cfb") defs.push(["group", "group", (r) => r.market === "moneyline" && info.get(String(r.game_pk)).group === true, (t) => [sport === "nfl" ? "Divisional matchups" : "Conference matchups", `${pc(t)} model accuracy (${rec(t)})`]]);
   if (sport === "nfl") defs.push(["short", "short", (r) => r.market === "total" && r.side === "under" && info.get(String(r.game_pk)).short === true, (t) => ["Short-week unders", `${pc(t)} hit rate (${rec(t)}) · a team on ${BL_SHORT_REST} or fewer days' rest`]]);
   const rows = [];
   for (const [key, icon, test, text] of defs) {
     const t = trackTally(picks.filter(test));
-    if (t.n < BL_MIN_INSIGHT || t.pct == null) continue;
+    if (t.w + t.l < BL_MIN_INSIGHT) continue;      // decided picks only: a push is neither a win nor a loss
     const [title, stat] = text(t);
-    rows.push({ key, icon, title, stat, n: t.n, pct: t.pct });
+    rows.push({ key, icon, title, stat, n: t.w + t.l, pct: t.pct });
   }
   return rows.sort((a, b) => Math.abs(b.pct - 0.5) - Math.abs(a.pct - 0.5) || b.n - a.n).slice(0, 4);
 }
@@ -281,7 +286,7 @@ function blModelMarket(D) {
   const data = blMvmData(L), avail = BL_MM.map(([k]) => k).filter((k) => data[k].n > 0);
   if (!avail.length) return blEmpty(id, title, blLive(D) ? "No graded games with a market line yet." : `${blNoModel(D)} No graded ${boardName(D.sport)} games to compare with the market.`);
   const st = blState(), sel = avail.includes(st.mm) ? st.mm : avail[0], d = data[sel], m = BL_MVM[sel];
-  const head = blHead(title, infoTip(m.tip));
+  const head = blHead(title, infoTip(sel === "props" ? m.tip : m.tip.replace("this season", blWhen(L, D.sport, D.today))));
   if (!d.bins) return blCard(id, `${head}${blMmPills(D, data, sel)}${emptyMsg(`Not enough graded games yet: ${d.n} of ${BL_MIN_MVM} needed.`)}`);
   const dots = d.bins.map((b) => ({ x: b.x, y: b.y, n: b.n, title: `${b.n} ${sel === "props" ? "props" : "games"} · average gap ${signedStr(b.x, 1, m.unit)} · ${m.hit} ${b.y.toFixed(0)}% of the time` }));
   const isMl = sel === "moneyline", chart = scatterChart({ dots, line: d.bins.map((b) => ({ x: b.x, y: b.y })), base: isMl ? d.bins.map((b) => ({ x: b.x, y: b.m })) : null, flat: isMl ? null : 50 }, { h: 150, xUnit: sel === "props" ? "%" : "" });
@@ -303,7 +308,7 @@ function blKeyInsights(D) {
   const L = D.left, id = "board-key-insights", title = "Key Insights";
   if (!L || L.failed.record) return blFailed(id, title);
   if (!blLive(D) && !L.accRec.length) return blEmpty(id, title, `${blNoModel(D)} No graded games to read insights from.`);
-  const rows = blInsights(L, D.sport);
+  const rows = blInsights(L, D.sport, blWhen(L, D.sport, D.today));
   if (!rows.length) return blLive(D) ? "" : blEmpty(id, title, `Not enough graded games yet (${BL_MIN_INSIGHT} needed).`);     // a live sport's card is hidden while no row has a sample of 8 games
   return blCard(id, `${blHead(title)}${rows.map((r) => `<div class="ca-bl-in" data-insight="${ctxEsc(r.key)}"><span class="ca-bl-in-ic ca-bl-in-${ctxEsc(r.key)}">${BL_ICONS[r.icon]}</span><span class="ca-bl-in-t"><b>${ctxEsc(r.title)}</b><small title="${ctxEsc(`${r.stat} · ${r.n} games`)}">${ctxEsc(r.stat)}</small></span></div>`).join("")}`);
 }
