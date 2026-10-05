@@ -504,3 +504,13 @@ test("D8: Watchlist keeps Games / Teams / Players pills and Recent Model Updates
   assert.deepEqual([...wl.matchAll(/data-pill="dash-watch" data-key="(\w+)"/g)].map((m) => m[1]), ["games", "teams", "players"]);
   assert.ok(!html.includes("Recent Model Updates"));
 });
+
+test("D9: cleanup CSS contract: slate cap holds 8 rows, Hit Rate sub fits at ~1280, head links stay inside the card padding", () => {
+  const theme = fs.readFileSync(new URL("../css/theme.css", import.meta.url), "utf8");
+  const cap = theme.match(/\.ca-dash-slate-wrap\{max-height:clamp\((\d+)px,(\d+)vw,(\d+)px\);overflow-y:auto\}/);
+  assert.ok(cap && +cap[1] >= 480 && +cap[3] >= 640, "the Slate cap leaves room for 8 rows at 1440 and 1920 (old cap was clamp(330px,26vw,440px))");
+  assert.match(theme, /@container \(max-width:170px\)\{\.ca-dash-stats \.ca-stat-body\{gap:6px\}\.ca-dash-stats \.ca-stat-visual svg\{max-width:46px\}\}/, "slimmer donut + tighter gap in the narrow stat card");
+  assert.match(theme, /@container \(max-width:470px\)\{#dash-perf \.ca-lk-opt\{display:none\}\}/, "View drops before the Performance head overflows");
+  assert.match(theme, /@container \(max-width:392px\)\{#dash-perf \.ca-card-head\{flex-wrap:wrap\}/, "Performance head wraps instead of overflowing");
+  assert.match(theme, /@container \(max-width:600px\)\{#dash-slate \.ca-card-head \.ca-pills\{gap:5px\}#dash-slate \.ca-card-head \.ca-pill\{padding:5px 9px\}\}/, "Slate head pills tighten before the link leaves the card");
+});

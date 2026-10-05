@@ -122,6 +122,8 @@ footer{width:calc(100% - 2 * var(--gutter));margin:0 auto;padding:16px 0 32px;bo
 .ca-dash-stats .ca-stat-sub,.ca-ev-stats .ca-stat-sub{font-size:clamp(12px,.88vw,13.5px);line-height:1.35}
 .ca-dash-stats .ca-stat-visual,.ca-ev-stats .ca-stat-visual{flex:none}
 @container (max-width:200px){.ca-dash-stats .ca-stat-visual svg,.ca-ev-stats .ca-stat-visual svg{max-width:54px;height:auto}.ca-dash-gt .ca-league{display:none}}
+/* Hit Rate (donut) at ~1280px: a slimmer donut + tighter gap so "+6.1% vs. market" stays on ONE line without an ellipsis */
+@container (max-width:170px){.ca-dash-stats .ca-stat-body{gap:6px}.ca-dash-stats .ca-stat-visual svg{max-width:46px}}
 .ca-dash-gt{display:flex;justify-content:space-between;gap:4px;margin-top:10px}
 .ca-dash-gt-item{display:flex;align-items:center;gap:4px}
 .ca-dash-gt .ca-league{width:17px;height:17px}
@@ -161,8 +163,11 @@ footer{width:calc(100% - 2 * var(--gutter));margin:0 auto;padding:16px 0 32px;bo
 #dash-perf .ca-card-head .ca-pills{gap:4px}
 #dash-perf .ca-card-head .ca-pill{padding:3px 5px;font-size:11px;border-radius:6px}
 #dash-perf .ca-card-head .ca-link{font-size:12px}
-@container (max-width:430px){#dash-perf .ca-lk-opt{display:none}}
-@container (max-width:355px){#dash-perf .ca-card-head{flex-wrap:wrap}#dash-perf .ca-card-head .ca-link{order:2}#dash-perf .ca-card-head .ca-pills{order:3;flex-basis:100%}}
+@container (max-width:470px){#dash-perf .ca-lk-opt{display:none}}
+/* head links stay inside the card padding: below ~430px (1366-1500px viewports) the Performance head tightens its gaps, pill padding and title, and the Slate head its pill padding, so the whole row fits */
+@container (max-width:430px){#dash-perf .ca-card-head{gap:5px}#dash-perf .ca-card-head h2{font-size:14.5px}#dash-perf .ca-card-head .ca-info{margin-left:-8px}#dash-perf .ca-card-head .ca-pills{gap:3px}#dash-perf .ca-card-head .ca-pill{padding:3px 4px}}
+@container (max-width:600px){#dash-slate .ca-card-head .ca-pills{gap:5px}#dash-slate .ca-card-head .ca-pill{padding:5px 9px}}
+@container (max-width:392px){#dash-perf .ca-card-head{flex-wrap:wrap}#dash-perf .ca-card-head .ca-link{order:2}#dash-perf .ca-card-head .ca-pills{order:3;flex-basis:100%}}
 .ca-dash-sub .ca-card-head .ca-pill{padding:5px clamp(7px,.7vw,11px);font-size:clamp(11.5px,.8vw,13px)}
 .ca-dash-pillrow{display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-bottom:14px}
 .ca-dash-pillrow .ca-pill{padding:clamp(6px,.5vw,8px) clamp(12px,1.05vw,18px);font-size:clamp(12.5px,.9vw,14.5px)}
@@ -218,7 +223,7 @@ footer{width:calc(100% - 2 * var(--gutter));margin:0 auto;padding:16px 0 32px;bo
 .ca-dash-slate th:last-child,.ca-dash-slate td:last-child{padding-right:10px}
 .ca-dash-actions{text-align:right}
 .ca-dash-actions .ca-star{padding:0 1px;font-size:15px;vertical-align:middle}
-.ca-dash-slate-wrap{max-height:clamp(330px,26vw,440px);overflow-y:auto}
+.ca-dash-slate-wrap{max-height:clamp(480px,38vw,640px);overflow-y:auto}
 .ca-dash-slate th{position:sticky;top:0;z-index:1}
 #dash-slate{display:flex;flex-direction:column;container-type:inline-size}
 #dash-opps{container-type:inline-size}
@@ -231,7 +236,7 @@ footer{width:calc(100% - 2 * var(--gutter));margin:0 auto;padding:16px 0 32px;bo
   .ca-dash .ca-dash-opps .ca-conf{min-width:50px}
 }
 @container (max-width:760px){.ca-dash-opps .ca-book{display:none}.ca-dash-opps .ca-dash-who{max-width:112px}.ca-dash-opps .ca-dash-mkt{max-width:90px}.ca-dash .ca-dash-opps .ca-conf{min-width:46px;padding:4px}}
-@container (max-width:440px){#dash-slate .ca-card-head{flex-wrap:wrap}#dash-slate .ca-card-head .ca-link{order:2}#dash-slate .ca-card-head .ca-pills{order:3;flex-basis:100%}
+@container (max-width:460px){#dash-slate .ca-card-head{flex-wrap:wrap}#dash-slate .ca-card-head .ca-link{order:2}#dash-slate .ca-card-head .ca-pills{order:3;flex-basis:100%}
   .ca-dash-slate th:nth-child(1){width:20%}.ca-dash-slate th:nth-child(2){width:27%}.ca-dash-slate th:nth-child(3){width:17%}.ca-dash-slate th:nth-child(4){width:11%}.ca-dash-slate th:nth-child(5){width:11%}.ca-dash-slate th:nth-child(6){width:14%}.ca-dash .ca-dash-slate .ca-go{width:26px}}
 .ca-dash-minis{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:10px;margin-bottom:10px}
 .ca-dash-mini{border:1px solid var(--line);border-radius:10px;padding:8px 6px;text-align:center}
@@ -302,6 +307,8 @@ footer{width:calc(100% - 2 * var(--gutter));margin:0 auto;padding:16px 0 32px;bo
 .ca-sfind{display:flex;align-items:center;padding:clamp(12px,1vw,18px) clamp(10px,1vw,22px)}
 .ca-sfind .ca-search svg{width:clamp(16px,1.1vw,20px);height:clamp(16px,1.1vw,20px);flex:none}
 .ca-sfind .ca-search{flex:1;min-width:0;padding:0 clamp(8px,.75vw,12px);gap:6px}
+/* Track Record search card is the narrow 23% rail column: tighter side padding up to 1500px so "Search teams, players, or games..." reads in full at 1280px */
+@media (max-width:1500px){.ca-trk .ca-sfind{padding-left:10px;padding-right:10px}.ca-trk .ca-sfind .ca-search{padding:0 6px}}
 .ca-f{display:flex;flex-direction:column;gap:6px;min-width:0;font-size:13px;color:var(--ink)}
 .ca-f span{color:var(--muted);font-weight:500}
 .ca-f .ca-select{width:100%;min-width:0;height:40px;padding:0 6px;background:#fff;font-size:13px}
@@ -329,13 +336,13 @@ footer{width:calc(100% - 2 * var(--gutter));margin:0 auto;padding:16px 0 32px;bo
 .ca-ev-table .ca-conf{min-width:clamp(54px,4.2vw,76px)}
 .ca-ev-table .ca-book{width:22px;height:22px}
 .ca-ev-table .ca-league{width:clamp(16px,1.2vw,22px);height:clamp(16px,1.2vw,22px)}
-.ca-ev-mkt{max-width:clamp(100px,7.2vw,150px)}
+.ca-ev-mkt{max-width:clamp(100px,8vw,160px)}
 .ca-ev-who{display:flex;flex-direction:column;line-height:1.25;max-width:clamp(120px,9vw,200px)}
 .ca-ev-who small{color:var(--muted);font-size:.86em}
 .ca-ev-player{display:inline-flex;align-items:center;gap:2px}
 .ca-ev-player .ca-star{padding:0 2px;font-size:15px}
 .prop-proj td .ca-star{padding:0 4px 0 0;font-size:15px;vertical-align:-1px}
-.ca-ev-table .ca-team .ca-ell{max-width:clamp(120px,9vw,200px)}
+.ca-ev-table .ca-team .ca-ell{max-width:clamp(120px,10vw,200px)}
 .ca-ev-prob .ca-fair{margin-left:4px}
 .ca-ev-reset{margin:0 0 14px 4px}
 /* narrower table card (1280-1700px viewports): league logo only, two-line headers, tighter cells */
@@ -343,10 +350,10 @@ footer{width:calc(100% - 2 * var(--gutter));margin:0 auto;padding:16px 0 32px;bo
   .ca-ev-sport-t{display:none}
   .ca-ev .ca-ev-table th{white-space:normal}
   .ca-ev .ca-ev-table th,.ca-ev .ca-ev-table td{padding-left:4px;padding-right:4px}
-  .ca-ev-table .ca-ev-mkt{max-width:104px}.ca-ev-who,.ca-ev-table .ca-team .ca-ell{max-width:124px}
+  .ca-ev-table .ca-ev-mkt{max-width:132px}.ca-ev-who,.ca-ev-table .ca-team .ca-ell{max-width:170px}
   .ca-ev .ca-ev-table .ca-conf{min-width:48px;padding:4px}
 }
-@container (max-width:900px){.ca-ev-table .ca-book{display:none}.ca-ev-table .ca-ev-mkt{max-width:88px}.ca-ev-who,.ca-ev-table .ca-team .ca-ell{max-width:104px}
+@container (max-width:900px){.ca-ev-table .ca-book{display:none}.ca-ev-table .ca-ev-mkt{max-width:116px}.ca-ev-who,.ca-ev-table .ca-team .ca-ell{max-width:128px}
   .ca-ev .ca-ev-table th,.ca-ev .ca-ev-table td{padding-left:3px;padding-right:3px}.ca-ev .ca-ev-table .ca-conf{min-width:44px}}
 /* rail: Top Alpha, Market Pulse full width; EV Distribution + Performance by Edge Bucket side by side */
 .ca-ev-rail{display:grid;gap:16px;align-content:start;min-width:0}
@@ -383,7 +390,8 @@ a.ca-ev-pr:hover{background:#FBFAF6}
 #ev-dist .ca-hist{display:block;margin:0 auto;width:100%;height:auto}
 /* the SVG scales with the card, so its text is set in viewBox units (170 wide): ~10px rendered at every rail width; below ~190px every second bin label is dropped */
 #ev-dist .ca-axis,#ev-dist .ca-bar-val{font-size:9.5px}
-@container (max-width:190px){#ev-dist .ca-axis,#ev-dist .ca-bar-val{font-size:10.5px}#ev-dist .ca-axis-alt{display:none}}
+/* below ~190px all 6 bin labels stay (none are dropped): every 2nd label drops onto a second row (14 viewBox units lower; the svg gets the matching space below) so the larger font never overlaps its neighbour */
+@container (max-width:190px){#ev-dist .ca-axis,#ev-dist .ca-bar-val{font-size:10.5px}#ev-dist .ca-hist{overflow:visible;margin-bottom:8.3cqw}#ev-dist .ca-axis-alt{transform:translateY(14px)}}
 @container (max-width:165px){#ev-dist .ca-axis,#ev-dist .ca-bar-val{font-size:12px}}
 @container (max-width:140px){#ev-dist .ca-axis,#ev-dist .ca-bar-val{font-size:13.5px}}
 .ca-ev-bt{font-size:clamp(10.5px,.72vw,13px)}
@@ -570,7 +578,15 @@ a.ca-ev-pr:hover{background:#FBFAF6}
   background:#fff url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='14' height='14' viewBox='0 0 24 24' fill='none' stroke='%2314202E' stroke-width='2.4' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M6 9l6 6 6-6'/%3E%3C/svg%3E") no-repeat right 7px center}
 .ca-trk .ca-search{height:clamp(34px,2.2vw,42px)}
 .ca-trk .ca-search .ca-input{height:clamp(32px,2.1vw,40px);font-size:clamp(12px,.82vw,15px);text-overflow:ellipsis}
-@container (max-width:1480px){.ca-trk-filters{flex-wrap:wrap}.ca-trk-fgrid{flex-basis:100%}}
+/* F7: filters share one line from a ~1331px container up (1440px viewport); below that the select grid wraps under the pills */
+@container (max-width:1330px){.ca-trk-filters{flex-wrap:wrap}.ca-trk-fgrid{flex-basis:100%}}
+@container (min-width:1331px) and (max-width:1580px){
+  .ca-trk-filters{gap:10px}
+  .ca-trk-fgrid{grid-template-columns:repeat(6,minmax(0,auto));gap:5px}
+  .ca-trk .ca-f .ca-select{padding:0 17px 0 5px;background-position:right 4px center;text-overflow:ellipsis}
+  .ca-trk-filters .ca-pill{padding:6px 9px}
+  .ca-trk-filters .ca-pills{gap:4px}
+}
 .ca-trk-main{display:grid;grid-template-columns:minmax(0,77fr) minmax(0,23fr);gap:16px;align-items:start}
 .ca-trk-left{min-width:0}
 .ca-trk-tablecard{padding:clamp(8px,.7vw,14px) clamp(8px,.8vw,16px) 14px;min-width:0;container-type:inline-size}

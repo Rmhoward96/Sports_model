@@ -376,3 +376,12 @@ test("E3 type scale: the +EV page uses the shared fluid tokens, not the old 24px
   assert.match(css, /\.ca-dash-stats \.ca-stat-value,\.ca-ev-stats \.ca-stat-value\{font-size:var\(--fs-stat\)/);
   assert.match(css, /#ev-table[^{]*\{[^}]*container-type|\.ca-ev-tablecard\{[^}]*container-type:inline-size/, "table card is a size container for the column-fitting queries");
 });
+
+test("E7: cleanup CSS contract: EV Distribution keeps all six labels (staggered, never dropped); table name/market caps widened", () => {
+  const css = require_src("css/theme.css");
+  assert.doesNotMatch(css, /#ev-dist \.ca-axis-alt\{display:none\}/, "no bin label is hidden at any rail width");
+  assert.match(css, /@container \(max-width:190px\)\{[^\n]*#ev-dist \.ca-axis-alt\{transform:translateY\(14px\)\}/, "every 2nd label drops to a second row");
+  assert.match(css, /#ev-dist \.ca-hist\{overflow:visible;margin-bottom:8\.3cqw\}/, "the svg reserves the second row's space");
+  assert.match(css, /@container \(max-width:1200px\)\{[\s\S]*?\.ca-ev-table \.ca-ev-mkt\{max-width:132px\}\.ca-ev-who,\.ca-ev-table \.ca-team \.ca-ell\{max-width:170px\}/, "1200px tier: market 132px, matchup/player 170px");
+  assert.match(css, /@container \(max-width:900px\)\{[^\n]*\.ca-ev-table \.ca-ev-mkt\{max-width:116px\}\.ca-ev-who,\.ca-ev-table \.ca-team \.ca-ell\{max-width:128px\}/, "900px tier widened too");
+});

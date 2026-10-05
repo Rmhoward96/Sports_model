@@ -696,3 +696,15 @@ test("T2 Record select: +EV picks re-renders the page with the +EV sections (and
   assert.equal(last().searchParams.has("view"), false, "model picks is the default: a clean URL");
   assert.ok(R.shell.html.includes("Cumulative Prediction Performance") && !R.shell.html.includes("+EV profit tracker"));
 });
+
+test("T8: filter row is one line from a ~1331px container (F7), wraps below; search card keeps its full placeholder on the narrow rail", () => {
+  const css = fs.readFileSync(new URL("../css/theme.css", import.meta.url), "utf8");
+  assert.match(css, /@container \(max-width:1330px\)\{\.ca-trk-filters\{flex-wrap:wrap\}\.ca-trk-fgrid\{flex-basis:100%\}\}/, "wrap only below the 1331px container");
+  assert.doesNotMatch(css, /@container \(max-width:1480px\)\{\.ca-trk-filters/, "the old 1480px wrap threshold is gone");
+  const band = css.slice(css.indexOf("@container (min-width:1331px) and (max-width:1580px){"));
+  const block = band.slice(0, band.indexOf("\n}") + 2);
+  assert.match(block, /\.ca-trk-fgrid\{grid-template-columns:repeat\(6,minmax\(0,auto\)\)/, "six content-sized selects on one line");
+  assert.match(block, /\.ca-trk \.ca-f \.ca-select\{[^}]*text-overflow:ellipsis/, "long selected options ellipsise inside the closed select");
+  assert.ok(!/11\.5px/.test(block), "the 12px font floor holds in the one-line band");
+  assert.match(css, /@media \(max-width:1500px\)\{\.ca-trk \.ca-sfind\{padding-left:10px;padding-right:10px\}\.ca-trk \.ca-sfind \.ca-search\{padding:0 6px\}\}/, "Track search card side padding is tightened (scoped to .ca-trk so +EV is unchanged)");
+});
