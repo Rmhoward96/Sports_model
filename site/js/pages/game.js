@@ -379,7 +379,8 @@ function gmHero(D) {
   const when = gmWhen(r.commence_time);
   const team = (side) => {
     const rec = gmRecord(D.ctxHist, D.ctxPower, side), nm = side === "home" ? r.home_team_name : r.away_team_name;
-    return `<div class="ca-gm-team">${logoImg(nm, sport)}<h1>${gmEsc(gmName(D, side))}</h1>${rec ? `<p class="ca-gm-rec">${gmEsc(rec)}</p>` : ""}</div>`;
+    // R24: the team's star (shell-owned toggle) fills the dashboard Watchlist's Teams tab; id = the full team name.
+    return `<div class="ca-gm-team">${logoImg(nm, sport)}<div class="ca-gm-name"><h1>${gmEsc(gmName(D, side))}</h1>${starButton("teams", nm, nm)}</div>${rec ? `<p class="ca-gm-rec">${gmEsc(rec)}</p>` : ""}</div>`;
   };
   const price = (x) => (x != null ? oddsStr(x) : "—");
   const L = o.spread.line, T = o.total.line;
@@ -522,7 +523,9 @@ function gmTrendsTab(D) {
 }
 function gmPlayersTab(D) {
   if (!D.isNfl) return emptyMsg("Player projections are NFL-only for now.");
-  return gmLegacy(propsProjectionSection(D.sims, D.props, D.playerActuals, D.propLines, D.simTag) + boxscoreSection(D.sims, D.r), "No player projections for this game yet.");
+  // R24: a star per player (shell-owned) fills the Watchlist's Players tab; id = the player's name as ev_prop_picks carries it.
+  const star = (name) => starButton("players", name, name);
+  return gmLegacy(propsProjectionSection(D.sims, D.props, D.playerActuals, D.propLines, D.simTag, { star }) + boxscoreSection(D.sims, D.r), "No player projections for this game yet.");
 }
 const GM_PANELS = { overview: gmOverview, matchup: gmMatchupTab, market: gmMarketTab, trends: gmTrendsTab, players: gmPlayersTab };
 

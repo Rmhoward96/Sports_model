@@ -229,7 +229,7 @@ function evxTabs(D) {
 function evxRow(o, i, D) {
   const [away, home] = matchupSides(o.matchup), pick = pickLabel(o, D.lineBy);
   const who = o.kind === "prop"
-    ? `<span class="ca-ev-who" title="${ctxEsc(`${o.playerName || ""} · ${shortMatchup(away, home, o.sport)}`)}"><b class="ca-ell">${ctxEsc(o.playerName || "")}</b><small class="ca-ell">${ctxEsc(shortMatchup(away, home, o.sport))}</small></span>`
+    ? `<span class="ca-ev-player">${o.playerName ? starButton("players", o.playerName, o.playerName) : ""}<span class="ca-ev-who" title="${ctxEsc(`${o.playerName || ""} · ${shortMatchup(away, home, o.sport)}`)}"><b class="ca-ell">${ctxEsc(o.playerName || "")}</b><small class="ca-ell">${ctxEsc(shortMatchup(away, home, o.sport))}</small></span></span>`
     : `<span class="ca-team" title="${ctxEsc(shortMatchup(away, home, o.sport))}">${oppLogo(o) || logoImg(away, o.sport)}<span class="ca-ell">${ctxEsc(shortMatchup(away, home, o.sport))}</span></span>`;
   return `<tr data-href="${gameHref(o.sport, o.game_pk)}"><td class="muted">${i + 1}</td><td><span class="ca-team">${leagueLogo(o.sport)}${SPORT_NAME[o.sport] || ""}</span></td><td>${who}</td>
     <td><span class="ca-ell ca-ev-mkt" title="${ctxEsc(pick)}">${ctxEsc(pick)}</span></td><td><span class="ca-dash-odds">${bookBadge(o.book)}${oddsStr(o.odds)}</span></td>

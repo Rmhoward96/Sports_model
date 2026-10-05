@@ -269,6 +269,9 @@ a{color:inherit}
 .ca-ev-mkt{max-width:112px}
 .ca-ev-who{display:flex;flex-direction:column;line-height:1.25;max-width:120px}
 .ca-ev-who small{color:var(--muted);font-size:11.5px}
+.ca-ev-player{display:inline-flex;align-items:center;gap:2px}
+.ca-ev-player .ca-star{padding:0 2px;font-size:15px}
+.prop-proj td .ca-star{padding:0 4px 0 0;font-size:15px;vertical-align:-1px}
 .ca-ev-table .ca-team .ca-ell{max-width:120px}
 .ca-ev-table .ca-conf{min-width:60px;padding:4px 5px;font-size:10.5px}
 .ca-ev-table .ca-alpha-cell{min-width:40px;padding:3px 5px}
@@ -327,6 +330,8 @@ a.ca-ev-pr:hover{background:#FBFAF6}
 .ca-gm-team{display:flex;flex-direction:column;align-items:center;gap:6px;text-align:center;min-width:0}
 .ca-gm-team .tlogo{width:112px!important;height:112px!important;max-width:112px;max-height:112px;margin:0 0 4px!important;filter:drop-shadow(0 4px 14px rgba(0,0,0,.45))}
 .ca-gm-team h1{margin:0;font:700 30px/1.15 var(--sans);letter-spacing:-.2px;color:#fff;text-shadow:0 2px 14px rgba(0,0,0,.5)}
+.ca-gm-name{display:flex;align-items:center;justify-content:center;gap:6px;min-width:0}
+.ca-gm-name .ca-star{font-size:24px;padding:0 2px;text-shadow:0 2px 10px rgba(0,0,0,.45)}
 .ca-gm-rec{margin:0;color:#D4DEEB;font-size:16px}
 .ca-gm-at{font:700 42px var(--sans);color:#fff;text-shadow:0 2px 14px rgba(0,0,0,.5)}
 .ca-gm-final{margin:-6px 0 14px;text-align:center;color:#EAF1F9;font-weight:600}

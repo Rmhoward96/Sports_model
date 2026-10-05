@@ -377,3 +377,30 @@ test("Best Current Edge picks and shows the largest edge in probability points (
   assert.ok(!html.includes("+30.0%"));
   assert.match(g.dashStatBest({ lineBy: new Map(), opps: [] }), /No \+EV opportunities on this date\./);
 });
+
+test("R24: Watchlist Teams tab lists starred teams with their next game on the board, else just the name", async () => {
+  const { D } = populated({ watch: { games: [], teams: [HOME, "Nowhere FC"], players: [] } });
+  D.dashState.watch = "teams";
+  const html = await D.buildDashboard();
+  const wl = html.slice(html.indexOf('id="watchlist"'));
+  const rows = wl.split('class="ca-dash-wl-row"').slice(1);
+  assert.equal(rows.length, 2);
+  assert.match(rows[0], /class="ca-star on" data-star-kind="teams" data-star-id="Kansas City &quot;Chiefs&quot;"/);
+  assert.ok(rows[0].includes("game.html?sport=nfl&game=1") && rows[0].includes("Kansas City &quot;Chiefs&quot;") && rows[0].includes("&lt;b&gt;Crew&lt;/b&gt;"), "links the team's next game, escaped");
+  assert.ok(rows[1].includes("Nowhere FC") && rows[1].includes("No upcoming game"));
+  assert.ok(!/NaN|undefined/.test(html));
+  D.dashState.watch = "games";
+});
+
+test("R24: Watchlist Teams tab skips a team's finished game; Players tab shows a starred player without a prop by name only", async () => {
+  const { D } = populated({ watch: { games: [], teams: [HOME], players: ["Nobody Special"] }, predH: -30 });
+  D.dashState.watch = "teams";
+  let html = await D.buildDashboard();
+  assert.ok(html.slice(html.indexOf('id="watchlist"')).includes("No upcoming game"), "a game that kicked off 30h ago is not 'next'");
+  D.dashState.watch = "players";
+  html = await D.buildDashboard();
+  const wl = html.slice(html.indexOf('id="watchlist"'));
+  assert.match(wl, /class="ca-star on" data-star-kind="players" data-star-id="Nobody Special"/);
+  assert.ok(wl.includes("No +EV prop on the board"));
+  D.dashState.watch = "games";
+});

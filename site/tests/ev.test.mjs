@@ -284,3 +284,12 @@ test("R19: +EV table and Top Alpha rail mark game-line probabilities as the shar
   assert.match(items.find((x) => x.includes("game=1") || x.includes("Chiefs")) || "", /fair<\/span> vs 50\.0%/);
   assert.ok(items.some((x) => x.includes("O&quot;Brien") && !x.includes("ca-fair")), "prop rail row: no marker");
 });
+
+test("R24: prop rows on the +EV table carry the player's star (shell-owned); game-line rows carry none", async () => {
+  const { D } = populated();
+  const html = await D.buildEvPage();
+  const rows = sect(html, "ev-table", "ev-rail").split("<tr data-href").slice(1);
+  assert.match(rows.find((r) => r.includes("game=5")), /<button class="ca-star" data-star-kind="players" data-star-id="O&quot;Brien &lt;i&gt;Zed&lt;\/i&gt;"/);
+  assert.ok(rows.filter((r) => !r.includes("game=5")).every((r) => !r.includes("data-star-kind")), "line rows: no star");
+  assert.ok(!/starToggle\(|starDelegate|data-star-kind/.test(require_src("js/pages/ev.js")), "no page-level star logic (R16)");
+});

@@ -144,7 +144,7 @@ async function dashLoad(date) {
   return {
     date, nowMs, isToday, preds, lineBy, mls, splits, hist: hist || [],
     datePreds: preds.filter((r) => gameDate(r) === date),
-    opps, tiered, allOpps: oppsAll || [],
+    opps, tiered,
     boardOpps: dashBoardOpps(tiered, date, nowMs, isToday),  // separate list for the Best Opportunities card
     counts7: dailyCounts(hist || [], (r) => r.date, 7, date),
     pnl, expo: dashExposure(pnl, [], addDays(date, -29)),
@@ -360,16 +360,21 @@ function dashWatchBody(D) {
       return row(starButton("games", p.game_pk, mu), ctxEsc(mu), o ? ctxEsc(oppTxt(o)) : "", kickLabel(p.commence_time), gameHref(p.sport, p.game_pk));
     });
   } else if (tab === "teams") {
+    // Team stars come from the game page hero (id = the full team name); the row links that team's next game on the board
+    // (kicking off later, or started within the last 4 hours), else shows just the name.
     rows = w.teams.map((id) => {
       const up = String(id).toUpperCase();
       const hit = (n, s) => n && (n === id || shortTeam(n, s) === id || String(teamShort(n, s)).toUpperCase() === up);
-      const p = D.preds.filter((r) => hit(r.home_team_name, r.sport) || hit(r.away_team_name, r.sport)).sort((a, b) => timeMs(a.commence_time) - timeMs(b.commence_time))[0];
+      const p = D.preds.filter((r) => (hit(r.home_team_name, r.sport) || hit(r.away_team_name, r.sport)) && timeMs(r.commence_time) >= D.nowMs - 4 * 36e5)
+        .sort((a, b) => timeMs(a.commence_time) - timeMs(b.commence_time))[0];
       if (!p) return row(starButton("teams", id, id), ctxEsc(id), "No upcoming game", "", "#watchlist");
       return row(starButton("teams", id, id), ctxEsc(id), ctxEsc(shortMatchup(p.away_team_name, p.home_team_name, p.sport)), kickLabel(p.commence_time), gameHref(p.sport, p.game_pk));
     });
   } else {
+    // Player stars come from prop rows (+EV table, game page Players tab); the row shows the player's current prop
+    // opportunity (R9: a pick with a tier), else just the name.
     rows = w.players.map((id) => {
-      const o = D.allOpps.filter((x) => x.kind === "prop" && x.playerName === id).sort((a, b) => b.alpha - a.alpha)[0];
+      const o = D.tiered.filter((x) => x.kind === "prop" && x.playerName === id).sort((a, b) => b.alpha - a.alpha)[0];
       if (!o) return row(starButton("players", id, id), ctxEsc(id), "No +EV prop on the board", "", "#watchlist");
       return row(starButton("players", id, id), ctxEsc(id), ctxEsc(`${pickLabel(o, D.lineBy)} ${oddsStr(o.odds)}`), kickLabel(o.commence), gameHref(o.sport, o.game_pk));
     });

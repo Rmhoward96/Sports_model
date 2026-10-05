@@ -479,3 +479,22 @@ test("wireGamePage / gmRedraw are safe without a game view (other pages, early r
   g.wireGamePage();
   g.gmRedraw();
 });
+
+test("R24: the hero carries a star per team (id = full team name) and the Players tab a star per player; stars stay shell-owned", async () => {
+  const html = await populated().D.buildGamePage();
+  const hero = html.slice(html.indexOf("ca-gm-hero"), html.indexOf('id="gm-read"'));
+  assert.match(hero, /class="ca-star" data-star-kind="teams" data-star-id="Evil &quot;Q&quot; &lt;b&gt;Crew&lt;\/b&gt;"/, "away team star, escaped");
+  assert.match(hero, /class="ca-star" data-star-kind="teams" data-star-id="Kansas City &quot;Chiefs&quot;"/, "home team star");
+  const p = await tabHtml("players");
+  const props = p.slice(p.indexOf("Projected player props"), p.indexOf("Boxscore"));
+  assert.match(props, /data-star-kind="players" data-star-id="O&quot;Brien &lt;i&gt;Zed&lt;\/i&gt;"[^>]*>☆<\/button><b>O&quot;Brien/, "player star before the name");
+  assert.ok(!/addEventListener\("click"[^)]*star/i.test(src("js/pages/game.js")), "no page-level star handler (R16)");
+});
+
+test("R24: a starred team / player renders filled (watchlist read by the shared starButton); no star option -> no star", async () => {
+  const storage = new Map([["ca-watchlist", JSON.stringify({ games: [], teams: [HOME], players: [PLAYER] })]]);
+  const L = loadScripts(FILES, { page: "game", storage });
+  assert.match(L.starButton("teams", HOME, HOME), /class="ca-star on"/);
+  assert.match(L.propsProjectionSection([{ player_id: "p1", name: PLAYER, pos: "WR", team: HOME, market: "rec_yds", mean: 71 }], [], [], [], "", { star: (n) => L.starButton("players", n, n) }), /class="ca-star on" data-star-kind="players"/);
+  assert.ok(!L.propsProjectionSection([{ player_id: "p1", name: PLAYER, pos: "WR", team: HOME, market: "rec_yds", mean: 71 }], [], [], []).includes("ca-star"), "no star option -> no star (legacy callers unchanged)");
+});

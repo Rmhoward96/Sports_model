@@ -1170,7 +1170,8 @@ function wireGameSim() {
 // The sim's projected stat line per featured player for one game, +EV flagged.
 // Once the game is captured (nfl_player_actuals), each cell also shows the
 // player's ACTUAL stat beneath the projection with a ✓/✗ (met/beat our number).
-function propsProjectionSection(sims, props, actuals, lines, modelTag = "") {
+// `star(name)` (optional) renders a watchlist star before each player name (the game page passes the shell's starButton).
+function propsProjectionSection(sims, props, actuals, lines, modelTag = "", { star = null } = {}) {
   const norm = (s) => String(s || "").toLowerCase().replace(/[.’']/g, "").replace(/\s+(jr|sr|ii|iii|iv|v)$/, "").replace(/\s+/g, " ").trim();
   const pickBy = new Map();
   (props || []).filter((p) => p.is_pick).forEach((p) => pickBy.set(`${norm(p.player_name)}|${p.market}`, p));
@@ -1263,7 +1264,7 @@ function propsProjectionSection(sims, props, actuals, lines, modelTag = "") {
     ["PASS TD", (p) => cell(p, "pass_tds", 1)], ["RUSH TD", anyTd]];
   const SKILL_COLS = [["REC YDS", (p) => cell(p, "rec_yds")], ["REC'NS", (p) => cell(p, "receptions", 1)],
     ["RUSH YDS", (p) => cell(p, "rush_yds")], ["RUSH ATT", (p) => cell(p, "rush_att", 1)], ["TD", anyTd]];
-  const group = (title, list, cols) => !list.length ? "" : `<div class="prop-group"><h3>${title}<small>${list.length}</small></h3><div class="table-wrap"><table class="ev-table prop-proj"><thead><tr><th>PLAYER</th>${cols.map(([h]) => `<th>${h}</th>`).join("")}</tr></thead><tbody>${list.map((p) => `<tr><td><b>${ctxEsc(p.name)}</b><small>${ctxEsc(p.team || "")}</small></td>${cols.map(([, f]) => `<td>${f(p)}</td>`).join("")}</tr>`).join("")}</tbody></table></div></div>`;
+  const group = (title, list, cols) => !list.length ? "" : `<div class="prop-group"><h3>${title}<small>${list.length}</small></h3><div class="table-wrap"><table class="ev-table prop-proj"><thead><tr><th>PLAYER</th>${cols.map(([h]) => `<th>${h}</th>`).join("")}</tr></thead><tbody>${list.map((p) => `<tr><td>${star && p.name ? star(p.name) : ""}<b>${ctxEsc(p.name)}</b><small>${ctxEsc(p.team || "")}</small></td>${cols.map(([, f]) => `<td>${f(p)}</td>`).join("")}</tr>`).join("")}</tbody></table></div></div>`;
   const groups = group("Quarterbacks", qbs, QB_COLS) + group("Running Backs", atPos("RB"), SKILL_COLS)
     + group("Wide Receivers", atPos("WR"), SKILL_COLS) + group("Tight Ends", atPos("TE"), SKILL_COLS);
   const note = (hasActuals
