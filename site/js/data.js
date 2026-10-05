@@ -142,6 +142,31 @@ function pickLabel(o, lineBy) {
 }
 // pickLabel with the player's name in front for props ("Josh Allen Over 64.5 Rec Yds").
 const oppLabel = (o, lineBy) => `${o.kind === "prop" ? `${o.playerName || ""} ` : ""}${pickLabel(o, lineBy)}`.trim();
+// ET calendar day of a predictions / results row ("" when it has neither a kickoff nor a game_date).
+const gameDate = (r) => (r && r.commence_time ? etDateStr(r.commence_time) : (r && r.game_date) || "");
+
+// One row per game (predictions), carrying its highest-alpha opportunity (ties -> higher EV) or null.
+function slateRows(predRows, opps) {
+  const best = new Map();
+  for (const o of opps || []) {
+    if (!o) continue;
+    const k = `${o.sport}|${o.game_pk}`, b = best.get(k);
+    if (!b || o.alpha > b.alpha || (o.alpha === b.alpha && (o.evPct ?? -Infinity) > (b.evPct ?? -Infinity))) best.set(k, o);
+  }
+  const seen = new Set(), out = [];
+  for (const r of predRows || []) {
+    if (!r) continue;
+    const k = `${r.sport}|${r.game_pk}`;
+    if (seen.has(k)) continue;
+    seen.add(k);
+    out.push({ sport: r.sport, game_pk: r.game_pk, away: r.away_team_name, home: r.home_team_name, commence: r.commence_time || null, pred: r, opp: best.get(k) || null });
+  }
+  const t = (r) => { const v = timeMs(r.commence); return Number.isFinite(v) ? v : Infinity; };
+  return out.sort((a, b) => t(a) - t(b) || String(a.game_pk).localeCompare(String(b.game_pk)));
+}
+
+// Compact "best bet" text for a slate row: props lead with the player's last name ("Allen Over 64.5 Rec Yds"), lines read as pickLabel.
+const oppSlateLabel = (o, lineBy) => `${o.kind === "prop" ? `${String(o.playerName || "").split(/\s+/).slice(-1)[0]} ` : ""}${pickLabel(o, lineBy)}`.trim();
 // Logo of the team a game-line opportunity is on ("" for props and totals).
 const oppLogo = (o) => {
   if (o.kind === "prop" || o.market === "total") return "";

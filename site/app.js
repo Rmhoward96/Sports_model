@@ -2072,31 +2072,42 @@ function rankingsTable(rows, sport, state) {
   const body = shown.length
     ? shown.map((x) => `<tr>${cols.map((c) => `<td>${c[4](x)}</td>`).join("")}</tr>`).join("")
     : `<tr><td colspan="${cols.length}" class="rk-empty">No ranked teams in this conference.</td></tr>`;
-  return `<div class="table-wrap"><table class="rk-table"><thead><tr>${head}</tr></thead><tbody>${body}</tbody></table></div>`;
+  return `<div class="ca-table-wrap"><table class="ca-table ca-rk-table rk-table"><thead><tr>${head}</tr></thead><tbody>${body}</tbody></table></div>`;
 }
+// The sport whose rankings are on screen: the NFL / CFB board pages are their own sport; rankings.html reads ?sport=.
 function rkSport() {
+  if (page === "nfl" || page === "cfb") return page;
   const s = (new URLSearchParams(location.search).get("sport") || "nfl").toLowerCase();
   return s === "cfb" ? "cfb" : "nfl";
 }
-async function buildRankings() {
-  const sport = rkSport(), name = sport.toUpperCase();
+// power_rankings_current rows of one sport; the sort / conference state survives re-renders (window.__caRank) while the sport stays.
+async function rankingsLoad(sport) {
   const rows = await sb(`power_rankings_current?sport=eq.${sport}&order=rank.asc`).catch(() => []);
   const prev = window.__caRank;
   const st = window.__caRank = prev && prev.sport === sport ? prev : { sport, key: "rank", dir: "asc", conf: "all" };
   window.__caRankRows = rows;
-  const tabs = ["nfl", "cfb"].map((s) => `<a class="${s === sport ? "selected" : ""}" href="rankings.html?sport=${s}">${s.toUpperCase()}</a>`).join("");
-  const wk = rows[0] ? `Season ${ctxEsc(rows[0].season)} · Week ${ctxEsc(rows[0].week)}` : "";
+  return { rows, st };
+}
+function rkConfSelect(rows, sport, st) {   // CFB only
+  if (sport !== "cfb" || !rows.length) return "";
+  const ids = [...new Set(rows.map((x) => rkConfId(x.conf)).filter((c) => c != null))]
+    .sort((a, b) => rkConfName(a).localeCompare(rkConfName(b)));
+  if (st.conf !== "all" && !ids.includes(String(st.conf))) st.conf = "all";
+  return `<label class="rk-conf">Conference <select id="rk-conf" class="ca-select"><option value="all">All conferences</option>${ids.map((c) => `<option value="${ctxEsc(c)}"${String(st.conf) === c ? " selected" : ""}>${ctxEsc(rkConfName(c))}</option>`).join("")}</select></label>`;
+}
+// The Power Rankings card, shared by rankings.html and the NFL / CFB boards' Power Rankings pill: the sortable legacy
+// table in .rk-body (wireRankings re-draws it) under a head with the week and (CFB) the conference filter.
+function rankingsCard(sport, rows, st) {
+  const name = sport.toUpperCase();
+  if (!rows.length) return `<section class="ca-card ca-rk-card" id="rk-card"><div class="ca-card-head"><h2>${name} Power Rankings</h2></div><p class="ca-empty">No ${name} power rankings yet. They publish with the daily team-context job ahead of each week's games.</p></section>`;
+  const wk = `Season ${ctxEsc(rows[0].season)} · Week ${ctxEsc(rows[0].week)}`;
+  return `<section class="ca-card ca-rk-card" id="rk-card"><div class="ca-card-head"><h2>${name} Power Rankings</h2><p>${rows.length} teams · ${wk} · click a column to sort</p>${rkConfSelect(rows, sport, st)}</div><div class="rk-body">${rankingsTable(rows, sport, st)}</div></section>`;
+}
+async function buildRankings() {
+  const sport = rkSport(), { rows, st } = await rankingsLoad(sport);
+  const tabs = `<div class="ca-pills">${["nfl", "cfb"].map((s) => `<a class="ca-pill${s === sport ? " on" : ""}" href="rankings.html?sport=${s}">${s.toUpperCase()}</a>`).join("")}</div>`;
   const intro = `Rating = points better than an average team on a neutral field, earned from this season's results: point margin (blowouts capped, adjusted for home vs road), wins weighed against how likely they were (road upsets earn more, bad home losses cost more) and strength of schedule. This season counts games ÷ (games + 1) — 75% after 3 games — the rest is the preseason rating. SOS = average rating of opponents played; SOV = average rating of teams beaten; unit ranks by opponent-adjusted EPA/play (shown, not rated); records are regular season · ${CTX_NOT_A_PICK}`;
-  const heading = `<section class="page-heading"><div><p class="eyebrow">${name} · POWER RANKINGS</p><h1>${name} power rankings</h1><p>${intro}</p></div><div class="page-head-stat"><span>TEAMS RANKED</span><strong>${rows.length}</strong><small>${wk || "not published yet"}</small></div></section>`;
-  if (!rows.length) return `<main class="rk-page">${heading}<div class="rk-bar"><div class="rk-sport">${tabs}</div></div><div class="ev-empty"><b>No ${name} power rankings yet.</b><p>They publish with the daily team-context job ahead of each week's games.</p></div></main>`;
-  let confSel = "";
-  if (sport === "cfb") {
-    const ids = [...new Set(rows.map((x) => rkConfId(x.conf)).filter((c) => c != null))]
-      .sort((a, b) => rkConfName(a).localeCompare(rkConfName(b)));
-    if (st.conf !== "all" && !ids.includes(String(st.conf))) st.conf = "all";
-    confSel = `<label class="rk-conf">Conference <select id="rk-conf"><option value="all">All conferences</option>${ids.map((c) => `<option value="${ctxEsc(c)}"${String(st.conf) === c ? " selected" : ""}>${ctxEsc(rkConfName(c))}</option>`).join("")}</select></label>`;
-  }
-  return `<main class="rk-page">${heading}<div class="rk-bar"><div class="rk-sport">${tabs}</div>${confSel}</div><div class="rk-body">${rankingsTable(rows, sport, st)}</div></main>`;
+  return `<main class="rk-page ca-rk">${pageTitle("Power Rankings", "Team ratings, strength of schedule and unit ranks.", tabs)}${safeCard("Power Rankings", () => rankingsCard(sport, rows, st), {}, "ca-card ca-rk-card", "rk-card")}<p class="ca-rk-note">${intro}</p></main>`;
 }
 function wireRankings() {
   const body = document.querySelector(".rk-body"); if (!body) return;
@@ -2119,19 +2130,21 @@ function wireRankings() {
 
 /* ── Settings page (values filled + kept in sync by wireSettings) ──────── */
 function buildSettings() {
-  const card = (title, sub, inner, extra = "") => `<section class="section set-card"><div class="section-title"><div><h2>${title}</h2>${sub ? `<p>${sub}</p>` : ""}</div>${extra}</div>${inner}</section>`;
+  const card = (title, sub, inner, extra = "") => `<div class="ca-set-block"><div class="ca-set-head"><div><h2>${title}</h2>${sub ? `<p>${sub}</p>` : ""}</div>${extra}</div>${inner}</div>`;
   const note = (t) => `<p class="set-note">${t}</p>`;
   const money = (id, label, max) => `<span class="set-money"><span>$</span><input type="number" id="${id}" min="0.01" max="${max}" step="any" inputmode="decimal" aria-label="${label}"></span>`;
   const books = US_BOOKS.map(([k, name]) => `<button type="button" class="set-book" data-book="${k}" aria-pressed="false">${bookLogo(k)}<span>${name}</span><i aria-hidden="true">✓</i></button>`).join("");
   const units = [10, 25, 50, 100].map((u) => `<button type="button" data-unit="${u}">$${u}</button>`).join("");
   const kelly = KELLY_FRACTIONS.map(([f, l]) => `<button type="button" data-kelly="${f}" aria-pressed="false">${l}</button>`).join("");
-  return `<main class="settings"><section class="page-heading"><div><p class="eyebrow">SETTINGS</p><h1>Your settings</h1><p>Saved in this browser — they apply across the site.</p></div></section>${settingsStorageOk() ? "" : `<p class="set-warn">Settings can't be saved in this browser (storage blocked)</p>`}
+  return `<main class="settings">${pageTitle("Settings", "Sportsbooks, unit size, bankroll, Kelly and minimum EV.")}${settingsStorageOk() ? "" : `<p class="set-warn">Settings can't be saved in this browser (storage blocked)</p>`}
+    <section class="ca-card ca-set">
     ${card("Sportsbooks", "The books you bet at.", `<div class="set-books">${books}</div><p class="set-note set-books-min" hidden>At least one sportsbook must stay selected.</p>`,
       `<div class="set-actions"><button type="button" data-books="all">Select all</button><button type="button" data-books="none">Clear</button></div>`)}
     ${card("Unit size", "", `<div class="set-row">${money("set-unit", "Unit size in dollars", SETTINGS_MAX.unit)}<div class="set-chips">${units}</div></div>${note("Every $ amount on the site (profit trackers, parlay payouts, Kelly units) uses this.")}`)}
     ${card("Bankroll &amp; Kelly", "", `<div class="set-row"><label class="set-field"><small>BANKROLL</small>${money("set-bankroll", "Bankroll in dollars", SETTINGS_MAX.bankroll)}</label><div class="set-field"><small>KELLY FRACTION</small><div class="set-seg" role="group" aria-label="Kelly fraction">${kelly}</div></div></div>${note("Kelly suggests a stake from your bankroll and each bet's edge. Quarter Kelly is the common choice when edges are model estimates.")}${note("Kelly sizes each bet on its own — bets on the same game (e.g. moneyline and spread) are correlated, so don't stack full stakes on both.")}`)}
     ${card("Minimum EV", "", `<div class="set-range"><input type="range" id="set-minev" min="0" max="20" step="0.5" aria-label="Minimum EV percent"><output id="set-minev-out" for="set-minev"></output></div>${note("The +EV page hides picks below this EV at your books.")}`)}
-    <section class="section"><button type="button" class="set-reset">Reset to defaults</button></section>
+    <div class="ca-set-foot"><button type="button" class="set-reset">Reset to defaults</button></div>
+    </section>
     <div class="set-saved" role="status" aria-live="polite"></div></main>`;
 }
 
@@ -2645,8 +2658,6 @@ function injectStylesOnce() {  // one-time; re-renders must not keep appending <
     .rk-empty{text-align:center;color:var(--muted);padding:24px}
     @media(max-width:620px){.mu-unit{grid-template-columns:40px 24px 1fr 64px;gap:8px}.rk-bar{flex-direction:column;align-items:stretch}.rk-conf select{flex:1}}
     .set-warn{margin:22px 0 0;padding:11px 15px;border:1px solid var(--line);border-left:3px solid var(--amber);border-radius:8px;background:var(--amber-tint);color:var(--ink);font-size:13px}
-    .set-card{background:var(--card);border:1px solid var(--line);border-radius:8px;padding:20px 22px}
-    .set-card .section-title{margin-bottom:16px}
     .set-note{margin:14px 0 0;color:var(--muted);font-size:12px;line-height:1.55;max-width:640px}
     .set-note.set-books-min{color:var(--amber);font-weight:600}
     .set-actions,.set-chips{display:flex;gap:8px;flex-wrap:wrap}
@@ -2679,10 +2690,11 @@ function injectStylesOnce() {  // one-time; re-renders must not keep appending <
     .set-reset:hover{border-color:var(--red);color:var(--red)}
     .set-saved{position:fixed;right:20px;bottom:20px;z-index:5;padding:9px 15px;border:1px solid var(--green);border-radius:8px;background:var(--green-tint);color:var(--green);font-size:13px;font-weight:700;opacity:0;transform:translateY(6px);transition:.2s;pointer-events:none}
     .set-saved.show{opacity:1;transform:none}
-    @media(max-width:620px){.set-card{padding:16px}.set-books{gap:8px}.set-book{gap:8px;padding:11px 10px;font-size:13px}.set-row{flex-direction:column;align-items:stretch}.set-money input{width:100%}.set-seg{display:flex}.set-seg button{flex:1;padding:8px 6px}.set-range{gap:12px}}
+    @media(max-width:620px){.set-books{gap:8px}.set-book{gap:8px;padding:11px 10px;font-size:13px}.set-row{flex-direction:column;align-items:stretch}.set-money input{width:100%}.set-seg{display:flex}.set-seg button{flex:1;padding:8px 6px}.set-range{gap:12px}}
   </style>`);
 }
 
+const BOARD_PAGES = ["nfl", "cfb", "mlb", "nba"];
 async function render() {
   const shell = document.querySelector(".page-shell");
   // preserve scroll + active filter so the 5-min refresh isn't disruptive
@@ -2704,7 +2716,8 @@ async function render() {
     else if (page === "ev") body = await buildEvPage();
     else if (page === "settings") body = buildSettings();
     else if (page === "rankings") body = await buildRankings();
-    else body = await buildLeague(page); // cfb / nfl
+    else if (BOARD_PAGES.includes(page)) body = await buildBoardPage(page);
+    else body = await buildLeague(page); // legacy league page (unreachable now; Task 12 deletes it)
     shell.innerHTML = siteHeader(page === "rankings" || page === "settings" ? "" : page) + `<div class="ca-page">${body}</div>` + footer(); wireShell();
     if (page === "dashboard") wireDashboard();
     if (page === "game") wireGamePage();
@@ -2712,6 +2725,7 @@ async function render() {
     if (page === "ev") wireEvPage2();
     if (page === "settings") wireSettings();
     if (page === "rankings") wireRankings();
+    if (BOARD_PAGES.includes(page)) wireBoardPage();
     const chartSvg = document.querySelector(".chart svg");
     const chartSeries = window.__cappingAlphaChartSeries || [];
     if (chartSvg && chartSeries.length >= 2) {

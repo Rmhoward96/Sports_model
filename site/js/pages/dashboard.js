@@ -22,27 +22,6 @@ const dashWarned = new Set();
 const dashState = window.__caDash || (window.__caDash = { op: "all", kind: "all", slate: "all", perf: "30d", movers: "moves", expo: "sport", watch: "games" });
 
 /* ── pure helpers ─────────────────────────────────────────────────────── */
-const dashGameDate = (r) => (r && r.commence_time ? etDateStr(r.commence_time) : (r && r.game_date) || "");
-
-// One row per game (predictions), carrying its highest-alpha opportunity (ties -> higher EV) or null.
-function dashSlate(predRows, opps) {
-  const best = new Map();
-  for (const o of opps || []) {
-    if (!o) continue;
-    const k = `${o.sport}|${o.game_pk}`, b = best.get(k);
-    if (!b || o.alpha > b.alpha || (o.alpha === b.alpha && (o.evPct ?? -Infinity) > (b.evPct ?? -Infinity))) best.set(k, o);
-  }
-  const seen = new Set(), out = [];
-  for (const r of predRows || []) {
-    if (!r) continue;
-    const k = `${r.sport}|${r.game_pk}`;
-    if (seen.has(k)) continue;
-    seen.add(k);
-    out.push({ sport: r.sport, game_pk: r.game_pk, away: r.away_team_name, home: r.home_team_name, commence: r.commence_time || null, pred: r, opp: best.get(k) || null });
-  }
-  const t = (r) => { const v = timeMs(r.commence); return Number.isFinite(v) ? v : Infinity; };
-  return out.sort((a, b) => t(a) - t(b) || String(a.game_pk).localeCompare(String(b.game_pk)));
-}
 
 // Exposure over graded bets since `sinceDate`: shares = bets staked (graded count n), units = P&L.
 // Rows whose market is not explicitly classified are left out (console.warn once per market).
@@ -164,7 +143,7 @@ async function dashLoad(date) {
   const pnl = (evPnl || []).filter(upToDate);                // the one performance population: graded +EV picks
   return {
     date, nowMs, isToday, preds, lineBy, mls, splits, hist: hist || [],
-    datePreds: preds.filter((r) => dashGameDate(r) === date),
+    datePreds: preds.filter((r) => gameDate(r) === date),
     opps, tiered, allOpps: oppsAll || [],
     boardOpps: dashBoardOpps(tiered, date, nowMs, isToday),  // separate list for the Best Opportunities card
     counts7: dailyCounts(hist || [], (r) => r.date, 7, date),
@@ -251,7 +230,7 @@ function dashOppsCard(D) {
 /* ── Today's Slate ────────────────────────────────────────────────────── */
 function dashSlateCard(D) {
   const s = dashState.slate;
-  const rows = dashSlate(D.datePreds.filter((r) => s === "all" || r.sport === s), D.opps);
+  const rows = slateRows(D.datePreds.filter((r) => s === "all" || r.sport === s), D.opps);
   const counts = SPORTS.map((x) => [x, D.datePreds.filter((r) => r.sport === x).length]).sort((a, b) => b[1] - a[1]);
   const allHref = `${s === "all" ? counts[0][0] : s}.html`;
   const settings = getSettings();
@@ -266,8 +245,7 @@ function dashSlateCard(D) {
         : mins <= 0 ? ["live", "Live / started"] : mins <= 180 ? ["soon", "Starts within 3 hours"] : ["later", "Later today"];
       let market, line, tip = "";
       if (g.opp) {
-        const who = g.opp.kind === "prop" ? `${String(g.opp.playerName || "").split(/\s+/).slice(-1)[0]} ` : "";   // props: player's last name first
-        tip = who + pickLabel(g.opp, D.lineBy); market = ctxEsc(tip); line = oddsStr(g.opp.odds);
+        tip = oppSlateLabel(g.opp, D.lineBy); market = ctxEsc(tip); line = oddsStr(g.opp.odds);
       }
       else {
         // No +EV edge: the model's lean (predicted winner) and that side's best moneyline at the user's books.

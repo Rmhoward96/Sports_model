@@ -8,7 +8,7 @@ test("slate keeps one row per game: the highest-alpha opportunity", () => {
                  { sport: "cfb", game_pk: 2, home_team_name: "Oregon", away_team_name: "Ohio State", commence_time: "2026-10-04T23:30:00Z" }];
   const opps = [{ game_pk: 1, sport: "nfl", alpha: 70, marketLabel: "Spread", tier: "MEDIUM" },
                 { game_pk: 1, sport: "nfl", alpha: 89, marketLabel: "ML", tier: "HIGH" }];
-  const s = g.dashSlate(preds, opps);
+  const s = g.slateRows(preds, opps);
   assert.equal(s.length, 2);
   assert.equal(s.find((r) => r.game_pk === 1).opp.alpha, 89);
   assert.equal(s.find((r) => r.game_pk === 2).opp, null);
@@ -29,11 +29,11 @@ test("slate: an opportunity only attaches to the game of its own sport; same-gam
   const preds = [{ sport: "nfl", game_pk: 7, home_team_name: "A", away_team_name: "B", commence_time: "2026-10-05T17:00:00Z" },
                  { sport: "nfl", game_pk: 7, home_team_name: "A", away_team_name: "B", commence_time: "2026-10-05T17:00:00Z" }];
   const opps = [{ game_pk: 7, sport: "cfb", alpha: 99 }, { game_pk: 7, sport: "nfl", alpha: 66, evPct: 2 }, { game_pk: 7, sport: "nfl", alpha: 66, evPct: 5 }];
-  const s = g.dashSlate(preds, opps);
+  const s = g.slateRows(preds, opps);
   assert.equal(s.length, 1);
   assert.equal(s[0].opp.evPct, 5, "ties on alpha keep the higher EV");
   assert.equal(s[0].away, "B"); assert.equal(s[0].home, "A");
-  assert.deepEqual(g.dashSlate(null, null), []);
+  assert.deepEqual(g.slateRows(null, null), []);
 });
 
 test("exposure: window cut, prediction rows count, market types, P&L units beside each slice", () => {
