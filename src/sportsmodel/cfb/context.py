@@ -61,17 +61,6 @@ def utc_offset_hours(tz: str, when_iso: str) -> float:
         return float("nan")
 
 
-def venue_utc_offset(venue: dict, when_iso: str) -> float:
-    """A venue's UTC offset (hours): its IANA timezone when known (DST-aware); otherwise the
-    longitude-derived zone round(lon / 15) (standard time, used for time-zone-change features
-    only); NaN when neither is available (never fabricated)."""
-    off = utc_offset_hours(venue.get("tz") or "", when_iso)
-    if not math.isnan(off):
-        return off
-    lon = venue.get("lon")
-    return float(round(lon / 15.0)) if _ok(lon) else float("nan")
-
-
 def utc_shift_hours(origin: dict, dest: dict, when_iso: str) -> float:
     """Time-zone shift (hours, + = traveled east) from `origin` to `dest` venue. When both venues have
     a usable IANA timezone the shift is DST-aware; if EITHER lacks one, BOTH use the longitude zone
@@ -83,6 +72,8 @@ def utc_shift_hours(origin: dict, dest: dict, when_iso: str) -> float:
     lons = (origin.get("lon"), dest.get("lon"))
     if not all(_ok(x) for x in lons):
         return float("nan")
+    # round(lon / 15) is a known approximation near zone boundaries (e.g. Ann Arbor, Lubbock can land
+    # one zone off). It applies only to venues with a null timezone, and only to the shift feature.
     return float(round(lons[1] / 15.0) - round(lons[0] / 15.0))
 
 
@@ -179,7 +170,7 @@ def talent_gap(assets: ContextAssets, season: int, home: str, away: str, games_h
 
 
 def rest_table(frame: pd.DataFrame) -> dict:
-    """{(game_pk, team): days since that team's previous game of the season} (NaN for an opener).
+    """{(game_pk, team): US-Eastern calendar days since that team's previous game of the season (NaN for an opener).
     Reads start dates only, so unscored (upcoming) games are fine."""
     d = frame[["season", "game_pk", "start_date", "home_team", "away_team"]].copy()
     d["t"] = pd.to_datetime(d["start_date"], utc=True, errors="coerce")
@@ -187,7 +178,11 @@ def rest_table(frame: pd.DataFrame) -> dict:
                       d.rename(columns={"away_team": "team"})[["season", "game_pk", "team", "t"]]])
     long = long.sort_values(["season", "team", "t"])
     prev = long.groupby(["season", "team"])["t"].shift(1)
-    days = (long["t"].dt.normalize() - prev.dt.normalize()).dt.days
+    # Count US Eastern calendar days (a Sat 10:30pm ET kickoff is already Sunday in UTC, which would make
+    # the next Saturday look like 6 days). Drop the tz after normalising so DST changes cannot skew it.
+    def et_day(t):
+        return t.dt.tz_convert("America/New_York").dt.tz_localize(None).dt.normalize()
+    days = (et_day(long["t"]) - et_day(prev)).dt.days
     return {(int(g), str(t)): (float(x) if pd.notna(x) else float("nan"))
             for g, t, x in zip(long["game_pk"], long["team"], days)}
 

@@ -127,20 +127,6 @@ def test_context_features_assembles_every_column_and_never_nan():
 SEPT = "2023-09-16T16:00Z"
 
 
-def test_utc_offset_falls_back_to_longitude_when_timezone_missing():
-    assert cx.venue_utc_offset({"tz": "", "lon": -118.2437}, SEPT) == -8.0       # round(-7.88)
-    assert cx.venue_utc_offset({"tz": "", "lon": -74.006}, SEPT) == -5.0         # standard time, not DST
-    assert cx.venue_utc_offset({"tz": "Not/AZone", "lon": 0.4}, SEPT) == 0.0     # unparseable zone -> fallback
-    assert cx.venue_utc_offset({"tz": "America/New_York", "lon": -118.0}, SEPT) == -4.0   # a known zone wins
-    assert cx.venue_utc_offset({"lon": 120.0}, SEPT) == 8.0                      # no tz key at all
-
-
-def test_utc_offset_is_nan_when_timezone_and_longitude_missing():
-    assert math.isnan(cx.venue_utc_offset({"tz": "", "lon": float("nan")}, SEPT))
-    assert math.isnan(cx.venue_utc_offset({"tz": "", "lon": None}, SEPT))
-    assert math.isnan(cx.venue_utc_offset({}, SEPT))
-
-
 def _frames(venue_rows):
     venues = pd.DataFrame(venue_rows, columns=["venue_id", "name", "timezone", "latitude", "longitude",
                                                "elevation", "dome"])
@@ -232,3 +218,44 @@ def test_travel_missing_longitude_with_missing_timezone_gives_zero_features():
                  (2, "la", "", LA[0], nan, nan, 0.0)])
     assert cx.travel_features(a, 2023, "EAST", "WEST", 1, OCT) == {
         "travel_mid_diff": 0.0, "travel_far_diff": 0.0, "tz_east_diff": 0.0, "tz_west_diff": 0.0}
+
+
+# ------------------------------- rest days are US Eastern calendar days, not UTC --
+
+def _rest(*kickoffs_utc):
+    """rest_table for team 'a' playing at each UTC kickoff (opponents are throwaway)."""
+    frame = pd.DataFrame({"season": [2023] * len(kickoffs_utc), "game_pk": range(1, len(kickoffs_utc) + 1),
+                          "start_date": list(kickoffs_utc),
+                          "home_team": ["a"] * len(kickoffs_utc),
+                          "away_team": [f"opp{i}" for i in range(len(kickoffs_utc))]})
+    r = cx.rest_table(frame)
+    return [r[(i, "a")] for i in range(1, len(kickoffs_utc) + 1)]
+
+
+def test_late_saturday_kickoff_to_next_saturday_noon_is_seven_days_not_a_short_week():
+    # Sat 2023-09-09 10:30pm EDT = Sun 02:30Z; next Sat 2023-09-16 12:00 EDT = 16:00Z (UTC dates: 6 apart)
+    r = _rest("2023-09-10T02:30Z", "2023-09-16T16:00Z")[1]
+    assert r == 7.0
+    assert cx.rest_features(r, 7.0) == {"short_week_diff": 0.0, "bye_diff": 0.0}
+
+
+def test_real_thursday_to_saturday_gap_stays_short():
+    # Thu 2023-09-14 8pm EDT (= Fri 00:00Z) -> Sat 2023-09-16 noon EDT: 2 days
+    r = _rest("2023-09-15T00:00Z", "2023-09-16T16:00Z")[1]
+    assert r == 2.0 and cx.rest_features(r, 7.0)["short_week_diff"] == -1.0
+
+
+def test_bye_threshold_uses_eastern_dates_across_a_late_kickoff():
+    # 13 ET days (bye) that UTC dates would call 12: Sat 9/9 10:30pm EDT -> Fri 9/22 7pm EDT (= 23:00Z)
+    r13 = _rest("2023-09-10T02:30Z", "2023-09-22T23:00Z")[1]
+    assert r13 == 13.0 and cx.rest_features(r13, 7.0)["bye_diff"] == -1.0
+    # 12 ET days (no bye) that UTC dates would call 13: Sat 9/9 noon EDT -> Thu 9/21 9pm EDT (= Fri 01:00Z)
+    r12 = _rest("2023-09-09T16:00Z", "2023-09-22T01:00Z")[1]
+    assert r12 == 12.0 and cx.rest_features(r12, 7.0)["bye_diff"] == 0.0
+    # 14 ET days stays a bye
+    assert _rest("2023-09-09T16:00Z", "2023-09-23T16:00Z")[1] == 14.0
+
+
+def test_rest_days_are_exact_across_the_november_dst_change():
+    # Sat 2023-11-04 noon EDT -> Sat 2023-11-11 noon EST (clocks fell back on 11-05): still 7 days
+    assert _rest("2023-11-04T16:00Z", "2023-11-11T17:00Z")[1] == 7.0
