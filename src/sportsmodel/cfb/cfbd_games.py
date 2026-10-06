@@ -67,9 +67,24 @@ def _frame(rows: list[dict], columns: list[str], ints=(), strs=(), bools=(), dro
 
 # --------------------------------------------------------------- games meta --
 
+LINE_SCORE_PERIODS = ("q1", "q2", "q3", "q4", "ot")
+LINE_SCORE_COLUMNS = [f"{side}_{p}" for side in ("home", "away") for p in LINE_SCORE_PERIODS]
 GAMES_COLUMNS = ["game_id", "season", "week", "season_type", "start_date", "neutral_site",
                  "venue_id", "home_team", "away_team", "home_points", "away_points",
-                 "home_pregame_elo", "away_pregame_elo"]
+                 "home_pregame_elo", "away_pregame_elo"] + LINE_SCORE_COLUMNS
+
+
+def line_scores(v) -> list[float]:
+    """CFBD `homeLineScores` / `awayLineScores` -> [q1, q2, q3, q4, ot]. `ot` is the sum of every period
+    after the fourth (0.0 when the game ended in regulation). All five are NaN unless the list holds at
+    least four numeric entries (an unplayed game, or a completed one CFBD has no line score for)."""
+    nan5 = [NAN] * 5
+    if not isinstance(v, list) or len(v) < 4:
+        return nan5
+    vals = [num(x) for x in v]
+    if any(math.isnan(x) for x in vals):
+        return nan5
+    return vals[:4] + [float(sum(vals[4:]))]
 
 
 def parse_games_meta(payload) -> pd.DataFrame:
@@ -90,7 +105,9 @@ def parse_games_meta(payload) -> pd.DataFrame:
                      "venue_id": num(g.get("venueId")), "home_team": h, "away_team": a,
                      "home_points": num(g.get("homePoints")), "away_points": num(g.get("awayPoints")),
                      "home_pregame_elo": num(g.get("homePregameElo")),
-                     "away_pregame_elo": num(g.get("awayPregameElo"))})
+                     "away_pregame_elo": num(g.get("awayPregameElo")),
+                     **dict(zip(LINE_SCORE_COLUMNS[:5], line_scores(g.get("homeLineScores")))),
+                     **dict(zip(LINE_SCORE_COLUMNS[5:], line_scores(g.get("awayLineScores"))))})
     return _frame(rows, GAMES_COLUMNS, ints=("game_id", "season", "week"),
                   strs=("season_type", "start_date", "home_team", "away_team"),
                   bools=("neutral_site",), dropped=dropped)
@@ -247,12 +264,13 @@ def parse_talent(payload) -> pd.DataFrame:
 
 # ------------------------------------------------------------------- venues --
 
-VENUE_COLUMNS = ["venue_id", "name", "timezone", "latitude", "longitude", "elevation", "dome"]
+VENUE_COLUMNS = ["venue_id", "name", "timezone", "latitude", "longitude", "elevation", "dome", "city", "state"]
 
 
 def parse_venues(payload) -> pd.DataFrame:
     """CFBD `/venues` -> venue_id, name, IANA timezone, lat/lon, elevation (CFBD sends it
-    as a string), dome (NaN when unknown). Venues without an id are skipped."""
+    as a string), dome (NaN when unknown), city and state ("" when CFBD has none; a few venues have no
+    state). Venues without an id are skipped."""
     rows = []
     for v in payload:
         if v.get("id") is None:
@@ -265,8 +283,9 @@ def parse_venues(payload) -> pd.DataFrame:
         rows.append({"venue_id": int(v["id"]), "name": str(v.get("name") or ""),
                      "timezone": str(v.get("timezone") or ""), "latitude": num(v.get("latitude")),
                      "longitude": num(v.get("longitude")), "elevation": elev,
-                     "dome": float(dome) if isinstance(dome, bool) else NAN})
-    return _frame(rows, VENUE_COLUMNS, ints=("venue_id",), strs=("name", "timezone"))
+                     "dome": float(dome) if isinstance(dome, bool) else NAN,
+                     "city": str(v.get("city") or ""), "state": str(v.get("state") or "")})
+    return _frame(rows, VENUE_COLUMNS, ints=("venue_id",), strs=("name", "timezone", "city", "state"))
 
 
 # ------------------------------------------------------------ prior ratings --
@@ -293,3 +312,86 @@ def parse_prior_ratings(fpi_payload, srs_payload, season: int) -> pd.DataFrame:
             for t in sorted(set(fpi) | set(srs))]
     return _frame(rows, ["season", "team", "fpi", "srs"], ints=("season",), strs=("team",),
                   dropped=dropped)
+
+
+# -------------------------------------------------------------- team stats --
+
+TEAM_STAT_COLUMNS = ["season", "week", "season_type", "game_id", "team", "opponent",
+                     "fumbles_lost", "interceptions_thrown", "giveaways", "takeaways"]
+
+
+def _stat(stats, category: str) -> float:
+    """One entry of a CFBD `/games/teams` stats list ([{"category": "turnovers", "stat": "3"}, ...]) as a
+    float; NaN when the category is absent or its value is not a number (the values arrive as strings)."""
+    for s in stats if isinstance(stats, list) else []:
+        if isinstance(s, dict) and s.get("category") == category:
+            try:
+                return float(s.get("stat"))
+            except (TypeError, ValueError):
+                return NAN
+    return NAN
+
+
+def parse_team_game_stats(payload, season: int, week: int, stype: str = "regular") -> pd.DataFrame:
+    """CFBD `/games/teams?year=&week=&seasonType=` -> one row per team-game of ball security.
+
+    The payload is [{"id": gameId, "teams": [{"team", "homeAway", "stats": [{"category", "stat"}]}, x2]}] and
+    carries no season / week, so the caller stamps `season`, `week` and `stype` (the request's own params).
+    `giveaways` = the team's `turnovers` stat (fumblesLost + interceptions THROWN: verified live that CFBD's
+    `interceptions` is the offense's, `passesIntercepted` the defense's); `takeaways` = the opponent's
+    giveaways in the same game. A missing stat is NaN, never 0. A game whose two sides do not both map to
+    FBS ids (an FCS opponent) is dropped and counted in `df.attrs["dropped"]`, matching havoc / advanced."""
+    rows, dropped = [], 0
+    for g in payload:
+        gid = _ints(g, "id")
+        teams = g.get("teams") if isinstance(g.get("teams"), list) else []
+        ids = [cfbd_to_espn((t or {}).get("team") or "") for t in teams]
+        if gid is None or len(teams) != 2 or not all(ids):
+            dropped += 1
+            continue
+        per = []
+        for t in teams:
+            st = t.get("stats")
+            fl, ints, tot = _stat(st, "fumblesLost"), _stat(st, "interceptions"), _stat(st, "turnovers")
+            if math.isnan(tot) and not (math.isnan(fl) or math.isnan(ints)):
+                tot = fl + ints
+            per.append((fl, ints, tot))
+        for i in (0, 1):
+            rows.append({"season": int(season), "week": int(week), "season_type": season_type(stype),
+                         "game_id": gid[0], "team": ids[i], "opponent": ids[1 - i],
+                         "fumbles_lost": per[i][0], "interceptions_thrown": per[i][1],
+                         "giveaways": per[i][2], "takeaways": per[1 - i][2]})
+    return _frame(rows, TEAM_STAT_COLUMNS, ints=("season", "week", "game_id"),
+                  strs=("season_type", "team", "opponent"), dropped=dropped)
+
+
+# ---------------------------------------------------------- weather window --
+
+WEATHER_WINDOW_COLUMNS = ["game_id", "season", "week", "season_type", "start_time", "venue_id", "venue",
+                          "game_indoors", "temperature", "wind_speed", "precipitation", "condition", "has_fbs"]
+
+
+def parse_weather_window(payload) -> pd.DataFrame:
+    """CFBD `/games/weather` (forecast before kickoff, observation after) -> one row per game for the
+    site's game_info table. Unlike `parse_weather_games` this keeps FBS-vs-FCS games (the site has pages
+    for them): `has_fbs` says at least one side maps to an FBS id, and the caller drops the rest (CFBD returns
+    every division). `venue_id` / `venue` come straight from the weather row (verified live: it carries both),
+    `condition` is CFBD's weatherCondition text ("" when absent, which is most rows). CFBD sends no
+    precipitation probability, only `precipitation` (inches), so no chance is derived here."""
+    rows, dropped = [], 0
+    for w in payload:
+        ids = _ints(w, "id", "season", "week")
+        if ids is None:
+            dropped += 1
+            continue
+        h, a = cfbd_to_espn(w.get("homeTeam") or ""), cfbd_to_espn(w.get("awayTeam") or "")
+        rows.append({"game_id": ids[0], "season": ids[1], "week": ids[2],
+                     "season_type": season_type(w.get("seasonType")),
+                     "start_time": str(w.get("startTime") or ""), "venue_id": num(w.get("venueId")),
+                     "venue": str(w.get("venue") or ""), "game_indoors": bool(w.get("gameIndoors")),
+                     "temperature": num(w.get("temperature")), "wind_speed": num(w.get("windSpeed")),
+                     "precipitation": num(w.get("precipitation")),
+                     "condition": str(w.get("weatherCondition") or ""), "has_fbs": bool(h or a)})
+    return _frame(rows, WEATHER_WINDOW_COLUMNS, ints=("game_id", "season", "week"),
+                  strs=("season_type", "start_time", "venue", "condition"),
+                  bools=("game_indoors", "has_fbs"), dropped=dropped)

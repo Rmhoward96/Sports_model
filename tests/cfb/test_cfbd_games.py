@@ -286,3 +286,65 @@ def test_prior_ratings_count_unmapped_fpi_rows_as_dropped():
 
 def test_cfbd_module_docstring_describes_the_client():
     assert "CfbdClient" in cfbd.__doc__
+
+
+AZ, OKST = cfbd_to_espn("Arizona"), cfbd_to_espn("Oklahoma State")
+
+def test_line_scores():
+    assert cg.line_scores([0, 10, 3, 24]) == [0.0, 10.0, 3.0, 24.0, 0.0]
+    assert cg.line_scores([7, 7, 7, 3, 7, 6]) == [7.0, 7.0, 7.0, 3.0, 13.0]
+    for bad in (None, [], [1, 2, 3], [1, 2, None, 4], "x"):
+        assert all(math.isnan(x) for x in cg.line_scores(bad))
+
+def test_games_line_scores():
+    df = cg.parse_games_meta([
+        {"id": 1, "season": 2025, "week": 6, "seasonType": "regular", "homeTeam": "Alabama", "awayTeam": "Georgia",
+         "homePoints": 37, "awayPoints": 10, "homeLineScores": [0, 10, 3, 24], "awayLineScores": [0, 3, 7, 0]},
+        {"id": 2, "season": 2025, "week": 6, "seasonType": "regular", "homeTeam": "Alabama", "awayTeam": "Georgia",
+         "homePoints": 31, "awayPoints": 27, "homeLineScores": [7, 7, 7, 3, 7], "awayLineScores": [7, 7, 7, 3, 3]},
+        {"id": 3, "season": 2025, "week": 7, "seasonType": "regular", "homeTeam": "Alabama", "awayTeam": "Georgia",
+         "homeLineScores": None, "awayLineScores": None}])
+    a, b, c = df.iloc[0], df.iloc[1], df.iloc[2]
+    assert [a["home_q1"], a["home_q2"], a["home_q3"], a["home_q4"], a["home_ot"]] == [0, 10, 3, 24, 0]
+    assert (b["home_ot"], b["away_ot"]) == (7.0, 3.0)
+    assert math.isnan(c["home_q1"]) and math.isnan(c["away_ot"])
+    assert list(df.columns) == cg.GAMES_COLUMNS
+
+def test_venue_city_state():
+    df = cg.parse_venues([{"id": 3657, "name": "Bryant-Denny Stadium", "city": "Tuscaloosa", "state": "AL"},
+                          {"id": 9, "name": "Somewhere", "city": "Dublin", "state": None}])
+    assert list(df["city"]) == ["Tuscaloosa", "Dublin"] and list(df["state"]) == ["AL", ""]
+
+def _t(name, ha, stats): return {"teamId": 1, "team": name, "homeAway": ha, "points": 1, "stats": [{"category": k, "stat": str(v)} for k, v in stats.items()]}
+
+def test_team_stats():
+    pay = [{"id": 401756910, "teams": [_t("Arizona", "home", {"turnovers": 3, "fumblesLost": 1, "interceptions": 2}),
+                                       _t("Oklahoma State", "away", {"turnovers": 1, "fumblesLost": 1})]},
+           {"id": 5, "teams": [_t("Arizona", "home", {}), _t("Nowhere State Fighting Pickles", "away", {"turnovers": 2})]},
+           {"id": 6, "teams": [_t("Arizona", "home", {"fumblesLost": 1, "interceptions": 0}), _t("Oklahoma State", "away", {})]}]
+    df = cg.parse_team_game_stats(pay, 2025, 6)
+    assert df.attrs["dropped"] == 1 and len(df) == 4
+    az = df[(df.game_id == 401756910) & (df.team == AZ)].iloc[0]
+    ok = df[(df.game_id == 401756910) & (df.team == OKST)].iloc[0]
+    assert (az["giveaways"], az["takeaways"], az["fumbles_lost"], az["interceptions_thrown"]) == (3, 1, 1, 2)
+    assert (ok["giveaways"], ok["takeaways"]) == (1, 3) and math.isnan(ok["interceptions_thrown"])
+    g6 = df[(df.game_id == 6) & (df.team == AZ)].iloc[0]
+    assert g6["giveaways"] == 1 and math.isnan(g6["takeaways"])
+    assert set(df["season"]) == {2025} and set(df["week"]) == {6} and set(df["season_type"]) == {"regular"}
+    assert list(cg.parse_team_game_stats([], 2025, 1).columns) == cg.TEAM_STAT_COLUMNS
+
+def test_weather_window():
+    pay = [{"id": 401862794, "season": 2026, "week": 6, "seasonType": "regular", "startTime": "2026-10-08T23:30:00.000Z",
+            "gameIndoors": True, "homeTeam": "UTSA", "awayTeam": "South Florida", "venueId": 3604, "venue": "Alamodome",
+            "temperature": 82.8, "windSpeed": 9.2, "precipitation": 0, "weatherCondition": "Fair"},
+           {"id": 401908581, "season": 2026, "week": 6, "seasonType": "regular", "startTime": "2026-10-09T22:00:00.000Z",
+            "gameIndoors": False, "homeTeam": "Bridgewater State", "awayTeam": "Framingham State", "venueId": 5808,
+            "venue": "Swenson", "temperature": 66, "windSpeed": 10.1, "precipitation": 0.035, "weatherCondition": None},
+           {"id": 7, "season": 2026, "week": 6, "homeTeam": "Alabama", "awayTeam": "Mercer", "windSpeed": None},
+           {"season": 2026, "week": 6}]
+    df = cg.parse_weather_window(pay)
+    assert len(df) == 3 and df.attrs["dropped"] == 1
+    assert list(df["has_fbs"]) == [True, False, True]
+    r = df.iloc[0]; assert (r["venue_id"], r["venue"], r["game_indoors"], r["condition"]) == (3604, "Alamodome", True, "Fair")
+    assert df.iloc[1]["condition"] == "" and df.iloc[1]["precipitation"] == 0.035
+    assert math.isnan(df.iloc[2]["temperature"]) and math.isnan(df.iloc[2]["venue_id"])
