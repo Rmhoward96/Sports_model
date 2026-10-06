@@ -53,4 +53,15 @@ The cause is the season z-score and league-mean shift from adding three teams. U
 games move up to 0.34 pts. 2026 games already played (12 involving the three teams): margin MAE
 A 18.64 -> B 19.38 (n=12; Arkansas has underperformed its prior).
 
-Recommendation: ship B (this asset with the committed weights and decay; no refit, no version change).
+Decision: ship B (this asset with the committed weights and decay; no refit, no version change).
+
+## lines.parquet (same bug)
+
+`lines.parquet` (CFBD closing/opening lines, 2015-2025) also lacked the three teams. Re-pulled with
+the fixed resolver: 7553 -> 7902 rows (+349, all involving 8/142/258). Every existing row is
+identical in every column. It is not read by the live game-line producer. It is read by:
+- the gates and backtests. The gate eval set grows 2169 -> 2266 games, so
+  `v3_gate.V2_EXPECTED` moves to 12.61 / 13.09 / 0.491 (measured 12.6075 / 13.0919 / 49.12% on
+  the committed assets). The v3 / v3.1 gate JSONs stay as historical records on the old set.
+- the daily team-context job (game log ATS/O-U history, rankings). The three teams go from 0 to
+  about 120 lined games each, and every game-log row not involving them is identical.

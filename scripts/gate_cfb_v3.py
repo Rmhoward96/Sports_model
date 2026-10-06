@@ -3,7 +3,8 @@ report-only residual check. Writes assets/cfb/v3_gate.json and a markdown summar
 
 Order (spec section 4):
   1. v2 is run through THIS harness and must reproduce its published held-out numbers (margin
-     MAE 12.61, total MAE 13.10, ATS 49.0 % on 2023-2025 FBS-vs-FBS games with a closing spread)
+     MAE 12.61, total MAE 13.09, ATS 49.1 % on 2023-2025 FBS-vs-FBS games with a closing spread;
+     12.61 / 13.10 / 49.0 % before the 2026-10-06 Arkansas/Missouri/Virginia asset fix)
      within rounding. If it does not, the run STOPS (exit 2) before v3 is scored and nothing is
      written -- reconcile the harness first (compare against scripts/compare_cfb_live_fix.py).
   2. v3 ships only if, on the combined 2023-2025 numbers: margin MAE < v2, total MAE < v2,
