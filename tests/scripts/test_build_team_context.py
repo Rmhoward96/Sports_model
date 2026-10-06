@@ -393,7 +393,8 @@ def test_migration_matches_db_columns_and_keys():
     import re
     dbdir = pathlib.Path(__file__).resolve().parents[2] / "db"
     sql = (dbdir / "migration_team_context.sql").read_text()
-    later = (dbdir / "migration_power_results.sql").read_text()   # ALTER ... ADD COLUMN
+    later = "\n".join((dbdir / f).read_text() for f in
+                      ("migration_power_results.sql", "migration_power_fpi.sql"))   # ALTER ... ADD COLUMN
     for t, cols in db.TEAM_CONTEXT_COLUMNS.items():
         body = re.search(rf"CREATE TABLE IF NOT EXISTS {t} \((.*?)\n\);", sql, re.S).group(1)
         names = [ln.split()[0] for ln in body.splitlines()
@@ -406,6 +407,9 @@ def test_migration_matches_db_columns_and_keys():
         assert f'CREATE POLICY "public read {t}" ON {t} FOR SELECT USING (true)' in sql
     assert "CREATE OR REPLACE VIEW power_rankings_current" in sql
     assert "power_rankings_current TO anon, authenticated" in sql
+    fpi = (dbdir / "migration_power_fpi.sql").read_text()
+    assert "CREATE OR REPLACE VIEW power_rankings_current" in fpi
+    assert "GRANT SELECT ON power_rankings_current TO anon, authenticated" in fpi
 
 
 def test_one_sport_failing_does_not_block_the_other(monkeypatch, capsys):
@@ -514,6 +518,7 @@ def test_nfl_rankings_use_the_results_rating():
     home_w = rk["home_record"].str.split("-").str[0].astype(int)
     road_w = rk["road_record"].str.split("-").str[0].astype(int)
     assert (home_w + road_w == wins).all()      # fixtures have no neutral games
+    assert rk["fpi"].isna().all() and rk["model_rating"].isna().all()   # CFB-only blend
 
 
 def test_regular_season_only_drops_postseason_rows_and_tolerates_old_parquets():
@@ -524,3 +529,92 @@ def test_regular_season_only_drops_postseason_rows_and_tolerates_old_parquets():
     old = adv.drop(columns="season_type")
     assert btc.regular_season_only(old) is old                  # pre-v3 parquet untouched
     assert btc.regular_season_only(None) is None
+
+
+def test_cfb_rankings_blend_fpi_sixty_forty():
+    src = cfb_sources()
+    teams = _cfb_teams()
+    priors = {t: 1500.0 + 40.0 * i for i, t in enumerate(teams)}
+    base = btc.build_cfb(**src, now=NOW, priors=priors, rp=_rp(), fbs=set(teams))["power_rankings"]
+    fpi = {t: float(-3 * i) for i, t in enumerate(teams)}         # reverses the prior order
+    fpi.pop(teams[-1])                                            # one team without FPI
+    rk = btc.build_cfb(**src, now=NOW, priors=priors, rp=_rp(), fbs=set(teams),
+                       fpi=fpi)["power_rankings"].set_index("team")
+    model = base.set_index("team")["rating"]
+    for t in teams[:-1]:
+        assert rk.loc[t, "model_rating"] == pytest.approx(model[t])
+        assert rk.loc[t, "fpi"] == fpi[t]
+        assert rk.loc[t, "rating"] == pytest.approx(0.6 * fpi[t] + 0.4 * model[t])
+    last = teams[-1]
+    assert pd.isna(rk.loc[last, "fpi"]) and rk.loc[last, "rating"] == pytest.approx(model[last])
+    assert list(rk.sort_values("rank").index) == list(rk["rating"].sort_values(ascending=False).index)
+
+
+def test_cfb_move_comes_from_the_last_published_blended_week():
+    src = cfb_sources()
+    teams = _cfb_teams()
+    fpi = {t: float(i) for i, t in enumerate(teams)}
+    rk0 = btc.build_cfb(**src, now=NOW, fpi=fpi)["power_rankings"]
+    s, w = int(rk0["season"].iloc[0]), int(rk0["week"].iloc[0])
+    assert rk0["prev_rank"].isna().all() and rk0["move"].isna().all()   # nothing published
+    prev = {t: i + 1 for i, t in enumerate(reversed(teams))}
+    pub = pd.DataFrame([(s, w - 1, t, r, 1.0) for t, r in prev.items()],
+                       columns=["season", "week", "team", "rank", "fpi"])
+    rk = btc.build_cfb(**src, now=NOW, fpi=fpi, published=pub)["power_rankings"].set_index("team")
+    for t in teams:
+        assert rk.loc[t, "prev_rank"] == prev[t]
+        assert rk.loc[t, "move"] == prev[t] - rk.loc[t, "rank"]
+    model_only = pub.assign(fpi=np.nan)                                 # rollout week
+    rk2 = btc.build_cfb(**src, now=NOW, fpi=fpi, published=model_only)["power_rankings"]
+    assert rk2["prev_rank"].isna().all() and rk2["move"].isna().all()
+
+
+def test_load_cfb_fpi_warns_and_returns_none_on_failure_or_empty(monkeypatch, capsys):
+    from sportsmodel.cfb import espn
+
+    def boom(season):
+        raise RuntimeError("503")
+    monkeypatch.setattr(espn, "fetch_fpi", boom)
+    assert btc.load_cfb_fpi(2026) is None
+    monkeypatch.setattr(espn, "fetch_fpi", lambda season: {})
+    assert btc.load_cfb_fpi(2026) is None
+    monkeypatch.setattr(espn, "fetch_fpi", lambda season: {"194": 28.8})
+    assert btc.load_cfb_fpi(2026) == {"194": 28.8}
+    out = capsys.readouterr().out
+    assert out.count("::warning::team-context: cfb: ESPN FPI") == 2
+
+
+def test_load_cfb_published_reads_this_seasons_cfb_rows(monkeypatch, capsys):
+    monkeypatch.setattr(db.config, "DATABASE_URL", None)
+    assert btc.load_cfb_published(2026) is None
+    assert "no published rankings" in capsys.readouterr().out
+    seen = {}
+
+    class Cur:
+        def execute(self, sql, params):
+            seen["sql"], seen["params"] = sql, params
+
+        def fetchall(self):
+            return [(2026, 5, "194", 1, 28.8)]
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+    class Conn:
+        def cursor(self):
+            return Cur()
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+    monkeypatch.setattr(db.config, "DATABASE_URL", "postgres://fake")
+    monkeypatch.setattr(db, "get_postgres", lambda: Conn())
+    df = btc.load_cfb_published(2026)
+    assert list(df.columns) == ["season", "week", "team", "rank", "fpi"]
+    assert df.iloc[0].tolist() == [2026, 5, "194", 1, 28.8]
+    assert "sport = 'cfb'" in seen["sql"] and seen["params"] == (2026,)

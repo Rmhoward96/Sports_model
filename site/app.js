@@ -1431,8 +1431,10 @@ function rkMove(row, hasPrev = true) {
   if (!m) return `<span class="rk-flat">–</span>`;
   return m > 0 ? `<span class="rk-up">▲${m}</span>` : `<span class="rk-down">▼${-m}</span>`;
 }
+// CFB power rating = 60% ESPN FPI + 40% the CappingAlpha results rating (power_rankings.fpi / model_rating).
+const RK_CFB_BLEND = "60% ESPN FPI + 40% CappingAlpha model";
 const rkPowerLine = (p, hasPrev = true) => p
-  ? `<span class="ctx-power" title="Power rating weighted to this season">#${ctxEsc(p.rank)} power · ${rkRating(p.rating)} ${rkMove(p, hasPrev)}</span>` : "";
+  ? `<span class="ctx-power" title="${p.sport === "cfb" ? `Power rating: ${RK_CFB_BLEND}` : "Power rating weighted to this season"}">#${ctxEsc(p.rank)} power · ${rkRating(p.rating)} ${rkMove(p, hasPrev)}</span>` : "";
 
 // A–F chip (null / anything else -> an ungraded dash).
 function gradeChip(letter, big = false) {
@@ -1632,6 +1634,12 @@ function rkColumns(sport, hasPrev) {
     ["ats", "ATS", "desc", (x) => rkAtsPct(x.ats), (x) => ctxEsc(x.ats || "—")],
   ];
   if (sport === "cfb") cols.splice(2, 0, ["conf", "CONF", "asc", (x) => rkConfName(x.conf).toLowerCase(), (x) => ctxEsc(rkConfName(x.conf))]);
+  if (sport === "cfb") {   // the two halves of the blended Rating, right after it
+    const at = cols.findIndex((c) => c[0] === "rating") + 1;
+    cols.splice(at, 0,
+      ["fpi", "FPI", "desc", (x) => ctxNum(x.fpi), (x) => ctxSigned(x.fpi)],
+      ["model_rating", "MODEL", "desc", (x) => ctxNum(x.model_rating), (x) => ctxSigned(x.model_rating)]);
+  }
   return cols;
 }
 // Filter (CFB conference id or "all") then sort; nulls always sink to the bottom.
@@ -1697,7 +1705,11 @@ function rankingsCard(sport, rows, st) {
 async function buildRankings() {
   const sport = rkSport(), { rows, st } = await rankingsLoad(sport);
   const tabs = `<div class="ca-pills">${["nfl", "cfb"].map((s) => `<a class="ca-pill${s === sport ? " on" : ""}" href="rankings.html?sport=${s}">${s.toUpperCase()}</a>`).join("")}</div>`;
-  const intro = `Rating = points better than an average team on a neutral field, earned from this season's results: point margin (blowouts capped, adjusted for home vs road), wins weighed against how likely they were (road upsets earn more, bad home losses cost more) and strength of schedule. This season counts games ÷ (games + 1) — 75% after 3 games — the rest is the preseason rating. SOS = average rating of opponents played; SOV = average rating of teams beaten; unit ranks by opponent-adjusted EPA/play (shown, not rated); records are regular season · ${CTX_NOT_A_PICK}`;
+  const results = "earned from this season's results: point margin (blowouts capped, adjusted for home vs road), wins weighed against how likely they were (road upsets earn more, bad home losses cost more) and strength of schedule. This season counts games ÷ (games + 1) — 75% after 3 games — the rest is the preseason rating.";
+  const head = sport === "cfb"
+    ? `Rating = ${RK_CFB_BLEND} rating, in points better than an average team on a neutral field. FPI = ESPN's Football Power Index. Model = the CappingAlpha results rating, ${results}`
+    : `Rating = points better than an average team on a neutral field, ${results}`;
+  const intro = `${head} SOS = average rating of opponents played; SOV = average rating of teams beaten; unit ranks by opponent-adjusted EPA/play (shown, not rated); records are regular season · ${CTX_NOT_A_PICK}`;
   return `<main class="rk-page ca-rk">${pageTitle("Power Rankings", "Team ratings, strength of schedule and unit ranks.", tabs)}${safeCard("Power Rankings", () => rankingsCard(sport, rows, st), {}, "ca-card ca-rk-card", "rk-card")}<p class="ca-rk-note">${intro}</p></main>`;
 }
 function wireRankings() {

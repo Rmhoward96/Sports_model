@@ -383,3 +383,40 @@ def rankings(power_df: pd.DataFrame, prev_power_df: pd.DataFrame | None,
     out["su"] = out["su"].astype(object)
     out["ats"] = out["ats"].astype(object)
     return out
+
+
+# CFB power rankings: 60% ESPN FPI + 40% our results-based rating (both points vs an average
+# team on a neutral field; spec 2026-10-06-cfb-fpi-rankings-design).
+W_FPI = 0.6
+
+
+def blend_fpi(power_df: pd.DataFrame, fpi: dict[str, float] | None,
+              w_fpi: float = W_FPI) -> pd.DataFrame:
+    """Copy of ``power_df`` with ``model_rating`` (its ``rating``), ``fpi`` (ESPN FPI by team,
+    NaN when missing) and ``rating = w_fpi * fpi + (1 - w_fpi) * model_rating``. A team without
+    an FPI value (incl. the "FCS" pseudo-team, or every team when ``fpi`` is None/empty) keeps
+    its model rating. Ranking, SOS and SOV in ``rankings`` then all use the blend."""
+    out = power_df.copy()
+    out["model_rating"] = out["rating"].astype(float)
+    out["fpi"] = out["team"].astype(str).map(fpi or {}).astype(float)
+    has = out["fpi"].notna()
+    out.loc[has, "rating"] = (w_fpi * out.loc[has, "fpi"]
+                              + (1 - w_fpi) * out.loc[has, "model_rating"])
+    return out
+
+
+def prev_ranks_from_published(published: pd.DataFrame | None, season: int,
+                              week: int) -> dict[str, int]:
+    """{team: rank} of the last published week before (``season``, ``week``), same season only.
+    Returns {} when there is none, or when that week was not blended (no non-null ``fpi``: the
+    model-only rankings from before the FPI blend, or a week whose FPI fetch failed). That way
+    ``move`` never compares a blended rank with a model-only one."""
+    if published is None or published.empty:
+        return {}
+    p = published[(published["season"] == season) & (published["week"] < week)]
+    if p.empty:
+        return {}
+    last = p[p["week"] == p["week"].max()]
+    if last["fpi"].isna().all():
+        return {}
+    return {str(t): int(r) for t, r in zip(last["team"], last["rank"])}
