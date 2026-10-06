@@ -54,10 +54,10 @@ def _norm(s: str) -> str:
 # not Texas A&M/State/Tech), and (b) CFBD names that differ from our ESPN displayName.
 _CFBD_ALIASES = {
     # ambiguous bare names -> the flagship program
-    "arizona": "12", "colorado": "38", "florida": "57", "georgia": "61",
+    "arizona": "12", "arkansas": "8", "colorado": "38", "florida": "57", "georgia": "61",
     "iowa": "2294", "kansas": "2305", "louisiana": "309", "miami": "2390",
-    "michigan": "130", "new mexico": "167", "ohio": "195", "oklahoma": "201",
-    "oregon": "2483", "texas": "251", "utah": "254", "washington": "264",
+    "michigan": "130", "missouri": "142", "new mexico": "167", "ohio": "195", "oklahoma": "201",
+    "oregon": "2483", "texas": "251", "utah": "254", "virginia": "258", "washington": "264",
     # CFBD spelling differs from ESPN displayName
     "connecticut": "41", "appalachian state": "2026",
     "southern mississippi": "2572", "louisiana monroe": "2433",

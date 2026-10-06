@@ -1,0 +1,554 @@
+[
+ {
+  "school": "Air Force",
+  "id": 2005
+ },
+ {
+  "school": "Akron",
+  "id": 2006
+ },
+ {
+  "school": "Alabama",
+  "id": 333
+ },
+ {
+  "school": "App State",
+  "id": 2026
+ },
+ {
+  "school": "Arizona",
+  "id": 12
+ },
+ {
+  "school": "Arizona State",
+  "id": 9
+ },
+ {
+  "school": "Arkansas",
+  "id": 8
+ },
+ {
+  "school": "Arkansas State",
+  "id": 2032
+ },
+ {
+  "school": "Army",
+  "id": 349
+ },
+ {
+  "school": "Auburn",
+  "id": 2
+ },
+ {
+  "school": "Ball State",
+  "id": 2050
+ },
+ {
+  "school": "Baylor",
+  "id": 239
+ },
+ {
+  "school": "Boise State",
+  "id": 68
+ },
+ {
+  "school": "Boston College",
+  "id": 103
+ },
+ {
+  "school": "Bowling Green",
+  "id": 189
+ },
+ {
+  "school": "Buffalo",
+  "id": 2084
+ },
+ {
+  "school": "BYU",
+  "id": 252
+ },
+ {
+  "school": "California",
+  "id": 25
+ },
+ {
+  "school": "Central Michigan",
+  "id": 2117
+ },
+ {
+  "school": "Charlotte",
+  "id": 2429
+ },
+ {
+  "school": "Cincinnati",
+  "id": 2132
+ },
+ {
+  "school": "Clemson",
+  "id": 228
+ },
+ {
+  "school": "Coastal Carolina",
+  "id": 324
+ },
+ {
+  "school": "Colorado",
+  "id": 38
+ },
+ {
+  "school": "Colorado State",
+  "id": 36
+ },
+ {
+  "school": "Delaware",
+  "id": 48
+ },
+ {
+  "school": "Duke",
+  "id": 150
+ },
+ {
+  "school": "East Carolina",
+  "id": 151
+ },
+ {
+  "school": "Eastern Michigan",
+  "id": 2199
+ },
+ {
+  "school": "Florida",
+  "id": 57
+ },
+ {
+  "school": "Florida Atlantic",
+  "id": 2226
+ },
+ {
+  "school": "Florida International",
+  "id": 2229
+ },
+ {
+  "school": "Florida State",
+  "id": 52
+ },
+ {
+  "school": "Fresno State",
+  "id": 278
+ },
+ {
+  "school": "Georgia",
+  "id": 61
+ },
+ {
+  "school": "Georgia Southern",
+  "id": 290
+ },
+ {
+  "school": "Georgia State",
+  "id": 2247
+ },
+ {
+  "school": "Georgia Tech",
+  "id": 59
+ },
+ {
+  "school": "Hawai'i",
+  "id": 62
+ },
+ {
+  "school": "Houston",
+  "id": 248
+ },
+ {
+  "school": "Illinois",
+  "id": 356
+ },
+ {
+  "school": "Indiana",
+  "id": 84
+ },
+ {
+  "school": "Iowa",
+  "id": 2294
+ },
+ {
+  "school": "Iowa State",
+  "id": 66
+ },
+ {
+  "school": "Jacksonville State",
+  "id": 55
+ },
+ {
+  "school": "James Madison",
+  "id": 256
+ },
+ {
+  "school": "Kansas",
+  "id": 2305
+ },
+ {
+  "school": "Kansas State",
+  "id": 2306
+ },
+ {
+  "school": "Kennesaw State",
+  "id": 338
+ },
+ {
+  "school": "Kent State",
+  "id": 2309
+ },
+ {
+  "school": "Kentucky",
+  "id": 96
+ },
+ {
+  "school": "Liberty",
+  "id": 2335
+ },
+ {
+  "school": "Louisiana",
+  "id": 309
+ },
+ {
+  "school": "Louisiana Tech",
+  "id": 2348
+ },
+ {
+  "school": "Louisville",
+  "id": 97
+ },
+ {
+  "school": "LSU",
+  "id": 99
+ },
+ {
+  "school": "Marshall",
+  "id": 276
+ },
+ {
+  "school": "Maryland",
+  "id": 120
+ },
+ {
+  "school": "Massachusetts",
+  "id": 113
+ },
+ {
+  "school": "Memphis",
+  "id": 235
+ },
+ {
+  "school": "Miami",
+  "id": 2390
+ },
+ {
+  "school": "Miami (OH)",
+  "id": 193
+ },
+ {
+  "school": "Michigan",
+  "id": 130
+ },
+ {
+  "school": "Michigan State",
+  "id": 127
+ },
+ {
+  "school": "Middle Tennessee",
+  "id": 2393
+ },
+ {
+  "school": "Minnesota",
+  "id": 135
+ },
+ {
+  "school": "Mississippi State",
+  "id": 344
+ },
+ {
+  "school": "Missouri",
+  "id": 142
+ },
+ {
+  "school": "Missouri State",
+  "id": 2623
+ },
+ {
+  "school": "Navy",
+  "id": 2426
+ },
+ {
+  "school": "NC State",
+  "id": 152
+ },
+ {
+  "school": "Nebraska",
+  "id": 158
+ },
+ {
+  "school": "Nevada",
+  "id": 2440
+ },
+ {
+  "school": "New Mexico",
+  "id": 167
+ },
+ {
+  "school": "New Mexico State",
+  "id": 166
+ },
+ {
+  "school": "North Carolina",
+  "id": 153
+ },
+ {
+  "school": "North Dakota State",
+  "id": 2449
+ },
+ {
+  "school": "Northern Illinois",
+  "id": 2459
+ },
+ {
+  "school": "North Texas",
+  "id": 249
+ },
+ {
+  "school": "Northwestern",
+  "id": 77
+ },
+ {
+  "school": "Notre Dame",
+  "id": 87
+ },
+ {
+  "school": "Ohio",
+  "id": 195
+ },
+ {
+  "school": "Ohio State",
+  "id": 194
+ },
+ {
+  "school": "Oklahoma",
+  "id": 201
+ },
+ {
+  "school": "Oklahoma State",
+  "id": 197
+ },
+ {
+  "school": "Old Dominion",
+  "id": 295
+ },
+ {
+  "school": "Ole Miss",
+  "id": 145
+ },
+ {
+  "school": "Oregon",
+  "id": 2483
+ },
+ {
+  "school": "Oregon State",
+  "id": 204
+ },
+ {
+  "school": "Penn State",
+  "id": 213
+ },
+ {
+  "school": "Pittsburgh",
+  "id": 221
+ },
+ {
+  "school": "Purdue",
+  "id": 2509
+ },
+ {
+  "school": "Rice",
+  "id": 242
+ },
+ {
+  "school": "Rutgers",
+  "id": 164
+ },
+ {
+  "school": "Sacramento State",
+  "id": 16
+ },
+ {
+  "school": "Sam Houston",
+  "id": 2534
+ },
+ {
+  "school": "San Diego State",
+  "id": 21
+ },
+ {
+  "school": "San Jos\u00e9 State",
+  "id": 23
+ },
+ {
+  "school": "SMU",
+  "id": 2567
+ },
+ {
+  "school": "South Alabama",
+  "id": 6
+ },
+ {
+  "school": "South Carolina",
+  "id": 2579
+ },
+ {
+  "school": "Southern Miss",
+  "id": 2572
+ },
+ {
+  "school": "South Florida",
+  "id": 58
+ },
+ {
+  "school": "Stanford",
+  "id": 24
+ },
+ {
+  "school": "Syracuse",
+  "id": 183
+ },
+ {
+  "school": "TCU",
+  "id": 2628
+ },
+ {
+  "school": "Temple",
+  "id": 218
+ },
+ {
+  "school": "Tennessee",
+  "id": 2633
+ },
+ {
+  "school": "Texas",
+  "id": 251
+ },
+ {
+  "school": "Texas A&M",
+  "id": 245
+ },
+ {
+  "school": "Texas State",
+  "id": 326
+ },
+ {
+  "school": "Texas Tech",
+  "id": 2641
+ },
+ {
+  "school": "Toledo",
+  "id": 2649
+ },
+ {
+  "school": "Troy",
+  "id": 2653
+ },
+ {
+  "school": "Tulane",
+  "id": 2655
+ },
+ {
+  "school": "Tulsa",
+  "id": 202
+ },
+ {
+  "school": "UAB",
+  "id": 5
+ },
+ {
+  "school": "UCF",
+  "id": 2116
+ },
+ {
+  "school": "UCLA",
+  "id": 26
+ },
+ {
+  "school": "UConn",
+  "id": 41
+ },
+ {
+  "school": "UL Monroe",
+  "id": 2433
+ },
+ {
+  "school": "UNLV",
+  "id": 2439
+ },
+ {
+  "school": "USC",
+  "id": 30
+ },
+ {
+  "school": "Utah",
+  "id": 254
+ },
+ {
+  "school": "Utah State",
+  "id": 328
+ },
+ {
+  "school": "UTEP",
+  "id": 2638
+ },
+ {
+  "school": "UTSA",
+  "id": 2636
+ },
+ {
+  "school": "Vanderbilt",
+  "id": 238
+ },
+ {
+  "school": "Virginia",
+  "id": 258
+ },
+ {
+  "school": "Virginia Tech",
+  "id": 259
+ },
+ {
+  "school": "Wake Forest",
+  "id": 154
+ },
+ {
+  "school": "Washington",
+  "id": 264
+ },
+ {
+  "school": "Washington State",
+  "id": 265
+ },
+ {
+  "school": "Western Kentucky",
+  "id": 98
+ },
+ {
+  "school": "Western Michigan",
+  "id": 2711
+ },
+ {
+  "school": "West Virginia",
+  "id": 277
+ },
+ {
+  "school": "Wisconsin",
+  "id": 275
+ },
+ {
+  "school": "Wyoming",
+  "id": 2751
+ }
+]
