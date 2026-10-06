@@ -212,3 +212,71 @@ def test_props_enabled_false_when_ingest_props_false_mixed_case():
 
 def test_props_enabled_false_when_window_zero():
     assert ingest_odds.props_enabled({}, 0) is False
+
+
+# -- MLB (reactivated 2026-10-05) ---------------------------------------------------
+
+def test_mlb_is_an_ingested_sport_with_schedule_fetcher_and_matcher():
+    from sportsmodel.mlb import matcher
+    assert "mlb" in ingest_odds.SPORTS
+    assert "mlb" in ingest_odds._ESPN_FETCHERS
+    assert ingest_odds._matcher_for("mlb") is matcher.match_odds_event
+    # football wiring is untouched
+    assert ingest_odds._matcher_for("nfl").__module__.endswith("nfl.matcher")
+    assert ingest_odds._matcher_for("cfb").__module__.endswith("cfb.matcher")
+
+
+def test_sports_to_run_defaults_to_all_and_honors_odds_sports():
+    assert ingest_odds.sports_to_run({}) == ("nfl", "cfb", "mlb")
+    assert ingest_odds.sports_to_run({"ODDS_SPORTS": ""}) == ("nfl", "cfb", "mlb")
+    assert ingest_odds.sports_to_run({"ODDS_SPORTS": "mlb"}) == ("mlb",)
+    assert ingest_odds.sports_to_run({"ODDS_SPORTS": "NFL, cfb"}) == ("nfl", "cfb")
+    assert ingest_odds.sports_to_run({"ODDS_SPORTS": "mlb,cricket"}) == ("mlb",)   # unknown dropped
+    # a typo must never fall back to "all sports" (credits): nothing valid -> nothing runs
+    assert ingest_odds.sports_to_run({"ODDS_SPORTS": "cricket"}) == ()
+
+
+def test_mlb_prop_window_is_capped_but_football_is_not():
+    slate = {"PROP_SCOPE": "slate"}
+    assert ingest_odds.sport_prop_window_minutes("nfl", slate) == 7 * 24 * 60
+    assert ingest_odds.sport_prop_window_minutes("mlb", slate) == ingest_odds.MLB_PROP_WINDOW_CAP_MIN == 240
+    # a shorter configured window is respected, never widened to the cap
+    assert ingest_odds.sport_prop_window_minutes("mlb", {"PROP_WINDOW_MIN": "90"}) == 90
+    assert ingest_odds.sport_prop_window_minutes("mlb", {"PROP_WINDOW_MIN": ""}) == 0
+    assert ingest_odds.sport_prop_window_minutes("nfl", {"PROP_WINDOW_MIN": "90"}) == 90
+
+
+def test_mlb_prop_markets_requested_are_only_the_live_four():
+    cfg = sports.get("mlb")
+    assert sorted(cfg.prop_market_map.values()) == [
+        "batter_total_bases", "pitcher_hits_allowed", "pitcher_outs", "pitcher_strikeouts"]
+    assert not {"batter_hits", "batter_hits_runs_rbis", "batter_home_runs"} & set(cfg.prop_market_map.values())
+
+
+def test_fetch_games_mlb_keeps_every_game_type(monkeypatch):
+    from sportsmodel.ingest import mlb_statsapi
+
+    def fake_schedule(day):
+        return [{"game_pk": 1, "game_date": day, "home_team_name": "H", "away_team_name": "A",
+                 "commence_time": f"{day}T23:00:00Z", "game_type": "D"},
+                {"game_pk": 2, "game_date": day, "home_team_name": "H2", "away_team_name": "A2",
+                 "commence_time": None, "game_type": "R"}]
+
+    monkeypatch.setattr(mlb_statsapi, "fetch_schedule", fake_schedule)
+    games = ingest_odds._fetch_games_mlb()
+    assert len(games) == 5 * 2          # yesterday .. +3 days, both game types kept
+    assert {"game_pk", "home_name", "away_name", "commence_time", "game_date"} <= set(games[0])
+
+
+def test_mlb_event_flows_through_lookup_and_parse_to_game_pk():
+    from sportsmodel.mlb import matcher
+    events = [{"id": "e1", "home_team": "Los Angeles Dodgers", "away_team": "Atlanta Braves",
+               "commence_time": "2026-10-07T01:30:00Z",
+               "bookmakers": [{"key": "pinnacle", "markets": [{"key": "h2h", "outcomes": [
+                   {"name": "Los Angeles Dodgers", "price": -140}, {"name": "Atlanta Braves", "price": 120}]}]}]}]
+    games = [{"game_pk": 849826, "home_name": "Los Angeles Dodgers", "away_name": "Atlanta Braves",
+              "game_date": "2026-10-06", "commence_time": "2026-10-07T01:30:00Z"}]
+    lookup = ingest_odds.build_game_lookup(events, games, matcher.match_odds_event)
+    rows = odds.parse_game_odds(events, lookup, "2026-10-06T20:00:00+00:00")
+    assert {(r["game_pk"], r["market"], r["side"], r["price"]) for r in rows} == {
+        (849826, "moneyline", "home", -140), (849826, "moneyline", "away", 120)}

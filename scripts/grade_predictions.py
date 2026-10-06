@@ -1,9 +1,11 @@
 """Grade game_predictions against actual final scores -> prediction_accuracy.
 
-Sibling of grade_results.py, but simpler: no odds, no ROI, no CLV. For each
-recently-finished NFL/CFB game with a game_predictions row not yet graded,
-fetch the final score (ESPN) and record whether the model picked the right
-winner, plus margin/total error. This is the model's accuracy track record.
+Sibling of grade_results.py, but simpler: no ROI, no CLV. For each
+recently-finished NFL/CFB/MLB game with a game_predictions row not yet graded,
+fetch the final score (ESPN for football, StatsAPI for MLB) and record whether the
+model picked the right winner, plus margin/total error. This is the model's accuracy
+track record. MLB has no ESPN pickcenter line, so its market_spread/market_total
+(run line / total) come from the last captured Pinnacle snapshot before first pitch.
 
 Runs on a rolling window (like grade_results); idempotent -- re-running just
 re-upserts the same rows via (sport, game_pk).
@@ -23,12 +25,18 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 from sportsmodel import config
 from sportsmodel.cfb import espn as cfb_espn
 from sportsmodel.db import get_postgres, refresh_prediction_pnl, upsert_prediction_accuracy
+from sportsmodel.ingest import mlb_statsapi
 from sportsmodel.nfl import espn as nfl_espn
 
 # Results-provider seam: sport key -> module exposing fetch_final(game_pk) -> dict|None.
-# Both NFL and CFB use ESPN event ids as game_pk, so fetch_final takes the same
-# argument shape for either sport.
-FINAL_PROVIDERS = {"nfl": nfl_espn, "cfb": cfb_espn}
+# NFL and CFB use ESPN event ids as game_pk; MLB uses the StatsAPI gamePk. fetch_final
+# takes the same argument shape for every sport. Postseason games are included: nothing
+# here filters on game type.
+FINAL_PROVIDERS = {"nfl": nfl_espn, "cfb": cfb_espn, "mlb": mlb_statsapi}
+
+# Sports whose final-score provider carries no closing market line; their
+# market_spread/market_total are read from the captured Pinnacle closing snapshot.
+CLOSING_LINES_FROM_ODDS = frozenset({"mlb"})
 
 
 def _window_start(days: int, today: date | None = None) -> str:
@@ -130,6 +138,32 @@ def _accuracy_row(prediction: dict, final: dict) -> dict:
     }
 
 
+def closing_lines_from_rows(rows: list[tuple]) -> dict:
+    """{"market_spread", "market_total"} from (market, line) rows, newest capture first
+    per market (the caller's ORDER BY): the HOME spread and the total, either may be None.
+    Pure -- no DB."""
+    out: dict = {"market_spread": None, "market_total": None}
+    for market, line in rows:
+        if line is None:
+            continue
+        key = {"spread": "market_spread", "total": "market_total"}.get(market)
+        if key and out[key] is None:
+            out[key] = float(line)
+    return out
+
+
+def _closing_market_lines(cur, game_pk: int) -> dict:
+    """Last Pinnacle home-spread / total line captured at or before first pitch."""
+    cur.execute("""
+        SELECT market, line FROM odds_snapshot
+        WHERE game_pk = %s AND book = 'pinnacle' AND COALESCE(player_name, '') = ''
+          AND captured_at <= commence_time
+          AND ((market = 'spread' AND side = 'home') OR (market = 'total' AND side = 'over'))
+        ORDER BY captured_at DESC
+    """, (game_pk,))
+    return closing_lines_from_rows(cur.fetchall())
+
+
 def _pending_predictions(cur, sport: str, start: str, regrade: bool = False) -> list[dict]:
     """game_predictions rows for `sport` with game_date >= `start` to grade.
 
@@ -188,6 +222,8 @@ def main() -> None:
                     continue
                 if final is None:
                     continue  # not final yet -- skip until a later run
+                if sport in CLOSING_LINES_FROM_ODDS:
+                    final = {**final, **_closing_market_lines(cur, pred["game_pk"])}
                 graded_rows.append(_accuracy_row(pred, final))
                 n += 1
             counts[sport] = n

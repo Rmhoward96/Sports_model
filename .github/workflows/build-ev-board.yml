@@ -1,11 +1,15 @@
 name: build-ev-board
 
-# Build the +EV board -> ev_picks / ev_current. Reads the upcoming slate
+# Build the +EV board (NFL, CFB and MLB game lines) -> ev_picks / ev_current. Reads the upcoming slate
 # (predictions_current) + the latest odds_snapshot (Pinnacle + soft books) and
 # writes one edge/EV row per market side for every upcoming game. DATABASE_URL
 # lives here, not in the session. Run AFTER capture-odds (odds must be fresh).
 # The Decision Desk overlay is retired: true prob = Pinnacle no-vig, so the
 # board is pure line shopping.
+#
+# MLB is built ~5 min after each of capture-odds' MLB-only crons (every day Mar-Nov); the
+# football steps are skipped on those firings (their odds were not re-pulled) and the MLB
+# step is skipped on the football-day firings (MLB odds were not re-pulled then either).
 #
 # The +EV board is assistive -- not a proven edge until grade-ev's forward CLV
 # record supports it.
@@ -16,9 +20,20 @@ on:
     # so the board reflects the freshest lines. Crons are UTC.
     - cron: "30 20 * * 0,1,4,6"
     - cron: "30 23 * * 0,1,4,6"
+    # MLB: 5 min after capture-odds' MLB-only crons.
+    - cron: "35 16 * 3-11 *"
+    - cron: "5 19 * 3-11 *"
+    - cron: "35 21 * 3-11 *"
+    - cron: "5 0 * 3-11 *"
 
 permissions:
   contents: read
+
+env:
+  # True on the MLB crons above: build only the MLB board (+ parlays). False on the
+  # football crons; a manual run builds everything.
+  MLB_FIRING: ${{ (github.event.schedule == '35 16 * 3-11 *' || github.event.schedule == '5 19 * 3-11 *' || github.event.schedule == '35 21 * 3-11 *' || github.event.schedule == '5 0 * 3-11 *') && 'true' || 'false' }}
+  FOOTBALL_FIRING: ${{ (github.event.schedule == '30 20 * * 0,1,4,6' || github.event.schedule == '30 23 * * 0,1,4,6') && 'true' || 'false' }}
 
 jobs:
   build:
@@ -31,13 +46,20 @@ jobs:
       - name: Sync deps
         run: uv sync
       - name: Build +EV board (NFL)
+        if: ${{ env.MLB_FIRING != 'true' }}
         env:
           DATABASE_URL: ${{ secrets.DATABASE_URL }}
         run: uv run python scripts/build_ev_board.py --sport nfl
       - name: Build +EV board (CFB)
+        if: ${{ env.MLB_FIRING != 'true' }}
         env:
           DATABASE_URL: ${{ secrets.DATABASE_URL }}
         run: uv run python scripts/build_ev_board.py --sport cfb
+      - name: Build +EV board (MLB)
+        if: ${{ env.FOOTBALL_FIRING != 'true' }}
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+        run: uv run python scripts/build_ev_board.py --sport mlb
       - name: Build +EV parlays
         env:
           DATABASE_URL: ${{ secrets.DATABASE_URL }}

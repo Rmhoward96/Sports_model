@@ -34,6 +34,11 @@ def _parse_game(g: dict[str, Any]) -> dict[str, Any]:
     return {
         "game_pk": g["gamePk"],
         "game_date": g["officialDate"],
+        # UTC first-pitch time + game type (R regular, F/D/L/W postseason, S/E exhibition).
+        # NOT filtered on: the postseason runs through the same schedule feed. Neither key is
+        # a daily_schedule column (upsert_daily_schedule writes an explicit column list).
+        "commence_time": g.get("gameDate"),
+        "game_type": g.get("gameType"),
         "status": g["status"]["detailedState"],
         "venue_id": g.get("venue", {}).get("id"),
         "venue_name": g.get("venue", {}).get("name"),
@@ -59,3 +64,37 @@ def fetch_schedule(date: str) -> list[dict[str, Any]]:
         for g in day.get("games", []):
             games.append(_parse_game(g))
     return games
+
+
+# detailedState prefixes of a game that was actually played to completion. A postponed or
+# cancelled game ALSO reports abstractGameState "Final" (detailedState "Postponed" /
+# "Cancelled"), so abstractGameState alone is not a safe "it has a result" check.
+_PLAYED_STATES = ("Final", "Game Over", "Completed Early")
+
+
+def parse_final(game: dict[str, Any]) -> dict[str, Any] | None:
+    """Final score from one /schedule game dict, or None unless the game was played to
+    completion (see _PLAYED_STATES). Same return shape as nfl/cfb espn.fetch_final; MLB has
+    no ESPN pickcenter line here, so market_spread/market_total are None (the grader fills
+    them from the captured closing odds)."""
+    status = game.get("status") or {}
+    if status.get("abstractGameState") != "Final":
+        return None
+    if not str(status.get("detailedState", "")).startswith(_PLAYED_STATES):
+        return None
+    home = (game.get("teams", {}).get("home") or {}).get("score")
+    away = (game.get("teams", {}).get("away") or {}).get("score")
+    if home is None or away is None:
+        return None
+    return {"home_score": int(home), "away_score": int(away), "final": True,
+            "market_spread": None, "market_total": None}
+
+
+def fetch_final(game_pk: int) -> dict[str, Any] | None:
+    """Final score dict for an MLB gamePk, or None if it is not (yet) a completed game."""
+    data = _get("/schedule", {"sportId": 1, "gamePk": game_pk})
+    for day in data.get("dates", []):
+        for g in day.get("games", []):
+            if g.get("gamePk") == game_pk:
+                return parse_final(g)
+    return None

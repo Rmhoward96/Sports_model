@@ -1,7 +1,8 @@
 name: grade-predictions
 
 # Prediction-ACCURACY grading (did the predicted winner win? how close was the
-# margin/total?) for NFL + CFB. No odds, no CLV, no ROI — this is the prediction
+# margin/total?) for NFL + CFB + MLB (MLB finals from StatsAPI, postseason included; its run line /
+# total come from the captured Pinnacle close). No odds, no CLV, no ROI — this is the prediction
 # tool's track record. grade_predictions.py reads ESPN finals + Supabase only
 # (free), is idempotent, and grades both sports in one pass, so it runs often.
 on:

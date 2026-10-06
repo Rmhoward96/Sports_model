@@ -51,9 +51,12 @@ def load_game_odds(game_pks: list[int]) -> list[dict]:
 
 
 def load_prop_picks() -> list[dict]:
+    # NFL props only: grade_best_parlays settles prop legs from nfl_player_actuals, and the
+    # prop-leg pricing keys on the NFL market map. MLB prop picks stay straight bets (their
+    # game-line picks DO enter parlays -- those settle from prediction_accuracy).
     return _q("""
         SELECT game_pk, player_id, player_name, market, side, line, model_prob, matchup, commence_time
-        FROM ev_prop_picks_current WHERE is_pick
+        FROM ev_prop_picks_current WHERE is_pick AND COALESCE(sport, 'nfl') = 'nfl'
     """)
 
 

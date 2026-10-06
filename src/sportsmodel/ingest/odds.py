@@ -35,6 +35,16 @@ PROP_MARKET_MAP = {
 }
 _ODDS_TO_OURS = {v: k for k, v in PROP_MARKET_MAP.items()}
 
+# The MLB prop markets that are actually PUBLISHED and therefore worth Odds-API credits
+# (one credit per market per event). PROP_MARKET_MAP above stays the full vocabulary
+# parse_prop_odds / the backtests translate; this is the subset the ingester requests.
+# Dropped on purpose (commit 206941b, ~1,970 live graded picks): hits (-32U at 45% win) and
+# hrr (-35U, ~38% of all volume) -- generate_sim no longer publishes either; home_run was
+# never published (a longshot over-only market that manufactures fake EV). Keep them out
+# unless a rebuilt model earns positive CLV on them.
+LIVE_PROP_MARKET_MAP = {k: v for k, v in PROP_MARKET_MAP.items()
+                        if k in ("total_bases", "pitcher_ks", "hits_allowed", "outs_recorded")}
+
 # credits remaining, updated from the last response header (for logging)
 last_requests_remaining: str | None = None
 

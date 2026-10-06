@@ -32,6 +32,7 @@ from __future__ import annotations
 
 import json
 import re
+import unicodedata
 from datetime import timedelta
 
 from ..model.distributions import prob_over_dist
@@ -55,6 +56,23 @@ def odds_market_for(sim_market: str) -> str | None:
     """Odds-side market key for a sim aggregate market, or None if `sim_market`
     is unknown or intentionally excluded from C v1 (e.g. pass_yds)."""
     return SIM_TO_ODDS_MARKET.get(sim_market)
+
+
+# MLB: the sim/prediction market codes and the odds-side codes are the same strings
+# (sports.get("mlb").prop_market_map keys == prop_predictions.market). Only the four
+# markets that were live before the 2026-08-30 pause -- hits/hrr/home_run stay dropped.
+MLB_SIM_TO_ODDS_MARKET: dict[str, str] = {
+    "total_bases": "total_bases",
+    "pitcher_ks": "pitcher_ks",
+    "hits_allowed": "hits_allowed",
+    "outs_recorded": "outs_recorded",
+}
+
+
+def always_propable(market: str, dist_mean: float) -> bool:
+    """MLB has no projected-usage gate: a prop is on the board whenever a book posts it
+    (books only post batter props for confirmed starters)."""
+    return True
 
 
 # Trailing generational-suffix tokens stripped from a normalized player name
@@ -84,6 +102,9 @@ def normalize_player_name(name: str) -> str:
     not player-name joins, and is left unchanged.
     """
     s = (name or "").strip().lower()
+    # Fold accents ("José Ramírez" -> "jose ramirez"): MLB StatsAPI names carry diacritics
+    # that the Odds API often drops (and vice versa); both sides go through this function.
+    s = "".join(c for c in unicodedata.normalize("NFKD", s) if not unicodedata.combining(c))
     s = _DROP_CHARS_RE.sub("", s)
     s = _WHITESPACE_RE.sub(" ", s).strip()
     tokens = s.split(" ") if s else []
@@ -181,7 +202,16 @@ def _is_pinnacle(book: str | None) -> bool:
     return "pinnacle" in (book or "").lower()
 
 
-def assemble_prop_rows(sim_rows: list[dict], odds_rows: list[dict], model_version: str) -> list[dict]:
+def assemble_prop_rows(
+    sim_rows: list[dict],
+    odds_rows: list[dict],
+    model_version: str,
+    *,
+    sport: str = "nfl",
+    market_map: dict[str, str] | None = None,
+    gate=None,
+    calibrate_fn=None,
+) -> list[dict]:
     """Join sim player-prop distributions to book prop odds and emit +EV pick
     rows shaped exactly like `sportsmodel.db._EV_PROP_PICKS_COLS`.
 
@@ -208,18 +238,25 @@ def assemble_prop_rows(sim_rows: list[dict], odds_rows: list[dict], model_versio
     odds match, missing one side, NaN prob, no shoppable soft price) are
     simply excluded -- this function never raises on a single row's bad/
     missing data.
+
+    Keyword-only knobs default to the NFL behavior above, so existing callers are
+    unchanged. MLB passes `sport="mlb"`, `market_map=MLB_SIM_TO_ODDS_MARKET`,
+    `gate=always_propable` and `calibrate_fn=calibration.calibrate` (the model's P(over)
+    at the book's line is Platt-corrected per market, as the pre-pause MLB board did).
     """
+    market_map = SIM_TO_ODDS_MARKET if market_map is None else market_map
+    gate = is_propable_projected if gate is None else gate
     rows: list[dict] = []
     for sim_row in sim_rows:
         sim_market = sim_row.get("market")
-        odds_market = odds_market_for(sim_market)
+        odds_market = market_map.get(sim_market)
         if odds_market is None:
             continue
         mean = sim_row.get("mean")
         if mean is None:
             continue
         try:
-            propable = is_propable_projected(sim_market, mean)
+            propable = gate(sim_market, mean)
         except (TypeError, ValueError):
             continue
         if not propable:
@@ -262,6 +299,8 @@ def assemble_prop_rows(sim_rows: list[dict], odds_rows: list[dict], model_versio
         p_over = prob_over_dist(sim_row.get("dist"), main_line)
         if p_over != p_over:  # NaN
             continue
+        if calibrate_fn is not None:
+            p_over = calibrate_fn(sim_market, p_over)
 
         # Pinnacle is the SHARP reference (kept for pinnacle_price/CLV below),
         # not a shoppable soft book -- best_book/best_price (and the EV/no-vig
@@ -297,7 +336,7 @@ def assemble_prop_rows(sim_rows: list[dict], odds_rows: list[dict], model_versio
                 break
 
         rows.append({
-            "sport": "nfl",
+            "sport": sport,
             "game_pk": game_pk,
             "player_id": sim_row.get("player_id"),
             "player_name": sim_row.get("name"),

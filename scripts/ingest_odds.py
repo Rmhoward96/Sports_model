@@ -1,4 +1,4 @@
-"""Snapshot current NFL + CFB game-line (and NFL player-prop) odds from The Odds API.
+"""Snapshot current NFL + CFB + MLB game-line (and NFL/MLB player-prop) odds from The Odds API.
 
 For each sport, events are joined to our ESPN game_pk by (home_team, away_team,
 US_game_date) via that sport's odds-event matcher (the Odds API carries no
@@ -7,14 +7,19 @@ captured_at. Run repeatedly through the day; the last snapshot before a game's
 commence_time is its closing line.
 
 Player props are additionally captured, per event, for any sport whose
-`SportConfig.prop_market_map` is non-empty (currently NFL only -- CFB's map is
-empty and so no-ops) and only for events inside a post-lineup pre-kickoff
-window: `now < commence_time <= now + prop_window_minutes(env) minutes`. The window
-is controlled by PROP_SCOPE (slate → a full week so every upcoming game's props
-are captured) or PROP_WINDOW_MIN (default 150 minutes; blank → 0 = disabled).
-Props are one Odds-API call per in-window event, so credits scale with how many
-games are in that window at run time. Set INGEST_PROPS=false or PROP_WINDOW_MIN=0
-to disable prop capture entirely and fall back to game-lines-only behavior.
+`SportConfig.prop_market_map` is non-empty (NFL and MLB -- CFB's map is empty and so
+no-ops) and only for events inside a post-lineup pre-kickoff window:
+`now < commence_time <= now + prop_window_minutes(env) minutes`. The window is controlled
+by PROP_SCOPE (slate → a full week so every upcoming game's props are captured) or
+PROP_WINDOW_MIN (default 150 minutes; blank → 0 = disabled). MLB's window is additionally
+capped at MLB_PROP_WINDOW_CAP_MIN (MLB lineups post ~3-4h before first pitch, and a
+7-day slate pull of a daily sport would be ~30+ events x 4 credits). Props are one
+Odds-API call per in-window event, so credits scale with how many games are in that
+window at run time. Set INGEST_PROPS=false or PROP_WINDOW_MIN=0 to disable prop capture
+entirely and fall back to game-lines-only behavior.
+
+ODDS_SPORTS (comma list, default "nfl,cfb,mlb") picks which sports a run covers, so the
+daily MLB-only crons in capture-odds.yml don't re-pull the football slates.
 
 Usage:
     uv run python scripts/ingest_odds.py
@@ -34,8 +39,27 @@ from sportsmodel import sports
 from sportsmodel.db import upsert_odds_snapshot
 from sportsmodel.ingest import odds
 
-SPORTS = ("nfl", "cfb")
+SPORTS = ("nfl", "cfb", "mlb")
 SLATE_WINDOW_MIN = 7 * 24 * 60
+# MLB lineups are posted ~3-4h before first pitch; a longer window would only buy
+# pre-lineup (inflated longshot) prop lines at 4 credits per event.
+MLB_PROP_WINDOW_CAP_MIN = 240
+_PROP_WINDOW_CAP_MIN = {"mlb": MLB_PROP_WINDOW_CAP_MIN}
+
+
+def sports_to_run(env: dict[str, str]) -> tuple[str, ...]:
+    """The sports this run covers: ODDS_SPORTS (comma list) filtered to the known
+    SPORTS, in SPORTS order; blank/unset -> all of them. A list with no known sport (a
+    typo) yields () -- nothing runs -- rather than silently pulling everything."""
+    raw = [t.strip().lower() for t in (env.get("ODDS_SPORTS") or "").split(",") if t.strip()]
+    return tuple(s for s in SPORTS if s in raw) if raw else SPORTS
+
+
+def sport_prop_window_minutes(sport: str, env: dict[str, str]) -> int:
+    """prop_window_minutes(env), clamped to the sport's cap (MLB only)."""
+    window = prop_window_minutes(env)
+    cap = _PROP_WINDOW_CAP_MIN.get(sport)
+    return min(window, cap) if cap is not None else window
 
 
 def prop_window_minutes(env: dict[str, str]) -> int:
@@ -137,15 +161,38 @@ def _fetch_espn_games_cfb() -> list[dict]:
     return games
 
 
+def _fetch_games_mlb() -> list[dict]:
+    """MLB StatsAPI games (game_pk/home_name/away_name/commence_time/game_date) for the
+    window the Odds API lists events in: yesterday (in-progress late games) through three
+    days ahead. Every game type is kept -- postseason (F/D/L/W) rides the same feed -- and
+    StatsAPI is free, so five date calls cost no credits."""
+    from sportsmodel.ingest import mlb_statsapi
+
+    today = datetime.now(timezone.utc).date()
+    games: list[dict] = []
+    for offset in range(-1, 4):
+        for g in mlb_statsapi.fetch_schedule((today + timedelta(days=offset)).isoformat()):
+            games.append({
+                "game_pk": g["game_pk"], "home_name": g["home_team_name"],
+                "away_name": g["away_team_name"], "commence_time": g.get("commence_time"),
+                "game_date": g["game_date"],
+            })
+    return games
+
+
+# Schedule fetchers keyed by sport (the name is historical: NFL/CFB are ESPN, MLB is StatsAPI).
 _ESPN_FETCHERS: dict[str, Callable[[], list[dict]]] = {
     "nfl": _fetch_espn_games_nfl,
     "cfb": _fetch_espn_games_cfb,
+    "mlb": _fetch_games_mlb,
 }
 
 
 def _matcher_for(sport: str) -> Callable[[dict, list[dict]], int | None]:
     if sport == "nfl":
         from sportsmodel.nfl import matcher
+    elif sport == "mlb":
+        from sportsmodel.mlb import matcher
     else:
         from sportsmodel.cfb import matcher
     return matcher.match_odds_event
@@ -166,7 +213,7 @@ def run_sport(sport: str, captured_at: str) -> list[dict]:
     rows = odds.parse_game_odds(events, game_lookup, captured_at)
     print(f"[{sport}] rows: {len(rows)}")
 
-    window_min = prop_window_minutes(os.environ)
+    window_min = sport_prop_window_minutes(sport, os.environ)
     if cfg.prop_market_map and props_enabled(os.environ, window_min):
         prop_markets = list(cfg.prop_market_map.values())
         in_window = events_in_prop_window(
@@ -193,7 +240,7 @@ def main() -> None:
 
     captured_at = datetime.now(timezone.utc).isoformat()
 
-    for sport in SPORTS:
+    for sport in sports_to_run(os.environ):
         # The whole per-sport pipeline -- fetch, match, parse AND store -- is
         # inside the boundary: a transient failure anywhere (ESPN, the Odds API,
         # or the odds_snapshot write) logs and moves on to the next sport rather

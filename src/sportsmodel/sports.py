@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from sportsmodel.ingest.odds import GAME_MARKETS, PROP_MARKET_MAP
+from sportsmodel.ingest.odds import GAME_MARKETS, LIVE_PROP_MARKET_MAP
 
 
 @dataclass(frozen=True)
@@ -26,7 +26,7 @@ SPORTS: dict[str, SportConfig] = {
         key="mlb",
         odds_sport="baseball_mlb",
         game_markets=GAME_MARKETS,
-        prop_market_map=PROP_MARKET_MAP,
+        prop_market_map=LIVE_PROP_MARKET_MAP,
         commence_shift_hours=10,
     ),
     "nfl": SportConfig(

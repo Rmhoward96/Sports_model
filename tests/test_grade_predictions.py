@@ -186,4 +186,38 @@ def test_grade_predictions_script_imports_cleanly():
     assert hasattr(grade_predictions, "main")
     assert hasattr(grade_predictions, "_accuracy_row")
     assert hasattr(grade_predictions, "FINAL_PROVIDERS")
-    assert set(grade_predictions.FINAL_PROVIDERS) == {"nfl", "cfb"}
+    assert set(grade_predictions.FINAL_PROVIDERS) == {"nfl", "cfb", "mlb"}
+
+
+def test_mlb_final_provider_is_statsapi_and_gets_closing_lines_from_odds():
+    from sportsmodel.ingest import mlb_statsapi
+    assert grade_predictions.FINAL_PROVIDERS["mlb"] is mlb_statsapi
+    assert "mlb" in grade_predictions.CLOSING_LINES_FROM_ODDS
+    assert "nfl" not in grade_predictions.CLOSING_LINES_FROM_ODDS  # ESPN already carries its line
+
+
+def test_closing_lines_from_rows_takes_newest_per_market():
+    # rows are (market, line) newest-first; spread is the HOME line.
+    rows = [("total", 8.5), ("spread", -1.5), ("total", 9.0), ("spread", -1.5)]
+    assert grade_predictions.closing_lines_from_rows(rows) == {"market_spread": -1.5, "market_total": 8.5}
+
+
+def test_closing_lines_from_rows_missing_market_or_null_line_is_none():
+    assert grade_predictions.closing_lines_from_rows([]) == {"market_spread": None, "market_total": None}
+    assert grade_predictions.closing_lines_from_rows([("total", None), ("total", 7.5)]) == {
+        "market_spread": None, "market_total": 7.5}
+    assert grade_predictions.closing_lines_from_rows([("moneyline", None)]) == {
+        "market_spread": None, "market_total": None}
+
+
+def test_mlb_accuracy_row_grades_total_pick_against_odds_derived_line():
+    # An MLB final merged with the Pinnacle close grades exactly like a football final.
+    prediction = _prediction(sport="mlb", game_pk=849825, home_team_name="Milwaukee Brewers",
+                             away_team_name="San Diego Padres", home_win_prob=0.55,
+                             pred_home_score=4.6, pred_away_score=3.9)
+    final = {"home_score": 4, "away_score": 3, "final": True, "market_spread": -1.5, "market_total": 6.5}
+    row = _accuracy_row(prediction, final)
+    assert row["sport"] == "mlb"
+    assert row["winner_correct"] is True
+    assert row["total_pick_correct"] is True    # model 8.5 leans over 6.5; the game went 7
+    assert row["spread_pick_correct"] is True   # model margin +0.7 -> away +1.5 side; home won by 1

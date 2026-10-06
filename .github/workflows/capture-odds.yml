@@ -1,20 +1,24 @@
 name: capture-odds
 
-# Snapshot NFL + CFB game-line odds (moneyline/spread/total) from The Odds API,
+# Snapshot NFL + CFB + MLB game-line odds (moneyline/spread/total) from The Odds API,
 # INCLUDING Pinnacle (an EU bookmaker -- the ingester pulls regions=us,eu). The
 # last snapshot before a game's commence_time is its closing line, used for the
 # +EV engine's CLV grading, so we run several times across game days and let each
 # run capture the whole slate (one cheap bulk call per sport).
 #
-# Also captures NFL player-prop lines (one Odds-API call per in-window event) for
-# events inside the post-lineup pre-kickoff window controlled by the repo
-# variables below -- credits scale with how many games are in that window at run
-# time. CFB has no prop_market_map, so it's unaffected (game lines only).
+# Also captures NFL and MLB player-prop lines (one Odds-API call per in-window event;
+# 4 markets = 4 credits per MLB event, hits/HRR stay dropped) for events inside the
+# post-lineup pre-kickoff window controlled by the repo variables below -- credits scale
+# with how many games are in that window at run time. MLB's window is capped at 240 min
+# in ingest_odds.py. CFB has no prop_market_map, so it's unaffected (game lines only).
 #
-# scripts/ingest_odds.py loops NFL + CFB internally and writes to odds_snapshot;
-# one sport failing does not abort the other. Crons are UTC; NFL plays Thu/Sun/Mon,
-# CFB mostly Sat. Cadence is tunable -- widen it once CLV grading (sub-project 6)
-# says where the closing snapshots need to land.
+# scripts/ingest_odds.py loops the sports named in ODDS_SPORTS (default nfl,cfb,mlb)
+# internally and writes to odds_snapshot; one sport failing does not abort the others.
+# Crons are UTC; NFL plays Thu/Sun/Mon, CFB mostly Sat, MLB every day Mar-Oct (the
+# postseason runs into early Nov). The football crons pull nfl,cfb only; the MLB-only
+# crons pull mlb only, so a daily baseball cadence never re-pulls the football slates.
+# The 15:00 UTC slate run pulls all three. Cadence is tunable -- widen it once CLV
+# grading says where the closing snapshots need to land.
 on:
   schedule:
     - cron: "0 15 * * *"          # daily full-slate prop pull (PROP_SCOPE=slate)
@@ -22,8 +26,19 @@ on:
     - cron: "0 18 * * 0,1,4,6"
     - cron: "0 20 * * 0,1,4,6"
     - cron: "0 23 * * 0,1,4,6"   # ~near close for late-afternoon/primetime kicks
+    # MLB-only, every day Mar-Nov. First pitches run ~17:00-03:00 UTC; each run's 150 min
+    # prop window (capped at 240) plus the 15:00 slate run covers every game once, and the
+    # last run before first pitch is its closing line.
+    - cron: "30 16 * 3-11 *"
+    - cron: "0 19 * 3-11 *"
+    - cron: "30 21 * 3-11 *"
+    - cron: "0 0 * 3-11 *"
   workflow_dispatch:
     inputs:
+      sports:
+        type: string
+        default: ""
+        description: "Comma list of sports to pull (nfl,cfb,mlb); empty = the schedule default (all three)"
       prop_scope:
         type: string
         default: ""
@@ -42,11 +57,26 @@ jobs:
         uses: astral-sh/setup-uv@v10.0.1
       - name: Sync deps
         run: uv sync
-      - name: Snapshot odds (NFL + CFB game lines, NFL player props)
+      - name: Snapshot odds (NFL + CFB + MLB game lines, NFL + MLB player props)
         env:
           DATABASE_URL: ${{ secrets.DATABASE_URL }}
           ODDS_API_KEY: ${{ secrets.ODDS_API_KEY }}
           PROP_WINDOW_MIN: ${{ vars.PROP_WINDOW_MIN }}
           INGEST_PROPS: ${{ vars.INGEST_PROPS }}
           PROP_SCOPE: ${{ github.event.inputs.prop_scope || (github.event.schedule == '0 15 * * *' && 'slate' || '') }}
-        run: uv run python scripts/ingest_odds.py
+          SCHEDULE: ${{ github.event.schedule }}
+          SPORTS_INPUT: ${{ github.event.inputs.sports }}
+        run: |
+          # Which sports this firing covers: the MLB-only crons -> mlb; the 15:00 slate run
+          # and manual runs -> all three; the football-day crons -> nfl,cfb.
+          case "$SCHEDULE" in
+            "30 16 * 3-11 *"|"0 19 * 3-11 *"|"30 21 * 3-11 *"|"0 0 * 3-11 *")
+              sports="mlb"
+              # An MLB-only firing exists to catch post-lineup props, so it must not
+              # inherit a blank PROP_WINDOW_MIN (which means "props off" for the others).
+              export PROP_WINDOW_MIN="${PROP_WINDOW_MIN:-150}" ;;
+            "0 15 * * *"|"") sports="nfl,cfb,mlb" ;;
+            *) sports="nfl,cfb" ;;
+          esac
+          export ODDS_SPORTS="${SPORTS_INPUT:-$sports}"
+          uv run python scripts/ingest_odds.py
