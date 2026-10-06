@@ -73,3 +73,36 @@ def test_fit_v3_only_reads_training_seasons():
     ref = v3_fit.fit_v3(t[t["season"] != 2022], train_seasons=tuple(range(2016, 2022)))
     assert held.margin == ref.margin and held.total == ref.total
     assert base.margin != held.margin
+
+
+def fold_table(with_effect: bool, n_per=400, seed=4):
+    """7 training seasons whose game-to-game noise is large (sd 15) but whose per-season error profile
+    is the SAME (the noise vector is reused each season), so the fold MAEs are stable while the per-row
+    SE of |error| is large. `good` has a real, consistent effect (1.5) on the target; `noise_term` has none."""
+    rng = np.random.default_rng(seed)
+    e = rng.normal(0, 15, n_per)
+    rows = []
+    for s in range(2016, 2023):
+        good = rng.permutation(np.r_[np.ones(n_per // 2), -np.ones(n_per // 2)])
+        c = rng.normal(0, 5, n_per)
+        rows.append(pd.DataFrame({"season": s, "c": c, "good": good, "noise_term": rng.permutation(good),
+                                  "y": 2.0 * c + (1.5 * good if with_effect else 0.0) + e}))
+    return pd.concat(rows, ignore_index=True)
+
+
+def test_one_se_rule_uses_fold_spread_and_keeps_a_consistent_effect_the_per_row_rule_would_drop():
+    df = fold_table(with_effect=True)
+    blend, info = v3_fit.fit_blend(df, df["y"].to_numpy(), ("c",), ("good", "noise_term"))
+    # the old rule: SE of the per-game |error| of the best model -- larger than the whole CV gain
+    gain = info["cv_mae"]["None"] - min(v for k, v in info["cv_mae"].items() if k != "None")
+    per_row_se = np.abs(df["y"] - 2.0 * df["c"]).std(ddof=1) / np.sqrt(len(df))
+    assert gain < per_row_se                                  # the per-row rule would select no context at all
+    assert info["cv_se"] < gain                               # the fold-spread SE is smaller than the gain
+    assert info["lasso_alpha"] is not None
+    assert blend.coefs["good"] == pytest.approx(1.5, abs=0.25)  # kept, and refit unpenalised (not shrunk)
+
+
+def test_one_se_rule_drops_a_pure_noise_term():
+    df = fold_table(with_effect=False)
+    blend, info = v3_fit.fit_blend(df, df["y"].to_numpy(), ("c",), ("good", "noise_term"))
+    assert blend.coefs["good"] == 0.0 and blend.coefs["noise_term"] == 0.0

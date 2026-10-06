@@ -4,7 +4,7 @@
    side features (both sides of every game stacked).
 2. blends: stage 1 = least squares on the core terms (v2 / efficiency / prior / home field);
    stage 2 = lasso on the stage-1 residual for the context terms, the penalty chosen by
-   leave-one-season-out MAE with the one-standard-error rule, so a context term that does not
+   leave-one-season-out MAE with the one-standard-error rule (SE over the fold MAEs), so a context term that does not
    help is fitted to EXACTLY 0 (the kept terms are refit unpenalised, "relaxed lasso").
    `weather_missing` is a nuisance column: fitted (so the other weather terms are estimated from
    games that have weather) but dropped from the served model.
@@ -72,18 +72,22 @@ def fit_blend(df: pd.DataFrame, y: np.ndarray, core, ctx, nuisance=(), alphas=LA
             warnings.simplefilter("ignore", ConvergenceWarning)
             return Lasso(alpha=a, max_iter=20000).fit(zs[tr], resid[tr])
 
-    abs_err = {None: np.abs(resid)}
+    # leave-one-season-out: one fold per training season; the CV error of an alpha is its fold MAEs
+    folds = np.unique(seasons)
+    fold_mae = {None: np.array([np.abs(resid[seasons == s]).mean() for s in folds])}
     for a in alphas:
-        errs = []
-        for s in np.unique(seasons):
+        maes = []
+        for s in folds:
             te, tr = seasons == s, seasons != s
-            errs.append(np.abs(resid[te] - lasso(a, tr).predict(zs[te])))
-        abs_err[a] = np.concatenate(errs)
-    cv = {a: float(e.mean()) for a, e in abs_err.items()}
+            maes.append(np.abs(resid[te] - lasso(a, tr).predict(zs[te])).mean())
+        fold_mae[a] = np.array(maes)
+    cv = {a: float(m.mean()) for a, m in fold_mae.items()}
     best_a = min(cv, key=cv.get)
-    se = float(abs_err[best_a].std(ddof=1) / np.sqrt(len(abs_err[best_a])))
-    # one-standard-error rule: the most penalised model within 1 SE of the best CV MAE, so a
-    # context term has to earn its place (None = no context terms at all = the largest penalty)
+    # one-standard-error rule, glmnet style: the SE is the spread of the best alpha's FOLD MAEs over
+    # sqrt(n_folds) (NOT the per-game spread of |error|, which is game-to-game noise and swamps any
+    # real gain). Take the most penalised alpha within 1 SE of the best CV MAE, so a context term
+    # has to earn its place (None = no context terms at all = the largest penalty)
+    se = float(fold_mae[best_a].std(ddof=1) / np.sqrt(len(folds)))
     ok = [a for a in cv if cv[a] <= cv[best_a] + se]
     best = None if None in ok else max(ok)
     coefs = {c: 0.0 for c in ctx}
@@ -100,7 +104,8 @@ def fit_blend(df: pd.DataFrame, y: np.ndarray, core, ctx, nuisance=(), alphas=LA
             intercept += float(b[0])
     core_coefs = {c: float(b) for c, b in zip(core, beta[1:])}
     return (LinearBlend(intercept, {**core_coefs, **coefs}),
-            {"lasso_alpha": best, "cv_mae": {str(k): v for k, v in cv.items()}})
+            {"lasso_alpha": best, "cv_se": se, "cv_mae": {str(k): v for k, v in cv.items()},
+             "fold_mae": {str(k): [float(x) for x in m] for k, m in fold_mae.items()}})
 
 
 def fit_v3(table: pd.DataFrame, train_seasons=TRAIN_SEASONS) -> V3Weights:
