@@ -44,10 +44,11 @@ The feed returns about 138 items (FBS plus transitional teams); only FBS ids
    - `rankings()` is unchanged. It is called with the blended frame, so rank, SOS and SOV all use
      the blended rating. `prev_power_df` is passed as None for CFB; `prev_rank` is set afterwards
      (item 3).
-   - `prev_ranks_from_published(rows) -> dict[str, int]`: pure. Takes the stored rows of the
-     previous published CFB week and returns {} unless that week was blended (any non-null `fpi`).
+   - `prev_ranks_from_published(published, season, week) -> dict[str, int]`: pure. Picks the last
+     published week before (season, week), same season, and returns {} unless that week was
+     blended (any non-null `fpi`).
 3. `scripts/build_team_context.py` (`build_cfb`)
-   - New keyword arguments `fpi: dict | None` and `prev_published: list[dict] | None` (injected in
+   - New keyword arguments `fpi: dict | None` and `published: pd.DataFrame | None` (this season's published CFB rows: season, week, team, rank, fpi) (injected in
      tests, the same pattern as `priors`/`rp`).
    - `load_cfb_sources` fetches FPI for the ranking season. If the fetch fails or returns nothing,
      it warns (`::warning::`) and passes `fpi=None`, which ranks on the model rating alone for that
@@ -61,8 +62,8 @@ The feed returns about 138 items (FBS plus transitional teams); only FBS ids
    NULL for both.
 5. `db/migration_power_fpi.sql` (user runs it in Supabase BEFORE the merge, like
    `migration_power_results.sql`):
-   - `ALTER TABLE power_rankings ADD COLUMN IF NOT EXISTS fpi double precision, ADD COLUMN IF NOT
-     EXISTS model_rating double precision;`
+   - One `ALTER TABLE power_rankings ADD COLUMN IF NOT EXISTS ...` statement per column (`fpi`,
+     `model_rating`, both double precision).
    - Recreate `power_rankings_current` so the view carries the new columns, and keep its grants.
 6. Site (`site/app.js`)
    - CFB only: add `FPI` and `MODEL` columns after `RATING`, signed points, sortable, with "—" when
