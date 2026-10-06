@@ -48,6 +48,8 @@ def main(argv=None) -> None:
     print(f"train 2016-2022: n={w.meta['n_train']} margin MAE={w.meta['train_mae']['margin']:.3f} "
           f"total MAE={w.meta['train_mae']['total']:.3f} sigma_margin={w.meta['sigma_margin']:.3f} "
           f"sigma_total={w.meta['sigma_total']:.3f}")
+    for tgt in ("margin", "total"):
+        print(f"{tgt} context lasso: lasso_alpha={w.meta[tgt]['lasso_alpha']} cv_se={w.meta[tgt]['cv_se']:.4f}")
     if args.dry_run:
         print("--dry-run: nothing written")
         return

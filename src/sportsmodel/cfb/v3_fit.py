@@ -9,6 +9,10 @@
    `weather_missing` is a nuisance column: fitted (so the other weather terms are estimated from
    games that have weather) but dropped from the served model.
 3. sigmas: RMSE of the fitted v3 margin / total on the training seasons (moneyline mapping).
+
+Cross-validation scope: stage 1 (the core least squares) and the points map are fitted ONCE on all
+training seasons; only the context penalty (the lasso alpha) is cross-validated, leave-one-season-out.
+The CV MAEs therefore do not re-fit stage 1 or the points map inside each fold.
 """
 from __future__ import annotations
 
