@@ -91,3 +91,71 @@ def test_parse_injuries_flattens_team_player_status():
     assert all(r["player"] != "Nobody" for r in rows)   # team-less entry dropped
     assert len(rows) == 2                                 # the no-athlete row dropped
     assert parse_injuries({}) == []
+
+
+# ---------------------------------------------------------------- game info --
+
+# Venue block copied from a LIVE finished-game summary (2026-10-06, event 401872971); it has no weather block.
+LIVE_VENUE = {"id": "11938", "fullName": "Highmark Stadium",
+              "address": {"city": "Orchard Park", "state": "NY", "zipCode": "14127", "country": "USA"},
+              "grass": True, "images": []}
+
+
+def test_parse_game_info_live_venue_shape_without_weather():
+    from sportsmodel.nfl.espn import parse_game_info
+    got = parse_game_info({"gameInfo": {"venue": LIVE_VENUE, "attendance": 60606}})
+    assert got == {"venue_name": "Highmark Stadium", "city": "Orchard Park", "state": "NY", "indoor": False,
+                   "temp_f": None, "wind_mph": None, "precip_chance": None, "conditions": None}
+
+
+# gameInfo.weather copied from a LIVE upcoming-game summary (2026-10-06, event 401872984, Nissan Stadium, week 5).
+# Real keys: temperature, highTemperature, lowTemperature, conditionId (a code, no text), gust, precipitation
+# (a 0-100 chance), link. There is NO sustained-wind key and NO condition text.
+LIVE_WEATHER = {"temperature": 74, "highTemperature": 74, "lowTemperature": 74, "conditionId": "18", "gust": 30,
+                "precipitation": 65, "link": {"language": "en-US", "rel": ["37213"], "text": "Weather", "isExternal": True}}
+
+
+def test_parse_game_info_live_weather_block():
+    from sportsmodel.nfl.espn import parse_game_info
+    got = parse_game_info({"gameInfo": {"venue": LIVE_VENUE, "weather": LIVE_WEATHER}})
+    assert got["temp_f"] == 74.0 and got["precip_chance"] == 65.0
+    assert got["wind_mph"] is None and got["conditions"] is None  # gust is not sustained wind; conditionId has no text
+    assert got["indoor"] is False
+
+
+def test_parse_game_info_known_dome_venues_are_indoor_without_an_indoor_key():
+    from sportsmodel.nfl.espn import parse_game_info
+    venue = {"id": "5239", "fullName": "U.S. Bank Stadium", "address": {"city": "Minneapolis", "state": "MN"}}
+    got = parse_game_info({"gameInfo": {"venue": venue, "weather": LIVE_WEATHER}})
+    assert got["indoor"] is True and got["temp_f"] is None and got["precip_chance"] is None
+    assert got["venue_name"] == "U.S. Bank Stadium" and got["city"] == "Minneapolis"
+
+
+def test_parse_game_info_gust_is_not_wind_and_bad_values_are_none():
+    from sportsmodel.nfl.espn import parse_game_info
+    got = parse_game_info({"gameInfo": {"venue": LIVE_VENUE, "weather": {"temperature": "n/a", "gust": 30,
+                                                                            "precipitation": 250}}})
+    assert (got["temp_f"], got["wind_mph"], got["precip_chance"], got["conditions"]) == (None, None, None, None)
+
+
+def test_parse_game_info_indoor_venue_drops_weather():
+    from sportsmodel.nfl.espn import parse_game_info
+    got = parse_game_info({"gameInfo": {"venue": {**LIVE_VENUE, "indoor": True},
+                                        "weather": {"temperature": 72, "displayValue": "Clear"}}})
+    assert got["indoor"] is True and got["temp_f"] is None and got["conditions"] is None
+    assert got["venue_name"] == "Highmark Stadium"
+
+
+def test_parse_game_info_missing_blocks_never_raise():
+    from sportsmodel.nfl.espn import parse_game_info
+    for payload in ({}, {"gameInfo": None}, {"gameInfo": {"venue": None, "weather": []}}):
+        got = parse_game_info(payload)
+        assert got["venue_name"] is None and got["indoor"] is False and got["temp_f"] is None
+
+
+def test_fetch_game_info_reads_the_summary_of_one_event(monkeypatch):
+    from sportsmodel.nfl import espn
+    seen = {}
+    monkeypatch.setattr(espn, "_get", lambda path, params=None: seen.update(path=path, params=params) or {"gameInfo": {"venue": LIVE_VENUE}})
+    assert espn.fetch_game_info(401872971)["venue_name"] == "Highmark Stadium"
+    assert seen == {"path": "/summary", "params": {"event": 401872971}}

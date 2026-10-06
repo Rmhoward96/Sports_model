@@ -148,3 +148,31 @@ def fetch_final(event_id: int) -> dict | None:
     return {"home_score": int(comp["home"]["score"]),
             "away_score": int(comp["away"]["score"]), "final": True,
             **parse_market(data)}
+
+
+def fetch_scoreboard(season: int, week: int, season_type: int = 2) -> dict:
+    """The raw FBS scoreboard payload for one week (`fetch_schedule` parses the same call)."""
+    return _get("/scoreboard", {"dates": season, "seasontype": season_type, "week": week, "groups": 80})
+
+
+def parse_line_scores(payload) -> dict[int, dict]:
+    """{game_pk: {"home": [q1, q2, q3, q4], "away": [...]}} for every STATUS_FINAL event of a scoreboard
+    payload whose two competitors both carry at least four `linescores` periods (overtime is dropped).
+    Anything else is omitted. NOT verified against a live payload (the shape read is ESPN's usual
+    competitors[].linescores[].value); the Task 2 [NETWORK] probe confirms it."""
+    out: dict[int, dict] = {}
+    for ev in payload.get("events", []):
+        try:
+            if ev["status"]["type"]["name"] != "STATUS_FINAL":
+                continue
+            sides = {}
+            for c in ev["competitions"][0]["competitors"]:
+                vals = [p.get("value") for p in (c.get("linescores") or [])]
+                if len(vals) < 4 or any(isinstance(v, bool) or not isinstance(v, (int, float)) for v in vals[:4]):
+                    raise ValueError("no usable line score")
+                sides[c["homeAway"]] = [int(v) for v in vals[:4]]
+            if set(sides) == {"home", "away"}:
+                out[int(ev["id"])] = sides
+        except (KeyError, IndexError, TypeError, ValueError):
+            continue
+    return out

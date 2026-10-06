@@ -80,3 +80,32 @@ def test_parse_schedule_neutral_site_conference_game_and_conf_ids():
 def test_parse_schedule_conference_game_false_when_flag_false():
     g = parse_schedule({**FIX, "events": [_ev(conferenceCompetition=False)]})[0]
     assert g["conference_game"] is False
+
+
+# ------------------------------------------------------------- line scores --
+
+def _final_event(pk, home, away, status="STATUS_FINAL"):
+    ls = lambda xs: [{"value": float(x), "displayValue": str(x)} for x in xs]  # noqa: E731
+    return {"id": str(pk), "status": {"type": {"name": status}},
+            "competitions": [{"competitors": [{"homeAway": "home", "linescores": ls(home)},
+                                              {"homeAway": "away", "linescores": ls(away)}]}]}
+
+
+def test_parse_line_scores_final_games_only_overtime_dropped():
+    from sportsmodel.cfb.espn import parse_line_scores
+    payload = {"events": [_final_event(1, [0, 10, 3, 24], [0, 3, 7, 0]),
+                          _final_event(2, [7, 7, 7, 3, 7], [7, 7, 7, 3, 3]),
+                          _final_event(3, [7, 7, 7, 3], [7, 7, 7, 3], status="STATUS_IN_PROGRESS"),
+                          _final_event(4, [7, 7], [3, 3]),
+                          {"id": "5"}]}
+    assert parse_line_scores(payload) == {1: {"home": [0, 10, 3, 24], "away": [0, 3, 7, 0]},
+                                          2: {"home": [7, 7, 7, 3], "away": [7, 7, 7, 3]}}
+    assert parse_line_scores({}) == {}
+
+
+def test_fetch_scoreboard_asks_for_the_fbs_group_and_returns_the_raw_payload(monkeypatch):
+    from sportsmodel.cfb import espn
+    seen = {}
+    monkeypatch.setattr(espn, "_get", lambda path, params=None: seen.update(path=path, params=params) or {"events": []})
+    assert espn.fetch_scoreboard(2026, 6, 2) == {"events": []}
+    assert seen == {"path": "/scoreboard", "params": {"dates": 2026, "seasontype": 2, "week": 6, "groups": 80}}
