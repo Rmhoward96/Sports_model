@@ -12,6 +12,7 @@ from pathlib import Path
 import pandas as pd
 
 from .. import config
+from .efficiency import build_eff_games
 
 ASSETS = config.PROJECT_ROOT / "assets" / "cfb"
 BACKFILL_HINT = ("run scripts/build_cfb_advanced.py and scripts/build_cfb_game_data.py with "
@@ -29,3 +30,34 @@ def require_asset(name: str, assets: Path = ASSETS) -> pd.DataFrame:
     if df is None:
         raise FileNotFoundError(f"{Path(assets) / name} is missing: {BACKFILL_HINT}")
     return df
+
+
+def load_merged_schedule(assets: Path = ASSETS) -> pd.DataFrame:
+    """REG schedules left-joined to closing/opening lines on (season, week, home, away), with the
+    CFBD self-match rows (home == away) dropped from both sides first -- identical to
+    backtest_cfb_gameline.load_merged_schedule, so the v2 walk-forward numbers are unchanged."""
+    sched = require_asset("schedules.parquet", assets)
+    reg = sched[sched["game_type"] == "REG"] if "game_type" in sched else sched
+    reg = reg[reg["home_team"] != reg["away_team"]].copy()
+    lines = require_asset("lines.parquet", assets)
+    lines = lines[lines["home_team"] != lines["away_team"]].drop_duplicates(
+        subset=["season", "week", "home_team", "away_team"], keep="first")
+    return reg.merge(lines, on=["season", "week", "home_team", "away_team"], how="left",
+                     validate="one_to_one")
+
+
+def load_priors_rows(assets: Path = ASSETS) -> dict[int, list[dict]]:
+    """priors.parquet -> {season: [row dicts]} (empty dict when the asset is absent)."""
+    df = read_asset("priors.parquet", assets)
+    if df is None:
+        return {}
+    return {int(s): sdf.to_dict("records") for s, sdf in df.groupby("season")}
+
+
+def load_eff_games(assets: Path = ASSETS) -> pd.DataFrame:
+    """The efficiency frame (efficiency.build_eff_games) from the committed assets."""
+    return build_eff_games(require_asset("advanced_games.parquet", assets),
+                           read_asset("havoc_games.parquet", assets),
+                           read_asset("drive_games.parquet", assets),
+                           require_asset("cfbd_games.parquet", assets),
+                           require_asset("schedules.parquet", assets))
