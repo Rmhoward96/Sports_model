@@ -121,3 +121,119 @@ test("hero: kickoff-aware label reaches the page (observed, kicked-off forecast,
     assert.ok(heroOf(html).includes(tail), `${sport} ${ct}: ${heroOf(html).match(/<p class="ca-gm-venue">.*?<\/p>/)}`);
   }
 });
+
+/* ── Key Insights: havoc, turnover, weather candidates ──────────────────── */
+const R = (sport = "cfb") => PRED(sport);
+const insRow = (team, o = {}) => ({ season: 2026, team, games: 5, n_ranked: 134, def_havoc_rate: 0.2132, def_havoc_rank: 60, off_havoc_allowed_rate: 0.1812, off_havoc_allowed_rank: 60,
+  turnover_margin: 0, turnover_margin_per_game: 0, turnover_margin_rank: 67, ...o });
+const base = (o = {}) => ({ sport: "cfb", r: R(), ctxGrades: [], ctxHist: HIST, ctxPower: [], cfbIns: [], gameInfo: null, ...o });
+const kinds = (D) => g.gmKeyInsights(D).map((i) => i.kind);
+
+test("havoc mismatch: a 30+ rank gap (defense edge), or an edge involving a top / bottom 15% unit; strength 50 + gap / 3 (max 95)", () => {
+  const D = base({ cfbIns: [insRow("333", { def_havoc_rank: 8 }), insRow("61", { off_havoc_allowed_rank: 118, off_havoc_allowed_rate: 0.2491 })] });
+  const [h] = g.gmKeyInsights(D);
+  assert.equal(h.kind, "havoc"); assert.equal(h.strength, 87);      // 50 + min(45, 110 / 3)
+  assert.equal(h.title, "Alabama defense creates havoc against Georgia");
+  assert.equal(h.body, "Alabama ranks #8 in havoc created (21.3% of plays); Georgia's offense ranks #118 in havoc allowed (24.9%), where #1 allows the least.");
+  // gap under 30 but the defense is top 15% (<= ceil(.15 * 134) = 21) and has the edge
+  const ext = g.gmKeyInsights(base({ cfbIns: [insRow("333", { def_havoc_rank: 5 }), insRow("61", { off_havoc_allowed_rank: 15 })] }));
+  assert.deepEqual([ext[0].kind, ext[0].strength], ["havoc", 53]);
+  // the offense is bottom 15% (> 134 - 21 = 113) with a small edge
+  assert.equal(kinds(base({ cfbIns: [insRow("333", { def_havoc_rank: 110 }), insRow("61", { off_havoc_allowed_rank: 114 })] })).includes("havoc"), true);
+  // not notable: gap 29 in the middle of the pack; a negative gap (the offense protects the ball better); extremes without the edge
+  for (const [d, o] of [[40, 69], [90, 30], [10, 5], [60, 60]])
+    assert.equal(kinds(base({ cfbIns: [insRow("333", { def_havoc_rank: d }), insRow("61", { off_havoc_allowed_rank: o })] })).includes("havoc"), false, `${d}/${o}`);
+});
+
+test("havoc mismatch: the stronger direction wins; unranked / missing rows and non-CFB games show nothing", () => {
+  const D = base({ cfbIns: [insRow("333", { def_havoc_rank: 8, off_havoc_allowed_rank: 125 }), insRow("61", { def_havoc_rank: 40, off_havoc_allowed_rank: 100 })] });
+  const [h] = g.gmKeyInsights(D);                                    // home D 8 vs away O 100 = 92; away D 40 vs home O 125 = 85
+  assert.match(h.title, /^Alabama defense creates havoc against Georgia$/); assert.equal(h.strength, 81);
+  const unranked = base({ cfbIns: [insRow("333", { def_havoc_rank: null }), insRow("61", { off_havoc_allowed_rank: 118 })] });
+  assert.equal(kinds(unranked).includes("havoc"), false);
+  assert.equal(kinds(base({ cfbIns: [insRow("333", { def_havoc_rank: 8, n_ranked: null }), insRow("61", { off_havoc_allowed_rank: 118, n_ranked: undefined })] })).includes("havoc"), false, "no field size, no 15% rule");
+  assert.equal(kinds(base({ cfbIns: [insRow("333", { def_havoc_rank: 8 })] })).includes("havoc"), false, "one team only");
+  assert.equal(kinds(base({ sport: "nfl", cfbIns: [insRow("333", { def_havoc_rank: 8 }), insRow("61", { off_havoc_allowed_rank: 118 })] })).includes("havoc"), false, "CFB only");
+  const old = [insRow("333", { season: 2025, def_havoc_rank: 90 }), insRow("333", { def_havoc_rank: 8 }), insRow("61", { off_havoc_allowed_rank: 118 })];   // newest season first in practice
+  assert.equal(g.gmKeyInsights(base({ cfbIns: [old[1], old[0], old[2]] }))[0].kind, "havoc", "the first (newest) row per team is used");
+});
+
+test("turnover edge: rank gap 30+ or a top / bottom 15% team; names the better team; equal ranks show nothing", () => {
+  const D = base({ cfbIns: [insRow("333", { turnover_margin_rank: 6, turnover_margin_per_game: 1.8 }), insRow("61", { turnover_margin_rank: 112, turnover_margin_per_game: -0.9 })] });
+  const [t] = g.gmKeyInsights(D);
+  assert.equal(t.kind, "turnover"); assert.equal(t.strength, 85);   // 50 + min(45, 106 / 3)
+  assert.equal(t.title, "Alabama owns the turnover edge");
+  assert.equal(t.body, "Alabama is +1.8 per game (#6 nationally); Georgia is −0.9 per game (#112).");
+  const away = g.gmKeyInsights(base({ cfbIns: [insRow("333", { turnover_margin_rank: 90 }), insRow("61", { turnover_margin_rank: 20, turnover_margin_per_game: 1.1 })] }));
+  assert.equal(away[0].title, "Georgia owns the turnover edge", "gap 70, rank 20 is inside the top 21");
+  assert.equal(kinds(base({ cfbIns: [insRow("333", { turnover_margin_rank: 10 }), insRow("61", { turnover_margin_rank: 25 })] })).includes("turnover"), true, "gap 15 but a top-15% team");
+  for (const [a, b] of [[50, 60], [67, 67], [30, 59]]) assert.equal(kinds(base({ cfbIns: [insRow("333", { turnover_margin_rank: a }), insRow("61", { turnover_margin_rank: b })] })).includes("turnover"), false, `${a}/${b}`);
+  assert.equal(kinds(base({ cfbIns: [insRow("333", { turnover_margin_rank: null }), insRow("61", { turnover_margin_rank: 112 })] })).includes("turnover"), false);
+  const bare = g.gmKeyInsights(base({ cfbIns: [insRow("333", { turnover_margin_rank: 6, turnover_margin_per_game: null }), insRow("61", { turnover_margin_rank: 112, turnover_margin_per_game: null })] }));
+  assert.equal(bare[0].body, "Alabama ranks (#6 nationally); Georgia ranks (#112).", "no per-game number, no invented one");
+});
+
+test("weather insight: wind 15+, under 40°F, 50%+ chance or measurable rain; outdoor only; CFB and NFL; strength from the worst factor", () => {
+  const wx = (o) => g.gmKeyInsights(base({ gameInfo: { ...INFO, wind_mph: 5, temp_f: 60, precip_chance: null, precip_in: null, ...o } })).find((i) => i.kind === "weather");
+  const a = wx({ wind_mph: 18 });
+  assert.deepEqual([a.strength, a.title], [64, "Weather: wind 18 mph"]);        // 55 + (18 - 15) * 3
+  assert.equal(a.body, "Forecast conditions at Bryant-Denny Stadium. Descriptive only, not a pick.");
+  const b = wx({ wind_mph: 20, temp_f: 35, precip_chance: 60 });
+  assert.deepEqual([b.strength, b.title], [70, "Weather: wind 20 mph, 35°F, 60% chance of rain"]);   // max(70, 65, 61)
+  assert.equal(wx({ temp_f: 20 }).strength, 85);                                 // 55 + min(30, (40 - 20) * 2)
+  assert.equal(wx({ temp_f: 39.4 }).title, "Weather: 39°F");
+  assert.equal(wx({ precip_in: 0.05 }).title, "Weather: 0.05 in of rain");
+  assert.equal(wx({ precip_in: 0.05 }).strength, 60);
+  assert.match(wx({ wind_mph: 18, weather_kind: "observed" }).body, /^Observed conditions at/);
+  for (const calm of [{}, { wind_mph: 14.9 }, { temp_f: 40 }, { precip_chance: 49 }, { precip_in: 0.004 }, { indoor: true, wind_mph: 30 }, { wind_mph: null, temp_f: null }]) assert.equal(wx(calm), undefined, JSON.stringify(calm));
+  assert.equal(g.gmKeyInsights(base({ gameInfo: null })).find((i) => i.kind === "weather"), undefined);
+  const nfl = g.gmKeyInsights({ sport: "nfl", r: R("nfl"), ctxGrades: [], ctxHist: [], ctxPower: [], gameInfo: { ...INFO, wind_mph: 22, venue_name: null } });
+  assert.equal(nfl[0].kind, "weather"); assert.equal(nfl[0].body, "Forecast conditions. Descriptive only, not a pick.");
+});
+
+test("weather insight: hidden more than 3 days after kickoff, same rule as the hero line (R1)", () => {
+  const hours = (h) => new Date(Date.now() + h * 36e5).toISOString();
+  const wx = (ct) => g.gmKeyInsights(base({ r: PRED("cfb", { commence_time: ct }), gameInfo: { ...INFO, wind_mph: 22 } })).find((i) => i.kind === "weather");
+  assert.ok(wx(hours(-3)), "a game that just kicked off still shows");
+  assert.ok(wx(hours(-24 * 3 + 1)), "just inside 3 days");
+  assert.equal(wx(hours(-24 * 3 - 1)), undefined, "just past 3 days");
+  assert.equal(wx(hours(-24 * 6)), undefined);
+  assert.ok(wx(null), "unknown kickoff: no time-based rule");
+  assert.ok(g.gmKeyInsights({ sport: "nfl", r: PRED("nfl", { commence_time: hours(-2) }), ctxGrades: [], ctxHist: [], ctxPower: [], gameInfo: { ...INFO, wind_mph: 22 } }).some((i) => i.kind === "weather"));
+});
+
+test("Key Insights keeps the strongest four, strongest first, ties in generation order", () => {
+  const grades = [{ side: "home", team: "333", overall: "A", pass: "A", run: "B", overall_pct: 90, units: null }];
+  const power = [{ team: "333", rank: 4, rating: 20 }, { team: "61", rank: 40, rating: 2 }];
+  const D = base({ ctxGrades: grades, ctxPower: power, ctxHist: [{ side: "home", team: "333", streaks: { su: "W5" } }, { side: "away", team: "61", streaks: {} }],
+    cfbIns: [insRow("333", { def_havoc_rank: 8, turnover_margin_rank: 6, turnover_margin_per_game: 1.8 }), insRow("61", { off_havoc_allowed_rank: 118, turnover_margin_rank: 112, turnover_margin_per_game: -0.9 })],
+    gameInfo: { ...INFO, wind_mph: 18 } });
+  const out = g.gmKeyInsights(D);
+  // grade 30 + 0.4 * 90 = 66 and power 30 + min(40, 36) = 66 tie: generation order (grade first). weather 64 and streak W5 54 are cut.
+  assert.deepEqual(out.map((i) => [i.kind, i.strength]), [["havoc", 87], ["turnover", 85], ["grade", 66], ["power", 66]]);
+  const again = g.gmKeyInsights(D);
+  assert.deepEqual(again, out, "deterministic");
+});
+
+test("Key Insights card: the new rows render with their icons and escaped text; missing tables leave the old rows alone", async () => {
+  const rows = { cfb_team_insights: [insRow("333", { def_havoc_rank: 8 }), insRow("61", { off_havoc_allowed_rank: 118 })],
+    game_info: [{ ...INFO, venue_name: "<i>Field</i>", wind_mph: 18 }], team_history: HIST };
+  const html = await page({ rows }).D.buildGamePage();
+  const ins = html.slice(html.indexOf('id="gm-insights"'), html.indexOf('id="gm-cover"'));
+  assert.ok(ins.includes("Alabama defense creates havoc against Georgia") && ins.includes("Weather: wind 18 mph"));
+  assert.ok(ins.includes("&lt;i&gt;Field&lt;/i&gt;") && !ins.includes("<i>Field</i>"));
+  assert.equal((ins.match(/class="ca-gm-ins"/g) || []).length, 2);
+  assert.ok(ins.includes("ca-gm-ic-red") && ins.includes("ca-gm-ic-blue"));
+  const none = await page({ missing: ["cfb_team_insights", "cfb_quarter_shares", "game_info"], rows: { team_history: HIST } }).D.buildGamePage();
+  assert.ok(none.includes("ca-gm-hero") && !none.includes("creates havoc") && !none.includes("Weather:"), "tables missing: the page renders without the new rows");
+});
+
+test("cfb_team_insights / cfb_quarter_shares are read for both team codes (CFB only)", async () => {
+  const cfb = page();
+  await cfb.D.buildGamePage();
+  assert.ok(cfb.requested.includes('cfb_team_insights?team=in.("61","333")&order=season.desc'), cfb.requested.join("\n"));
+  assert.ok(cfb.requested.includes('cfb_quarter_shares?team=in.("61","333")'));
+  const nfl = page({ sport: "nfl" });
+  await nfl.D.buildGamePage();
+  assert.ok(!nfl.requested.some((r) => r.startsWith("cfb_")), "NFL never reads the CFB tables");
+});

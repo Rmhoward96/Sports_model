@@ -14,6 +14,9 @@
    shell.js and data.js. */
 const GM_TABS = [["overview", "Overview"], ["matchup", "Matchup"], ["market", "Market"], ["trends", "Trends"], ["players", "Players"]];
 const ICON_GRADE = `<svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3l8 3v6c0 4.5-3.2 7.8-8 9-4.8-1.2-8-4.5-8-9V6z"/><path d="M9 12l2 2 4-4"/></svg>`;
+const ICON_HAVOC = `<svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M13 2L4 14h7l-1 8 9-12h-7z"/></svg>`;
+const ICON_SWAP = `<svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M7 7h11l-3-3M17 17H6l3 3"/></svg>`;
+const ICON_CLOUD = `<svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M7 18a4 4 0 0 1-.5-7.97A5.5 5.5 0 0 1 17 8.5 4.5 4.5 0 0 1 17 18z"/></svg>`;
 const ICON_RANK = `<svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 20V11M12 20V4M19 20v-7"/></svg>`;
 
 /* ── pure helpers ─────────────────────────────────────────────────────── */
@@ -53,6 +56,10 @@ function gmWhen(iso) {
 const GM_MEASURABLE_IN = 0.01;
 // Weather older than this after kickoff is no longer shown (the venue stays).
 const GM_WEATHER_STALE_MS = 3 * 864e5;
+// Ms since kickoff (negative before it), or null for an unknown kickoff.
+const gmSinceKick = (kickoffIso, nowMs) => { const k = timeMs(kickoffIso); return Number.isFinite(k) ? (nowMs == null ? Date.now() : nowMs) - k : null; };
+// Is the weather still shown? Unknown kickoff: yes; otherwise only until 3 days after kickoff. Shared by the hero line and the weather insight.
+const gmWeatherFresh = (kickoffIso, nowMs) => { const s = gmSinceKick(kickoffIso, nowMs); return s == null || s <= GM_WEATHER_STALE_MS; };
 // Weather pieces in reading order: conditions, "41°F", "wind 14 mph", "20% rain" (or "0.04 in rain"). A missing reading is omitted.
 function gmWeatherPieces(i) {
   const t = numOrNull(i.temp_f), w = numOrNull(i.wind_mph), pc = numOrNull(i.precip_chance), pi = numOrNull(i.precip_in);
@@ -71,11 +78,10 @@ function gmWeatherPieces(i) {
 function gmVenueLine(info, kickoffIso, nowMs) {
   if (!info || typeof info !== "object") return "";
   const place = [info.city, info.state].filter((x) => x && String(x).trim()).join(", ");
-  const kickMs = timeMs(kickoffIso), now = nowMs == null ? Date.now() : nowMs;
-  const since = Number.isFinite(kickMs) ? now - kickMs : null;    // ms after kickoff (negative before it); null when unknown
+  const since = gmSinceKick(kickoffIso, nowMs);    // ms after kickoff (negative before it); null when unknown
   let wx = "";
   if (info.indoor === true) wx = "Indoors";
-  else if (since == null || since <= GM_WEATHER_STALE_MS) {
+  else if (gmWeatherFresh(kickoffIso, nowMs)) {
     const p = gmWeatherPieces(info);
     if (p.length) {
       const label = info.weather_kind === "observed" ? "Observed " : info.weather_kind === "forecast" && since != null && since > 0 ? "Forecast " : "";
@@ -242,13 +248,67 @@ function gmRecord(hist, power, side) {
   return pr && pr.su ? String(pr.su) : "";
 }
 
-// Up to four generated sentences from data that exists: offense-vs-defense unit grade, explosive-play edge, power-rank
-// gap, current streak. Each is {kind, title, body} (plain text; escaped when rendered).
+// Up to four generated sentences from data that exists, strongest first. Candidates: offense-vs-defense unit grade, explosive-play
+// edge, power-rank gap, current streak (all sports) and, from game_info / cfb_team_insights, a CFB havoc mismatch, a CFB turnover edge
+// and a weather row (CFB + NFL). Each is {kind, strength, title, body} (plain text; escaped when rendered); strength is 0-100 and
+// derived below, ties keep the order the candidates are generated in, so the pick of four and its order are deterministic.
 const gmPoss = (n) => (/s$/i.test(n) ? `${n}'` : `${n}'s`);
 // team_history / matchup_grades / power_rankings identify a side by team code.
 const gmTeamCode = (hist, grades, side) => { const x = (hist || []).find((y) => y.side === side) || (grades || []).find((y) => y.side === side); return x ? String(x.team) : null; };
 const GM_STREAK = { su: { W: ["won", "won"], L: ["lost", "lost"] }, ats: { W: ["covered", "covered"], L: ["failed to cover", "failed to cover"] },
   ou: { O: ["has gone over in", "have gone over in"], U: ["has gone under in", "have gone under in"] } };
+// Strengths. Existing rows sit in 30-70 from their own thresholds (grade: the offense's percentile; explosive: shown whenever both
+// sides are computable; power: the rank gap; streak: its length, 3 or more); the new rows start at 50 and are only generated past
+// their notable thresholds, so a real mismatch / weather outranks a routine row but a routine row still fills an empty slot.
+const GM_STRENGTH = { grade: (pct) => Math.round(30 + 0.4 * pct), explosive: () => 45, power: (gap) => 30 + Math.min(40, gap), streak: (n) => Math.min(70, 30 + 8 * (n - 2)) };
+const GM_NOTABLE_GAP = 30, GM_NOTABLE_PCT = 0.15;
+const gmCut = (n) => Math.ceil(GM_NOTABLE_PCT * n);   // how many teams are the top (or bottom) 15% of an n-team field
+// The newest-season cfb_team_insights row of a side's team, or null (rows arrive newest season first).
+const gmInsRow = (D, side) => { const c = gmTeamCode(D.ctxHist, D.ctxGrades, side); return c == null ? null : (D.cfbIns || []).find((x) => String(x.team) === c) || null; };
+const gmPct1 = (x) => (finite(x) ? `${(+x * 100).toFixed(1)}%` : "");
+// CFB: one defense's havoc-created rank against the other offense's havoc-allowed rank (1 = best on both). Notable when the gap
+// (offense rank minus defense rank, positive = defense edge) is 30+, or the defense has the edge and is top 15% / the offense bottom 15%.
+function gmHavocInsight(D, name) {
+  let best = null;
+  for (const dSide of ["home", "away"]) {
+    const d = gmInsRow(D, dSide), o = gmInsRow(D, dSide === "home" ? "away" : "home");
+    if (!d || !o || !finite(d.def_havoc_rank) || !finite(o.off_havoc_allowed_rank) || !finite(d.n_ranked ?? o.n_ranked)) continue;
+    const n = +(d.n_ranked ?? o.n_ranked), gap = o.off_havoc_allowed_rank - d.def_havoc_rank, cut = gmCut(n);
+    const extreme = gap > 0 && (d.def_havoc_rank <= cut || o.off_havoc_allowed_rank > n - cut);
+    if (!(gap >= GM_NOTABLE_GAP || extreme)) continue;
+    const strength = Math.round(50 + Math.min(45, gap / 3));
+    if (best && best.strength >= strength) continue;
+    const dn = name(dSide), on = name(dSide === "home" ? "away" : "home"), dr = gmPct1(d.def_havoc_rate), or = gmPct1(o.off_havoc_allowed_rate);
+    best = { kind: "havoc", strength, title: `${dn} defense creates havoc against ${on}`,
+      body: `${dn} ranks #${d.def_havoc_rank} in havoc created${dr ? ` (${dr} of plays)` : ""}; ${gmPoss(on)} offense ranks #${o.off_havoc_allowed_rank} in havoc allowed${or ? ` (${or})` : ""}, where #1 allows the least.` };
+  }
+  return best;
+}
+// CFB: turnover-margin rank gap of 30+, or either team in the top / bottom 15% (equal ranks: no edge).
+function gmTurnoverInsight(D, name) {
+  const h = gmInsRow(D, "home"), a = gmInsRow(D, "away");
+  if (!h || !a || !finite(h.turnover_margin_rank) || !finite(a.turnover_margin_rank) || !finite(h.n_ranked ?? a.n_ranked)) return null;
+  const n = +(h.n_ranked ?? a.n_ranked), hr = +h.turnover_margin_rank, ar = +a.turnover_margin_rank, gap = Math.abs(hr - ar), cut = gmCut(n);
+  const ext = (r) => r <= cut || r > n - cut;
+  if (hr === ar || !(gap >= GM_NOTABLE_GAP || ext(hr) || ext(ar))) return null;
+  const [bs, b, w] = hr < ar ? ["home", h, a] : ["away", a, h], per = (x) => (finite(x.turnover_margin_per_game) ? ` is ${signedStr(+x.turnover_margin_per_game, 1)} per game` : "");
+  return { kind: "turnover", strength: Math.round(50 + Math.min(45, gap / 3)), title: `${name(bs)} owns the turnover edge`,
+    body: `${name(bs)}${per(b) || " ranks"} (#${b.turnover_margin_rank} nationally); ${name(bs === "home" ? "away" : "home")}${per(w) || " ranks"} (#${w.turnover_margin_rank}).` };
+}
+// CFB + NFL: outdoor games only. Wind 15+ mph, under 40°F, 50%+ chance of rain or measurable rain; strength from the worst factor.
+// Hidden once the weather is stale (3 days after kickoff), by the same rule as the hero's venue line.
+function gmWeatherInsight(D) {
+  const i = D && D.gameInfo;
+  if (!i || i.indoor === true || !gmWeatherFresh(D.r && D.r.commence_time, D.nowMs)) return null;
+  const t = numOrNull(i.temp_f), w = numOrNull(i.wind_mph), pc = numOrNull(i.precip_chance), pi = numOrNull(i.precip_in), f = [], sc = [];
+  if (w != null && w >= 15) { f.push(`wind ${Math.round(w)} mph`); sc.push(55 + Math.min(35, (w - 15) * 3)); }
+  if (t != null && t < 40) { f.push(`${Math.round(t)}°F`); sc.push(55 + Math.min(30, (40 - t) * 2)); }
+  if (pc != null && pc >= 50) { f.push(`${Math.round(pc)}% chance of rain`); sc.push(55 + Math.min(30, (pc - 50) * 0.6)); }
+  else if (pi != null && pi >= GM_MEASURABLE_IN) { f.push(`${pi.toFixed(2)} in of rain`); sc.push(60); }
+  if (!f.length) return null;
+  return { kind: "weather", strength: Math.round(Math.max(...sc)), title: `Weather: ${f.join(", ")}`,
+    body: `${i.weather_kind === "observed" ? "Observed" : "Forecast"} conditions${i.venue_name ? ` at ${i.venue_name}` : ""}. Descriptive only, not a pick.` };
+}
 function gmKeyInsights(D) {
   const r = (D && D.r) || {}, grades = (D && D.ctxGrades) || [], hist = (D && D.ctxHist) || [], power = (D && D.ctxPower) || [];
   const name = (side) => shortTeam(side === "home" ? r.home_team_name : r.away_team_name, D && D.sport);
@@ -256,7 +316,7 @@ function gmKeyInsights(D) {
   const pl = (D && D.sport) === "nfl" ? 1 : 0;   // NFL short names are plural nicknames ("Saints rank"), CFB schools singular ("Alabama ranks")
   const out = [];
   const graded = grades.filter((g) => g && g.overall && finite(g.overall_pct)).sort((x, y) => y.overall_pct - x.overall_pct)[0];
-  if (graded) out.push({ kind: "grade", title: `${name(graded.side)} offense grades ${graded.overall} vs ${name(other(graded.side))}`,
+  if (graded) out.push({ kind: "grade", strength: GM_STRENGTH.grade(+graded.overall_pct), title: `${name(graded.side)} offense grades ${graded.overall} vs ${name(other(graded.side))}`,
     body: `Pass ${graded.pass || "–"}, run ${graded.run || "–"} against ${gmPoss(name(other(graded.side)))} defense (${ctxOrd(graded.overall_pct)} percentile overall).` });
   const xpl = (g) => {
     const u = g && ctxJson(g.units), o = u && u.off, d = u && u.def;
@@ -269,7 +329,7 @@ function gmKeyInsights(D) {
   const xh = xpl(grades.find((g) => g.side === "home")), xa = xpl(grades.find((g) => g.side === "away"));
   if (xh != null && xa != null && Math.abs(xh - xa) > 1e-9) {
     const w = xh > xa ? "home" : "away";
-    out.push({ kind: "explosive", title: `Big-play grades favor ${name(w)}`,
+    out.push({ kind: "explosive", strength: GM_STRENGTH.explosive(), title: `Big-play grades favor ${name(w)}`,
       body: `${gmPoss(name(w))} offense vs ${gmPoss(name(other(w)))} defense is ahead of the reverse matchup on pass-rate-weighted explosive-play ratings.` });
   }
   const pr = (side) => power.find((x) => String(x.team) === gmTeamCode(hist, grades, side));
@@ -277,7 +337,7 @@ function gmKeyInsights(D) {
   if (ph && pa && finite(ph.rank) && finite(pa.rank) && ph.rank !== pa.rank) {
     const [bs, b, w] = ph.rank < pa.rank ? ["home", ph, pa] : ["away", pa, ph];
     const gap = finite(b.rating) && finite(w.rating) ? ` Rating gap: ${(b.rating - w.rating).toFixed(1)} pts.` : "";
-    out.push({ kind: "power", title: `${name(bs)} ${pl ? "rank" : "ranks"} #${b.rank} in the power rankings`, body: `${name(other(bs))} ${pl ? "rank" : "ranks"} #${w.rank}.${gap}` });
+    out.push({ kind: "power", strength: GM_STRENGTH.power(Math.abs(ph.rank - pa.rank)), title: `${name(bs)} ${pl ? "rank" : "ranks"} #${b.rank} in the power rankings`, body: `${name(other(bs))} ${pl ? "rank" : "ranks"} #${w.rank}.${gap}` });
   }
   let st = null;
   for (const h of hist) {
@@ -287,9 +347,12 @@ function gmKeyInsights(D) {
       if (m && GM_STREAK[k][m[1]] && +m[2] >= 3 && (!st || +m[2] > st.n)) st = { side: h.side, k, kind: m[1], n: +m[2] };
     }
   }
-  if (st) out.push({ kind: "streak", title: `${name(st.side)} ${GM_STREAK[st.k][st.kind][pl]} ${st.n} straight`,
+  if (st) out.push({ kind: "streak", strength: GM_STRENGTH.streak(st.n), title: `${name(st.side)} ${GM_STREAK[st.k][st.kind][pl]} ${st.n} straight`,
     body: `Current ${{ su: "straight-up", ats: "against-the-spread", ou: "over/under" }[st.k]} streak entering this game.` });
-  return out.slice(0, 4);
+  if (D && D.sport === "cfb") for (const x of [gmHavocInsight(D, name), gmTurnoverInsight(D, name)]) if (x) out.push(x);
+  const wx = gmWeatherInsight(D);
+  if (wx) out.push(wx);
+  return out.map((x, i) => ({ x, i })).sort((p, q) => q.x.strength - p.x.strength || p.i - q.i).slice(0, 4).map((p) => p.x);
 }
 
 // Best price per side: moneyline from the moneylines view (else the pick builds), spread / total from the latest builds.
@@ -351,7 +414,7 @@ async function gmLoad(sport, rawGame) {
   const r = predsAny[0] || predsCur[0];
   if (!r) return null;
   r.sport = sport;
-  let sims = [], props = [], simRows = [], playerActuals = [], propLines = [], splits = [], trendRecs = [], trendSits = [], ctxHist = [], ctxGrades = [], ctxPower = [];
+  let sims = [], props = [], simRows = [], playerActuals = [], propLines = [], splits = [], trendRecs = [], trendSits = [], ctxHist = [], ctxGrades = [], ctxPower = [], cfbIns = [], cfbShares = [];
   if (isNfl) {
     // Served-version filter; a failed served read falls back to the newest rows of any version, and so does an empty strict read
     // (a pre-switch game whose rows exist only under an earlier version).
@@ -382,6 +445,14 @@ async function gmLoad(sport, rawGame) {
     const codes = [...new Set([...ctxHist, ...ctxGrades].map((x) => x.team).filter((t) => t && t !== "FCS"))];
     if (ctxHist.length && codes.length)
       ctxPower = await sb(`power_rankings_current?sport=eq.${sport}&team=in.(${codes.map((c) => q(String(c))).join(",")})`).catch(() => []);
+    // CFB only: both teams' havoc / turnover ranks (every stored season, newest first) and quarter-scoring shares; a missing table -> []
+    if (sport === "cfb" && codes.length) {
+      const list = codes.map((c) => q(String(c))).join(",");
+      [cfbIns, cfbShares] = await Promise.all([
+        sb(`cfb_team_insights?team=in.(${list})&order=season.desc`).catch(() => []),
+        sb(`cfb_quarter_shares?team=in.(${list})`).catch(() => []),
+      ]);
+    }
   }
   // Player pmf map for the interactive per-player distribution panel, plus the team colors the sim charts share.
   const players = {};
@@ -397,7 +468,7 @@ async function gmLoad(sport, rawGame) {
   const shownSimVersion = (sims[0] && sims[0].model_version) || null;
   return { sport, game: String(rawGame), r, actual: accRows[0] || null, evRows: evRows || [], mlRow: mls.get(String(game)) || null, opps: myOpps, moves: myMoves, lineBy: lineBy || new Map(),
     splits: splits || [], sims, props, simRows, playerActuals, propLines, trendRecs, trendSits, ctxHist, ctxGrades, ctxPower, awayCol, homeCol,
-    gameInfo: (gameInfoRows || [])[0] || null,
+    gameInfo: (gameInfoRows || [])[0] || null, cfbIns: cfbIns || [], cfbShares: cfbShares || [],
     isNfl, simTag: isNfl ? mlModelTag(shownSimVersion) : "" };
 }
 
@@ -495,7 +566,8 @@ function gmProjectionCard(D) {
   }).join("");
   return `<section class="ca-card ca-gm-proj" id="gm-projection"><div class="ca-card-head"><h2>Model Projection</h2></div><table class="ca-table ca-gm-table"><thead><tr><th></th><th>Market</th><th>CappingAlpha</th><th>Difference</th></tr></thead><tbody>${body}</tbody></table></section>`;
 }
-const GM_INSIGHT_ICON = { grade: ["ca-gm-ic-red", ICON_GRADE], explosive: ["ca-gm-ic-amber", ICON_TREND], power: ["ca-gm-ic-blue", ICON_RANK], streak: ["ca-gm-ic-green", ICON_WAVE] };
+const GM_INSIGHT_ICON = { grade: ["ca-gm-ic-red", ICON_GRADE], explosive: ["ca-gm-ic-amber", ICON_TREND], power: ["ca-gm-ic-blue", ICON_RANK], streak: ["ca-gm-ic-green", ICON_WAVE],
+  havoc: ["ca-gm-ic-red", ICON_HAVOC], turnover: ["ca-gm-ic-amber", ICON_SWAP], weather: ["ca-gm-ic-blue", ICON_CLOUD] };
 function gmInsightsCard(D) {
   const ins = gmKeyInsights(D);
   if (!ins.length) return "";

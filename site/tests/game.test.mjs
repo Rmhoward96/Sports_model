@@ -179,11 +179,13 @@ test("gmKeyInsights: up to four sentences from unit grades, explosive plays, pow
     ctxPower: [pw("333", 2, 18.4, "5-1"), pw("87", 31, -2.1, "2-3")] };
   const ins = g.gmKeyInsights(D);
   assert.equal(ins.length, 4);
-  assert.deepEqual(ins.map((i) => i.kind), ["grade", "explosive", "power", "streak"]);
-  assert.match(ins[0].title, /Alabama offense grades A vs South Carolina/); assert.match(ins[0].body, /Pass A, run C/);
-  assert.match(ins[1].title, /Big-play grades favor Alabama/); assert.ok(!/pass and run/.test(ins[1].body), "only what is computed");
-  assert.match(ins[2].title, /Alabama ranks #2/); assert.match(ins[2].body, /South Carolina ranks #31/); assert.match(ins[2].body, /20\.5/);
-  assert.match(ins[3].title, /Alabama won 4 straight/);
+  // strongest first: grade 30 + 0.4 * 92 = 67, power 30 + gap 29 = 59, streak W4 = 46, explosive = 45
+  assert.deepEqual(ins.map((i) => [i.kind, i.strength]), [["grade", 67], ["power", 59], ["streak", 46], ["explosive", 45]]);
+  const by = (k) => ins.find((i) => i.kind === k);
+  assert.match(by("grade").title, /Alabama offense grades A vs South Carolina/); assert.match(by("grade").body, /Pass A, run C/);
+  assert.match(by("explosive").title, /Big-play grades favor Alabama/); assert.ok(!/pass and run/.test(by("explosive").body), "only what is computed");
+  assert.match(by("power").title, /Alabama ranks #2/); assert.match(by("power").body, /South Carolina ranks #31/); assert.match(by("power").body, /20\.5/);
+  assert.match(by("streak").title, /Alabama won 4 straight/);
   assert.ok(ins.every((i) => !/NaN|undefined/.test(i.title + i.body)));
   assert.deepEqual(g.gmKeyInsights({ sport: "cfb", r: cfbPred, ctxGrades: [], ctxHist: [], ctxPower: [] }), []);
   assert.deepEqual(g.gmKeyInsights({ sport: "mlb", r: cfbPred }), [], "missing arrays never throw");
