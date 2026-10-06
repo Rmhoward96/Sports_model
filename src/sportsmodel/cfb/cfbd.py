@@ -8,6 +8,9 @@ output by CFBD school display name (the same "team"/"school" strings CFBD
 returns). Mapping those names to ESPN team ids happens later, in
 `cfb.teams.cfbd_to_espn` (a downstream task's job, not this module's).
 
+`CfbdClient` is the retrying, call-counting HTTP client (Bearer auth, key never logged) used by the
+per-game v3 ingest (`scripts/build_cfb_game_data.py`).
+
 `_get` is the only network-touching piece here, and it is used solely by a
 later ingest step's main() -- never by the parse_* functions above. It
 mirrors `cfb.espn._get` / `nfl.espn._get`'s retry policy (tenacity: 3

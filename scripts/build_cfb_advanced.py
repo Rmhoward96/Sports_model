@@ -148,7 +148,8 @@ def merge_frames(existing: pd.DataFrame | None, new: pd.DataFrame, seasons) -> p
     if "season_type" in out.columns:           # pre-v3 parquets carry no season_type: all regular
         out["season_type"] = out["season_type"].fillna("regular")
     out = out.drop_duplicates(subset=["season", "game_id", "team"], keep="last")
-    return out.sort_values(["season", "week", "game_id", "team"]).reset_index(drop=True)
+    out = out.sort_values(["season", "week", "game_id", "team"]).reset_index(drop=True)
+    return out.reindex(columns=COLUMNS)
 
 
 def keep_postseason(existing: pd.DataFrame | None, new: pd.DataFrame, year: int) -> pd.DataFrame:
@@ -214,6 +215,9 @@ def main() -> None:
         parts = [parse_advanced(fetch_year(y, key, st)) for st in args.season_types]
         dropped += sum(p.attrs["dropped"] for p in parts)
         df = pd.concat(parts, ignore_index=True)
+        if (len(df) and "regular" in args.season_types and existing is not None
+                and (existing["season"] == y).any() and not (df["season_type"] == "regular").any()):
+            df = df.iloc[0:0]      # postseason-only pull: never replace a season's committed regular rows
         if len(df) and "postseason" in args.season_types:
             df = keep_postseason(existing, df, y)
         print(f"{y}: {len(df)} team-games kept ({', '.join(args.season_types)}), "

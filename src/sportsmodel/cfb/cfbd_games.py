@@ -30,6 +30,21 @@ def num(x) -> float:
     return float(x)
 
 
+def _ints(g: dict, *keys: str):
+    """Required identity keys of one CFBD record as ints, or None when any is missing /
+    null / non-integer (the caller drops and counts the row instead of raising)."""
+    out = []
+    for k in keys:
+        v = g.get(k)
+        if v is None or isinstance(v, bool):
+            return None
+        try:
+            out.append(int(v))
+        except (TypeError, ValueError):
+            return None
+    return out
+
+
 def season_type(x) -> str:
     """CFBD seasonType -> 'regular' | 'postseason' (lower-cased pass-through otherwise)."""
     return str(x or "regular").lower()
@@ -64,10 +79,11 @@ def parse_games_meta(payload) -> pd.DataFrame:
     rows, dropped = [], 0
     for g in payload:
         h, a = cfbd_to_espn(g.get("homeTeam") or ""), cfbd_to_espn(g.get("awayTeam") or "")
-        if not h or not a:
+        ids = _ints(g, "id", "season", "week")
+        if not h or not a or ids is None:
             dropped += 1
             continue
-        rows.append({"game_id": int(g["id"]), "season": int(g["season"]), "week": int(g["week"]),
+        rows.append({"game_id": ids[0], "season": ids[1], "week": ids[2],
                      "season_type": season_type(g.get("seasonType")),
                      "start_date": str(g.get("startDate") or ""),
                      "neutral_site": bool(g.get("neutralSite")),
@@ -96,12 +112,13 @@ def parse_havoc_games(payload) -> pd.DataFrame:
     rows, dropped = [], 0
     for g in payload:
         team, opp = cfbd_to_espn(g.get("team") or ""), cfbd_to_espn(g.get("opponent") or "")
-        if not team or not opp:
+        ids = _ints(g, "season", "week", "gameId")
+        if not team or not opp or ids is None:
             dropped += 1
             continue
-        row = {"season": int(g["season"]), "week": int(g["week"]),
+        row = {"season": ids[0], "week": ids[1],
                "season_type": season_type(g.get("seasonType")),
-               "game_id": int(g["gameId"]), "team": team, "opponent": opp}
+               "game_id": ids[2], "team": team, "opponent": opp}
         for unit, key in (("off", "offense"), ("def", "defense")):
             obj = g.get(key) if isinstance(g.get(key), dict) else {}
             for k, src in _HAVOC_FIELDS:
@@ -143,11 +160,12 @@ def parse_drive_games(payload, games_meta: pd.DataFrame) -> pd.DataFrame:
     opp_of: dict[tuple[int, str], str] = {}
     dropped = 0
     for d in payload:
-        gid = int(d["gameId"])
+        ids = _ints(d, "gameId")
         off, dfn = cfbd_to_espn(d.get("offense") or ""), cfbd_to_espn(d.get("defense") or "")
-        if not off or not dfn or gid not in meta:
+        if ids is None or not off or not dfn or ids[0] not in meta:
             dropped += 1
             continue
+        gid = ids[0]
         if str(d.get("driveResult") or "").upper() in EXCLUDED_DRIVE_RESULTS:
             continue
         pts, ytg_s, ytg_e = _drive_points(d), num(d.get("startYardsToGoal")), num(d.get("endYardsToGoal"))
@@ -196,10 +214,11 @@ def parse_weather_games(payload) -> pd.DataFrame:
     rows, dropped = [], 0
     for w in payload:
         h, a = cfbd_to_espn(w.get("homeTeam") or ""), cfbd_to_espn(w.get("awayTeam") or "")
-        if not h or not a:
+        ids = _ints(w, "id", "season", "week")
+        if not h or not a or ids is None:
             dropped += 1
             continue
-        rows.append({"game_id": int(w["id"]), "season": int(w["season"]), "week": int(w["week"]),
+        rows.append({"game_id": ids[0], "season": ids[1], "week": ids[2],
                      "season_type": season_type(w.get("seasonType")),
                      "start_time": str(w.get("startTime") or ""), "home_team": h, "away_team": a,
                      "venue_id": num(w.get("venueId")), "game_indoors": bool(w.get("gameIndoors")),
@@ -218,10 +237,11 @@ def parse_talent(payload) -> pd.DataFrame:
     rows, dropped = [], 0
     for t in payload:
         team = cfbd_to_espn(t.get("team") or "")
-        if not team or math.isnan(num(t.get("talent"))):
+        ids = _ints(t, "year")
+        if not team or ids is None or math.isnan(num(t.get("talent"))):
             dropped += 1
             continue
-        rows.append({"season": int(t["year"]), "team": team, "talent": num(t["talent"])})
+        rows.append({"season": ids[0], "team": team, "talent": num(t["talent"])})
     return _frame(rows, ["season", "team", "talent"], ints=("season",), strs=("team",), dropped=dropped)
 
 
@@ -255,12 +275,14 @@ def parse_prior_ratings(fpi_payload, srs_payload, season: int) -> pd.DataFrame:
     """CFBD `/ratings/fpi` + `/ratings/srs` for `season` -> season, team, fpi, srs.
     These are END-of-season ratings: the residual check only ever joins them to the
     NEXT season's games (season + 1), never to in-season games."""
-    fpi = {}
+    fpi, dropped = {}, 0
     for r in fpi_payload:
         team = cfbd_to_espn(r.get("team") or "")
         if team:
             fpi[team] = num(r.get("fpi"))
-    srs, dropped = {}, 0
+        else:
+            dropped += 1
+    srs = {}
     for r in srs_payload:
         team = cfbd_to_espn(r.get("team") or "")
         if team:

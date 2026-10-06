@@ -216,3 +216,26 @@ def test_main_empty_postseason_keeps_existing_bowls(monkeypatch, tmp_path):
     got = _run_main(monkeypatch, tmp_path, {2023: [dict(PAYLOAD[0], gameId=402)]}, old,
                     ["--merge", "--seasons", "2023"])
     assert set(got["game_id"]) == {402, 777}
+
+
+def test_main_empty_regular_pull_keeps_existing_season_even_with_postseason_rows(monkeypatch, tmp_path, capsys):
+    old = bca.parse_advanced([PAYLOAD[0]])
+    payloads = {2023: [], ("post", 2023): [_post(PAYLOAD[0], 555)]}      # postseason-only pull
+    got = _run_main(monkeypatch, tmp_path, payloads, old, ["--merge", "--seasons", "2023"])
+    assert set(got["game_id"]) == {401}                                  # regular rows not replaced
+    assert "KEEPING" in capsys.readouterr().out
+
+
+def test_main_regular_not_requested_still_replaces(monkeypatch, tmp_path):
+    old = bca.parse_advanced([PAYLOAD[0]])
+    payloads = {2023: [], ("post", 2023): [_post(PAYLOAD[0], 555)]}
+    got = _run_main(monkeypatch, tmp_path, payloads, old,
+                    ["--merge", "--seasons", "2023", "--season-types", "postseason"])
+    assert 555 in set(got["game_id"])
+
+
+def test_merge_frames_column_order_is_stable():
+    new = bca.parse_advanced([PAYLOAD[0]])
+    shuffled = new[list(reversed(new.columns))]
+    assert list(bca.merge_frames(shuffled, new, [2024]).columns) == bca.COLUMNS
+    assert list(bca.merge_frames(None, shuffled, [2023]).columns) == bca.COLUMNS

@@ -234,3 +234,55 @@ def test_prior_ratings_join_fpi_and_srs_by_team():
     b = df[df["team"] == BAMA].iloc[0]
     assert math.isnan(b["fpi"]) and math.isnan(b["srs"])
     assert df.attrs["dropped"] == 1
+
+
+# ------------------------------------------- missing identity keys are dropped --
+
+def _without(row, key):
+    return {k: v for k, v in row.items() if k != key}
+
+
+@pytest.mark.parametrize("key", ["id", "season", "week"])
+@pytest.mark.parametrize("how", ["missing", "null"])
+def test_games_and_weather_drop_rows_missing_identity_keys(key, how):
+    for parse, row in ((cg.parse_games_meta, GAMES[0]), (cg.parse_weather_games, _w(401, "Alabama", "Georgia"))):
+        row = dict(row, id=401)
+        bad = _without(row, key) if how == "missing" else dict(row, **{key: None})
+        df = parse([bad, row])
+        assert len(df) == 1 and df.attrs["dropped"] == 1, (parse.__name__, key, how)
+
+
+@pytest.mark.parametrize("key", ["gameId", "season", "week"])
+@pytest.mark.parametrize("how", ["missing", "null"])
+def test_havoc_drops_rows_missing_identity_keys(key, how):
+    row = HAVOC[0]
+    bad = _without(row, key) if how == "missing" else dict(row, **{key: None})
+    df = cg.parse_havoc_games([bad, row])
+    assert len(df) == 1 and df.attrs["dropped"] == 1
+
+
+@pytest.mark.parametrize("how", ["missing", "null"])
+def test_drives_drop_rows_missing_game_id(how):
+    row = DRIVES[0]
+    bad = _without(row, "gameId") if how == "missing" else dict(row, gameId=None)
+    df = cg.parse_drive_games([bad, row], META)
+    assert df.attrs["dropped"] == 1 and len(df) == 1
+
+
+@pytest.mark.parametrize("how", ["missing", "null"])
+def test_talent_drops_rows_missing_year(how):
+    ok = {"year": 2024, "team": "Georgia", "talent": 988.2}
+    bad = _without(ok, "year") if how == "missing" else dict(ok, year=None)
+    df = cg.parse_talent([bad, ok])
+    assert len(df) == 1 and df.attrs["dropped"] == 1
+
+
+def test_prior_ratings_count_unmapped_fpi_rows_as_dropped():
+    df = cg.parse_prior_ratings([{"team": "Georgia", "fpi": 28.1},
+                                 {"team": "Nowhere State Fighting Pickles", "fpi": 1.0}],
+                                [{"team": "Georgia", "rating": 20.5}], 2023)
+    assert len(df) == 1 and df.attrs["dropped"] == 1
+
+
+def test_cfbd_module_docstring_describes_the_client():
+    assert "CfbdClient" in cfbd.__doc__
