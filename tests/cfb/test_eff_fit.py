@@ -45,7 +45,6 @@ def test_loss_only_uses_games_before_each_week():
     g2.loc[last, "y_ppa"] += 1.0
     assert eff_fit.ppa_holdout_loss(g2, (2022,), eff.EffConfig(), {}, None) != base
     g3 = g[~((g.season == 2022) & (g.week == 6))]
-    g4 = g3.copy()
     g4_future = g[(g.season == 2023)].copy()
     g4_future["y_ppa"] += 3.0                       # a later season must not change 2022's loss
     assert eff_fit.ppa_holdout_loss(pd.concat([g3, g4_future]), (2022,), eff.EffConfig(), {}, None) == \
