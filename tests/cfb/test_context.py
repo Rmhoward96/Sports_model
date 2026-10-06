@@ -185,3 +185,50 @@ def test_unknown_dome_and_elevation_never_fabricate_a_weather_effect():
     assert a.venues[1]["dome"] is False and a.venues[2]["dome"] is True
     assert cx.weather_features({"wind_speed": 25.0}, a.venues[1])["wind_excess"] == 10.0
     assert cx.weather_features({"wind_speed": 25.0}, a.venues[2])["wind_excess"] == 0.0
+
+
+# ------------------------- ruling T2: never compare DST-aware with standard-time --
+
+OCT = "2023-10-14T16:00Z"
+CHI = (41.88, -87.63)          # Central-longitude zone: round(-87.63 / 15) = -6
+
+
+def test_utc_shift_uses_longitude_zone_for_both_when_either_timezone_missing():
+    east = {"tz": "America/New_York", "lon": NYC[1]}
+    central_fallback = {"tz": "", "lon": CHI[1]}
+    # lon zones: -6 -> -5 = 1h. Mixing DST-aware EDT (-4) with standard -6 would wrongly read 2h.
+    assert cx.utc_shift_hours(central_fallback, east, OCT) == 1.0     # Chicago -> NY: 1h east
+    assert cx.utc_shift_hours(east, central_fallback, OCT) == -1.0
+
+
+def test_utc_shift_stays_dst_aware_when_both_timezones_known():
+    ny = {"tz": "America/New_York", "lon": NYC[1]}
+    chi = {"tz": "America/Chicago", "lon": CHI[1]}
+    assert cx.utc_shift_hours(chi, ny, OCT) == 1.0                    # EDT -4 vs CDT -5
+    la = {"tz": "America/Los_Angeles", "lon": LA[1]}
+    assert cx.utc_shift_hours(la, ny, OCT) == 3.0
+    # longitude is irrelevant (and may be missing) when both zones are known
+    assert cx.utc_shift_hours({"tz": "America/Chicago", "lon": float("nan")}, ny, OCT) == 1.0
+
+
+def test_utc_shift_is_nan_when_a_needed_longitude_is_missing():
+    ny = {"tz": "America/New_York", "lon": NYC[1]}
+    assert math.isnan(cx.utc_shift_hours(ny, {"tz": "", "lon": float("nan")}, OCT))
+    assert math.isnan(cx.utc_shift_hours({"tz": "", "lon": None}, ny, OCT))
+
+
+def test_travel_october_known_eastern_vs_central_fallback_is_one_hour_not_two():
+    nan = float("nan")
+    a = _frames([(1, "ny", "America/New_York", NYC[0], NYC[1], nan, 0.0),
+                 (2, "chi", "", CHI[0], CHI[1], nan, 0.0)])
+    f = cx.travel_features(a, 2023, "EAST", "WEST", 1, OCT)           # WEST flies Chicago -> NY: 1h east
+    assert f["tz_east_diff"] == 0.0 and f["tz_west_diff"] == 0.0 and f["travel_far_diff"] == 0.0
+    assert f["travel_mid_diff"] == 1.0                                # ~710 mi: distance unaffected
+
+
+def test_travel_missing_longitude_with_missing_timezone_gives_zero_features():
+    nan = float("nan")
+    a = _frames([(1, "ny", "America/New_York", NYC[0], NYC[1], nan, 0.0),
+                 (2, "la", "", LA[0], nan, nan, 0.0)])
+    assert cx.travel_features(a, 2023, "EAST", "WEST", 1, OCT) == {
+        "travel_mid_diff": 0.0, "travel_far_diff": 0.0, "tz_east_diff": 0.0, "tz_west_diff": 0.0}

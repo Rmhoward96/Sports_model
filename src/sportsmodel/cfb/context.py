@@ -72,6 +72,20 @@ def venue_utc_offset(venue: dict, when_iso: str) -> float:
     return float(round(lon / 15.0)) if _ok(lon) else float("nan")
 
 
+def utc_shift_hours(origin: dict, dest: dict, when_iso: str) -> float:
+    """Time-zone shift (hours, + = traveled east) from `origin` to `dest` venue. When both venues have
+    a usable IANA timezone the shift is DST-aware; if EITHER lacks one, BOTH use the longitude zone
+    round(lon / 15) so a DST-aware offset is never compared with a standard-time one. NaN when a
+    needed longitude is missing (-> a zero adjustment downstream)."""
+    a, b = utc_offset_hours(origin.get("tz") or "", when_iso), utc_offset_hours(dest.get("tz") or "", when_iso)
+    if not (math.isnan(a) or math.isnan(b)):
+        return b - a
+    lons = (origin.get("lon"), dest.get("lon"))
+    if not all(_ok(x) for x in lons):
+        return float("nan")
+    return float(round(lons[1] / 15.0) - round(lons[0] / 15.0))
+
+
 def build_context_assets(venues: pd.DataFrame | None, meta: pd.DataFrame | None,
                          weather: pd.DataFrame | None, talent: pd.DataFrame | None) -> ContextAssets:
     """Index the committed frames (any may be None -> that feature family is neutral)."""
@@ -136,7 +150,7 @@ def _burden(assets: ContextAssets, team: str, season: int, game_vid, when_iso: s
     if not a or not b or not (_ok(a["lat"]) and _ok(a["lon"]) and _ok(b["lat"]) and _ok(b["lon"])):
         return zero
     d = haversine_miles(a["lat"], a["lon"], b["lat"], b["lon"])
-    shift = venue_utc_offset(b, when_iso) - venue_utc_offset(a, when_iso)   # + = traveled east
+    shift = utc_shift_hours(a, b, when_iso)   # + = traveled east
     shift = 0.0 if math.isnan(shift) else shift
     return {"mid": float(TRAVEL_MID_MI <= d < TRAVEL_FAR_MI), "far": float(d >= TRAVEL_FAR_MI),
             "east": float(shift >= TZ_SHIFT_HOURS), "west": float(shift <= -TZ_SHIFT_HOURS)}
