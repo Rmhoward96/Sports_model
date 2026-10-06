@@ -190,3 +190,19 @@ def test_safe_fetch_passes_through_data(monkeypatch):
     monkeypatch.setattr(bcp.cfbd, "_get", lambda path, key, params=None: payload)
     out = bcp._fetch_parsed(bcp.cfbd.parse_portal, "/player/portal", "k", {"year": 2022})
     assert set(out) == {"Ames", "Boone"}
+
+
+def test_committed_priors_cover_every_current_fbs_team():
+    """The live v2 prior reads seasons S-1 and S of assets/cfb/priors.parquet; a team with no row
+    silently gets no prior. Arkansas/Missouri/Virginia were absent from every season until the
+    CFBD->ESPN mapping fix (their bare names were ambiguous with the State/Tech siblings)."""
+    from sportsmodel.cfb.teams import load_fbs_ids
+
+    df = pd.read_parquet(_p.parents[1] / "assets" / "cfb" / "priors.parquet")
+    latest = int(df["season"].max())
+    fbs = load_fbs_ids()
+    for season in (latest - 1, latest):
+        missing = sorted(fbs - set(df.loc[df["season"] == season, "team_espn_id"]))
+        assert not missing, f"priors.parquet {season} lacks FBS teams {missing}"
+    for team in ("8", "142", "258"):   # Arkansas, Missouri, Virginia: every season
+        assert set(df.loc[df["team_espn_id"] == team, "season"]) == set(df["season"])

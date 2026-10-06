@@ -55,8 +55,8 @@ def test_eval_set_filters_season_scored_and_priced():
 
 
 def test_check_baseline_passes_within_rounding_and_stops_otherwise():
-    ok = {"margin_mae": 12.6069, "total_mae": 13.0980, "ats": 0.48964}
-    assert g.check_baseline(ok)["margin_mae"] == (12.61, 12.6069)
+    ok = {"margin_mae": 12.6075, "total_mae": 13.0919, "ats": 0.49121}
+    assert g.check_baseline(ok)["margin_mae"] == (12.61, 12.6075)
     for bad in ({**ok, "margin_mae": 12.70}, {**ok, "total_mae": 13.2}, {**ok, "ats": 0.50}):
         with pytest.raises(g.BaselineMismatch, match="NOT reproduced"):
             g.check_baseline(bad)

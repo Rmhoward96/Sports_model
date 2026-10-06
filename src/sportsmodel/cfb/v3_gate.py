@@ -1,7 +1,7 @@
 """The v3 ship gate (spec section 4): pure metrics, the v2-baseline reproduction check and the
 pass/fail verdict. No IO.
 
-Eval set (identical to the one v2's 12.61 / 13.10 / 49.0 % were measured on): held-out 2023-2025
+Eval set (the one v2's baseline below is measured on): held-out 2023-2025
 REG FBS-vs-FBS games that have a closing spread. O/U is scored on the subset with a closing total.
 `market_spread` is in HOME-MARGIN convention (positive = home favored): the model picks home when
 its margin is above the number. Pushes and no-pick games are excluded from ATS / O/U.
@@ -14,8 +14,11 @@ import numpy as np
 import pandas as pd
 
 HOLDOUT_SEASONS = (2023, 2024, 2025)
-# v2's held-out numbers (compare_cfb_live_fix.py "fixed", 2026-09-30) -- reproduced FIRST
-V2_EXPECTED = {"margin_mae": 12.61, "total_mae": 13.10, "ats": 0.490}
+# v2's held-out numbers -- reproduced FIRST. 2026-10-06: 12.607 / 13.092 / 49.12 % (2266 games) after
+# Arkansas/Missouri/Virginia were added to priors.parquet and lines.parquet (CFBD name-mapping fix);
+# before that they were absent from both and v2 measured 12.61 / 13.10 / 49.0 % on 2169 games
+# (compare_cfb_live_fix.py "fixed", 2026-09-30; the v3 / v3.1 gate JSONs use that set).
+V2_EXPECTED = {"margin_mae": 12.61, "total_mae": 13.09, "ats": 0.491}
 BASELINE_TOL = {"margin_mae": 0.006, "total_mae": 0.006, "ats": 0.0006}   # rounding of the published figures
 ECE_SLACK = 0.005
 ECE_BINS = 10
