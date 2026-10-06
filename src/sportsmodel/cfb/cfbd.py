@@ -8,7 +8,10 @@ output by CFBD school display name (the same "team"/"school" strings CFBD
 returns). Mapping those names to ESPN team ids happens later, in
 `cfb.teams.cfbd_to_espn` (a downstream task's job, not this module's).
 
-`_get` is the only network-touching piece here, and it is used solely by a
+`CfbdClient` is the retrying, call-counting HTTP client (Bearer auth, key never logged) used by the
+per-game v3 ingest (`scripts/build_cfb_game_data.py`).
+
+Besides `CfbdClient`, `_get` is the only network-touching piece here, and it is used solely by a
 later ingest step's main() -- never by the parse_* functions above. It
 mirrors `cfb.espn._get` / `nfl.espn._get`'s retry policy (tenacity: 3
 attempts, exponential backoff) but adds the CFBD Bearer-token auth header.
@@ -20,10 +23,15 @@ keeps `_get` pure of env access, same as the parse_* functions above.
 """
 from __future__ import annotations
 
+import logging
+import os
 from typing import Any
 
 import httpx
-from tenacity import retry, stop_after_attempt, wait_exponential
+from tenacity import (Retrying, retry, retry_if_exception, stop_after_attempt,
+                      wait_exponential)
+
+log = logging.getLogger("cfbd")
 
 _BASE = "https://api.collegefootballdata.com"
 
@@ -50,6 +58,60 @@ def _get(path: str, api_key: str, params: dict | None = None) -> Any:
     r = httpx.get(f"{_BASE}{path}", params=params, headers=headers, timeout=20)
     r.raise_for_status()
     return r.json()
+
+
+def _is_transient(exc: BaseException) -> bool:
+    """Retry network errors, 5xx and 429; fail fast on other 4xx (bad params/key)."""
+    if isinstance(exc, httpx.HTTPStatusError):
+        code = exc.response.status_code
+        return code >= 500 or code == 429
+    return isinstance(exc, httpx.TransportError)
+
+
+class CfbdClient:
+    """Shared CFBD client for the paid-tier pulls: Bearer auth, retry with
+    exponential backoff on transient failures, and a per-run call counter.
+
+    The key is held privately and sent only in the Authorization header: it is
+    never logged, never put in a URL, and never appears in `repr`. `calls`
+    counts every HTTP attempt (retries included) so the budget line printed at
+    the end of a run is honest. `http`/`wait` are injectable for tests.
+    """
+
+    def __init__(self, api_key: str, *, http: httpx.Client | None = None,
+                 attempts: int = 4, wait=None, timeout: float = 60.0):
+        if not api_key:
+            raise ValueError("CFBD api_key is empty")
+        self._key = api_key
+        self._http = http or httpx.Client(base_url=_BASE, timeout=timeout)
+        self._attempts = attempts
+        self._wait = wait or wait_exponential(multiplier=1, max=20)
+        self.calls = 0
+
+    @classmethod
+    def from_env(cls, **kw) -> "CfbdClient":
+        key = os.environ.get("CFBD_API_KEY")
+        if not key:
+            raise SystemExit("CFBD_API_KEY not set in environment (export it / repo secret).")
+        return cls(key, **kw)
+
+    def __repr__(self) -> str:
+        return f"CfbdClient(calls={self.calls})"
+
+    def get(self, path: str, params: dict | None = None) -> Any:
+        for attempt in Retrying(stop=stop_after_attempt(self._attempts), wait=self._wait,
+                                retry=retry_if_exception(_is_transient), reraise=True):
+            with attempt:
+                self.calls += 1
+                r = self._http.get(path, params=params,
+                                   headers={"Authorization": f"Bearer {self._key}"})
+                r.raise_for_status()
+                out = r.json()
+        log.info("CFBD GET %s (%d calls this run)", path, self.calls)
+        return out
+
+    def summary(self) -> str:
+        return f"CFBD calls this run: {self.calls}"
 
 
 def parse_sp(payload) -> dict[str, float]:

@@ -1,0 +1,8 @@
+{
+  "ridge": 1.0,
+  "half_life_games": 4.0,
+  "prior_floor": 0.3,
+  "k0": 0.7,
+  "k_ret": 0.0,
+  "k_tal": 0.1
+}

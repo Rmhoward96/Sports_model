@@ -514,3 +514,13 @@ def test_nfl_rankings_use_the_results_rating():
     home_w = rk["home_record"].str.split("-").str[0].astype(int)
     road_w = rk["road_record"].str.split("-").str[0].astype(int)
     assert (home_w + road_w == wins).all()      # fixtures have no neutral games
+
+
+def test_regular_season_only_drops_postseason_rows_and_tolerates_old_parquets():
+    adv = pd.DataFrame({"season": [2024, 2024, 2024], "week": [1, 1, 2], "game_id": [1, 2, 3],
+                        "season_type": ["regular", "postseason", None]})
+    got = btc.regular_season_only(adv)
+    assert list(got["game_id"]) == [1, 3]                       # postseason out, null = regular
+    old = adv.drop(columns="season_type")
+    assert btc.regular_season_only(old) is old                  # pre-v3 parquet untouched
+    assert btc.regular_season_only(None) is None

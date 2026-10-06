@@ -1,7 +1,9 @@
 """Pull CFBD advanced per-game team stats -> assets/cfb/advanced_games.parquet.
 
 Reads CFBD_API_KEY from the environment (never hardcoded, never logged). Source is
-`/stats/game/advanced?year=Y&seasonType=regular`, which returns one object per
+`/stats/game/advanced?year=Y&seasonType=regular|postseason` (both pulled by default; each
+row is stamped with `season_type`, so consumers that want the regular season only filter on
+it), which returns one object per
 team-game: {gameId, season, week, team, opponent, offense{...}, defense{...}} where each
 unit carries plays / ppa / successRate / explosiveness plus `passingPlays` and
 `rushingPlays` sub-objects ({ppa, totalPPA, successRate, explosiveness}). Missing
@@ -50,11 +52,19 @@ _METRICS = (
     ("rush_ppa", ("rushingPlays", "ppa")),
     ("rush_success", ("rushingPlays", "successRate")),
     ("rush_explosiveness", ("rushingPlays", "explosiveness")),
+    # down/distance splits + run-game shape (residual-check features for cfb-ratings-v3)
+    ("std_down_success", ("standardDowns", "successRate")),
+    ("pass_down_success", ("passingDowns", "successRate")),
+    ("std_down_ppa", ("standardDowns", "ppa")),
+    ("pass_down_ppa", ("passingDowns", "ppa")),
+    ("line_yards", ("lineYards",)),
+    ("stuff_rate", ("stuffRate",)),
+    ("power_success", ("powerSuccess",)),
 )
 _SPLIT_PLAYS = (("pass_plays", ("passingPlays", "plays")),
                 ("rush_plays", ("rushingPlays", "plays")))
 _UNIT_FIELDS = tuple(s for s, _ in _METRICS)
-_ID_COLS = ("season", "week", "game_id", "team", "opponent")
+_ID_COLS = ("season", "week", "season_type", "game_id", "team", "opponent")
 
 
 def _unit_cols(prefix: str) -> list[str]:
@@ -111,13 +121,14 @@ def parse_advanced(payload: list[dict]) -> pd.DataFrame:
             dropped += 1
             continue
         row = {"season": int(g["season"]), "week": int(g["week"]),
+               "season_type": str(g.get("seasonType") or "regular").lower(),
                "game_id": int(g["gameId"]), "team": team, "opponent": opp}
         row.update(_unit_row("off", g.get("offense")))
         row.update(_unit_row("def", g.get("defense")))
         rows.append(row)
     df = pd.DataFrame(rows, columns=COLUMNS)
     for c in COLUMNS:
-        if c in ("team", "opponent"):
+        if c in ("team", "opponent", "season_type"):
             df[c] = df[c].astype(str)
         elif c in ("season", "week", "game_id"):
             df[c] = df[c].astype("int64")
@@ -134,8 +145,22 @@ def merge_frames(existing: pd.DataFrame | None, new: pd.DataFrame, seasons) -> p
     else:
         kept = existing[~existing["season"].isin(list(seasons))]
         out = pd.concat([kept, new], ignore_index=True) if len(kept) else new.copy()
+    if "season_type" in out.columns:           # pre-v3 parquets carry no season_type: all regular
+        out["season_type"] = out["season_type"].fillna("regular")
     out = out.drop_duplicates(subset=["season", "game_id", "team"], keep="last")
-    return out.sort_values(["season", "week", "game_id", "team"]).reset_index(drop=True)
+    out = out.sort_values(["season", "week", "game_id", "team"]).reset_index(drop=True)
+    return out.reindex(columns=COLUMNS)
+
+
+def keep_postseason(existing: pd.DataFrame | None, new: pd.DataFrame, year: int) -> pd.DataFrame:
+    """A season refresh whose postseason pull came back empty (mid-season, or an API
+    blip after bowls) must not drop the postseason rows already committed."""
+    if existing is None or "season_type" not in existing.columns:
+        return new
+    if (new["season_type"] == "postseason").any():
+        return new
+    old = existing[(existing["season"] == year) & (existing["season_type"] == "postseason")]
+    return pd.concat([new, old], ignore_index=True) if len(old) else new
 
 
 def coverage(adv: pd.DataFrame, sched: pd.DataFrame, fbs: set[str] | None = None) -> pd.DataFrame:
@@ -149,12 +174,12 @@ def coverage(adv: pd.DataFrame, sched: pd.DataFrame, fbs: set[str] | None = None
     return g[g.index.isin(adv["season"].unique())]
 
 
-def fetch_year(year: int, key: str) -> list:
-    """CFBD advanced game stats for a season, retrying transient 5xx / network errors."""
+def fetch_year(year: int, key: str, season_type: str = "regular") -> list:
+    """CFBD advanced game stats for a season + season type, retrying transient 5xx / network errors."""
     last: Exception | None = None
     for attempt in range(4):
         try:
-            r = httpx.get(_API, params={"year": year, "seasonType": "regular"},
+            r = httpx.get(_API, params={"year": year, "seasonType": season_type},
                           headers={"Authorization": f"Bearer {key}"}, timeout=60)
             r.raise_for_status()
             return r.json()
@@ -174,6 +199,8 @@ def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("--seasons", type=int, nargs="+",
                     default=list(range(2015, dt.date.today().year + 1)))
+    ap.add_argument("--season-types", nargs="+", default=["regular", "postseason"],
+                    choices=["regular", "postseason"], help="CFBD seasonType values to pull")
     ap.add_argument("--merge", action="store_true",
                     help="refresh only the given seasons, keeping the rest of the parquet")
     args = ap.parse_args()
@@ -185,10 +212,15 @@ def main() -> None:
     existing = pd.read_parquet(_OUT) if args.merge and _OUT.exists() else None
     frames, dropped, replace = [], 0, []
     for y in args.seasons:
-        payload = fetch_year(y, key)
-        df = parse_advanced(payload)
-        dropped += df.attrs["dropped"]
-        print(f"{y}: {len(payload)} team-games, {len(df)} kept, "
+        parts = [parse_advanced(fetch_year(y, key, st)) for st in args.season_types]
+        dropped += sum(p.attrs["dropped"] for p in parts)
+        df = pd.concat(parts, ignore_index=True)
+        if (len(df) and "regular" in args.season_types and existing is not None
+                and (existing["season"] == y).any() and not (df["season_type"] == "regular").any()):
+            df = df.iloc[0:0]      # postseason-only pull: never replace a season's committed regular rows
+        if len(df) and "postseason" in args.season_types:
+            df = keep_postseason(existing, df, y)
+        print(f"{y}: {len(df)} team-games kept ({', '.join(args.season_types)}), "
               f"{df['off_pass_plays'].notna().mean() if len(df) else 0:.0%} with pass/rush counts",
               flush=True)
         if df.empty and existing is not None and (existing["season"] == y).any():
