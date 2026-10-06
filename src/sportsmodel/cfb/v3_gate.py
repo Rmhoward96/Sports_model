@@ -87,6 +87,48 @@ def bias_by_season(df: pd.DataFrame, margin_col: str, total_col: str) -> dict:
     return {int(s): bias(g, margin_col, total_col) for s, g in df.groupby("season")}
 
 
+def _paired(d: np.ndarray) -> dict:
+    """Mean and standard error (sd / sqrt(n), ddof=1) of a vector of per-game differences."""
+    n = int(len(d))
+    diff = float(np.mean(d)) if n else float("nan")
+    se = float(np.std(d, ddof=1) / math.sqrt(n)) if n > 1 else float("nan")
+    z = diff / se if n > 1 and se > 0 else None
+    return {"n": n, "diff": diff, "se": se, "z": z}
+
+
+def paired_side_diff(pred_a, pred_b, line, actual) -> dict:
+    """Paired comparison of two models' side accuracy (A - B) against `line`: per-game hit
+    differences on the games decided for BOTH (no push, neither model on the line). The headline
+    accuracies in `metrics` use each model's own decided set; this is the matched-pairs version."""
+    pa, pb, line, actual = (np.asarray(x, float) for x in (pred_a, pred_b, line, actual))
+    ok = ~np.isnan(line) & (actual != line) & (pa != line) & (pb != line)
+    hit_a = (pa[ok] > line[ok]) == (actual[ok] > line[ok])
+    hit_b = (pb[ok] > line[ok]) == (actual[ok] > line[ok])
+    return _paired(hit_a.astype(float) - hit_b.astype(float))
+
+
+def paired_logloss_diff(p_a, p_b, y) -> dict:
+    """Paired comparison of two win-probability models' log-loss (A - B): per-game loss differences."""
+    y = np.asarray(y, float)
+
+    def loss(p):
+        p = np.clip(np.asarray(p, float), 1e-6, 1 - 1e-6)
+        return -(y * np.log(p) + (1 - y) * np.log(1 - p))
+    return _paired(loss(p_a) - loss(p_b))
+
+
+def paired_diffs(df: pd.DataFrame, a: str, b: str) -> dict:
+    """Paired (A - B) differences, with standard errors, for ATS, O/U and ML log-loss on an
+    eval-set frame holding `<a>_margin/_total/_wp` and `<b>_...` columns."""
+    has_t = df["market_total"].notna()
+    dec = df["actual_margin"] != 0
+    y = (df.loc[dec, "actual_margin"] > 0).astype(float)
+    return {"ats": paired_side_diff(df[f"{a}_margin"], df[f"{b}_margin"], df["market_spread"], df["actual_margin"]),
+            "ou": paired_side_diff(df.loc[has_t, f"{a}_total"], df.loc[has_t, f"{b}_total"],
+                                   df.loc[has_t, "market_total"], df.loc[has_t, "actual_total"]),
+            "ml_logloss": paired_logloss_diff(df.loc[dec, f"{a}_wp"], df.loc[dec, f"{b}_wp"], y)}
+
+
 def check_baseline(measured: dict, expected: dict = V2_EXPECTED, tol: dict = BASELINE_TOL) -> dict:
     """Raise BaselineMismatch unless v2's measured combined numbers equal the published ones within
     rounding; returns {metric: (expected, measured)} on success."""

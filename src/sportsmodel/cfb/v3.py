@@ -115,10 +115,14 @@ ALL_MARGIN_FEATURES = MARGIN_CORE + MARGIN_CTX
 ALL_TOTAL_FEATURES = TOTAL_CORE + TOTAL_CTX
 
 
-def load_gameline_config(path) -> GameLineConfig:
-    """GameLineConfig from a gameline.json-shaped file (gameline.json for v2, gameline_v3.json for v3)."""
-    j = json.loads(Path(path).read_text())
+def gameline_from_dict(j: dict) -> GameLineConfig:
+    """GameLineConfig from a gameline.json-shaped dict (see gameline_v3_dict)."""
     return GameLineConfig(sigma_margin=j["sigma_margin"], sigma_total=j["sigma_total"], offset=j["offset"],
                           total_max=j["total_max"], w_margin=ShrinkParams(**j["w_margin"]),
                           w_total=ShrinkParams(**j["w_total"]), bias_margin=j.get("bias_margin", 0.0),
                           bias_total=j.get("bias_total", 0.0))
+
+
+def load_gameline_config(path) -> GameLineConfig:
+    """GameLineConfig from a gameline.json-shaped file (gameline.json for v2, gameline_v3.json for v3)."""
+    return gameline_from_dict(json.loads(Path(path).read_text()))

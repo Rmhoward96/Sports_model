@@ -85,3 +85,17 @@ def test_better_v3_ships_and_report_renders():
     md = gate.render_report(res)
     assert "Live model: v2 (unchanged)" in md and "Held-out [2023, 2024, 2025]" in md
     assert "| 2024 | v3 |" in md
+
+
+def test_report_shows_n_ats_n_ou_and_the_decided_games_note_without_changing_the_verdict():
+    out = gate.add_predictions(raw_table(), W, GL, GL)
+    ev = v3_gate.eval_set(out)
+    v2c = v3_gate.metrics(ev, "v2_margin", "v2_total", "v2_wp")
+    res = gate.evaluate_gate(out, expected={k: round(v2c[k], 4) for k in ("margin_mae", "total_mae", "ats")})
+    ship_before = res["ship"]
+    res.update({"generated": "2026-10-07", "residual_check": None})
+    md = gate.render_report(res)
+    assert "n ATS" in md and "n O/U" in md
+    assert f"| 2023 | v3 | {res['v3']['by_season'][2023]['n']} | {res['v3']['by_season'][2023]['n_ats']} |" in md
+    assert "decided games only" in md
+    assert res["ship"] is ship_before

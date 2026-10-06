@@ -99,3 +99,40 @@ def test_bias_is_mean_signed_error_pred_minus_actual():
     bs = g.bias_by_season(df, "pm", "pt")
     assert set(bs) == {2023, 2024, 2025} and bs[2023]["n"] == 2
     assert bs[2023]["margin_bias"] == pytest.approx(1.5)
+
+
+def test_paired_side_diff_is_the_per_game_difference_of_hits_on_the_commonly_decided_games():
+    line = np.array([3.5, -6.5, 14.0, -3.0, 0.5])
+    actual = np.array([7.0, -3.0, 10.0, -14.0, 3.0])
+    a = np.array([6.0, -10.0, 14.0, 0.0, 2.0])         # game 3 is a no-pick for a (pred == line)
+    b = np.array([6.0, 0.0, 20.0, 0.0, -2.0])
+    d = g.paired_side_diff(a, b, line, actual)
+    # decided for both: games 1, 2, 4, 5.  a hits: 1,0,0,1  b hits: 1,1,0,0  -> diffs 0,-1,0,1
+    assert d["n"] == 4 and d["diff"] == pytest.approx(0.0)
+    assert d["se"] == pytest.approx(np.std([0, -1, 0, 1], ddof=1) / 2)
+    assert d["z"] == pytest.approx(0.0)
+    same = g.paired_side_diff(b, b, line, actual)
+    assert same["diff"] == 0.0 and same["se"] == 0.0 and same["z"] is None
+
+
+def test_paired_logloss_diff_uses_per_game_loss_differences_on_decided_games():
+    y = np.array([1.0, 0.0, 1.0, 1.0])
+    pa = np.array([0.8, 0.3, 0.6, 0.9])
+    pb = np.array([0.7, 0.4, 0.5, 0.6])
+    d = g.paired_logloss_diff(pa, pb, y)
+    la = -(y * np.log(pa) + (1 - y) * np.log(1 - pa))
+    lb = -(y * np.log(pb) + (1 - y) * np.log(1 - pb))
+    assert d["n"] == 4 and d["diff"] == pytest.approx(np.mean(la - lb))
+    assert d["se"] == pytest.approx(np.std(la - lb, ddof=1) / 2)
+    assert d["diff"] == pytest.approx(g.log_loss(pa, y) - g.log_loss(pb, y))
+
+
+def test_paired_diffs_wires_ats_ou_and_logloss_from_model_columns():
+    df = frame(a_margin=[6.0, -10.0, 15.0, 0.0], b_margin=[6.0, 0.0, 20.0, 0.0],
+               a_total=[50.0, 40.0, 70.0, 40.0], b_total=[49.0, 46.0, 70.0, 36.0],
+               a_wp=[0.8, 0.3, 0.6, 0.9], b_wp=[0.7, 0.4, 0.5, 0.6])
+    out = g.paired_diffs(df, "a", "b")
+    assert set(out) == {"ats", "ou", "ml_logloss"}
+    assert out["ats"]["n"] == 4 and out["ou"]["n"] == 2          # game 3 has no closing total
+    assert out["ml_logloss"]["n"] == 4
+    json.dumps(g.clean(out), allow_nan=False)

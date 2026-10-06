@@ -117,12 +117,17 @@ def render_report(res: dict) -> str:
     for k, c in res["criteria"].items():
         pct = k in ("ats", "ou")
         L.append(f"| {c['label']} | {_fmt(c['v2'], 4, pct)} | {_fmt(c['v3'], 4, pct)} | {'yes' if c['pass'] else 'NO'} |")
-    L += ["", "## Per season", "", "| season | model | n | margin MAE | total MAE | ATS | O/U | ML log-loss | ECE |",
-          "|---|---|---|---|---|---|---|---|---|"]
+    v2c, v3c = res["v2"]["combined"], res["v3"]["combined"]
+    L += ["", f"n ATS: v2 {v2c['n_ats']}, v3 {v3c['n_ats']}; n O/U: v2 {v2c['n_ou']}, v3 {v3c['n_ou']}."]
+    L += ["", "ATS and O/U are scored on decided games only (pushes and no-pick games excluded), so n ATS / n O/U "
+          "are below the game count; one standard error on a combined ATS difference is roughly 0.8 pp.",
+          "", "## Per season", "",
+          "| season | model | n | n ATS | n O/U | margin MAE | total MAE | ATS | O/U | ML log-loss | ECE |",
+          "|---|---|---|---|---|---|---|---|---|---|---|"]
     for s in sorted(res["v2"]["by_season"]):
         for name in ("v2", "v3"):
             m = res[name]["by_season"][s]
-            L.append(f"| {s} | {name} | {m['n']} | {_fmt(m['margin_mae'])} | {_fmt(m['total_mae'])} | "
+            L.append(f"| {s} | {name} | {m['n']} | {m['n_ats']} | {m['n_ou']} | {_fmt(m['margin_mae'])} | {_fmt(m['total_mae'])} | "
                      f"{_fmt(m['ats'], pct=True)} | {_fmt(m['ou'], pct=True)} | {_fmt(m['ml_logloss'], 4)} | "
                      f"{_fmt(m['ml_ece'], 4)} |")
     L += ["", "Seasons where v3 is worse than v2: "
