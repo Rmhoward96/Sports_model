@@ -1,4 +1,5 @@
 from __future__ import annotations
+import math
 from typing import Any
 
 import httpx
@@ -200,8 +201,9 @@ _WX_WIND, _WX_PRECIP = (), ("precipitation",)
 # parks are included because the roof is normally closed for bad weather. A venue missing here just shows weather.
 _INDOOR_VENUES = frozenset({
     "U.S. Bank Stadium", "Allegiant Stadium", "Caesars Superdome", "Reliant Stadium", "AT&T Stadium",
-    "NRG Stadium", "Ford Field", "Lucas Oil Stadium", "State Farm Stadium", "SoFi Stadium",
+    "NRG Stadium", "Ford Field", "Lucas Oil Stadium", "State Farm Stadium",
     "Mercedes-Benz Stadium"})
+_INDOOR_KEYS = frozenset(n.casefold() for n in _INDOOR_VENUES)  # SoFi (open-sided canopy) is deliberately absent
 
 
 def _first_num(block: dict, keys: tuple[str, ...]) -> float | None:
@@ -209,13 +211,13 @@ def _first_num(block: dict, keys: tuple[str, ...]) -> float | None:
         v = block.get(k)
         if isinstance(v, bool):
             continue
-        if isinstance(v, (int, float)):
-            return float(v)
         if isinstance(v, str):
             try:
-                return float(v.strip().rstrip("%"))
+                v = float(v.strip().rstrip("%"))
             except ValueError:
                 continue
+        if isinstance(v, (int, float)) and math.isfinite(v):
+            return float(v)
     return None
 
 
@@ -224,7 +226,8 @@ def parse_game_info(summary) -> dict:
 
     Returns {venue_name, city, state, indoor, temp_f, wind_mph, precip_chance, conditions}; every field is
     None when ESPN does not provide it (never guessed). `indoor` is True only when the venue says so
-    (`venue.indoor is True` or a known dome name, see `_INDOOR_VENUES`); then every weather field is None (the site shows "Indoors"). `wind_mph` reads
+    (`venue.indoor is True` or a known dome name, see `_INDOOR_VENUES`); then every weather field is None
+    (the site shows "Indoors"). `wind_mph` reads
     a sustained wind key only -- `gust` is deliberately NOT used. `precip_chance` is ESPN's precipitation
     value when it lies in 0..100. ESPN gives no rainfall amount, so there is no precip_in here."""
     info = summary.get("gameInfo") if isinstance(summary.get("gameInfo"), dict) else {}
@@ -234,7 +237,7 @@ def parse_game_info(summary) -> dict:
         summary.get("weather") if isinstance(summary.get("weather"), dict) else {})
     text = lambda v: (str(v).strip() or None) if isinstance(v, str) else None  # noqa: E731
     venue_name = text(venue.get("fullName"))
-    indoor = venue.get("indoor") is True or venue_name in _INDOOR_VENUES
+    indoor = venue.get("indoor") is True or (venue_name or "").casefold() in _INDOOR_KEYS
     out = {"venue_name": venue_name, "city": text(addr.get("city")),
            "state": text(addr.get("state")), "indoor": indoor,
            "temp_f": None, "wind_mph": None, "precip_chance": None, "conditions": None}

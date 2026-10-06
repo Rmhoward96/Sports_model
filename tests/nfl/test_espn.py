@@ -159,3 +159,19 @@ def test_fetch_game_info_reads_the_summary_of_one_event(monkeypatch):
     monkeypatch.setattr(espn, "_get", lambda path, params=None: seen.update(path=path, params=params) or {"gameInfo": {"venue": LIVE_VENUE}})
     assert espn.fetch_game_info(401872971)["venue_name"] == "Highmark Stadium"
     assert seen == {"path": "/summary", "params": {"event": 401872971}}
+
+
+def test_parse_game_info_dome_match_is_case_and_whitespace_insensitive_and_sofi_is_open():
+    from sportsmodel.nfl.espn import parse_game_info
+    wx = {"temperature": 70, "precipitation": 10}
+    dome = parse_game_info({"gameInfo": {"venue": {"fullName": "  u.s. bank STADIUM "}, "weather": wx}})
+    assert dome["indoor"] is True and dome["temp_f"] is None
+    sofi = parse_game_info({"gameInfo": {"venue": {"fullName": "SoFi Stadium"}, "weather": wx}})
+    assert sofi["indoor"] is False and sofi["temp_f"] == 70.0
+
+
+def test_parse_game_info_non_finite_numbers_are_none():
+    from sportsmodel.nfl.espn import parse_game_info
+    for bad in ("nan", "inf", "-inf", float("nan"), float("inf")):
+        got = parse_game_info({"gameInfo": {"venue": LIVE_VENUE, "weather": {"temperature": bad, "precipitation": bad}}})
+        assert got["temp_f"] is None and got["precip_chance"] is None

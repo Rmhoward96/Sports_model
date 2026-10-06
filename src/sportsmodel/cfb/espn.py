@@ -156,10 +156,13 @@ def fetch_scoreboard(season: int, week: int, season_type: int = 2) -> dict:
 
 
 def parse_line_scores(payload) -> dict[int, dict]:
-    """{game_pk: {"home": [q1, q2, q3, q4], "away": [...]}} for every STATUS_FINAL event of a scoreboard
-    payload whose two competitors both carry at least four `linescores` periods (overtime is dropped).
-    Anything else is omitted. NOT verified against a live payload (the shape read is ESPN's usual
-    competitors[].linescores[].value); the Task 2 [NETWORK] probe confirms it."""
+    """{game_pk: {"home": [q1..q4], "away": [q1..q4], "home_ot": n, "away_ot": n}} for STATUS_FINAL events.
+
+    `*_ot` is the sum of every period after the fourth (0 for a game decided in regulation), so Q1-Q4 alone
+    may not add up to the final score. A game is omitted unless both competitors have a numeric `score`, at
+    least four numeric `linescores` periods (a non-numeric overtime period included), and the sum of ALL
+    periods equals that `score`. Verified live 2026-10-06: competitors[].linescores[] = {value, displayValue,
+    period}; `score` is a string."""
     out: dict[int, dict] = {}
     for ev in payload.get("events", []):
         try:
@@ -168,10 +171,14 @@ def parse_line_scores(payload) -> dict[int, dict]:
             sides = {}
             for c in ev["competitions"][0]["competitors"]:
                 vals = [p.get("value") for p in (c.get("linescores") or [])]
-                if len(vals) < 4 or any(isinstance(v, bool) or not isinstance(v, (int, float)) for v in vals[:4]):
+                if len(vals) < 4 or any(isinstance(v, bool) or not isinstance(v, (int, float)) for v in vals):
                     raise ValueError("no usable line score")
-                sides[c["homeAway"]] = [int(v) for v in vals[:4]]
-            if set(sides) == {"home", "away"}:
+                if sum(vals) != float(c["score"]):
+                    raise ValueError("line score does not add up to the final score")
+                side = c["homeAway"]
+                sides[side] = [int(v) for v in vals[:4]]
+                sides[f"{side}_ot"] = int(sum(vals[4:]))
+            if {"home", "away"} <= set(sides):
                 out[int(ev["id"])] = sides
         except (KeyError, IndexError, TypeError, ValueError):
             continue

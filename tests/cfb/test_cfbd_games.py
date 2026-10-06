@@ -348,3 +348,27 @@ def test_weather_window():
     r = df.iloc[0]; assert (r["venue_id"], r["venue"], r["game_indoors"], r["condition"]) == (3604, "Alamodome", True, "Fair")
     assert df.iloc[1]["condition"] == "" and df.iloc[1]["precipitation"] == 0.035
     assert math.isnan(df.iloc[2]["temperature"]) and math.isnan(df.iloc[2]["venue_id"])
+
+
+def test_games_line_scores_are_kept_only_when_verified_against_the_final_score():
+    def g(i, hp, ap, hl, al, **kw):
+        return {"id": i, "season": 2025, "week": 6, "seasonType": "regular", "homeTeam": "Alabama", "awayTeam": "Georgia",
+                "homePoints": hp, "awayPoints": ap, "homeLineScores": hl, "awayLineScores": al, **kw}
+    df = cg.parse_games_meta([
+        g(1, 31, 27, [7, 7, 7, 3, 7], [7, 7, 7, 3, 3], completed=True),      # valid OT game: kept
+        g(2, 38, 10, [0, 10, 3, 24], [0, 3, 7, 0], completed=True),          # home periods sum to 37: dropped
+        g(3, 14, 7, [7, 7, 0, 0], [0, 7, 0, 0], completed=False),            # in progress: dropped
+        g(4, None, None, [7, 7, 0, 0], [0, 7, 0, 0]),                        # no final points: dropped
+        g(5, 31, 27, [7, 7, 7, 3, None], [7, 7, 7, 3, 3], completed=True)])  # null OT period: sum unverifiable
+    cols = cg.LINE_SCORE_COLUMNS
+    assert list(df.iloc[0][cols]) == [7, 7, 7, 3, 7, 7, 7, 7, 3, 3]
+    for i in range(1, 5):
+        assert all(math.isnan(x) for x in df.iloc[i][cols]), i
+
+
+def test_team_stats_giveaways_prefer_the_component_sum_over_turnovers():
+    pay = [{"id": 8, "teams": [_t("Arizona", "home", {"turnovers": 5, "fumblesLost": 1, "interceptions": 2}),
+                               _t("Oklahoma State", "away", {"turnovers": 1, "fumblesLost": 1, "interceptions": 0})]}]
+    df = cg.parse_team_game_stats(pay, 2025, 6)
+    az, ok = df[df.team == AZ].iloc[0], df[df.team == OKST].iloc[0]
+    assert (az["giveaways"], az["takeaways"]) == (3, 1) and (ok["giveaways"], ok["takeaways"]) == (1, 3)

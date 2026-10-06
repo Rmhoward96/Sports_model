@@ -87,6 +87,18 @@ def line_scores(v) -> list[float]:
     return vals[:4] + [float(sum(vals[4:]))]
 
 
+def _verified_line_scores(g: dict) -> list[float]:
+    """The 10 `LINE_SCORE_COLUMNS` values of one /games record, or ten NaN. A line score is kept only for a
+    completed game with both final points present, and only when each side's q1+q2+q3+q4+ot equals that
+    side's points (CFBD's list can be partial, stale or mid-game); otherwise it is dropped whole."""
+    hp, ap = num(g.get("homePoints")), num(g.get("awayPoints"))
+    home, away = line_scores(g.get("homeLineScores")), line_scores(g.get("awayLineScores"))
+    if (g.get("completed") is False or math.isnan(hp) or math.isnan(ap)
+            or sum(home) != hp or sum(away) != ap):  # a NaN anywhere makes the sum compare False
+        return [NAN] * 10
+    return home + away
+
+
 def parse_games_meta(payload) -> pd.DataFrame:
     """CFBD `/games` -> one row per FBS-vs-FBS game: ids, week, season_type, venue,
     neutral flag, final points (NaN until played) and CFBD's PRE-game Elo (leak-free;
@@ -106,8 +118,7 @@ def parse_games_meta(payload) -> pd.DataFrame:
                      "home_points": num(g.get("homePoints")), "away_points": num(g.get("awayPoints")),
                      "home_pregame_elo": num(g.get("homePregameElo")),
                      "away_pregame_elo": num(g.get("awayPregameElo")),
-                     **dict(zip(LINE_SCORE_COLUMNS[:5], line_scores(g.get("homeLineScores")))),
-                     **dict(zip(LINE_SCORE_COLUMNS[5:], line_scores(g.get("awayLineScores"))))})
+                     **dict(zip(LINE_SCORE_COLUMNS, _verified_line_scores(g)))})
     return _frame(rows, GAMES_COLUMNS, ints=("game_id", "season", "week"),
                   strs=("season_type", "start_date", "home_team", "away_team"),
                   bools=("neutral_site",), dropped=dropped)
@@ -337,7 +348,7 @@ def parse_team_game_stats(payload, season: int, week: int, stype: str = "regular
 
     The payload is [{"id": gameId, "teams": [{"team", "homeAway", "stats": [{"category", "stat"}]}, x2]}] and
     carries no season / week, so the caller stamps `season`, `week` and `stype` (the request's own params).
-    `giveaways` = the team's `turnovers` stat (fumblesLost + interceptions THROWN: verified live that CFBD's
+    `giveaways` = fumblesLost + interceptions THROWN when both are present, else the `turnovers` stat (verified live that CFBD's
     `interceptions` is the offense's, `passesIntercepted` the defense's); `takeaways` = the opponent's
     giveaways in the same game. A missing stat is NaN, never 0. A game whose two sides do not both map to
     FBS ids (an FCS opponent) is dropped and counted in `df.attrs["dropped"]`, matching havoc / advanced."""
@@ -353,8 +364,8 @@ def parse_team_game_stats(payload, season: int, week: int, stype: str = "regular
         for t in teams:
             st = t.get("stats")
             fl, ints, tot = _stat(st, "fumblesLost"), _stat(st, "interceptions"), _stat(st, "turnovers")
-            if math.isnan(tot) and not (math.isnan(fl) or math.isnan(ints)):
-                tot = fl + ints
+            if not (math.isnan(fl) or math.isnan(ints)):
+                tot = fl + ints  # the components win over CFBD's `turnovers` when the two disagree
             per.append((fl, ints, tot))
         for i in (0, 1):
             rows.append({"season": int(season), "week": int(week), "season_type": season_type(stype),
