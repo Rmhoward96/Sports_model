@@ -7,7 +7,9 @@ Datasets (CFBD endpoint -> asset):
   weather  /games/weather      -> weather_games.parquet  per game weather (historical + forecast)
   talent   /talent             -> talent.parquet         yearly 247 talent composite
   ratings  /ratings/fpi + srs  -> prior_ratings.parquet  yearly FPI/SRS (residual check; next-season use only)
-  venues   /venues             -> venues.parquet         static lat/lon/timezone/dome
+  venues   /venues             -> venues.parquet         static lat/lon/timezone/dome + city/state
+  team_stats /games/teams      -> team_game_stats.parquet per team-game giveaways / takeaways (regular season; one
+                                                           call per PLAYED week, so pass a single current season)
 
 Reads CFBD_API_KEY from the environment through CfbdClient (never logged). Every dataset is
 always merged season-by-season: a season whose pull returns no rows keeps its committed rows. The
@@ -35,11 +37,13 @@ from sportsmodel.cfb.cfbd import CfbdClient  # noqa: E402
 ASSETS = ROOT / "assets" / "cfb"
 FILES = {"games": "cfbd_games.parquet", "havoc": "havoc_games.parquet", "drives": "drive_games.parquet",
          "weather": "weather_games.parquet", "talent": "talent.parquet",
-         "ratings": "prior_ratings.parquet", "venues": "venues.parquet"}
+         "ratings": "prior_ratings.parquet", "venues": "venues.parquet",
+         "team_stats": "team_game_stats.parquet"}
 KEYS = {"games": ["season", "game_id"], "havoc": ["season", "game_id", "team"],
         "drives": ["season", "game_id", "team"], "weather": ["season", "game_id"],
-        "talent": ["season", "team"], "ratings": ["season", "team"], "venues": ["venue_id"]}
-ORDER = ["games", "havoc", "drives", "weather", "talent", "ratings", "venues"]
+        "talent": ["season", "team"], "ratings": ["season", "team"], "venues": ["venue_id"],
+        "team_stats": ["season", "game_id", "team"]}
+ORDER = ["games", "havoc", "drives", "weather", "talent", "ratings", "venues", "team_stats"]
 SEASON_TYPES = ("regular", "postseason")
 
 
@@ -93,6 +97,15 @@ def describe_shape(obj, depth: int = 3):
     return type(obj).__name__
 
 
+def played_weeks(meta: pd.DataFrame | None, year: int) -> list[int]:
+    """Regular-season weeks of `year` with at least one finished game in the committed `games` asset (its
+    final points are not NaN) -- the weeks worth a /games/teams call."""
+    if meta is None or meta.empty:
+        return []
+    d = meta[(meta["season"] == year) & (meta["season_type"] == "regular") & meta["home_points"].notna()]
+    return sorted(int(w) for w in d["week"].unique())
+
+
 def _pull(client, dataset: str, year: int, meta: pd.DataFrame | None) -> pd.DataFrame:
     parts = []
     if dataset == "games":
@@ -111,6 +124,12 @@ def _pull(client, dataset: str, year: int, meta: pd.DataFrame | None) -> pd.Data
                  for st in SEASON_TYPES]
     elif dataset == "talent":
         parts = [cg.parse_talent(client.get("/talent", {"year": year}))]
+    elif dataset == "team_stats":
+        if meta is None or meta.empty:
+            raise SystemExit("team_stats needs cfbd_games.parquet (run the `games` dataset first)")
+        parts = [cg.parse_team_game_stats(client.get("/games/teams", {"year": year, "week": w, "seasonType": "regular"}),
+                                          year, w, "regular") for w in played_weeks(meta, year)]
+        parts = parts or [cg.parse_team_game_stats([], year, 0, "regular")]    # preseason: an empty, typed frame
     elif dataset == "ratings":
         parts = [cg.parse_prior_ratings(client.get("/ratings/fpi", {"year": year}),
                                         client.get("/ratings/srs", {"year": year}), year)]
