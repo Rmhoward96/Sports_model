@@ -82,3 +82,82 @@ def to_rows(df: pd.DataFrame) -> list[dict]:
                 row[c] = v
         out.append(row)
     return out
+
+
+MIN_GAMES = 3                  # a team needs this many games to be ranked
+INSIGHT_COLUMNS = ["season", "team", "games", "def_havoc_rate", "def_havoc_rank", "off_havoc_allowed_rate",
+                   "off_havoc_allowed_rank", "turnover_margin", "turnover_margin_per_game",
+                   "turnover_margin_rank", "off_explosiveness", "off_explosiveness_rank",
+                   "def_explosiveness_allowed", "def_explosiveness_allowed_rank", "n_ranked", "through_week"]
+
+
+def _wmean(values: pd.Series, weights: pd.Series) -> float:
+    """Weighted mean ignoring NaN values; plain mean when the weights are unusable; NaN when no value."""
+    v = values.astype(float)
+    ok = v.notna()
+    if not ok.any():
+        return float("nan")
+    w = weights.astype(float).where(ok)
+    if w.notna().any() and w[ok].sum() > 0 and not w[ok].isna().any():
+        return float((v[ok] * w[ok]).sum() / w[ok].sum())
+    return float(v[ok].mean())
+
+
+def _rank(s: pd.Series, eligible: pd.Series, *, best_high: bool) -> pd.Series:
+    """1 = best among eligible teams (ties share the lowest rank); NaN for the rest."""
+    r = s.where(eligible).rank(method="min", ascending=not best_high)
+    return r.astype("Float64").where(r.notna(), pd.NA)
+
+
+def team_insights(havoc: pd.DataFrame, advanced: pd.DataFrame, team_stats: pd.DataFrame | None,
+                  season: int, *, min_games: int = MIN_GAMES, fbs: set[str] | None = None) -> pd.DataFrame:
+    """One row per team (columns INSIGHT_COLUMNS) for `season`, regular season, through the last week that
+    has havoc data. `havoc` = havoc_games (off_* = havoc the offense suffered, def_* = havoc the defense
+    created), `advanced` = advanced_games (def_explosiveness = explosiveness ALLOWED), `team_stats` =
+    team_game_stats (giveaways / takeaways; may be None -> turnover columns NULL). Rates are play-weighted
+    season totals. Ranks (1 = best): defensive havoc created high, havoc allowed low, turnover margin per
+    game high, explosiveness high (offense) / low (allowed). Teams under `min_games` games keep their
+    values but get no rank; `n_ranked` is the size of the ranked field."""
+    def reg(df):
+        d = df[(df["season"] == season) & (df["season_type"].fillna("regular") == "regular")]
+        return d[d["team"].astype(str).isin(fbs)] if fbs is not None else d
+    h = reg(havoc)
+    if h.empty:
+        return pd.DataFrame(columns=INSIGHT_COLUMNS)
+    through = int(h["week"].max())
+    h = h[h["week"] <= through]
+    a = reg(advanced)
+    a = a[a["week"] <= through]
+    ts = reg(team_stats) if team_stats is not None and len(team_stats) else None
+    if ts is not None:
+        ts = ts[ts["week"] <= through].dropna(subset=["giveaways", "takeaways"])
+
+    rows = []
+    for team, d in h.groupby(h["team"].astype(str)):
+        def rate(ev, pl):
+            plays = float(d[pl].sum())
+            return float(d[ev].sum()) / plays if plays > 0 else float("nan")
+        da = a[a["team"].astype(str) == team]
+        row = {"season": int(season), "team": team, "games": int(len(d)),
+               "def_havoc_rate": rate("def_havoc_events", "def_plays"),
+               "off_havoc_allowed_rate": rate("off_havoc_events", "off_plays"),
+               "off_explosiveness": _wmean(da["off_explosiveness"], da["off_plays"]) if len(da) else float("nan"),
+               "def_explosiveness_allowed": _wmean(da["def_explosiveness"], da["def_plays"]) if len(da) else float("nan"),
+               "turnover_margin": float("nan"), "turnover_margin_per_game": float("nan"),
+               "through_week": through}
+        if ts is not None:
+            dt = ts[ts["team"].astype(str) == team]
+            if len(dt):
+                row["turnover_margin"] = float((dt["takeaways"] - dt["giveaways"]).sum())
+                row["turnover_margin_per_game"] = row["turnover_margin"] / len(dt)
+        rows.append(row)
+    df = pd.DataFrame(rows)
+    ok = df["games"] >= min_games
+    for col, src, high in (("def_havoc_rank", "def_havoc_rate", True),
+                           ("off_havoc_allowed_rank", "off_havoc_allowed_rate", False),
+                           ("turnover_margin_rank", "turnover_margin_per_game", True),
+                           ("off_explosiveness_rank", "off_explosiveness", True),
+                           ("def_explosiveness_allowed_rank", "def_explosiveness_allowed", False)):
+        df[col] = _rank(df[src], ok, best_high=high)
+    df["n_ranked"] = int(ok.sum())
+    return df[INSIGHT_COLUMNS].sort_values("team").reset_index(drop=True)

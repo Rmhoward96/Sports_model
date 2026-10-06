@@ -60,3 +60,75 @@ def test_to_rows_python_scalars_and_none():
     rows = panels.to_rows(panels.quarter_shares(pd.DataFrame([_game(2026, "A", "B", [7, 7, 7, 7], [7, 7, 7, 7])]), 2026))
     assert type(rows[0]["games_used"]) is int and type(rows[0]["scored_q1"]) is float and rows[0]["team"] == "A"
     assert panels.to_rows(pd.DataFrame({"x": [float("nan"), 1.5], "n_ranked": [3.0, None]})) == [{"x": None, "n_ranked": 3}, {"x": 1.5, "n_ranked": None}]
+
+
+def _h(team, opp, week, gid, def_ev, def_pl, off_ev, off_pl):
+    return {"season": 2026, "week": week, "season_type": "regular", "game_id": gid, "team": team, "opponent": opp,
+            "def_havoc_events": def_ev, "def_plays": def_pl, "off_havoc_events": off_ev, "off_plays": off_pl}
+
+
+def _adv(team, week, gid, off_x, off_pl, def_x, def_pl):
+    return {"season": 2026, "week": week, "season_type": "regular", "game_id": gid, "team": team,
+            "off_explosiveness": off_x, "off_plays": off_pl, "def_explosiveness": def_x, "def_plays": def_pl}
+
+
+def _fixture():
+    """Teams 1..4, three weeks each (weeks 1-3), plus team 5 with two games. Havoc created: 1 > 2 > 3 > 4."""
+    pairs = {1: [(1, 2), (3, 4)], 2: [(1, 3), (2, 4)], 3: [(1, 4), (2, 3)]}
+    created = {"1": 20, "2": 15, "3": 10, "4": 5}          # per 100 plays
+    allowed = {"1": 5, "2": 10, "3": 15, "4": 20}
+    hv, ad, ts, gid = [], [], [], 0
+    for w, ps in pairs.items():
+        for a, b in ps:
+            gid += 1
+            for t, o in ((str(a), str(b)), (str(b), str(a))):
+                hv.append(_h(t, o, w, gid, created[t], 100, allowed[t], 100))
+                ad.append(_adv(t, w, gid, 0.1 * int(t), 50 + int(t), 0.5 - 0.1 * int(t), 60))
+                ts.append({"season": 2026, "week": w, "season_type": "regular", "game_id": gid, "team": t,
+                           "opponent": o, "giveaways": float(int(t)), "takeaways": float(5 - int(t))})
+    for w in (1, 2):                                          # team 5 plays itself... a second opponent pool
+        gid += 1
+        hv.append(_h("5", "6", w, gid, 99, 100, 1, 100)); hv.append(_h("6", "5", w, gid, 1, 100, 99, 100))
+    return pd.DataFrame(hv), pd.DataFrame(ad), pd.DataFrame(ts)
+
+
+def test_team_insights_rates_ranks_and_n_ranked():
+    hv, ad, ts = _fixture()
+    ins = panels.team_insights(hv, ad, ts, 2026).set_index("team")
+    assert ins.loc["1", "games"] == 3 and ins.loc["1", "through_week"] == 3
+    assert ins.loc["1", "def_havoc_rate"] == pytest.approx(0.20)
+    assert ins.loc["1", "off_havoc_allowed_rate"] == pytest.approx(0.05)
+    assert [int(ins.loc[t, "def_havoc_rank"]) for t in "1234"] == [1, 2, 3, 4]             # higher created = better
+    assert [int(ins.loc[t, "off_havoc_allowed_rank"]) for t in "1234"] == [1, 2, 3, 4]     # lower allowed = better
+    assert ins.loc["1", "turnover_margin"] == pytest.approx(3 * (4 - 1))                  # takeaways 4, giveaways 1 per game
+    assert ins.loc["1", "turnover_margin_per_game"] == pytest.approx(3.0)
+    assert [int(ins.loc[t, "turnover_margin_rank"]) for t in "1234"] == [1, 2, 3, 4]
+    assert [int(ins.loc[t, "off_explosiveness_rank"]) for t in "1234"] == [4, 3, 2, 1]     # 0.1 * team id
+    assert [int(ins.loc[t, "def_explosiveness_allowed_rank"]) for t in "1234"] == [4, 3, 2, 1]   # 0.5 - 0.1 * id: lower allowed = better
+    assert set(ins["n_ranked"]) == {4}
+    for t in ("5", "6"):                                                                    # two games: values yes, ranks no
+        assert ins.loc[t, "games"] == 2 and pd.isna(ins.loc[t, "def_havoc_rank"]) and pd.isna(ins.loc[t, "turnover_margin_rank"])
+    assert ins.loc["5", "def_havoc_rate"] == pytest.approx(0.99)
+    assert math.isnan(ins.loc["5", "turnover_margin"])                                      # no team_stats rows -> NaN, never 0
+    assert list(panels.team_insights(hv, ad, None, 2026).loc[:, "turnover_margin"].isna()) == [True] * 6
+
+
+def test_team_insights_filters_season_postseason_and_weeks_beyond_havoc():
+    hv, ad, ts = _fixture()
+    post = hv.iloc[:2].assign(season_type="postseason", week=9)
+    old = hv.iloc[:2].assign(season=2025)
+    ad2 = pd.concat([ad, ad.iloc[:1].assign(week=8)], ignore_index=True)        # advanced is ahead of havoc: ignored
+    got = panels.team_insights(pd.concat([hv, post, old]), ad2, ts, 2026)
+    assert got["through_week"].eq(3).all() and got.set_index("team").loc["1", "games"] == 3
+    assert panels.team_insights(hv, ad, ts, 2030).empty
+    assert list(panels.team_insights(hv.iloc[0:0], ad, ts, 2026).columns) == panels.INSIGHT_COLUMNS
+    assert set(panels.team_insights(hv, ad, ts, 2026, fbs={"1", "2"})["team"]) == {"1", "2"}
+
+
+def test_to_rows_insight_ranks_are_ints_and_missing_values_are_none():
+    hv, ad, ts = _fixture()
+    rows = panels.to_rows(panels.team_insights(hv, ad, ts, 2026))
+    r5 = next(r for r in rows if r["team"] == "5")
+    assert r5["def_havoc_rank"] is None and r5["turnover_margin"] is None and r5["games"] == 2
+    r1 = next(r for r in rows if r["team"] == "1")
+    assert type(r1["def_havoc_rank"]) is int and r1["def_havoc_rank"] == 1 and type(r1["def_havoc_rate"]) is float
