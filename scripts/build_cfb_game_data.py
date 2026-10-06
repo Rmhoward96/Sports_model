@@ -29,7 +29,7 @@ import pandas as pd
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
-from sportsmodel.cfb import cfbd_games as cg  # noqa: E402
+from sportsmodel.cfb import cfbd_games as cg, data_checks  # noqa: E402
 from sportsmodel.cfb.cfbd import CfbdClient  # noqa: E402
 
 ASSETS = ROOT / "assets" / "cfb"
@@ -66,6 +66,22 @@ def merge_asset(existing: pd.DataFrame | None, new: pd.DataFrame, keys: list[str
     out = out.drop_duplicates(subset=keys, keep="last").sort_values(keys).reset_index(drop=True)
     extra = [c for c in out.columns if c not in new.columns]
     return out.reindex(columns=list(new.columns) + extra)
+
+
+def drop_implausible_havoc_seasons(h: pd.DataFrame) -> pd.DataFrame:
+    """Drop whole seasons whose mean havoc rate is below the plausible floor. Live finding (plan
+    Task 4): CFBD's 2015 havoc is a partial, differently-counted feed (~1.5 events per team-game,
+    mean rate 0.02 vs ~0.165 every later season). Those rows are removed so the feature is NaN
+    for that season rather than a wrong number."""
+    if h.empty:
+        return h
+    lo = data_checks.HAVOC_RATE[0]
+    bad = [s for s, d in h.groupby("season")
+           if d["off_havoc"].dropna().mean() < lo or d["def_havoc"].dropna().mean() < lo]
+    for s in bad:
+        print(f"::warning::build-cfb-game-data: havoc {s} mean rate is below {lo} (partial CFBD feed); "
+              "DROPPING the season -- its havoc features stay NaN", flush=True)
+    return h[~h["season"].isin(bad)].reset_index(drop=True) if bad else h
 
 
 def describe_shape(obj, depth: int = 3):
@@ -119,6 +135,8 @@ def run(client, datasets: list[str], seasons: list[int], out_dir: Path) -> dict:
             else:
                 frames = [_pull(client, ds, y, meta) for y in seasons]
                 new = pd.concat(frames, ignore_index=True)
+                if ds == "havoc":
+                    new = drop_implausible_havoc_seasons(new)
                 print(f"{ds}: {len(new)} rows pulled for {seasons[0]}-{seasons[-1]} "
                       f"({sum(f.attrs['dropped'] for f in frames)} dropped: unmapped/FCS/unknown game)",
                       flush=True)

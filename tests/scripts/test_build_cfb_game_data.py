@@ -144,3 +144,25 @@ def test_run_prints_call_counter_even_on_early_exit(tmp_path, capsys):
     with pytest.raises(SystemExit):
         bgd.run(StubClient({"/drives": DRIVES}), ["drives"], [2023], tmp_path)
     assert "CFBD calls this run" in capsys.readouterr().out
+
+
+# ------------------------------- implausible havoc seasons (live finding: CFBD 2015 havoc) --
+
+def test_drop_implausible_havoc_seasons_removes_partial_season_and_warns(capsys):
+    h = pd.DataFrame({"season": [2015, 2015, 2016, 2016], "game_id": [1, 1, 2, 2], "team": list("abab"),
+                      "off_havoc": [0.02, 0.01, 0.17, 0.16], "def_havoc": [0.01, 0.02, 0.16, 0.17]})
+    out = bgd.drop_implausible_havoc_seasons(h)
+    assert set(out["season"]) == {2016}
+    assert "::warning::" in capsys.readouterr().out
+    assert bgd.drop_implausible_havoc_seasons(h[h.season == 2016]).equals(h[h.season == 2016])
+    assert bgd.drop_implausible_havoc_seasons(h.iloc[0:0]).empty
+
+
+def test_run_havoc_drops_implausible_season(tmp_path):
+    def rec(rate):
+        side = {"totalPlays": 70, "totalHavocEvents": 1, "frontSevenHavocEvents": 1, "dbHavocEvents": 0,
+                "havocRate": rate, "frontSevenHavocRate": rate, "dbHavocRate": 0.0}
+        return {"gameId": 1, "season": 2015, "seasonType": "regular", "week": 1, "team": "Ohio State",
+                "opponent": "Michigan", "offense": dict(side), "defense": dict(side)}
+    wrote = bgd.run(StubClient({"/stats/game/havoc": [rec(0.02)]}), ["havoc"], [2015], tmp_path)
+    assert wrote["havoc"] == 0
