@@ -25,6 +25,7 @@ on:
     - cron: "5 19 * 3-11 *"
     - cron: "35 21 * 3-11 *"
     - cron: "5 0 * 3-11 *"
+    - cron: "35 2 * 3-11 *"
 
 permissions:
   contents: read
@@ -32,7 +33,7 @@ permissions:
 env:
   # True on the MLB crons above: build only the MLB board (+ parlays). False on the
   # football crons; a manual run builds everything.
-  MLB_FIRING: ${{ (github.event.schedule == '35 16 * 3-11 *' || github.event.schedule == '5 19 * 3-11 *' || github.event.schedule == '35 21 * 3-11 *' || github.event.schedule == '5 0 * 3-11 *') && 'true' || 'false' }}
+  MLB_FIRING: ${{ (github.event.schedule == '35 16 * 3-11 *' || github.event.schedule == '5 19 * 3-11 *' || github.event.schedule == '35 21 * 3-11 *' || github.event.schedule == '5 0 * 3-11 *' || github.event.schedule == '35 2 * 3-11 *') && 'true' || 'false' }}
   FOOTBALL_FIRING: ${{ (github.event.schedule == '30 20 * * 0,1,4,6' || github.event.schedule == '30 23 * * 0,1,4,6') && 'true' || 'false' }}
 
 jobs:

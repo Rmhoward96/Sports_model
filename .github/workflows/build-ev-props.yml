@@ -46,13 +46,14 @@ on:
     - cron: "7 19 * 3-11 *"
     - cron: "37 21 * 3-11 *"
     - cron: "7 0 * 3-11 *"
+    - cron: "37 2 * 3-11 *"
 
 permissions:
   contents: read
 
 env:
   # True on the MLB crons above: build only the MLB prop board. False otherwise.
-  MLB_FIRING: ${{ (github.event.schedule == '37 16 * 3-11 *' || github.event.schedule == '7 19 * 3-11 *' || github.event.schedule == '37 21 * 3-11 *' || github.event.schedule == '7 0 * 3-11 *') && 'true' || 'false' }}
+  MLB_FIRING: ${{ (github.event.schedule == '37 16 * 3-11 *' || github.event.schedule == '7 19 * 3-11 *' || github.event.schedule == '37 21 * 3-11 *' || github.event.schedule == '7 0 * 3-11 *' || github.event.schedule == '37 2 * 3-11 *') && 'true' || 'false' }}
 
 jobs:
   build:

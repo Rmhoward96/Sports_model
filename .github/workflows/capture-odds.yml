@@ -33,6 +33,7 @@ on:
     - cron: "0 19 * 3-11 *"
     - cron: "30 21 * 3-11 *"
     - cron: "0 0 * 3-11 *"
+    - cron: "30 2 * 3-11 *"       # late West Coast first pitches (~7:40pm PT on): props + a fresher close
   workflow_dispatch:
     inputs:
       sports:
@@ -70,7 +71,7 @@ jobs:
           # Which sports this firing covers: the MLB-only crons -> mlb; the 15:00 slate run
           # and manual runs -> all three; the football-day crons -> nfl,cfb.
           case "$SCHEDULE" in
-            "30 16 * 3-11 *"|"0 19 * 3-11 *"|"30 21 * 3-11 *"|"0 0 * 3-11 *")
+            "30 16 * 3-11 *"|"0 19 * 3-11 *"|"30 21 * 3-11 *"|"0 0 * 3-11 *"|"30 2 * 3-11 *")
               sports="mlb"
               # An MLB-only firing exists to catch post-lineup props, so it must not
               # inherit a blank PROP_WINDOW_MIN (which means "props off" for the others).

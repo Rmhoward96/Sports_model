@@ -22,9 +22,9 @@ def crons(name: str) -> list[str]:
     return re.findall(r'-\s*cron:\s*"([^"]+)"', text(name))
 
 
-MLB_CAPTURE = ["30 16 * 3-11 *", "0 19 * 3-11 *", "30 21 * 3-11 *", "0 0 * 3-11 *"]
-MLB_BOARD = ["35 16 * 3-11 *", "5 19 * 3-11 *", "35 21 * 3-11 *", "5 0 * 3-11 *"]
-MLB_PROPS = ["37 16 * 3-11 *", "7 19 * 3-11 *", "37 21 * 3-11 *", "7 0 * 3-11 *"]
+MLB_CAPTURE = ["30 16 * 3-11 *", "0 19 * 3-11 *", "30 21 * 3-11 *", "0 0 * 3-11 *", "30 2 * 3-11 *"]
+MLB_BOARD = ["35 16 * 3-11 *", "5 19 * 3-11 *", "35 21 * 3-11 *", "5 0 * 3-11 *", "35 2 * 3-11 *"]
+MLB_PROPS = ["37 16 * 3-11 *", "7 19 * 3-11 *", "37 21 * 3-11 *", "7 0 * 3-11 *", "37 2 * 3-11 *"]
 
 
 def test_mlb_workflow_files_present():
@@ -88,6 +88,8 @@ def test_ev_props_builds_mlb_straight_props_only_and_not_parlays():
     for c in MLB_PROPS:
         assert c in crons("build-ev-props.yml")
     assert "build_ev_props_board.py --sport mlb" in t
+    for c in MLB_PROPS:
+        assert f"'{c}'" in t                 # MLB_FIRING lists every MLB prop cron (incl. the late 02:37 run)
     nfl_step = t[t.index("Build NFL prop +EV board"):t.index("Build MLB prop +EV board")]
     assert "env.MLB_FIRING != 'true'" in nfl_step
     parlay_step = t[t.index("Build +EV parlays"):]

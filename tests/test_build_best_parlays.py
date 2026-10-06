@@ -290,13 +290,13 @@ def test_odds_loaders_empty_game_pks_short_circuit_no_db():
     assert build_best_parlays.load_prop_odds([]) == []
 
 
-def test_parlay_prop_legs_are_nfl_only_and_game_legs_are_not_sport_filtered():
-    """MLB prop picks stay straight bets (grade_best_parlays settles prop legs from
-    nfl_player_actuals); MLB GAME-line picks flow into parlays like any other sport."""
+def test_parlay_legs_exclude_mlb_game_lines_and_props():
+    """Ruling M2: MLB game-line picks stay out of the best-parlays pool until MLB has its own
+    record; prop legs are NFL-only (grade_best_parlays settles them from nfl_player_actuals)."""
     captured = []
     with patch.object(build_best_parlays, "_q", side_effect=lambda sql, params=None: captured.append(sql) or []):
         build_best_parlays.load_prop_picks()
         build_best_parlays.load_game_picks()
     prop_sql, game_sql = captured
     assert "COALESCE(sport, 'nfl') = 'nfl'" in prop_sql
-    assert "sport" not in game_sql.split("WHERE")[1]
+    assert "e.sport IN ('nfl', 'cfb')" in game_sql and "mlb" not in game_sql.lower()
