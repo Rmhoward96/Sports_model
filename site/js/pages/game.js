@@ -602,39 +602,48 @@ function gmInsightsCard(D) {
   return `<section class="ca-card ca-gm-ins-card" id="gm-insights"><div class="ca-card-head"><h2>Key Insights</h2></div>${rows}</section>`;
 }
 const GM_FLOW_TIP = "Each team's own quarter-by-quarter scoring pattern over the last two seasons and this one (shrunk toward the league average), averaged with what its opponent allows by quarter, applied to the projected score. A pace estimate, not a prediction of the score by quarter. Overtime is excluded.";
+// Cumulative points after each quarter, starting from 0: [0, q1, q1+q2, q1+q2+q3, total].
+const gmFlowCumulative = (qs) => qs.reduce((acc, q) => (acc.push(acc[acc.length - 1] + q), acc), [0]);
+// The Cover Probability block (away % | two-colour bar | home %, plus the "% of Money" caption when splits exist). Shared by the
+// standalone card and the Projected Game Flow card.
+function gmCoverBody(D) {
+  const c = gmCover(gmOddsOf(D));
+  if (!c) return emptyMsg("Model cover probability isn't available for this game yet.");
+  const away = Math.max(0, Math.min(100, c.away / (c.away + c.home) * 100));
+  const money = latestSplitMap(D.splits), ma = money.get(`${D.game}|spread|away`), mh = money.get(`${D.game}|spread|home`);
+  const cap = ma && mh && finite(ma.cash_pct) && finite(mh.cash_pct)
+    ? `<p class="ca-gm-cap">% of Money · ${gmEsc(teamShort(D.r.away_team_name, D.sport))} ${Math.round(ma.cash_pct)}% · ${gmEsc(teamShort(D.r.home_team_name, D.sport))} ${Math.round(mh.cash_pct)}%</p>` : "";
+  return `<div class="ca-gm-cov"><span class="ca-gm-cov-s">${logoImg(D.r.away_team_name, D.sport)}<b>${pct1(c.away)}</b></span>
+      <span class="ca-gm-bar"><i style="width:${away.toFixed(1)}%;background:${gmEsc(D.awayCol)}"></i><i style="width:${(100 - away).toFixed(1)}%;background:${gmEsc(D.homeCol)}"></i></span>
+      <span class="ca-gm-cov-s"><b>${pct1(c.home)}</b>${logoImg(D.r.home_team_name, D.sport)}</span></div>${cap}`;
+}
+// One narrow card: cumulative projected points by quarter (solid team-coloured lines with dots; on a started / final game the actual
+// cumulative line is overlaid dashed), then the Cover Probability block underneath. "" when there is no flow (gmGameFlow null).
 function gmFlowCard(D) {
   const f = gmGameFlow(D);
   if (!f) return "";
   const away = shortTeam(D.r.away_team_name, "cfb"), home = shortTeam(D.r.home_team_name, "cfb");
-  const groups = (src, fmt) => ["Q1", "Q2", "Q3", "Q4"].map((q, i) => ({ label: q, bars: [{ value: src.away[i], color: D.awayCol, label: fmt(src.away[i]) }, { value: src.home[i], color: D.homeCol, label: fmt(src.home[i]) }] }));
-  const chart = (cap, src, fmt) => `<figure><figcaption>${cap}</figcaption>${groupedBars(groups(src, fmt), { h: 200, bw: 28 })}</figure>`;
-  const legend = `<div class="ca-legend"><span class="ca-legend-item"><i style="background:${gmEsc(D.awayCol)}"></i>${gmEsc(away)}</span><span class="ca-legend-item"><i style="background:${gmEsc(D.homeCol)}"></i>${gmEsc(home)}</span></div>`;
-  const n = f.games.away != null && f.games.home != null ? `<p class="ca-gm-cap">Shares come from ${gmEsc(away)}'s ${f.games.away} and ${gmEsc(home)}'s ${f.games.home} games over the last two seasons and this one.</p>` : "";
-  return `<section class="ca-card ca-gm-flow" id="gm-flow"><div class="ca-card-head"><h2>Projected Game Flow</h2>${infoTip(GM_FLOW_TIP)}</div>${legend}
-    <div class="ca-gm-flow-charts">${chart("Projected pace (points by quarter)", f, (v) => v.toFixed(1))}${f.actual ? chart("Actual by quarter (excludes overtime)", f.actual, (v) => String(Math.round(v))) : ""}</div>${n}</section>`;
+  const series = [{ color: D.awayCol, values: gmFlowCumulative(f.away) }, { color: D.homeCol, values: gmFlowCumulative(f.home) }];
+  if (f.actual) series.push({ color: D.awayCol, values: gmFlowCumulative(f.actual.away), dash: "6 4" }, { color: D.homeCol, values: gmFlowCumulative(f.actual.home), dash: "6 4" });
+  const chart = lineChart(series, [null, "Q1", "Q2", "Q3", "Q4"], { h: 230, yTicks: 5, nice: true, dots: true });
+  const item = (col, name) => `<span class="ca-legend-item"><i style="background:${gmEsc(col)}"></i>${gmEsc(name)}</span>`;
+  const legend = `<div class="ca-legend">${item(D.awayCol, away)}${item(D.homeCol, home)}${f.actual ? `<span class="ca-legend-note">dashed = actual</span>` : ""}</div>`;
+  const n = f.games.away != null && f.games.home != null ? `Shares come from ${gmEsc(away)}'s ${f.games.away} and ${gmEsc(home)}'s ${f.games.home} games over the last two seasons and this one.` : "";
+  const notes = [f.actual ? "Actual (dashed) excludes overtime." : "", n].filter(Boolean).map((t) => `<p class="ca-gm-cap ca-gm-flow-note">${t}</p>`).join("");
+  return `<section class="ca-card ca-gm-flow" id="gm-flow"><div class="ca-card-head"><h2>Projected Game Flow</h2>${infoTip(GM_FLOW_TIP)}</div>${legend}${chart}${notes}
+    <div class="ca-gm-flow-cover"><h3>Cover Probability</h3>${gmCoverBody(D)}</div></section>`;
 }
 function gmCoverCard(D) {
-  const c = gmCover(gmOddsOf(D));
-  let body;
-  if (!c) body = emptyMsg("Model cover probability isn't available for this game yet.");
-  else {
-    const away = Math.max(0, Math.min(100, c.away / (c.away + c.home) * 100));
-    const money = latestSplitMap(D.splits), ma = money.get(`${D.game}|spread|away`), mh = money.get(`${D.game}|spread|home`);
-    const cap = ma && mh && finite(ma.cash_pct) && finite(mh.cash_pct)
-      ? `<p class="ca-gm-cap">% of Money · ${gmEsc(teamShort(D.r.away_team_name, D.sport))} ${Math.round(ma.cash_pct)}% · ${gmEsc(teamShort(D.r.home_team_name, D.sport))} ${Math.round(mh.cash_pct)}%</p>` : "";
-    body = `<div class="ca-gm-cov"><span class="ca-gm-cov-s">${logoImg(D.r.away_team_name, D.sport)}<b>${pct1(c.away)}</b></span>
-      <span class="ca-gm-bar"><i style="width:${away.toFixed(1)}%;background:${gmEsc(D.awayCol)}"></i><i style="width:${(100 - away).toFixed(1)}%;background:${gmEsc(D.homeCol)}"></i></span>
-      <span class="ca-gm-cov-s"><b>${pct1(c.home)}</b>${logoImg(D.r.home_team_name, D.sport)}</span></div>${cap}`;
-  }
-  return `<section class="ca-card ca-gm-cover" id="gm-cover"><div class="ca-card-head"><h2>Cover Probability</h2></div>${body}</section>`;
+  return `<section class="ca-card ca-gm-cover" id="gm-cover"><div class="ca-card-head"><h2>Cover Probability</h2></div>${gmCoverBody(D)}</section>`;
 }
 function gmOverview(D) {
   const cards = GM_OVERVIEW.map(([n, fn]) => safeCard(n, fn, D, "ca-card ca-gm-card")).join("");
   const ins = safeCard("Key Insights", gmInsightsCard, D, "ca-card ca-gm-ins-card", "gm-insights");
   const flow = safeCard("Projected Game Flow", gmFlowCard, D, "ca-card ca-gm-flow", "gm-flow");
-  const left = ins + flow;       // CFB: the Projected Game Flow card sits under Key Insights
+  // CFB with a flow: Key Insights on the left, the combined Flow + Cover Probability card on the right. Otherwise the standalone Cover card.
+  const right = flow || safeCard("Cover Probability", gmCoverCard, D, "ca-card ca-gm-cover", "gm-cover");
   return `<div class="ca-gm-cards" id="gm-cards">${cards}</div>${safeCard("Model Projection", gmProjectionCard, D, "ca-card ca-gm-proj", "gm-projection")}
-    <div class="ca-gm-lower${left ? "" : " solo"}">${flow ? `<div class="ca-gm-col">${left}</div>` : left}${safeCard("Cover Probability", gmCoverCard, D, "ca-card ca-gm-cover", "gm-cover")}</div>`;
+    <div class="ca-gm-lower${ins ? "" : " solo"}">${ins}${right}</div>`;
 }
 
 /* ── other tabs ───────────────────────────────────────────────────────── */
