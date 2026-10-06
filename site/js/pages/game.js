@@ -299,7 +299,7 @@ function gmTurnoverInsight(D, name) {
 // Hidden once the weather is stale (3 days after kickoff), by the same rule as the hero's venue line.
 function gmWeatherInsight(D) {
   const i = D && D.gameInfo;
-  if (!i || i.indoor === true || !gmWeatherFresh(D.r && D.r.commence_time, D.nowMs)) return null;
+  if (!i || i.indoor === true || !gmWeatherFresh(D.r && D.r.commence_time, D.nowMs)) return null;    // D.nowMs is a test seam; production leaves it unset and Date.now() is used
   const t = numOrNull(i.temp_f), w = numOrNull(i.wind_mph), pc = numOrNull(i.precip_chance), pi = numOrNull(i.precip_in), f = [], sc = [];
   if (w != null && w >= 15) { f.push(`wind ${Math.round(w)} mph`); sc.push(55 + Math.min(35, (w - 15) * 3)); }
   if (t != null && t < 40) { f.push(`${Math.round(t)}°F`); sc.push(55 + Math.min(30, (40 - t) * 2)); }
@@ -312,7 +312,7 @@ function gmWeatherInsight(D) {
 // CFB Projected Game Flow. Each team's projected points by quarter = its projected score x the average of its own scored shares and its
 // opponent's allowed shares (cfb_quarter_shares: Q1-Q4 shares of points, shrunk to the league, each vector sums to 1), renormalised to
 // 1. Returns {home: [q1..q4], away: [q1..q4], actual: {home, away} | null, games: {home, away}} or null when it is not CFB, has no
-// projected score, or either team lacks a share row (the card hides). `actual` = game_info.line_score for a finished game.
+// projected score, or either team lacks a share row (the card hides). `actual` = game_info.line_score once the game has a graded result or has started.
 const gmShareRow = (D, side) => { const c = gmTeamCode(D.ctxHist, D.ctxGrades, side); return c == null ? null : (D.cfbShares || []).find((x) => String(x.team) === c) || null; };
 function gmLineScore(info) {
   const ls = info && ctxJson(info.line_score);
@@ -334,7 +334,7 @@ function gmGameFlow(D) {
   };
   const bh = blend(sh, sa), ba = blend(sa, sh);
   if (!bh || !ba) return null;
-  return { home: bh.map((x) => x * h), away: ba.map((x) => x * a), actual: gmLineScore(D.gameInfo), games: { home: numOrNull(sh.games_used), away: numOrNull(sa.games_used) } };
+  return { home: bh.map((x) => x * h), away: ba.map((x) => x * a), actual: (D.actual || gmStarted(r)) ? gmLineScore(D.gameInfo) : null, games: { home: numOrNull(sh.games_used), away: numOrNull(sa.games_used) } };
 }
 function gmKeyInsights(D) {
   const r = (D && D.r) || {}, grades = (D && D.ctxGrades) || [], hist = (D && D.ctxHist) || [], power = (D && D.ctxPower) || [];

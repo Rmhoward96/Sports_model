@@ -242,7 +242,8 @@ test("cfb_team_insights / cfb_quarter_shares are read for both team codes (CFB o
 const share = (team, scored, allowed, games = 31) => ({ team, scored_q1: scored[0], scored_q2: scored[1], scored_q3: scored[2], scored_q4: scored[3],
   allowed_q1: allowed[0], allowed_q2: allowed[1], allowed_q3: allowed[2], allowed_q4: allowed[3], games_used: games });
 const SHARES = [share("333", [0.30, 0.20, 0.20, 0.30], [0.25, 0.25, 0.25, 0.25], 31), share("61", [0.20, 0.30, 0.30, 0.20], [0.28, 0.22, 0.22, 0.28], 29)];
-const flowD = (o = {}) => ({ sport: "cfb", r: PRED("cfb"), ctxGrades: [], ctxHist: HIST, cfbShares: SHARES, gameInfo: null, ...o });
+const PAST = () => new Date(Date.now() - 5 * 36e5).toISOString();    // kicked off 5 hours ago
+const flowD = (o = {}) => ({ sport: "cfb", r: PRED("cfb", { commence_time: PAST() }), ctxGrades: [], ctxHist: HIST, cfbShares: SHARES, gameInfo: null, ...o });
 const close = (a, b) => assert.ok(a.length === b.length && a.every((x, i) => Math.abs(x - b[i]) < 1e-9), `${a} vs ${b}`);
 
 test("gmGameFlow: projected score x the average of the team's scored shares and the opponent's allowed shares", () => {
@@ -267,6 +268,14 @@ test("gmGameFlow: the actual line score rides along only when it is four non-neg
     assert.equal(g.gmGameFlow(flowD({ gameInfo: { line_score: bad } })).actual, null, JSON.stringify(bad));
 });
 
+test("gmGameFlow: the actual quarters show only for a started or finished game, never for an upcoming one", () => {
+  const gameInfo = { line_score: { home: [7, 3, 10, 7], away: [0, 7, 6, 7] } };
+  const upcoming = PRED("cfb");
+  assert.equal(g.gmGameFlow(flowD({ r: upcoming, gameInfo })).actual, null, "kickoff in the future, no result: no actual chart");
+  assert.deepEqual({ ...g.gmGameFlow(flowD({ r: upcoming, gameInfo, actual: { actual_total: 44, actual_margin: 7 } })).actual }, { home: [7, 3, 10, 7], away: [0, 7, 6, 7] }, "a graded result counts as finished");
+  assert.deepEqual({ ...g.gmGameFlow(flowD({ gameInfo })).actual }, { home: [7, 3, 10, 7], away: [0, 7, 6, 7] }, "kickoff has passed");
+});
+
 test("gmGameFlow hides (null) without a projection, a share row for either team, a usable share vector, or for non-CFB", () => {
   assert.equal(g.gmGameFlow(flowD({ r: PRED("cfb", { pred_home_score: null }) })), null);
   assert.equal(g.gmGameFlow(flowD({ r: PRED("cfb", { pred_away_score: "x" }) })), null);
@@ -284,7 +293,7 @@ test("gmGameFlow hides (null) without a projection, a share row for either team,
 test("Overview: the Projected Game Flow card sits under Key Insights with its tooltip, legend, projected chart and (final games) the actual chart", async () => {
   const rows = { cfb_quarter_shares: SHARES, game_info: [{ ...INFO, line_score: { home: [7, 3, 10, 7], away: [0, 7, 6, 7] } }],
     cfb_team_insights: [insRow("333", { def_havoc_rank: 8 }), insRow("61", { off_havoc_allowed_rank: 118 })] };
-  const html = await page({ rows }).D.buildGamePage();
+  const html = await page({ rows, pred: { commence_time: PAST() } }).D.buildGamePage();
   const i = html.indexOf('id="gm-insights"'), f = html.indexOf('id="gm-flow"'), c = html.indexOf('id="gm-cover"');
   assert.ok(i > 0 && i < f && f < c, "insights, then game flow, then cover");
   const card = html.slice(f, c);
