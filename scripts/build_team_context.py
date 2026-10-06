@@ -168,6 +168,9 @@ def _rank_frame(rk: pd.DataFrame, sport: str, conf: dict | None = None) -> pd.Da
     rk["conf"] = rk["team"].map(conf) if conf else None
     if "games" not in rk.columns:
         rk["games"] = None
+    for c in ("fpi", "model_rating"):     # CFB-only blend parts; NFL rows store NULL
+        if c not in rk.columns:
+            rk[c] = np.nan
     return rk[TABLE_COLUMNS["power_rankings"]].reset_index(drop=True)
 
 

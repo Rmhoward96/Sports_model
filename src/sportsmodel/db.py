@@ -1014,7 +1014,8 @@ TEAM_CONTEXT_COLUMNS: dict[str, list[str]] = {
         "overall_pct", "pass_pct", "run_pct", "early", "units"],
     "power_rankings": [
         "sport", "season", "week", "team", "rank", "rating", "prev_rank", "move", "units",
-        "sos", "su", "ats", "games", "conf", "sov", "home_record", "road_record"],
+        "sos", "su", "ats", "games", "conf", "sov", "home_record", "road_record",
+        "fpi", "model_rating"],
 }
 TEAM_CONTEXT_KEYS: dict[str, tuple[str, ...]] = {
     "team_game_log": ("sport", "game_key", "team"),

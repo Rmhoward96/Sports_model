@@ -393,7 +393,8 @@ def test_migration_matches_db_columns_and_keys():
     import re
     dbdir = pathlib.Path(__file__).resolve().parents[2] / "db"
     sql = (dbdir / "migration_team_context.sql").read_text()
-    later = (dbdir / "migration_power_results.sql").read_text()   # ALTER ... ADD COLUMN
+    later = "\n".join((dbdir / f).read_text() for f in
+                      ("migration_power_results.sql", "migration_power_fpi.sql"))   # ALTER ... ADD COLUMN
     for t, cols in db.TEAM_CONTEXT_COLUMNS.items():
         body = re.search(rf"CREATE TABLE IF NOT EXISTS {t} \((.*?)\n\);", sql, re.S).group(1)
         names = [ln.split()[0] for ln in body.splitlines()
@@ -406,6 +407,9 @@ def test_migration_matches_db_columns_and_keys():
         assert f'CREATE POLICY "public read {t}" ON {t} FOR SELECT USING (true)' in sql
     assert "CREATE OR REPLACE VIEW power_rankings_current" in sql
     assert "power_rankings_current TO anon, authenticated" in sql
+    fpi = (dbdir / "migration_power_fpi.sql").read_text()
+    assert "CREATE OR REPLACE VIEW power_rankings_current" in fpi
+    assert "GRANT SELECT ON power_rankings_current TO anon, authenticated" in fpi
 
 
 def test_one_sport_failing_does_not_block_the_other(monkeypatch, capsys):
@@ -514,6 +518,7 @@ def test_nfl_rankings_use_the_results_rating():
     home_w = rk["home_record"].str.split("-").str[0].astype(int)
     road_w = rk["road_record"].str.split("-").str[0].astype(int)
     assert (home_w + road_w == wins).all()      # fixtures have no neutral games
+    assert rk["fpi"].isna().all() and rk["model_rating"].isna().all()   # CFB-only blend
 
 
 def test_regular_season_only_drops_postseason_rows_and_tolerates_old_parquets():
