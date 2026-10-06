@@ -1,7 +1,9 @@
 /* Game page (game.html?sport=<s>&game=<game_pk>) — mockup #2 "Matchup Story". Real data only: every card has an empty
    state and the mockup's numbers are never rendered. The tab (Overview / Matchup / Market / Trends / Players) lives in
    window.__caGame AND in the URL (?tab=) and survives the 5-minute re-render; switching tabs redraws from the cached load
-   (window.__caGameData) without a refetch. Phase B items (venue / weather line, Projected Game Flow, TV network) are omitted.
+   (window.__caGameData) without a refetch. The venue / weather hero line (game_info, NFL + CFB), the havoc / turnover / weather Key Insights
+   (cfb_team_insights, game_info) and the CFB Projected Game Flow (cfb_quarter_shares, game_info.line_score) render only from rows that
+   exist: a missing table or row hides its panel. The TV network is still omitted.
    "Opportunities" are is_pick rows with a non-null Alpha tier (loadOpportunities). Every "CappingAlpha" number is the MODEL's
    (home_win_prob; margin / total distributions at the market line), never ev_picks.true_prob, which is Pinnacle's no-vig line.
    The Read card compares the model with the price available on every side (no pick gate) and is not shown for started games.
@@ -45,6 +47,42 @@ function gmLean(pred) {
 function gmWhen(iso) {
   if (!iso || !Number.isFinite(Date.parse(iso))) return "";
   return `${new Date(iso).toLocaleDateString("en-US", { timeZone: "America/New_York", weekday: "short", month: "short", day: "numeric" })} · ${timeET(iso)}`;
+}
+
+// Rain below this many inches is not "measurable" (CFBD precipitation is inches).
+const GM_MEASURABLE_IN = 0.01;
+// Weather older than this after kickoff is no longer shown (the venue stays).
+const GM_WEATHER_STALE_MS = 3 * 864e5;
+// Weather pieces in reading order: conditions, "41°F", "wind 14 mph", "20% rain" (or "0.04 in rain"). A missing reading is omitted.
+function gmWeatherPieces(i) {
+  const t = numOrNull(i.temp_f), w = numOrNull(i.wind_mph), pc = numOrNull(i.precip_chance), pi = numOrNull(i.precip_in);
+  const out = [];
+  if (i.conditions && String(i.conditions).trim()) out.push(String(i.conditions).trim());
+  if (t != null) out.push(`${Math.round(t)}°F`);
+  if (w != null) out.push(`wind ${Math.round(w)} mph`);
+  if (pc != null && pc > 0) out.push(`${Math.round(pc)}% rain`);
+  else if (pi != null && pi >= GM_MEASURABLE_IN) out.push(`${pi.toFixed(2)} in rain`);
+  return out;
+}
+// The hero's venue line from a game_info row: "Venue · City, ST · 41°F, wind 14 mph, 20% rain". Any missing piece is omitted; an indoor
+// venue says "Indoors" in place of the weather. The weather label follows kickoff (kickoffIso, nowMs): before kickoff the forecast is shown
+// as is; after kickoff a reading is labelled by weather_kind ("Observed" = measured, "Forecast" = still the pre-game forecast, as NFL
+// rows always are); more than 3 days after kickoff the weather is hidden. Unknown kickoff: no time-based rule. Plain text ("" = hide).
+function gmVenueLine(info, kickoffIso, nowMs) {
+  if (!info || typeof info !== "object") return "";
+  const place = [info.city, info.state].filter((x) => x && String(x).trim()).join(", ");
+  const kickMs = timeMs(kickoffIso), now = nowMs == null ? Date.now() : nowMs;
+  const since = Number.isFinite(kickMs) ? now - kickMs : null;    // ms after kickoff (negative before it); null when unknown
+  let wx = "";
+  if (info.indoor === true) wx = "Indoors";
+  else if (since == null || since <= GM_WEATHER_STALE_MS) {
+    const p = gmWeatherPieces(info);
+    if (p.length) {
+      const label = info.weather_kind === "observed" ? "Observed " : info.weather_kind === "forecast" && since != null && since > 0 ? "Forecast " : "";
+      wx = label + p.join(", ");
+    }
+  }
+  return [info.venue_name, place, wx].filter((x) => x && String(x).trim()).join(" · ");
 }
 
 // Market consensus: the median implied probability across books in a {book: american} map (object or JSON string),
@@ -297,7 +335,7 @@ function gmSetTab(tab) {
 async function gmLoad(sport, rawGame) {
   const game = encodeURIComponent(rawGame);
   const isNfl = sport === "nfl", live = LIVE_SPORTS.includes(sport), none = (v) => Promise.resolve(v);
-  const [predsAny, predsCur, evRows, accRows, servedVersion, mls, opps, moves, lineBy] = await Promise.all([
+  const [predsAny, predsCur, evRows, accRows, servedVersion, mls, opps, moves, lineBy, gameInfoRows] = await Promise.all([
     sb(`predictions_any?sport=eq.${sport}&game_pk=eq.${game}`).catch(() => []),
     sb(`predictions_current?sport=eq.${sport}&game_pk=eq.${game}`).catch(() => []),
     live ? sb(`ev_picks?sport=eq.${sport}&game_pk=eq.${game}&order=created_at.desc`).catch(() => []) : none([]),
@@ -307,6 +345,8 @@ async function gmLoad(sport, rawGame) {
     live ? loadOpportunities().catch(() => []) : none([]),
     live ? loadLineMoves().catch(() => []) : none([]),
     live ? evBestLines().catch(() => new Map()) : none(new Map()),
+    // venue / weather (+ CFB line score); the table may not exist yet -> [] and the hero line / weather row / actual quarters hide
+    isNfl || sport === "cfb" ? sb(`game_info?sport=eq.${sport}&game_pk=eq.${game}`).catch(() => []) : none([]),
   ]);
   const r = predsAny[0] || predsCur[0];
   if (!r) return null;
@@ -357,6 +397,7 @@ async function gmLoad(sport, rawGame) {
   const shownSimVersion = (sims[0] && sims[0].model_version) || null;
   return { sport, game: String(rawGame), r, actual: accRows[0] || null, evRows: evRows || [], mlRow: mls.get(String(game)) || null, opps: myOpps, moves: myMoves, lineBy: lineBy || new Map(),
     splits: splits || [], sims, props, simRows, playerActuals, propLines, trendRecs, trendSits, ctxHist, ctxGrades, ctxPower, awayCol, homeCol,
+    gameInfo: (gameInfoRows || [])[0] || null,
     isNfl, simTag: isNfl ? mlModelTag(shownSimVersion) : "" };
 }
 
@@ -390,8 +431,9 @@ function gmHero(D) {
     ${gmOddsBox("MONEYLINE", price(o.moneyline.away.price), price(o.moneyline.home.price), lean.ml === "away" ? "l" : lean.ml === "home" ? "r" : "")}
     ${gmOddsBox("SPREAD", L != null ? lineStr(-L) : "—", L != null ? lineStr(L) : "—", lean.spread === "away" ? "l" : lean.spread === "home" ? "r" : "")}
     ${gmOddsBox("TOTAL", T != null ? `O ${T}` : "—", T != null ? `U ${T}` : "—", lean.total === "over" ? "l" : lean.total === "under" ? "r" : "")}</div>` : "";
+  const venue = gmVenueLine(D.gameInfo, r.commence_time);
   return `<section class="ca-gm-hero${boxes ? " has-odds" : ""}"><div class="ca-gm-top"><a class="ca-gm-back" href="${sport}.html">‹ ${SPORT_NAME[sport] || sport.toUpperCase()} Board</a><span class="ca-gm-when">${gmEsc(when)}</span><span></span></div>
-    <div class="ca-gm-teams">${team("away")}<span class="ca-gm-at">@</span>${team("home")}</div>${gmFinalLine(D)}${boxes}</section>`;
+    ${venue ? `<p class="ca-gm-venue">${gmEsc(venue)}</p>` : ""}<div class="ca-gm-teams">${team("away")}<span class="ca-gm-at">@</span>${team("home")}</div>${gmFinalLine(D)}${boxes}</section>`;
 }
 
 const gmOddsOf = (D) => gmOdds(D.r, D.evRows, D.mlRow, D.simRows[0], D.lineBy);
