@@ -54,8 +54,38 @@ def test_main_dry_run_and_upsert(tmp_path, monkeypatch, capsys):
     bcp.main(["--dry-run"])
     assert not sent and "team_insights=4" in capsys.readouterr().out
     monkeypatch.setattr(bcp.config, "DATABASE_URL", "postgres://x")
+    monkeypatch.setattr(bcp.db, "missing_site_panel_tables", lambda tables: [])
     bcp.main(["--season", "2026"])
     assert {r["team"] for r in sent["ins"]} == {"1", "2", "3", "4"} and sent["sh"][0]["games_used"] >= 1
     monkeypatch.setattr(bcp.config, "DATABASE_URL", None)
     with pytest.raises(SystemExit):
+        bcp.main([])
+
+
+def test_main_skips_cleanly_when_the_panel_tables_are_missing(tmp_path, monkeypatch, capsys):
+    _write(tmp_path)
+    monkeypatch.setattr(bcp, "ASSETS", tmp_path)
+    monkeypatch.setattr(bcp, "load_fbs_ids", lambda: {"1", "2", "3", "4"})
+    monkeypatch.setattr(bcp.config, "DATABASE_URL", "postgres://x")
+    monkeypatch.setattr(bcp.db, "missing_site_panel_tables", lambda tables: list(tables))
+    for fn in ("upsert_cfb_team_insights", "upsert_cfb_quarter_shares"):
+        monkeypatch.setattr(bcp.db, fn, lambda rows: (_ for _ in ()).throw(AssertionError("no upsert")))
+    bcp.main([])                                                   # returns (exit 0), no SystemExit
+    out = capsys.readouterr().out
+    assert "::warning::cfb-panels: table cfb_team_insights missing" in out and "table cfb_quarter_shares missing" in out
+    assert "run db/migration_site_panels.sql" in out
+
+
+def test_a_real_db_error_after_the_table_check_still_fails_the_job(tmp_path, monkeypatch):
+    _write(tmp_path)
+    monkeypatch.setattr(bcp, "ASSETS", tmp_path)
+    monkeypatch.setattr(bcp, "load_fbs_ids", lambda: {"1", "2", "3", "4"})
+    monkeypatch.setattr(bcp.config, "DATABASE_URL", "postgres://x")
+    monkeypatch.setattr(bcp.db, "missing_site_panel_tables", lambda tables: [])
+
+    def boom(rows):
+        raise ConnectionError("db down")
+
+    monkeypatch.setattr(bcp.db, "upsert_cfb_team_insights", boom)
+    with pytest.raises(ConnectionError):
         bcp.main([])

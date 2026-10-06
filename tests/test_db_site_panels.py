@@ -149,3 +149,46 @@ def test_migration_is_idempotent_and_writes_nothing():
     assert MIGRATION.count("CREATE TABLE IF NOT EXISTS") == 3
     assert MIGRATION.count("DROP POLICY IF EXISTS") == 3
     assert not re.search(r"^\s*(INSERT|UPDATE|DELETE|DROP TABLE|TRUNCATE)\b", MIGRATION, re.MULTILINE | re.IGNORECASE)
+
+
+class _RegCursor(FakeCursor):
+    def __init__(self, existing, log):
+        self.existing, self.log, self.last = existing, log, None
+
+    def execute(self, sql, params):
+        self.log.append((sql, params))
+        name = params[0].split(".", 1)[1]
+        self.last = (params[0],) if name in self.existing else (None,)
+
+    def fetchone(self):
+        return self.last
+
+
+class _RegConn(FakeConn):
+    def __init__(self, existing, log):
+        self.existing, self.log = existing, log
+
+    def cursor(self):
+        return _RegCursor(self.existing, self.log)
+
+
+def test_missing_site_panel_tables_checks_to_regclass_in_public(monkeypatch):
+    log = []
+    monkeypatch.setattr(db, "get_postgres", lambda: _RegConn({"game_info"}, log))
+    tables = ["game_info", "cfb_team_insights", "cfb_quarter_shares"]
+    assert db.missing_site_panel_tables(tables) == ["cfb_team_insights", "cfb_quarter_shares"]
+    assert all("to_regclass" in sql for sql, _ in log) and [p[0] for _, p in log] == [f"public.{t}" for t in tables]
+    assert db.site_panel_tables_ready(["game_info"]) is True
+    assert db.site_panel_tables_ready(tables) is False
+
+
+def test_missing_site_panel_tables_rejects_unknown_names_and_propagates_connection_errors(monkeypatch):
+    with pytest.raises(KeyError):
+        db.missing_site_panel_tables(["users; drop table x"])
+
+    def down():
+        raise ConnectionError("db down")
+
+    monkeypatch.setattr(db, "get_postgres", down)
+    with pytest.raises(ConnectionError):
+        db.missing_site_panel_tables(["game_info"])

@@ -1133,3 +1133,23 @@ def upsert_cfb_team_insights(rows: list[dict]) -> int:
 
 def upsert_cfb_quarter_shares(rows: list[dict]) -> int:
     return _upsert_site_panel("cfb_quarter_shares", rows)
+
+
+def missing_site_panel_tables(tables: list[str]) -> list[str]:
+    """The subset of `tables` (keys of SITE_PANEL_COLUMNS) that do not exist in the `public` schema yet, in
+    the order given. Lets the site-panel jobs warn and exit cleanly until db/migration_site_panels.sql has
+    been run. One read-only connection; any connection error propagates (a real outage still fails the job)."""
+    unknown = [t for t in tables if t not in SITE_PANEL_COLUMNS]
+    if unknown:
+        raise KeyError(f"not a site-panel table: {unknown}")
+    with get_postgres() as conn, conn.cursor() as cur:
+        missing = []
+        for t in tables:
+            cur.execute("SELECT to_regclass(%s)", (f"public.{t}",))
+            if cur.fetchone()[0] is None:
+                missing.append(t)
+    return missing
+
+
+def site_panel_tables_ready(tables: list[str]) -> bool:
+    return not missing_site_panel_tables(tables)

@@ -71,6 +71,11 @@ def main(argv: list[str] | None = None) -> None:
     args = ap.parse_args(argv)
     if not args.dry_run and not config.DATABASE_URL:
         sys.exit("DATABASE_URL is not set (use --dry-run to compute without writing)")
+    if not args.dry_run and (gone := db.missing_site_panel_tables(["cfb_team_insights", "cfb_quarter_shares"])):
+        # until the user runs db/migration_site_panels.sql: skip cleanly (green job)
+        for t in gone:
+            print(f"::warning::cfb-panels: table {t} missing \u2014 run db/migration_site_panels.sql", flush=True)
+        return
     season, ins, shares = build(season=args.season, fbs=set(load_fbs_ids()))
     print(f"cfb panels season {season}: team_insights={len(ins)} (ranked {int(ins['n_ranked'].max()) if len(ins) else 0}, "
           f"through week {int(ins['through_week'].max()) if len(ins) else '-'}), quarter_shares={len(shares)}", flush=True)

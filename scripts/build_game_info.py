@@ -109,6 +109,10 @@ def main(argv: list[str] | None = None) -> None:
     args = ap.parse_args(argv)
     if not args.dry_run and not config.DATABASE_URL:
         sys.exit("DATABASE_URL is not set (use --dry-run to compute without writing)")
+    if not args.dry_run and (gone := db.missing_site_panel_tables(["game_info"])):
+        # until the user runs db/migration_site_panels.sql: skip cleanly (no API calls, green job)
+        print(f"::warning::game-info: table {gone[0]} missing \u2014 run db/migration_site_panels.sql", flush=True)
+        return
     now = game_info.utc(args.now) if args.now else pd.Timestamp.now(tz="UTC")
     failed = []
     for sport in (["nfl", "cfb"] if args.sport == "all" else [args.sport]):

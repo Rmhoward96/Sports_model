@@ -126,10 +126,34 @@ def test_main_dry_run_writes_nothing_and_a_failed_sport_exits_nonzero(monkeypatc
 def test_main_upserts_rows_and_requires_database_url(monkeypatch):
     sent = []
     monkeypatch.setattr(bgi.config, "DATABASE_URL", "postgres://x")
+    monkeypatch.setattr(bgi.db, "missing_site_panel_tables", lambda tables: [])
     monkeypatch.setattr(bgi.db, "upsert_game_info", lambda rows: sent.append(rows) or len(rows))
     monkeypatch.setattr(bgi, "build_nfl", lambda now, espn=None: [{"sport": "nfl", "game_pk": 1, "weather_kind": None, "indoor": None, "line_score": None}])
     bgi.main(["--sport", "nfl"])
     assert sent == [[{"sport": "nfl", "game_pk": 1, "weather_kind": None, "indoor": None, "line_score": None}]]
     monkeypatch.setattr(bgi.config, "DATABASE_URL", None)
+    with pytest.raises(SystemExit):
+        bgi.main(["--sport", "nfl"])
+
+
+def test_main_skips_cleanly_when_the_game_info_table_is_missing(monkeypatch, capsys):
+    monkeypatch.setattr(bgi.config, "DATABASE_URL", "postgres://x")
+    monkeypatch.setattr(bgi.db, "missing_site_panel_tables", lambda tables: list(tables))
+    monkeypatch.setattr(bgi, "build_nfl", lambda *a, **k: (_ for _ in ()).throw(AssertionError("no API calls")))
+    monkeypatch.setattr(bgi.db, "upsert_game_info", lambda rows: (_ for _ in ()).throw(AssertionError("no upsert")))
+    bgi.main(["--sport", "nfl"])                                   # returns (exit 0), no SystemExit
+    out = capsys.readouterr().out
+    assert "::warning::game-info: table game_info missing" in out and "run db/migration_site_panels.sql" in out
+
+
+def test_a_real_db_error_after_the_table_check_still_fails_the_job(monkeypatch):
+    monkeypatch.setattr(bgi.config, "DATABASE_URL", "postgres://x")
+    monkeypatch.setattr(bgi.db, "missing_site_panel_tables", lambda tables: [])
+    monkeypatch.setattr(bgi, "build_nfl", lambda now, espn=None: [{"sport": "nfl", "game_pk": 1, "weather_kind": None, "indoor": None, "line_score": None}])
+
+    def boom(rows):
+        raise ConnectionError("db down")
+
+    monkeypatch.setattr(bgi.db, "upsert_game_info", boom)
     with pytest.raises(SystemExit):
         bgi.main(["--sport", "nfl"])
