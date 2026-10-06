@@ -148,3 +148,38 @@ def fetch_final(event_id: int) -> dict | None:
     return {"home_score": int(comp["home"]["score"]),
             "away_score": int(comp["away"]["score"]), "final": True,
             **parse_market(data)}
+
+
+def fetch_scoreboard(season: int, week: int, season_type: int = 2) -> dict:
+    """The raw FBS scoreboard payload for one week (`fetch_schedule` parses the same call)."""
+    return _get("/scoreboard", {"dates": season, "seasontype": season_type, "week": week, "groups": 80})
+
+
+def parse_line_scores(payload) -> dict[int, dict]:
+    """{game_pk: {"home": [q1..q4], "away": [q1..q4], "home_ot": n, "away_ot": n}} for STATUS_FINAL events.
+
+    `*_ot` is the sum of every period after the fourth (0 for a game decided in regulation), so Q1-Q4 alone
+    may not add up to the final score. A game is omitted unless both competitors have a numeric `score`, at
+    least four numeric `linescores` periods (a non-numeric overtime period included), and the sum of ALL
+    periods equals that `score`. Verified live 2026-10-06: competitors[].linescores[] = {value, displayValue,
+    period}; `score` is a string."""
+    out: dict[int, dict] = {}
+    for ev in payload.get("events", []):
+        try:
+            if ev["status"]["type"]["name"] != "STATUS_FINAL":
+                continue
+            sides = {}
+            for c in ev["competitions"][0]["competitors"]:
+                vals = [p.get("value") for p in (c.get("linescores") or [])]
+                if len(vals) < 4 or any(isinstance(v, bool) or not isinstance(v, (int, float)) for v in vals):
+                    raise ValueError("no usable line score")
+                if sum(vals) != float(c["score"]):
+                    raise ValueError("line score does not add up to the final score")
+                side = c["homeAway"]
+                sides[side] = [int(v) for v in vals[:4]]
+                sides[f"{side}_ot"] = int(sum(vals[4:]))
+            if {"home", "away"} <= set(sides):
+                out[int(ev["id"])] = sides
+        except (KeyError, IndexError, TypeError, ValueError):
+            continue
+    return out

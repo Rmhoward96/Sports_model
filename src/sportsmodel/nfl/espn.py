@@ -1,4 +1,5 @@
 from __future__ import annotations
+import math
 from typing import Any
 
 import httpx
@@ -184,3 +185,71 @@ def fetch_final(event_id: int) -> dict | None:
 
 def fetch_inactives(event_id: int) -> list[str]:
     return parse_inactives(_get("/summary", {"event": event_id}))
+
+
+# ------------------------------------------------------------------ game info
+# Weather keys read from `gameInfo.weather`. VERIFIED LIVE 2026-10-06 (upcoming week-5 games): the block is
+# {temperature, highTemperature, lowTemperature, conditionId (a numeric code, no text), gust, precipitation
+# (a 0-100 chance), link}; it is absent on finished games and on some scheduled ones (e.g. a game with no
+# forecast yet). ESPN gives NO sustained-wind key (`gust` is deliberately not used) and NO condition text, so
+# wind_mph and conditions are always None until ESPN adds them: the tuples are empty rather than guessed.
+_WX_TEMP, _WX_COND = ("temperature",), ()
+_WX_WIND, _WX_PRECIP = (), ("precipitation",)
+# ESPN does NOT set `venue.indoor` for domed stadiums (verified live: U.S. Bank, Allegiant, Caesars Superdome,
+# Reliant/NRG, AT&T all print no indoor key), so domes are matched by ESPN `fullName`. Verified spellings:
+# those five. The rest are standard names NOT yet seen live (ESPN may spell them differently); retractable-roof
+# parks are included because the roof is normally closed for bad weather. A venue missing here just shows weather.
+_INDOOR_VENUES = frozenset({
+    "U.S. Bank Stadium", "Allegiant Stadium", "Caesars Superdome", "Reliant Stadium", "AT&T Stadium",
+    "NRG Stadium", "Ford Field", "Lucas Oil Stadium", "State Farm Stadium",
+    "Mercedes-Benz Stadium"})
+_INDOOR_KEYS = frozenset(n.casefold() for n in _INDOOR_VENUES)  # SoFi (open-sided canopy) is deliberately absent
+
+
+def _first_num(block: dict, keys: tuple[str, ...]) -> float | None:
+    for k in keys:
+        v = block.get(k)
+        if isinstance(v, bool):
+            continue
+        if isinstance(v, str):
+            try:
+                v = float(v.strip().rstrip("%"))
+            except ValueError:
+                continue
+        if isinstance(v, (int, float)) and math.isfinite(v):
+            return float(v)
+    return None
+
+
+def parse_game_info(summary) -> dict:
+    """Venue + weather of one game from a /summary payload's `gameInfo` block (PURE).
+
+    Returns {venue_name, city, state, indoor, temp_f, wind_mph, precip_chance, conditions}; every field is
+    None when ESPN does not provide it (never guessed). `indoor` is True only when the venue says so
+    (`venue.indoor is True` or a known dome name, see `_INDOOR_VENUES`); then every weather field is None
+    (the site shows "Indoors"). `wind_mph` reads
+    a sustained wind key only -- `gust` is deliberately NOT used. `precip_chance` is ESPN's precipitation
+    value when it lies in 0..100. ESPN gives no rainfall amount, so there is no precip_in here."""
+    info = summary.get("gameInfo") if isinstance(summary.get("gameInfo"), dict) else {}
+    venue = info.get("venue") if isinstance(info.get("venue"), dict) else {}
+    addr = venue.get("address") if isinstance(venue.get("address"), dict) else {}
+    wx = info.get("weather") if isinstance(info.get("weather"), dict) else (
+        summary.get("weather") if isinstance(summary.get("weather"), dict) else {})
+    text = lambda v: (str(v).strip() or None) if isinstance(v, str) else None  # noqa: E731
+    venue_name = text(venue.get("fullName"))
+    indoor = venue.get("indoor") is True or (venue_name or "").casefold() in _INDOOR_KEYS
+    out = {"venue_name": venue_name, "city": text(addr.get("city")),
+           "state": text(addr.get("state")), "indoor": indoor,
+           "temp_f": None, "wind_mph": None, "precip_chance": None, "conditions": None}
+    if indoor:
+        return out
+    out["temp_f"] = _first_num(wx, _WX_TEMP)
+    out["wind_mph"] = _first_num(wx, _WX_WIND)
+    chance = _first_num(wx, _WX_PRECIP)
+    out["precip_chance"] = chance if chance is not None and 0 <= chance <= 100 else None
+    out["conditions"] = next((t[:40] for t in (text(wx.get(k)) for k in _WX_COND) if t), None)
+    return out
+
+
+def fetch_game_info(event_id: int) -> dict:
+    return parse_game_info(_get("/summary", {"event": event_id}))

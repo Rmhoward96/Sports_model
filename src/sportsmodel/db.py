@@ -1056,3 +1056,100 @@ def upsert_team_context(tables: dict[str, list[dict]]) -> dict[str, int]:
             cur.executemany(_team_context_sql(table), vals)
         conn.commit()
     return counts
+
+
+# ------------------------------------------------------------------ site panels
+# db/migration_site_panels.sql -- game_info is written by scripts/build_game_info.py, the two cfb_* tables by
+# scripts/build_cfb_panels.py. Upserts only: nothing is ever deleted (rows outside a run's window survive).
+SITE_PANEL_COLUMNS: dict[str, list[str]] = {
+    "game_info": ["sport", "game_pk", "venue_name", "city", "state", "indoor", "temp_f", "wind_mph",
+                  "precip_chance", "precip_in", "conditions", "weather_kind", "source", "captured_at",
+                  "line_score"],
+    "cfb_team_insights": ["season", "team", "games", "def_havoc_rate", "def_havoc_rank",
+                          "off_havoc_allowed_rate", "off_havoc_allowed_rank", "turnover_margin",
+                          "turnover_margin_per_game", "turnover_margin_rank", "off_explosiveness",
+                          "off_explosiveness_rank", "def_explosiveness_allowed",
+                          "def_explosiveness_allowed_rank", "n_ranked", "through_week"],
+    "cfb_quarter_shares": ["team", "scored_q1", "scored_q2", "scored_q3", "scored_q4", "allowed_q1",
+                           "allowed_q2", "allowed_q3", "allowed_q4", "games_used"],
+}
+SITE_PANEL_KEYS: dict[str, tuple[str, ...]] = {
+    "game_info": ("sport", "game_pk"), "cfb_team_insights": ("season", "team"),
+    "cfb_quarter_shares": ("team",),
+}
+_SITE_PANEL_JSON = frozenset({"line_score"})
+_GAME_INFO_WEATHER = frozenset({"temp_f", "wind_mph", "precip_chance", "precip_in", "conditions",
+                                "weather_kind"})
+
+
+def _site_panel_sql(table: str) -> str:
+    """INSERT ... ON CONFLICT DO UPDATE for one site-panel table. cfb_* tables overwrite every column.
+    game_info keeps what an earlier run learned: a later run that has no reading (ESPN drops its weather
+    block after a game, CFBD has no forecast yet) must not erase it, so every non-weather column except
+    `source` is COALESCE(new, old). The weather columns move as a GROUP: a new row with a weather_kind
+    replaces all of them (NULLs included, so a forecast's wind never mixes with an observation), a new row
+    without one keeps the old values, and an indoor row NULLs them. `captured_at` only advances when this
+    run supplied a weather reading or an indoor verdict, so a retained reading keeps its own timestamp."""
+    cols, key = SITE_PANEL_COLUMNS[table], SITE_PANEL_KEYS[table]
+    sets = []
+    for c in cols:
+        if c in key:
+            continue
+        if table != "game_info" or c == "source":
+            sets.append(f"{c} = EXCLUDED.{c}")
+        elif c == "captured_at":
+            sets.append("captured_at = CASE WHEN EXCLUDED.weather_kind IS NOT NULL OR EXCLUDED.indoor IS TRUE "
+                        "THEN EXCLUDED.captured_at ELSE game_info.captured_at END")
+        elif c in _GAME_INFO_WEATHER:
+            sets.append(f"{c} = CASE WHEN EXCLUDED.indoor IS TRUE THEN NULL "
+                        f"WHEN EXCLUDED.weather_kind IS NOT NULL THEN EXCLUDED.{c} "
+                        f"ELSE game_info.{c} END")
+        else:
+            sets.append(f"{c} = COALESCE(EXCLUDED.{c}, game_info.{c})")
+    return (f"INSERT INTO {table} ({', '.join(cols)}) VALUES ({', '.join(['%s'] * len(cols))}) "
+            f"ON CONFLICT ({', '.join(key)}) DO UPDATE SET {', '.join(sets)}, updated_at = now()")
+
+
+def _upsert_site_panel(table: str, rows: list[dict]) -> int:
+    if not rows:
+        return 0
+    cols = SITE_PANEL_COLUMNS[table]
+    vals = [tuple((None if r.get(c) is None else json.dumps(r[c])) if c in _SITE_PANEL_JSON else r.get(c)
+                  for c in cols) for r in rows]
+    with get_postgres() as conn, conn.cursor() as cur:
+        cur.executemany(_site_panel_sql(table), vals)
+        conn.commit()
+    return len(vals)
+
+
+def upsert_game_info(rows: list[dict]) -> int:
+    """Upsert `game_info` rows (SITE_PANEL_COLUMNS['game_info']; line_score a dict, JSON-encoded here)."""
+    return _upsert_site_panel("game_info", rows)
+
+
+def upsert_cfb_team_insights(rows: list[dict]) -> int:
+    return _upsert_site_panel("cfb_team_insights", rows)
+
+
+def upsert_cfb_quarter_shares(rows: list[dict]) -> int:
+    return _upsert_site_panel("cfb_quarter_shares", rows)
+
+
+def missing_site_panel_tables(tables: list[str]) -> list[str]:
+    """The subset of `tables` (keys of SITE_PANEL_COLUMNS) that do not exist in the `public` schema yet, in
+    the order given. Lets the site-panel jobs warn and exit cleanly until db/migration_site_panels.sql has
+    been run. One read-only connection; any connection error propagates (a real outage still fails the job)."""
+    unknown = [t for t in tables if t not in SITE_PANEL_COLUMNS]
+    if unknown:
+        raise KeyError(f"not a site-panel table: {unknown}")
+    with get_postgres() as conn, conn.cursor() as cur:
+        missing = []
+        for t in tables:
+            cur.execute("SELECT to_regclass(%s)", (f"public.{t}",))
+            if cur.fetchone()[0] is None:
+                missing.append(t)
+    return missing
+
+
+def site_panel_tables_ready(tables: list[str]) -> bool:
+    return not missing_site_panel_tables(tables)

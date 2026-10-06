@@ -166,3 +166,43 @@ def test_run_havoc_drops_implausible_season(tmp_path):
                 "opponent": "Michigan", "offense": dict(side), "defense": dict(side)}
     wrote = bgd.run(StubClient({"/stats/game/havoc": [rec(0.02)]}), ["havoc"], [2015], tmp_path)
     assert wrote["havoc"] == 0
+
+
+def test_played_weeks_counts_only_finished_regular_weeks():
+    meta = pd.DataFrame({"season": [2026] * 5 + [2025], "season_type": ["regular"] * 4 + ["postseason", "regular"],
+                         "week": [1, 1, 2, 3, 1, 9], "home_points": [3.0, 7.0, 10.0, float("nan"), 14.0, 21.0]})
+    assert bgd.played_weeks(meta, 2026) == [1, 2]
+    assert bgd.played_weeks(meta, 2024) == [] and bgd.played_weeks(None, 2026) == []
+
+
+def test_run_team_stats_pulls_each_played_week_and_writes_the_asset(tmp_path):
+    games = [{"id": 400 + w, "season": 2026, "week": w, "seasonType": "regular", "homeTeam": "Alabama",
+              "awayTeam": "Georgia", "homePoints": 20, "awayPoints": 10} for w in (1, 2)]
+    teams = [{"id": 401, "teams": [{"team": "Alabama", "stats": [{"category": "turnovers", "stat": "1"}]},
+                                   {"team": "Georgia", "stats": [{"category": "turnovers", "stat": "2"}]}]}]
+    class WeekStub(StubClient):             # one distinct game id per requested week
+        def get(self, path, params=None):
+            out = super().get(path, params)
+            return [{**g, "id": 400 + params["week"]} for g in out] if path == "/games/teams" else out
+
+    client = WeekStub({"/games": games, "/games/teams": teams})
+    bgd.run(client, ["games"], [2026], tmp_path)
+    wrote = bgd.run(client, ["team_stats"], [2026], tmp_path)
+    ts = pd.read_parquet(tmp_path / "team_game_stats.parquet")
+    assert wrote["team_stats"] == len(ts) and set(ts["week"]) == {1, 2}
+    assert [q["week"] for p, q in client.seen if p == "/games/teams"] == [1, 2]
+    assert {q["seasonType"] for p, q in client.seen if p == "/games/teams"} == {"regular"}
+    assert set(ts["giveaways"]) == {1.0, 2.0}
+
+
+def test_run_team_stats_without_games_asset_stops(tmp_path):
+    with pytest.raises(SystemExit):
+        bgd.run(StubClient({}), ["team_stats"], [2026], tmp_path)
+
+
+def test_run_team_stats_preseason_writes_an_empty_typed_asset(tmp_path):
+    client = StubClient({"/games": [{"id": 1, "season": 2026, "week": 1, "seasonType": "regular",
+                                     "homeTeam": "Alabama", "awayTeam": "Georgia"}]})
+    bgd.run(client, ["games"], [2026], tmp_path)
+    assert bgd.run(client, ["team_stats"], [2026], tmp_path)["team_stats"] == 0
+    assert not [p for p, _ in client.seen if p == "/games/teams"]

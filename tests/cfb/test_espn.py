@@ -80,3 +80,45 @@ def test_parse_schedule_neutral_site_conference_game_and_conf_ids():
 def test_parse_schedule_conference_game_false_when_flag_false():
     g = parse_schedule({**FIX, "events": [_ev(conferenceCompetition=False)]})[0]
     assert g["conference_game"] is False
+
+
+# ------------------------------------------------------------- line scores --
+
+def _final_event(pk, home, away, status="STATUS_FINAL", hs=None, as_=None):
+    ls = lambda xs: [{"value": float(x), "displayValue": str(x)} for x in xs]  # noqa: E731
+    hs, as_ = sum(home) if hs is None else hs, sum(away) if as_ is None else as_
+    return {"id": str(pk), "status": {"type": {"name": status}},
+            "competitions": [{"competitors": [{"homeAway": "home", "score": str(hs), "linescores": ls(home)},
+                                              {"homeAway": "away", "score": str(as_), "linescores": ls(away)}]}]}
+
+
+def test_parse_line_scores_final_games_with_overtime_total():
+    from sportsmodel.cfb.espn import parse_line_scores
+    payload = {"events": [_final_event(1, [0, 10, 3, 24], [0, 3, 7, 0]),
+                          _final_event(2, [7, 7, 7, 3, 7], [7, 7, 7, 3, 3]),
+                          _final_event(3, [7, 7, 7, 3], [7, 7, 7, 3], status="STATUS_IN_PROGRESS"),
+                          _final_event(4, [7, 7], [3, 3]),
+                          {"id": "5"}]}
+    assert parse_line_scores(payload) == {
+        1: {"home": [0, 10, 3, 24], "away": [0, 3, 7, 0], "home_ot": 0, "away_ot": 0},
+        2: {"home": [7, 7, 7, 3], "away": [7, 7, 7, 3], "home_ot": 7, "away_ot": 3}}
+    assert parse_line_scores({}) == {}
+
+
+def test_parse_line_scores_skips_games_whose_periods_do_not_add_up_to_the_score():
+    from sportsmodel.cfb.espn import parse_line_scores
+    ok = _final_event(1, [7, 7, 7, 3], [0, 3, 7, 0])
+    off_by_one = _final_event(2, [7, 7, 7, 3], [0, 3, 7, 0], hs=25)           # home periods sum to 24, score 25
+    missing_ot = _final_event(3, [7, 7, 7, 3, 7], [7, 7, 7, 3, 3], hs=24)     # OT ignored would match 24
+    no_score = _final_event(4, [7, 7, 7, 3], [0, 3, 7, 0]); del no_score["competitions"][0]["competitors"][0]["score"]
+    bad_ot = _final_event(5, [7, 7, 7, 3, 7], [7, 7, 7, 3, 3])
+    bad_ot["competitions"][0]["competitors"][0]["linescores"][4]["value"] = None
+    assert set(parse_line_scores({"events": [ok, off_by_one, missing_ot, no_score, bad_ot]})) == {1}
+
+
+def test_fetch_scoreboard_asks_for_the_fbs_group_and_returns_the_raw_payload(monkeypatch):
+    from sportsmodel.cfb import espn
+    seen = {}
+    monkeypatch.setattr(espn, "_get", lambda path, params=None: seen.update(path=path, params=params) or {"events": []})
+    assert espn.fetch_scoreboard(2026, 6, 2) == {"events": []}
+    assert seen == {"path": "/scoreboard", "params": {"dates": 2026, "seasontype": 2, "week": 6, "groups": 80}}

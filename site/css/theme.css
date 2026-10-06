@@ -424,6 +424,7 @@ a.ca-ev-pr:hover{background:#FBFAF6}
 .ca-gm-back{color:#fff;text-decoration:none;font-weight:600;justify-self:start}
 .ca-gm-back:hover{text-decoration:underline}
 .ca-gm-when{color:#DCE6F2;font-weight:500;text-align:center}
+.ca-gm-venue{margin:8px 0 0;text-align:center;color:#C9D6E6;font-size:14px;line-height:1.35}
 .ca-gm-teams{display:grid;grid-template-columns:minmax(0,1fr) auto minmax(0,1fr);align-items:center;gap:20px;margin:14px 0 32px}
 .ca-gm-team{display:flex;flex-direction:column;align-items:center;gap:6px;text-align:center;min-width:0}
 .ca-gm-team .tlogo{width:112px!important;height:112px!important;max-width:112px;max-height:112px;margin:0 0 4px!important;filter:drop-shadow(0 4px 14px rgba(0,0,0,.45))}
@@ -472,13 +473,19 @@ a.ca-ev-pr:hover{background:#FBFAF6}
 .ca-gm-score{justify-content:center;margin-top:10px;font:700 34px var(--sans)}
 .ca-gm-score span{color:var(--muted);font-weight:500}
 .ca-gm-card .tlogo{width:30px!important;height:30px!important;max-width:30px;max-height:30px;margin:0!important}
-.ca-gm-proj h2,.ca-gm-ins-card h2,.ca-gm-cover h2,.ca-gm-moves h2,.ca-gm-books h2,.ca-gm-power h2{font:700 24px var(--sans)}
+.ca-gm-proj h2,.ca-gm-ins-card h2,.ca-gm-cover h2,.ca-gm-moves h2,.ca-gm-books h2,.ca-gm-power h2,.ca-gm-flow h2{font:700 24px var(--sans)}
 .ca-gm-table{font-size:16px}
 .ca-gm-table th{background:transparent;text-align:center;font-weight:600;font-size:15px;color:var(--ink);padding:10px 12px}
 .ca-gm-table th:first-child,.ca-gm-table td:first-child{text-align:left;padding-left:4px;width:22%}
 .ca-gm-table td{text-align:center;padding:14px 12px}
 .ca-gm-lower{display:grid;grid-template-columns:minmax(0,1.5fr) minmax(0,1fr);gap:16px;align-items:start}
 .ca-gm-lower.solo{grid-template-columns:minmax(0,1fr)}
+.ca-gm-col{display:grid;gap:16px;min-width:0}
+.ca-gm-flow .ca-legend{margin:0 0 6px}
+.ca-gm-flow-charts{display:grid;grid-template-columns:repeat(2,minmax(0,368px));gap:12px 28px}
+.ca-gm-flow figure{margin:0;min-width:0}
+.ca-gm-flow figure svg{display:block;width:100%;height:auto}
+.ca-gm-flow figcaption{font:600 13px var(--sans);color:var(--muted);margin-bottom:2px}
 .ca-gm-ins{display:grid;grid-template-columns:44px minmax(0,1fr);gap:14px;align-items:start;padding:12px 0;border-top:1px solid #F0ECE3}
 .ca-gm-ins:first-of-type{border-top:0}
 .ca-gm-ins b{font-size:16px}

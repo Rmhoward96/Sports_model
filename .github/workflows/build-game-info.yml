@@ -1,0 +1,49 @@
+name: build-game-info
+
+# Venue + weather (and the CFB final line score) for the game page, NFL + CFB: every game from 2 days ago to
+# 10 days ahead -> Supabase game_info (scripts/build_game_info.py; db/migration_site_panels.sql). Descriptive,
+# not picks. Daily 14:00 UTC, plus 16:00 and 22:00 UTC on football days (Thu / Fri / Sat / Sun / Mon: cron
+# days 4 5 6 0 1), about 2 hours before the typical first kickoffs, so a forecast that firmed up is captured.
+# CFB reads CFBD (CFBD_API_KEY, one /games/weather call per week in the window); NFL reads ESPN (free).
+# Idempotent upserts that keep an earlier reading when a later run has none; never commits to the repo.
+on:
+  schedule:
+    - cron: "0 14 * * *"
+    - cron: "0 16 * * 0,1,4,5,6"
+    - cron: "0 22 * * 0,1,4,5,6"
+  workflow_dispatch:
+    inputs:
+      sport:
+        description: "Sport to build"
+        type: choice
+        options:
+          - all
+          - nfl
+          - cfb
+        default: all
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    concurrency:
+      group: build-game-info
+      cancel-in-progress: false
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v10.0.1
+
+      - name: Sync deps
+        run: uv sync
+
+      - name: Build game info (venue, weather, CFB line scores)
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+          CFBD_API_KEY: ${{ secrets.CFBD_API_KEY }}
+          SPORT: ${{ inputs.sport || 'all' }}
+        run: uv run python scripts/build_game_info.py --sport "$SPORT"
