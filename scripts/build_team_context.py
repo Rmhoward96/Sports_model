@@ -384,6 +384,15 @@ def cfb_results_games(schedules: pd.DataFrame) -> pd.DataFrame:
     return played_games(s.assign(neutral=s["neutral_site"].fillna(False).astype(bool)))
 
 
+def regular_season_only(advanced: pd.DataFrame | None) -> pd.DataFrame | None:
+    """advanced_games.parquet also carries postseason rows (cfb-ratings-v3); CFBD numbers bowl
+    weeks from 1 again, so the matchup grades (which key on season + week) must never see them.
+    A parquet without a season_type column (pre-v3) is all regular season."""
+    if advanced is None or "season_type" not in advanced.columns:
+        return advanced
+    return advanced[advanced["season_type"].fillna("regular") == "regular"].reset_index(drop=True)
+
+
 def load_cfb_sources(now: pd.Timestamp) -> dict:
     asset = pd.read_parquet(CFB_ASSETS / "schedules.parquet")
     espn_games, st = _espn_games(now)
@@ -391,7 +400,8 @@ def load_cfb_sources(now: pd.Timestamp) -> dict:
     print(f"cfb: schedule {len(asset)} asset rows + {len(sched) - len(asset)} from ESPN")
     season = int(sched["season"].max())
     pks = sched.loc[sched["season"] == season, "game_pk"].astype("int64").tolist()
-    advanced = pd.read_parquet(ADVANCED_PATH) if ADVANCED_PATH.exists() else None
+    advanced = regular_season_only(
+        pd.read_parquet(ADVANCED_PATH) if ADVANCED_PATH.exists() else None)
     return {"schedules": sched, "lines": pd.read_parquet(CFB_ASSETS / "lines.parquet"),
             "live_close": load_cfb_odds(pks), "advanced": advanced}
 

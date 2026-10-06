@@ -117,7 +117,8 @@ def _run_main(monkeypatch, tmp_path, payloads, existing, argv):
     monkeypatch.setattr(bca, "_OUT", out)
     monkeypatch.setattr(bca, "_SCHEDULES", tmp_path / "missing.parquet")
     monkeypatch.setattr(bca, "ROOT", tmp_path)
-    monkeypatch.setattr(bca, "fetch_year", lambda y, key: payloads[y])
+    monkeypatch.setattr(bca, "fetch_year", lambda y, key, st="regular":
+                        payloads[y] if st == "regular" else payloads.get(("post", y), []))
     monkeypatch.setenv("CFBD_API_KEY", "test-key")
     monkeypatch.setattr("sys.argv", ["build_cfb_advanced.py", *argv])
     bca.main()
@@ -172,3 +173,46 @@ def test_split_plays_nan_when_ratio_not_a_whole_count():
         r = bca.parse_advanced([g]).iloc[0]
         assert math.isnan(r["off_pass_plays"]), (ppa, total)
         assert r["off_rush_plays"] == 30
+
+
+def _post(payload_row, game_id):
+    return dict(payload_row, gameId=game_id, seasonType="postseason", week=1)
+
+
+def test_parse_stamps_season_type_and_reads_down_distance_splits():
+    g = dict(PAYLOAD[0], seasonType="postseason")
+    g["offense"] = dict(g["offense"], standardDowns={"ppa": 0.2, "successRate": 0.55},
+                        passingDowns={"ppa": -0.1, "successRate": 0.31},
+                        lineYards=3.1, stuffRate=0.17, powerSuccess=0.7)
+    df = bca.parse_advanced([g, PAYLOAD[0]])
+    assert list(df["season_type"]) == ["postseason", "regular"]      # missing seasonType = regular
+    r = df.iloc[0]
+    assert r["off_std_down_success"] == 0.55 and r["off_pass_down_ppa"] == -0.1
+    assert r["off_line_yards"] == 3.1 and r["off_stuff_rate"] == 0.17 and r["off_power_success"] == 0.7
+    assert math.isnan(df.iloc[1]["off_std_down_success"])            # absent split -> NaN, not 0
+
+
+def test_keep_postseason_preserves_committed_bowls_on_empty_post_pull():
+    reg = bca.parse_advanced([PAYLOAD[0]])
+    old_post = bca.parse_advanced([_post(PAYLOAD[0], 777)])
+    existing = pd.concat([reg, old_post], ignore_index=True)
+    kept = bca.keep_postseason(existing, reg, 2023)
+    assert set(kept["game_id"]) == {401, 777}
+    fresh_post = bca.parse_advanced([_post(PAYLOAD[0], 888)])
+    new = pd.concat([reg, fresh_post], ignore_index=True)
+    assert set(bca.keep_postseason(existing, new, 2023)["game_id"]) == {401, 888}   # real pull wins
+    assert bca.keep_postseason(None, reg, 2023) is reg
+
+
+def test_main_pulls_both_season_types_by_default(monkeypatch, tmp_path):
+    payloads = {2023: [PAYLOAD[0]], ("post", 2023): [_post(PAYLOAD[0], 555)]}
+    got = _run_main(monkeypatch, tmp_path, payloads, None, ["--seasons", "2023"])
+    assert dict(zip(got["game_id"], got["season_type"])) == {401: "regular", 555: "postseason"}
+
+
+def test_main_empty_postseason_keeps_existing_bowls(monkeypatch, tmp_path):
+    old = pd.concat([bca.parse_advanced([PAYLOAD[0]]),
+                     bca.parse_advanced([_post(PAYLOAD[0], 777)])], ignore_index=True)
+    got = _run_main(monkeypatch, tmp_path, {2023: [dict(PAYLOAD[0], gameId=402)]}, old,
+                    ["--merge", "--seasons", "2023"])
+    assert set(got["game_id"]) == {402, 777}
