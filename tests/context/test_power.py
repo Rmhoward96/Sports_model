@@ -3,7 +3,15 @@ import pandas as pd
 import pytest
 
 from sportsmodel.cfb.teams import load_fbs_ids
-from sportsmodel.context.power import cfb_power, nfl_market_scale, nfl_power, rankings
+from sportsmodel.context.power import (
+    W_FPI,
+    blend_fpi,
+    cfb_power,
+    nfl_market_scale,
+    nfl_power,
+    prev_ranks_from_published,
+    rankings,
+)
 from sportsmodel.context.units import unit_ratings_asof
 from sportsmodel.nfl.elo import EloConfig
 from sportsmodel.nfl.ratings import BlendConfig, expected_margin
@@ -437,3 +445,60 @@ def test_nfl_market_scale_accepts_blend_k():
     a = nfl_market_scale(ug, sched, 2023)
     b = nfl_market_scale(ug, sched, 2023, blend_k=1.0)
     assert a["n"] == b["n"] and b["slope"] is not None and b["slope"] != a["slope"]
+
+
+def test_blend_fpi_is_sixty_forty_and_keeps_both_parts():
+    assert W_FPI == 0.6
+    b = blend_fpi(_power({"A": 10.0, "B": 0.0}), {"A": 20.0, "B": -5.0}).set_index("team")
+    assert b.loc["A", "rating"] == pytest.approx(0.6 * 20.0 + 0.4 * 10.0)   # 16.0
+    assert b.loc["B", "rating"] == pytest.approx(0.6 * -5.0 + 0.4 * 0.0)    # -3.0
+    assert b.loc["A", "model_rating"] == 10.0 and b.loc["A", "fpi"] == 20.0
+
+
+def test_blend_fpi_team_without_fpi_keeps_its_model_rating():
+    b = blend_fpi(_power({"A": 10.0, "FCS": -30.0}), {"A": 20.0}).set_index("team")
+    assert b.loc["FCS", "rating"] == -30.0 and pd.isna(b.loc["FCS", "fpi"])
+    for none in (None, {}):
+        nb = blend_fpi(_power({"A": 10.0}), none)
+        assert nb["rating"].tolist() == [10.0] and nb["fpi"].isna().all()
+        assert nb["model_rating"].tolist() == [10.0]
+
+
+def test_blend_fpi_does_not_mutate_its_input():
+    p = _power({"A": 10.0})
+    blend_fpi(p, {"A": 20.0})
+    assert p["rating"].tolist() == [10.0] and "fpi" not in p.columns
+
+
+def test_rankings_on_blended_frame_rank_and_sos_use_the_blend():
+    # model order A > B > C > D; FPI flips B above A
+    cur = blend_fpi(_power({"A": 6.0, "B": 2.0, "C": -1.0, "D": -7.0}),
+                    {"A": 0.0, "B": 10.0, "C": -1.0, "D": -7.0})
+    r = rankings(cur, None, None, _log()).set_index("team")
+    assert r["rank"].to_dict() == {"B": 1, "A": 2, "C": 3, "D": 4}
+    # B played A once before week 5: SOS = A's blended rating 0.6*0 + 0.4*6 = 2.4
+    assert r.loc["B", "sos"] == pytest.approx(2.4)
+    assert r.loc["A", "model_rating"] == 6.0 and r.loc["A", "fpi"] == 0.0
+
+
+def _published(rows):
+    return pd.DataFrame(rows, columns=["season", "week", "team", "rank", "fpi"])
+
+
+def test_prev_ranks_from_published_uses_the_last_blended_week_of_the_season():
+    pub = _published([
+        (2026, 4, "A", 2, 10.0), (2026, 4, "B", 1, 12.0),
+        (2026, 5, "A", 1, 11.0), (2026, 5, "B", 2, 9.0),
+        (2026, 6, "A", 2, 11.0),                     # the current week itself: ignored
+        (2025, 15, "A", 9, 1.0),                     # last season: ignored
+    ])
+    assert prev_ranks_from_published(pub, 2026, 6) == {"A": 1, "B": 2}
+    assert prev_ranks_from_published(pub, 2026, 5) == {"A": 2, "B": 1}
+
+
+def test_prev_ranks_from_published_is_empty_when_last_week_was_not_blended_or_absent():
+    model_only = _published([(2026, 5, "A", 1, None), (2026, 5, "B", 2, None)])
+    assert prev_ranks_from_published(model_only, 2026, 6) == {}
+    assert prev_ranks_from_published(model_only, 2026, 5) == {}     # nothing earlier
+    assert prev_ranks_from_published(None, 2026, 6) == {}
+    assert prev_ranks_from_published(_published([]), 2026, 6) == {}
