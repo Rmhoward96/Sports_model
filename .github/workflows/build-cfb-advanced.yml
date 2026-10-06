@@ -4,6 +4,11 @@ name: build-cfb-advanced
 # committed as assets/cfb/advanced_games.parquet to the dispatched ref. Manual dispatch pulls
 # the given seasons; the weekly cron (Mon 12:00 UTC) refreshes the current season. Always
 # --merge: only the pulled seasons are replaced, the rest of the parquet is kept.
+# The same run also refreshes the CURRENT season's CFBD havoc, game results with line scores and
+# turnover stats (scripts/build_cfb_game_data.py --datasets games havoc team_stats; the turnover pull
+# is one call per played week, hence current season only), commits all four parquets, and then rebuilds
+# the site's cfb_team_insights + cfb_quarter_shares tables in Supabase (scripts/build_cfb_panels.py,
+# DATABASE_URL; db/migration_site_panels.sql). A failed table rebuild never blocks the asset commit.
 # CFBD_API_KEY is a repo secret; the key is never printed.
 on:
   workflow_dispatch:
@@ -40,16 +45,21 @@ jobs:
         run: |
           # cron runs have no inputs -> current season only
           uv run python scripts/build_cfb_advanced.py --merge --seasons ${SEASONS:-$(date +%Y)}
+      - name: Pull CFBD havoc, line scores and turnovers (current season)
+        env:
+          CFBD_API_KEY: ${{ secrets.CFBD_API_KEY }}
+        run: |
+          uv run python scripts/build_cfb_game_data.py --datasets games havoc team_stats --seasons "$(date +%Y)"
       - name: Commit advanced asset
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add assets/cfb/advanced_games.parquet
+          git add assets/cfb/advanced_games.parquet assets/cfb/cfbd_games.parquet assets/cfb/havoc_games.parquet assets/cfb/team_game_stats.parquet
           if git diff --staged --quiet; then
             echo "no change"
             exit 0
           fi
-          git commit -m "data(cfb): CFBD advanced game stats (build-cfb-advanced) [skip ci]"
+          git commit -m "data(cfb): CFBD advanced game stats, havoc, line scores, turnovers (build-cfb-advanced) [skip ci]"
           # other data workflows push to the same branch: rebase onto theirs and retry
           for attempt in 1 2 3; do
             if git push; then
@@ -60,3 +70,7 @@ jobs:
           done
           echo "push failed after 3 attempts" >&2
           exit 1
+      - name: Rebuild site panel tables (team insights, quarter shares)
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+        run: uv run python scripts/build_cfb_panels.py
