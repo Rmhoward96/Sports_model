@@ -90,3 +90,22 @@ def test_nfl_rows_window_dedupe_weather_kind_and_errors():
     assert (a["sport"], a["source"], a["indoor"], a["temp_f"], a["wind_mph"], a["precip_chance"], a["weather_kind"]) == ("nfl", "espn", False, 41.0, 14.0, 20.0, "forecast")
     assert rows[11]["weather_kind"] is None and rows[11]["temp_f"] is None and rows[11]["city"] == "Orchard Park"
     assert rows[12]["indoor"] is True and rows[12]["venue_name"] == "Dome"
+
+
+def test_nfl_indoor_is_none_for_a_blank_summary_and_false_only_with_a_venue():
+    from sportsmodel.nfl.espn import parse_game_info
+    games = [_g(20, "2026-10-11T17:00:00Z"), _g(21, "2026-10-11T17:00:00Z"), _g(22, "2026-10-11T17:00:00Z")]
+    infos = {20: parse_game_info({}), 21: _info(), 22: _info(indoor=True)}
+    rows = {r["game_pk"]: r for r in gi.nfl_game_info(games, lambda pk: infos[pk], NOW)}
+    assert rows[20]["indoor"] is None and rows[20]["venue_name"] is None and rows[20]["weather_kind"] is None
+    assert rows[21]["indoor"] is False and rows[22]["indoor"] is True
+
+
+def test_nfl_typical_espn_summary_gives_no_wind_or_conditions():
+    """Ruling W1: ESPN's gameInfo only has temperature and a 0-100 precipitation chance (gust is not wind)."""
+    from sportsmodel.nfl.espn import parse_game_info
+    summary = {"gameInfo": {"venue": {"fullName": "Highmark Stadium", "address": {"city": "Orchard Park", "state": "NY"}},
+                            "weather": {"temperature": 52, "gust": 21, "precipitation": 35}}}
+    (row,) = gi.nfl_game_info([_g(30, "2026-10-11T17:00:00Z")], lambda pk: parse_game_info(summary), NOW)
+    assert row["temp_f"] == 52.0 and row["precip_chance"] == 35.0 and row["weather_kind"] == "forecast"
+    assert row["wind_mph"] is None and row["conditions"] is None and row["indoor"] is False

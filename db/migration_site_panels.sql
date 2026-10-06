@@ -85,4 +85,6 @@ ALTER TABLE cfb_quarter_shares ENABLE ROW LEVEL SECURITY;
 DROP POLICY IF EXISTS "public read cfb_quarter_shares" ON cfb_quarter_shares;
 CREATE POLICY "public read cfb_quarter_shares" ON cfb_quarter_shares FOR SELECT USING (true);
 
+-- Defence in depth: the API roles can read these tables and nothing else (the jobs write as the DB owner).
+REVOKE INSERT, UPDATE, DELETE, TRUNCATE ON public.game_info, public.cfb_team_insights, public.cfb_quarter_shares FROM anon, authenticated;
 GRANT SELECT ON game_info, cfb_team_insights, cfb_quarter_shares TO anon, authenticated;

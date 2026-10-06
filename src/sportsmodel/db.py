@@ -1085,19 +1085,25 @@ _GAME_INFO_WEATHER = frozenset({"temp_f", "wind_mph", "precip_chance", "precip_i
 def _site_panel_sql(table: str) -> str:
     """INSERT ... ON CONFLICT DO UPDATE for one site-panel table. cfb_* tables overwrite every column.
     game_info keeps what an earlier run learned: a later run that has no reading (ESPN drops its weather
-    block after a game, CFBD has no forecast yet) must not erase it, so every non-key column except
-    `source` / `captured_at` is COALESCE(new, old); the weather columns are additionally NULLed when the
-    new row says the venue is indoors."""
+    block after a game, CFBD has no forecast yet) must not erase it, so every non-weather column except
+    `source` is COALESCE(new, old). The weather columns move as a GROUP: a new row with a weather_kind
+    replaces all of them (NULLs included, so a forecast's wind never mixes with an observation), a new row
+    without one keeps the old values, and an indoor row NULLs them. `captured_at` only advances when this
+    run supplied a weather reading or an indoor verdict, so a retained reading keeps its own timestamp."""
     cols, key = SITE_PANEL_COLUMNS[table], SITE_PANEL_KEYS[table]
     sets = []
     for c in cols:
         if c in key:
             continue
-        if table != "game_info" or c in ("source", "captured_at"):
+        if table != "game_info" or c == "source":
             sets.append(f"{c} = EXCLUDED.{c}")
+        elif c == "captured_at":
+            sets.append("captured_at = CASE WHEN EXCLUDED.weather_kind IS NOT NULL OR EXCLUDED.indoor IS TRUE "
+                        "THEN EXCLUDED.captured_at ELSE game_info.captured_at END")
         elif c in _GAME_INFO_WEATHER:
             sets.append(f"{c} = CASE WHEN EXCLUDED.indoor IS TRUE THEN NULL "
-                        f"ELSE COALESCE(EXCLUDED.{c}, game_info.{c}) END")
+                        f"WHEN EXCLUDED.weather_kind IS NOT NULL THEN EXCLUDED.{c} "
+                        f"ELSE game_info.{c} END")
         else:
             sets.append(f"{c} = COALESCE(EXCLUDED.{c}, game_info.{c})")
     return (f"INSERT INTO {table} ({', '.join(cols)}) VALUES ({', '.join(['%s'] * len(cols))}) "

@@ -66,16 +66,43 @@ def test_game_info_sql_keeps_earlier_readings_and_nulls_indoor_weather(monkeypat
     assert json.loads(tup[cols.index("line_score")]) == row["line_score"]
     sql = sink["sql"]
     assert "INSERT INTO game_info" in sql and "ON CONFLICT (sport, game_pk) DO UPDATE" in sql
-    assert "temp_f = CASE WHEN EXCLUDED.indoor IS TRUE THEN NULL ELSE COALESCE(EXCLUDED.temp_f, game_info.temp_f) END" in sql
+    assert ("temp_f = CASE WHEN EXCLUDED.indoor IS TRUE THEN NULL WHEN EXCLUDED.weather_kind IS NOT NULL "
+            "THEN EXCLUDED.temp_f ELSE game_info.temp_f END") in sql
     assert "weather_kind = CASE WHEN EXCLUDED.indoor IS TRUE" in sql
     assert "venue_name = COALESCE(EXCLUDED.venue_name, game_info.venue_name)" in sql
     assert "line_score = COALESCE(EXCLUDED.line_score, game_info.line_score)" in sql
     assert "indoor = COALESCE(EXCLUDED.indoor, game_info.indoor)" in sql
-    assert "source = EXCLUDED.source" in sql and "captured_at = EXCLUDED.captured_at" in sql
+    assert "source = EXCLUDED.source" in sql
+    assert ("captured_at = CASE WHEN EXCLUDED.weather_kind IS NOT NULL OR EXCLUDED.indoor IS TRUE "
+            "THEN EXCLUDED.captured_at ELSE game_info.captured_at END") in sql
     assert sql.rstrip().endswith("updated_at = now()") and sink["committed"] is True
     row2 = {**row, "line_score": None}
     db.upsert_game_info([row2])
     assert sink["rows"][0][cols.index("line_score")] is None          # NULL stays SQL NULL, not the string "null"
+
+
+def _set_clause(sql, col):
+    m = re.search(rf"\b{col} = (CASE .*?END|COALESCE\([^)]*\)|EXCLUDED\.\w+)", sql.split("DO UPDATE SET")[1])
+    assert m, col
+    return m.group(1)
+
+
+def test_game_info_weather_columns_replace_as_a_group_and_every_one_is_covered():
+    sql = db._site_panel_sql("game_info")
+    weather = ("temp_f", "wind_mph", "precip_chance", "precip_in", "conditions", "weather_kind")
+    for col in weather:
+        assert _set_clause(sql, col) == (f"CASE WHEN EXCLUDED.indoor IS TRUE THEN NULL "
+                                         f"WHEN EXCLUDED.weather_kind IS NOT NULL THEN EXCLUDED.{col} "
+                                         f"ELSE game_info.{col} END")      # new kind -> replace (NULLs too); none -> keep old
+    for col in ("venue_name", "city", "state", "indoor", "line_score"):
+        assert _set_clause(sql, col) == f"COALESCE(EXCLUDED.{col}, game_info.{col})"
+
+
+def test_captured_at_only_advances_with_a_reading_or_indoor_verdict():
+    sql = db._site_panel_sql("game_info")
+    assert "captured_at = CASE WHEN EXCLUDED.weather_kind IS NOT NULL OR EXCLUDED.indoor IS TRUE" in sql
+    assert "ELSE game_info.captured_at END" in sql
+    assert "captured_at = EXCLUDED.captured_at" not in sql
 
 
 def test_cfb_tables_overwrite_every_column(monkeypatch):
@@ -107,6 +134,15 @@ def test_migration_table_has_every_written_column_pk_rls_policy_and_grant(table)
     assert f"ALTER TABLE {table} ENABLE ROW LEVEL SECURITY;" in MIGRATION
     assert f'CREATE POLICY "public read {table}" ON {table} FOR SELECT USING (true);' in MIGRATION
     assert re.search(rf"GRANT SELECT ON [^;]*\b{table}\b[^;]* TO anon, authenticated;", MIGRATION)
+
+
+def test_migration_revokes_writes_from_api_roles():
+    m = re.search(r"REVOKE ([A-Z, ]+) ON ([^;]+) FROM anon, authenticated;", MIGRATION)
+    assert m, "no REVOKE"
+    assert set(re.split(r",\s*", m.group(1))) == {"INSERT", "UPDATE", "DELETE", "TRUNCATE"}
+    for t in ("game_info", "cfb_team_insights", "cfb_quarter_shares"):
+        assert f"public.{t}" in m.group(2)
+    assert MIGRATION.index("REVOKE") < MIGRATION.index("GRANT SELECT")
 
 
 def test_migration_is_idempotent_and_writes_nothing():

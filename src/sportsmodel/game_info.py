@@ -119,8 +119,11 @@ def nfl_game_info(games: list[dict], fetch_info: Callable[[int], dict], now,
             warn(f"nfl: summary for {pk} unavailable ({type(exc).__name__})")
             continue
         row = _blank("nfl", pk, "espn", now)
+        # True when ESPN says indoors; False only when it named the venue (so the verdict is real);
+        # None for a blank summary, so a stored True is never overwritten by a guess.
+        indoor = True if info.get("indoor") else (False if info.get("venue_name") else None)
         row.update(venue_name=info.get("venue_name"), city=info.get("city"), state=info.get("state"),
-                   indoor=bool(info.get("indoor")), temp_f=_num(info.get("temp_f")),
+                   indoor=indoor, temp_f=_num(info.get("temp_f")),
                    wind_mph=_num(info.get("wind_mph")), precip_chance=_num(info.get("precip_chance")),
                    conditions=_text(info.get("conditions")))
         if any(row[f] is not None for f in WEATHER_FIELDS):
