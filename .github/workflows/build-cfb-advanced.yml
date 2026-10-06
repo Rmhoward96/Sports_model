@@ -49,8 +49,10 @@ jobs:
         env:
           CFBD_API_KEY: ${{ secrets.CFBD_API_KEY }}
         run: |
+          # known gap: in January/February, date +%Y is the new year, so bowl games (season = prior year) are not refreshed
           uv run python scripts/build_cfb_game_data.py --datasets games havoc team_stats --seasons "$(date +%Y)"
       - name: Commit advanced asset
+        if: ${{ !cancelled() }}   # a failed game-data pull must not skip committing the advanced_games refresh
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
