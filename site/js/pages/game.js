@@ -309,6 +309,33 @@ function gmWeatherInsight(D) {
   return { kind: "weather", strength: Math.round(Math.max(...sc)), title: `Weather: ${f.join(", ")}`,
     body: `${i.weather_kind === "observed" ? "Observed" : "Forecast"} conditions${i.venue_name ? ` at ${i.venue_name}` : ""}. Descriptive only, not a pick.` };
 }
+// CFB Projected Game Flow. Each team's projected points by quarter = its projected score x the average of its own scored shares and its
+// opponent's allowed shares (cfb_quarter_shares: Q1-Q4 shares of points, shrunk to the league, each vector sums to 1), renormalised to
+// 1. Returns {home: [q1..q4], away: [q1..q4], actual: {home, away} | null, games: {home, away}} or null when it is not CFB, has no
+// projected score, or either team lacks a share row (the card hides). `actual` = game_info.line_score for a finished game.
+const gmShareRow = (D, side) => { const c = gmTeamCode(D.ctxHist, D.ctxGrades, side); return c == null ? null : (D.cfbShares || []).find((x) => String(x.team) === c) || null; };
+function gmLineScore(info) {
+  const ls = info && ctxJson(info.line_score);
+  const ok = (a) => Array.isArray(a) && a.length === 4 && a.every((v) => finite(v) && +v >= 0);
+  return ls && ok(ls.home) && ok(ls.away) ? { home: ls.home.map(Number), away: ls.away.map(Number) } : null;
+}
+function gmGameFlow(D) {
+  if (!D || D.sport !== "cfb") return null;
+  const r = D.r || {}, h = numOrNull(r.pred_home_score), a = numOrNull(r.pred_away_score);
+  if (h == null || a == null || h < 0 || a < 0 || h + a <= 0) return null;
+  const sh = gmShareRow(D, "home"), sa = gmShareRow(D, "away");
+  if (!sh || !sa) return null;
+  const vec = (row, kind) => [1, 2, 3, 4].map((q) => numOrNull(row[`${kind}_q${q}`]));
+  const blend = (own, opp) => {
+    const sc = vec(own, "scored"), al = vec(opp, "allowed");
+    if ([...sc, ...al].some((x) => x == null || x < 0)) return null;
+    const m = sc.map((x, i) => (x + al[i]) / 2), tot = m.reduce((x, y) => x + y, 0);
+    return tot > 0 ? m.map((x) => x / tot) : null;
+  };
+  const bh = blend(sh, sa), ba = blend(sa, sh);
+  if (!bh || !ba) return null;
+  return { home: bh.map((x) => x * h), away: ba.map((x) => x * a), actual: gmLineScore(D.gameInfo), games: { home: numOrNull(sh.games_used), away: numOrNull(sa.games_used) } };
+}
 function gmKeyInsights(D) {
   const r = (D && D.r) || {}, grades = (D && D.ctxGrades) || [], hist = (D && D.ctxHist) || [], power = (D && D.ctxPower) || [];
   const name = (side) => shortTeam(side === "home" ? r.home_team_name : r.away_team_name, D && D.sport);
@@ -574,6 +601,18 @@ function gmInsightsCard(D) {
   const rows = ins.map((i) => `<div class="ca-gm-ins"><span class="ca-gm-ic ${GM_INSIGHT_ICON[i.kind][0]}">${GM_INSIGHT_ICON[i.kind][1]}</span><div><b>${gmEsc(i.title)}</b><p>${gmEsc(i.body)}</p></div></div>`).join("");
   return `<section class="ca-card ca-gm-ins-card" id="gm-insights"><div class="ca-card-head"><h2>Key Insights</h2></div>${rows}</section>`;
 }
+const GM_FLOW_TIP = "Each team's own quarter-by-quarter scoring pattern over the last two seasons and this one (shrunk toward the league average), averaged with what its opponent allows by quarter, applied to the projected score. A pace estimate, not a prediction of the score by quarter. Overtime is excluded.";
+function gmFlowCard(D) {
+  const f = gmGameFlow(D);
+  if (!f) return "";
+  const away = shortTeam(D.r.away_team_name, "cfb"), home = shortTeam(D.r.home_team_name, "cfb");
+  const groups = (src, fmt) => ["Q1", "Q2", "Q3", "Q4"].map((q, i) => ({ label: q, bars: [{ value: src.away[i], color: D.awayCol, label: fmt(src.away[i]) }, { value: src.home[i], color: D.homeCol, label: fmt(src.home[i]) }] }));
+  const chart = (cap, src, fmt) => `<figure><figcaption>${cap}</figcaption>${groupedBars(groups(src, fmt), { h: 200, bw: 28 })}</figure>`;
+  const legend = `<div class="ca-legend"><span class="ca-legend-item"><i style="background:${gmEsc(D.awayCol)}"></i>${gmEsc(away)}</span><span class="ca-legend-item"><i style="background:${gmEsc(D.homeCol)}"></i>${gmEsc(home)}</span></div>`;
+  const n = f.games.away != null && f.games.home != null ? `<p class="ca-gm-cap">Shares come from ${gmEsc(away)}'s ${f.games.away} and ${gmEsc(home)}'s ${f.games.home} games over the last two seasons and this one.</p>` : "";
+  return `<section class="ca-card ca-gm-flow" id="gm-flow"><div class="ca-card-head"><h2>Projected Game Flow</h2>${infoTip(GM_FLOW_TIP)}</div>${legend}
+    <div class="ca-gm-flow-charts">${chart("Projected pace (points by quarter)", f, (v) => v.toFixed(1))}${f.actual ? chart("Actual by quarter (excludes overtime)", f.actual, (v) => String(Math.round(v))) : ""}</div>${n}</section>`;
+}
 function gmCoverCard(D) {
   const c = gmCover(gmOddsOf(D));
   let body;
@@ -592,8 +631,10 @@ function gmCoverCard(D) {
 function gmOverview(D) {
   const cards = GM_OVERVIEW.map(([n, fn]) => safeCard(n, fn, D, "ca-card ca-gm-card")).join("");
   const ins = safeCard("Key Insights", gmInsightsCard, D, "ca-card ca-gm-ins-card", "gm-insights");
+  const flow = safeCard("Projected Game Flow", gmFlowCard, D, "ca-card ca-gm-flow", "gm-flow");
+  const left = ins + flow;       // CFB: the Projected Game Flow card sits under Key Insights
   return `<div class="ca-gm-cards" id="gm-cards">${cards}</div>${safeCard("Model Projection", gmProjectionCard, D, "ca-card ca-gm-proj", "gm-projection")}
-    <div class="ca-gm-lower${ins ? "" : " solo"}">${ins}${safeCard("Cover Probability", gmCoverCard, D, "ca-card ca-gm-cover", "gm-cover")}</div>`;
+    <div class="ca-gm-lower${left ? "" : " solo"}">${flow ? `<div class="ca-gm-col">${left}</div>` : left}${safeCard("Cover Probability", gmCoverCard, D, "ca-card ca-gm-cover", "gm-cover")}</div>`;
 }
 
 /* ── other tabs ───────────────────────────────────────────────────────── */

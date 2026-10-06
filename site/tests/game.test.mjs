@@ -270,7 +270,7 @@ test("buildGamePage: hero, odds boxes, CappingAlpha Read, tabs and all five Over
   assert.ok(html.includes("&lt;b&gt;Crew&lt;/b&gt;") && html.includes("Kansas City &quot;Chiefs&quot;"), "hostile names are escaped");
   assert.ok(!html.includes("<b>Crew</b>") && !html.includes("<i>Zed</i>"));
   assert.ok(!/NaN|undefined/.test(clean(html)), "no NaN / undefined leaks");
-  assert.ok(!html.includes("Projected Game Flow") && !/Tuscaloosa|Bryant-Denny/.test(html), "Phase B items and mockup placeholders are never rendered");
+  assert.ok(!html.includes("Projected Game Flow") && !/Tuscaloosa|Bryant-Denny/.test(html), "the CFB-only Projected Game Flow and the mockup placeholders are never rendered for an NFL game without game_info");
   assert.ok(requested.some((r) => r.startsWith("line_moves_current")));
 });
 

@@ -237,3 +237,73 @@ test("cfb_team_insights / cfb_quarter_shares are read for both team codes (CFB o
   await nfl.D.buildGamePage();
   assert.ok(!nfl.requested.some((r) => r.startsWith("cfb_")), "NFL never reads the CFB tables");
 });
+
+/* ── Projected Game Flow ────────────────────────────────────────────────── */
+const share = (team, scored, allowed, games = 31) => ({ team, scored_q1: scored[0], scored_q2: scored[1], scored_q3: scored[2], scored_q4: scored[3],
+  allowed_q1: allowed[0], allowed_q2: allowed[1], allowed_q3: allowed[2], allowed_q4: allowed[3], games_used: games });
+const SHARES = [share("333", [0.30, 0.20, 0.20, 0.30], [0.25, 0.25, 0.25, 0.25], 31), share("61", [0.20, 0.30, 0.30, 0.20], [0.28, 0.22, 0.22, 0.28], 29)];
+const flowD = (o = {}) => ({ sport: "cfb", r: PRED("cfb"), ctxGrades: [], ctxHist: HIST, cfbShares: SHARES, gameInfo: null, ...o });
+const close = (a, b) => assert.ok(a.length === b.length && a.every((x, i) => Math.abs(x - b[i]) < 1e-9), `${a} vs ${b}`);
+
+test("gmGameFlow: projected score x the average of the team's scored shares and the opponent's allowed shares", () => {
+  const f = g.gmGameFlow(flowD());
+  close(f.home, [8.7, 6.3, 6.3, 8.7]);       // home 30 pts: (.30 + .28) / 2, (.20 + .22) / 2, ...
+  close(f.away, [4.5, 5.5, 5.5, 4.5]);       // away 20 pts: (.20 + .25) / 2, (.30 + .25) / 2, ...
+  assert.equal(f.actual, null); assert.deepEqual({ ...f.games }, { home: 31, away: 29 });
+  assert.ok(Math.abs(f.home.reduce((a, b) => a + b) - 30) < 1e-9 && Math.abs(f.away.reduce((a, b) => a + b) - 20) < 1e-9, "quarters add up to the projected score");
+});
+
+test("gmGameFlow: share vectors that do not sum to 1 are renormalised, so the quarters still add up to the projected score", () => {
+  const f = g.gmGameFlow(flowD({ cfbShares: [share("333", [0.6, 0.4, 0.4, 0.4], [0.25, 0.25, 0.25, 0.25]), share("61", [0.2, 0.3, 0.3, 0.2], [0.25, 0.25, 0.25, 0.25])] }));
+  close(f.home, [30 * 0.425 / 1.4, 30 * 0.325 / 1.4, 30 * 0.325 / 1.4, 30 * 0.325 / 1.4]);
+  assert.ok(Math.abs(f.home.reduce((a, b) => a + b) - 30) < 1e-9);
+});
+
+test("gmGameFlow: the actual line score rides along only when it is four non-negative numbers per side", () => {
+  const ok = g.gmGameFlow(flowD({ gameInfo: { line_score: { home: [7, 3, 10, 7], away: ["0", 7, 6, 7] } } }));
+  assert.deepEqual({ ...ok.actual }, { home: [7, 3, 10, 7], away: [0, 7, 6, 7] });
+  assert.deepEqual({ ...g.gmGameFlow(flowD({ gameInfo: { line_score: JSON.stringify({ home: [1, 2, 3, 4], away: [4, 3, 2, 1] }) } })).actual }, { home: [1, 2, 3, 4], away: [4, 3, 2, 1] }, "a JSON string works too");
+  for (const bad of [{ home: [7, 3, 10], away: [0, 7, 6, 7] }, { home: [7, 3, 10, -1], away: [0, 7, 6, 7] }, { home: [7, 3, 10, null], away: [0, 7, 6, 7] }, null, "junk", {}])
+    assert.equal(g.gmGameFlow(flowD({ gameInfo: { line_score: bad } })).actual, null, JSON.stringify(bad));
+});
+
+test("gmGameFlow hides (null) without a projection, a share row for either team, a usable share vector, or for non-CFB", () => {
+  assert.equal(g.gmGameFlow(flowD({ r: PRED("cfb", { pred_home_score: null }) })), null);
+  assert.equal(g.gmGameFlow(flowD({ r: PRED("cfb", { pred_away_score: "x" }) })), null);
+  assert.equal(g.gmGameFlow(flowD({ r: PRED("cfb", { pred_home_score: 0, pred_away_score: 0 }) })), null);
+  assert.equal(g.gmGameFlow(flowD({ cfbShares: [SHARES[0]] })), null, "one team has no row");
+  assert.equal(g.gmGameFlow(flowD({ cfbShares: [] })), null);
+  assert.equal(g.gmGameFlow(flowD({ cfbShares: undefined })), null);
+  assert.equal(g.gmGameFlow(flowD({ ctxHist: [] })), null, "no team codes, no rows to match");
+  assert.equal(g.gmGameFlow(flowD({ cfbShares: [share("333", [0.3, null, 0.2, 0.3], [0.25, 0.25, 0.25, 0.25]), SHARES[1]] })), null);
+  assert.equal(g.gmGameFlow(flowD({ cfbShares: [share("333", [0, 0, 0, 0], [0, 0, 0, 0]), share("61", [0, 0, 0, 0], [0, 0, 0, 0])] })), null, "all-zero shares cannot be normalised");
+  assert.equal(g.gmGameFlow(flowD({ sport: "nfl" })), null);
+  assert.equal(g.gmGameFlow(null), null);
+});
+
+test("Overview: the Projected Game Flow card sits under Key Insights with its tooltip, legend, projected chart and (final games) the actual chart", async () => {
+  const rows = { cfb_quarter_shares: SHARES, game_info: [{ ...INFO, line_score: { home: [7, 3, 10, 7], away: [0, 7, 6, 7] } }],
+    cfb_team_insights: [insRow("333", { def_havoc_rank: 8 }), insRow("61", { off_havoc_allowed_rank: 118 })] };
+  const html = await page({ rows }).D.buildGamePage();
+  const i = html.indexOf('id="gm-insights"'), f = html.indexOf('id="gm-flow"'), c = html.indexOf('id="gm-cover"');
+  assert.ok(i > 0 && i < f && f < c, "insights, then game flow, then cover");
+  const card = html.slice(f, c);
+  assert.ok(card.includes("<h2>Projected Game Flow</h2>") && card.includes("Projected pace (points by quarter)") && card.includes("Actual by quarter (excludes overtime)"));
+  assert.ok(card.includes('class="ca-info"') && card.includes("A pace estimate, not a prediction of the score by quarter"));
+  assert.ok(card.includes(">Georgia<") && card.includes(">Alabama<"), "legend names both teams");
+  for (const t of [">Q1<", ">Q4<", ">8.7<", ">4.5<", ">6.3<", ">10<"]) assert.ok(card.includes(t), t);
+  assert.ok(card.includes("Shares come from Georgia's 29 and Alabama's 31 games"));
+  assert.equal((card.match(/<svg class="ca-bars"/g) || []).length, 2);
+  const upcoming = await page({ rows: { cfb_quarter_shares: SHARES } }).D.buildGamePage();
+  const up = upcoming.slice(upcoming.indexOf('id="gm-flow"'), upcoming.indexOf('id="gm-cover"'));
+  assert.ok(up.includes("Projected pace") && !up.includes("Actual by quarter"), "no line score yet: projection only");
+});
+
+test("Overview: no shares, a missing table, no projection or an NFL game -> no Projected Game Flow card, page intact", async () => {
+  for (const o of [{ rows: { cfb_quarter_shares: [] } }, { missing: ["cfb_quarter_shares"] }, { rows: { cfb_quarter_shares: SHARES }, pred: { pred_home_score: null } },
+                   { sport: "nfl", rows: { cfb_quarter_shares: SHARES } }]) {
+    const html = await page(o).D.buildGamePage();
+    assert.ok(!html.includes("gm-flow") && !html.includes("Projected Game Flow") && html.includes('id="gm-cover"'), JSON.stringify(Object.keys(o)));
+    assert.ok(!/NaN|undefined/.test(html.replace(/\bnull\b(?=[^<]*>)/g, "")));
+  }
+});
