@@ -53,3 +53,49 @@ def test_load_eff_games_works_without_optional_assets(tmp_path):
     g = v3_data.load_eff_games(tmp_path)
     assert len(g) == 2 and g["y_havoc"].isna().all() and g["y_ppo"].isna().all()
     assert list(g["home"]) == [1.0, -1.0]
+
+
+def test_load_v3_inputs_reads_configs_and_tolerates_missing_optional_assets(tmp_path):
+    import json
+    write(tmp_path, "advanced_games.parquet", pd.DataFrame({
+        "season": [2023, 2023], "week": [1, 1], "season_type": ["regular"] * 2, "game_id": [1, 1],
+        "team": ["a", "b"], "opponent": ["b", "a"], "off_plays": [70.0, 60.0], "off_ppa": [0.2, 0.1],
+        "off_success": [0.5, 0.4], "off_explosiveness": [1.2, 1.1], "off_pass_ppa": [0.2, 0.1],
+        "off_rush_ppa": [0.1, 0.0], "off_pass_plays": [40.0, 30.0], "off_rush_plays": [30.0, 30.0]}))
+    write(tmp_path, "cfbd_games.parquet", pd.DataFrame({
+        "game_id": [1], "season": [2023], "venue_id": [7.0], "home_team": ["a"], "neutral_site": [False]}))
+    write(tmp_path, "schedules.parquet", pd.DataFrame({"game_pk": [1], "week": [1], "game_type": ["REG"]}))
+    (tmp_path / "rating.json").write_text(json.dumps({"k": 40, "hfa_elo": 70, "carryover": 0.9,
+                                                      "w_sos": 0.45, "srs_min_games": 3}))
+    inp = v3_data.load_v3_inputs(tmp_path)                    # no weights/decay/eff json: documented defaults
+    assert inp.elo_cfg.k == 40 and inp.blend_cfg.srs_min_games == 3
+    assert inp.eff_cfg.ridge == 4.0 and inp.decay.half_life_games > 0
+    assert inp.talent is None and inp.priors_rows == {} and len(inp.eff_games) == 2
+    assert inp.ctx.game_venue == {1: 7}
+
+
+def test_load_v3_inputs_is_strict_about_prior_weights_when_priors_exist(tmp_path):
+    import json
+    write(tmp_path, "priors.parquet", pd.DataFrame({"season": [2023], "team_espn_id": ["a"]}))
+    (tmp_path / "rating.json").write_text(json.dumps({"k": 40, "hfa_elo": 70, "carryover": 0.9,
+                                                      "w_sos": 0.45, "srs_min_games": 3}))
+    with pytest.raises(FileNotFoundError, match="priors_weights.json"):
+        v3_data.load_v3_inputs(tmp_path)
+
+
+def test_load_v3_inputs_weather_override_replaces_the_weather_asset(tmp_path):
+    import json
+    write(tmp_path, "advanced_games.parquet", pd.DataFrame({
+        "season": [2023, 2023], "week": [1, 1], "season_type": ["regular"] * 2, "game_id": [1, 1],
+        "team": ["a", "b"], "opponent": ["b", "a"], "off_plays": [70.0, 60.0], "off_ppa": [0.2, 0.1],
+        "off_success": [0.5, 0.4], "off_explosiveness": [1.2, 1.1], "off_pass_ppa": [0.2, 0.1],
+        "off_rush_ppa": [0.1, 0.0], "off_pass_plays": [40.0, 30.0], "off_rush_plays": [30.0, 30.0]}))
+    write(tmp_path, "cfbd_games.parquet", pd.DataFrame({
+        "game_id": [1], "season": [2023], "venue_id": [7.0], "home_team": ["a"], "neutral_site": [False]}))
+    write(tmp_path, "schedules.parquet", pd.DataFrame({"game_pk": [1], "week": [1], "game_type": ["REG"]}))
+    write(tmp_path, "weather_games.parquet", pd.DataFrame({"game_id": [1], "wind_speed": [3.0]}))
+    (tmp_path / "rating.json").write_text(json.dumps({"k": 40, "hfa_elo": 70, "carryover": 0.9,
+                                                      "w_sos": 0.45, "srs_min_games": 3}))
+    assert v3_data.load_v3_inputs(tmp_path).ctx.weather[1]["wind_speed"] == 3.0
+    live = pd.DataFrame({"game_id": [1], "wind_speed": [21.0]})
+    assert v3_data.load_v3_inputs(tmp_path, weather=live).ctx.weather[1]["wind_speed"] == 21.0

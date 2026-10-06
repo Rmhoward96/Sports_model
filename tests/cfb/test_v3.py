@@ -52,3 +52,43 @@ def test_load_gameline_config_reads_gameline_shaped_json_for_v2_and_v3(tmp_path)
     del d["bias_margin"], d["bias_total"]
     q.write_text(json.dumps(d))
     assert v3.load_gameline_config(q).bias_total == 0.0
+
+
+def _weights_json(**over):
+    d = json.loads(v3.V3Weights(v3.LinearBlend(1.0, {"ppa_plays": 2.0}), v3.LinearBlend(0.1, {"margin_v2": 1.0}),
+                                v3.LinearBlend(3.0, {"total_v2": 0.9})).to_json())
+    d.update(over)
+    return json.dumps(d)
+
+
+@pytest.mark.parametrize("section,bad", [("margin", "margin_v3"), ("margin", "wind_excess"),
+                                         ("total", "total_v3"), ("total", "short_week_diff"),
+                                         ("points_map", "ppa_play")])
+def test_load_v3_weights_rejects_unknown_feature_keys(tmp_path, section, bad):
+    d = json.loads(_weights_json())
+    d[section]["coefs"][bad] = 1.0                    # a typo / wrong-model key must not be silently dropped
+    p = tmp_path / "w.json"
+    p.write_text(json.dumps(d))
+    with pytest.raises(ValueError, match=bad):
+        v3.load_v3_weights(p)
+
+
+def test_load_v3_weights_rejects_a_wrong_or_missing_version(tmp_path):
+    p = tmp_path / "w.json"
+    p.write_text(_weights_json(version="cfb-ratings-v2"))
+    with pytest.raises(ValueError, match="version"):
+        v3.load_v3_weights(p)
+    d = json.loads(_weights_json())
+    del d["version"]
+    p.write_text(json.dumps(d))
+    with pytest.raises(ValueError, match="version"):
+        v3.load_v3_weights(p)
+
+
+def test_load_v3_weights_accepts_every_declared_feature(tmp_path):
+    w = v3.V3Weights(v3.LinearBlend(1.0, {f: 0.1 for f in v3.POINT_FEATURES}),
+                     v3.LinearBlend(0.0, {f: 0.1 for f in v3.ALL_MARGIN_FEATURES}),
+                     v3.LinearBlend(0.0, {f: 0.1 for f in v3.ALL_TOTAL_FEATURES}))
+    p = tmp_path / "w.json"
+    p.write_text(w.to_json())
+    assert v3.load_v3_weights(p) == w

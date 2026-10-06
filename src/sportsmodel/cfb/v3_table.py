@@ -81,6 +81,7 @@ def build_table(frame: pd.DataFrame, inp: V3Inputs, *, seasons=None,
         margin_v2, total_v2 = model_margin_total(h, a, eh, ea, st, inp.elo_cfg, inp.blend_cfg)
         if h in rp and a in rp:
             w_pair = 0.5 * (prior_weight(gh, inp.decay) + prior_weight(ga, inp.decay))
+            # includes hfa_elo even for neutral games, exactly as v2 does; the fitted non_neutral term absorbs it
             prior_margin = w_pair * ((rp[h] + inp.elo_cfg.hfa_elo) - rp[a]) / 25.0
         else:
             prior_margin = 0.0

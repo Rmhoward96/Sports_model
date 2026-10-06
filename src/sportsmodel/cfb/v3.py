@@ -75,6 +75,14 @@ def load_v3_weights(path) -> V3Weights:
     p = Path(path)
     if not p.exists():
         raise FileNotFoundError(f"{p} is missing; run scripts/fit_cfb_v3.py (plan Task 8) before serving v3")
+    d = json.loads(p.read_text())
+    if d.get("version") != VERSION:
+        raise ValueError(f"{p}: version {d.get('version')!r} != {VERSION!r}; refit with scripts/fit_cfb_v3.py")
+    for section, allowed in (("points_map", POINT_FEATURES), ("margin", ALL_MARGIN_FEATURES),
+                             ("total", ALL_TOTAL_FEATURES)):
+        unknown = sorted(set(d[section]["coefs"]) - set(allowed))
+        if unknown:                                   # a typo must not silently drop a feature
+            raise ValueError(f"{p}: unknown {section} coefficient(s) {unknown}; allowed: {sorted(allowed)}")
     return V3Weights.from_json(p.read_text())
 
 
