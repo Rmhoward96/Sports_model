@@ -44,19 +44,28 @@ SEASON_TYPES = ("regular", "postseason")
 
 
 def merge_asset(existing: pd.DataFrame | None, new: pd.DataFrame, keys: list[str]) -> pd.DataFrame:
-    """Replace the seasons present in `new`, keep every other committed season (a season whose
-    pull came back empty is therefore kept). Season-less assets (venues) are replaced whole
-    when `new` has rows."""
+    """Replace the committed blocks that `new` re-pulled and keep every other committed row.
+
+    A block is a season, or a (season, season_type) pair when both frames carry `season_type`, so
+    a regular-only pull never deletes that season's postseason rows (and vice versa). A block whose
+    pull came back empty is therefore kept. Season-less assets (venues) are replaced whole when
+    `new` has rows. Columns follow `new` (then any extra committed columns), a stable order."""
     if new.empty:
         return existing.copy() if existing is not None else new.copy()
     if existing is None or existing.empty:
         out = new.copy()
+    elif "season" in new.columns and "season_type" in new.columns and "season_type" in existing.columns:
+        pulled = set(zip(new["season"], new["season_type"]))
+        keep = [(s, t) not in pulled for s, t in zip(existing["season"], existing["season_type"])]
+        out = pd.concat([existing[keep], new], ignore_index=True)
     elif "season" in new.columns:
         out = pd.concat([existing[~existing["season"].isin(new["season"].unique())], new],
                         ignore_index=True)
     else:
         out = new.copy()
-    return out.drop_duplicates(subset=keys, keep="last").sort_values(keys).reset_index(drop=True)
+    out = out.drop_duplicates(subset=keys, keep="last").sort_values(keys).reset_index(drop=True)
+    extra = [c for c in out.columns if c not in new.columns]
+    return out.reindex(columns=list(new.columns) + extra)
 
 
 def describe_shape(obj, depth: int = 3):
@@ -99,32 +108,34 @@ def run(client, datasets: list[str], seasons: list[int], out_dir: Path) -> dict:
     (seasons not pulled are kept), and return {dataset: rows in the written file}."""
     out_dir.mkdir(parents=True, exist_ok=True)
     wrote = {}
-    games_path = out_dir / FILES["games"]
-    meta = pd.read_parquet(games_path) if games_path.exists() else None
-    for ds in [d for d in ORDER if d in datasets]:
-        path = out_dir / FILES[ds]
-        existing = pd.read_parquet(path) if path.exists() else None
-        if ds == "venues":
-            new = cg.parse_venues(client.get("/venues"))
-        else:
-            frames = [_pull(client, ds, y, meta) for y in seasons]
-            new = pd.concat(frames, ignore_index=True)
-            print(f"{ds}: {len(new)} rows pulled for {seasons[0]}-{seasons[-1]} "
-                  f"({sum(f.attrs['dropped'] for f in frames)} dropped: unmapped/FCS/unknown game)",
-                  flush=True)
-            for y in seasons:
-                if not (new["season"] == y).any():
-                    kept = existing is not None and (existing["season"] == y).any()
-                    print(f"::warning::build-cfb-game-data: {ds} {y} returned no rows"
-                          + ("; KEEPING the committed rows" if kept else ""), flush=True)
-        out = merge_asset(existing, new, KEYS[ds])
-        out.to_parquet(path)
-        wrote[ds] = len(out)
-        if ds == "games":
-            meta = out
-        print(f"wrote {len(out)} rows -> {path.name}", flush=True)
-    print(client.summary(), flush=True)
-    return wrote
+    try:
+        games_path = out_dir / FILES["games"]
+        meta = pd.read_parquet(games_path) if games_path.exists() else None
+        for ds in [d for d in ORDER if d in datasets]:
+            path = out_dir / FILES[ds]
+            existing = pd.read_parquet(path) if path.exists() else None
+            if ds == "venues":
+                new = cg.parse_venues(client.get("/venues"))
+            else:
+                frames = [_pull(client, ds, y, meta) for y in seasons]
+                new = pd.concat(frames, ignore_index=True)
+                print(f"{ds}: {len(new)} rows pulled for {seasons[0]}-{seasons[-1]} "
+                      f"({sum(f.attrs['dropped'] for f in frames)} dropped: unmapped/FCS/unknown game)",
+                      flush=True)
+                for y in seasons:
+                    if not (new["season"] == y).any():
+                        kept = existing is not None and (existing["season"] == y).any()
+                        print(f"::warning::build-cfb-game-data: {ds} {y} returned no rows"
+                              + ("; KEEPING the committed rows" if kept else ""), flush=True)
+            out = merge_asset(existing, new, KEYS[ds])
+            out.to_parquet(path)
+            wrote[ds] = len(out)
+            if ds == "games":
+                meta = out
+            print(f"wrote {len(out)} rows -> {path.name}", flush=True)
+        return wrote
+    finally:
+        print(client.summary(), flush=True)
 
 
 def probe(client, year: int = 2023) -> None:
@@ -139,8 +150,12 @@ def probe(client, year: int = 2023) -> None:
              "/stats/game/advanced": {"year": year, "week": 3}}
     for path, params in calls.items():
         data = client.get(path, params)
-        print(f"== {path} {params or ''}: {len(data)} records")
-        print(json.dumps(describe_shape(data[:1]), indent=1)[:2500])
+        if isinstance(data, list):
+            print(f"== {path} {params or ''}: {len(data)} records")
+            print(json.dumps(describe_shape(data[:1]), indent=1)[:2500])
+        else:                                   # an error / wrapper body: show its key/type shape
+            print(f"== {path} {params or ''}: non-list body ({type(data).__name__})")
+            print(json.dumps(describe_shape(data), indent=1)[:2500])
     print(client.summary())
 
 

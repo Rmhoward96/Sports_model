@@ -8,7 +8,6 @@ re-pull) before fitting anything on them.
 """
 from __future__ import annotations
 
-import numpy as np
 import pandas as pd
 
 TEMP_F = (40.0, 80.0)            # season mean of outdoor game temperatures, degrees F
