@@ -733,3 +733,24 @@ test("the URL: unknown params survive a period change; an invalid ?week= is norm
   Q.G.boardGoPeriod("nfl", 4, "2026-10-05");
   assert.equal(new URL(ok[1]).search, "?utm=x", "the default week removes ?week= only");
 });
+
+test("CFB rankings: Rating is the 60/40 FPI blend with FPI and MODEL columns right after it; NFL keeps its table and intro", async () => {
+  const cfbRows = [{ sport: "cfb", rank: 1, team: "194", rating: 25.14, fpi: 28.8, model_rating: 19.64, conf: 5, season: 2026, week: 6, units: {} },
+                   { sport: "cfb", rank: 2, team: "61", rating: 20, fpi: null, model_rating: 20, conf: 8, season: 2026, week: 6, units: {} }];
+  const A = loadScripts(FILES, { page: "rankings", globals: { location: { search: "?sport=cfb", href: "http://localhost/rankings.html?sport=cfb" },
+    fetch: async () => ({ ok: true, json: async () => cfbRows }) } });
+  const html = await A.buildRankings();
+  const heads = [...html.matchAll(/<th data-sort="(\w+)"/g)].map((m) => m[1]);
+  assert.deepEqual(heads.slice(0, 6), ["rank", "team", "conf", "rating", "fpi", "model_rating"]);
+  assert.ok(html.includes(">FPI") && html.includes(">MODEL"), "column headers");
+  assert.ok(html.includes("+28.8") && html.includes("+19.6"), "signed FPI and model values");
+  assert.ok(html.includes("60% ESPN FPI + 40% CappingAlpha model"), "the blend is explained");
+  assert.ok(!/NaN|undefined/.test(html), "a missing FPI renders as a dash");
+  const N = loadScripts(FILES, { page: "rankings", globals: { location: { search: "?sport=nfl", href: "http://localhost/rankings.html?sport=nfl" },
+    fetch: async () => ({ ok: true, json: async () => [{ sport: "nfl", rank: 1, team: "Detroit Lions", rating: 5, season: 2026, week: 5, units: {} }] }) } });
+  const nfl = await N.buildRankings();
+  assert.ok(!nfl.includes('data-sort="fpi"') && !nfl.includes('data-sort="model_rating"') && !nfl.includes("ESPN FPI"));
+  assert.ok(nfl.includes("Rating = points better than an average team on a neutral field, earned from this season's results"));
+  assert.ok(A.rkPowerLine({ sport: "cfb", rank: 1, rating: 25 }).includes('title="Power rating: 60% ESPN FPI + 40% CappingAlpha model"'));
+  assert.ok(A.rkPowerLine({ sport: "nfl", rank: 1, rating: 5 }).includes('title="Power rating weighted to this season"'));
+});
