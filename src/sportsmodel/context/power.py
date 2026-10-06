@@ -57,7 +57,11 @@ and ``nfl_power(..., scale=...)`` reports ``rating = slope * raw_rating`` (likew
 ``hfa`` as columns and in ``df.attrs["market_scale"]``. The fit is frozen per
 season (a pure function of prior seasons). No scale -> slope 1 (raw points).
 
-Season weighting (user, 2026-09-30): the RANKINGS weight this season by
+The live rankings rating is now ``context.results_power`` (PR #62); ``cfb_power`` /
+``cfb_power_current`` / ``nfl_power`` / ``nfl_market_scale`` remain as the "today's
+rating" baseline in ``scripts/fit_results_power.py``. ``rankings`` is still live.
+
+Season weighting (user, 2026-09-30, superseded for the live rating): weighted this season by
 ``w = games / (games + 1)`` (``POWER_BLEND_K``) -- 50% after 1 game, 75% after 3, ~90%
 by week 9. CFB: ``cfb_power_current`` (this-season SRS vs the preseason prior). NFL:
 ``nfl_power`` over ``unit_ratings_asof(..., blend_k=POWER_BLEND_K)`` with the market
