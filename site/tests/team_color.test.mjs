@@ -28,3 +28,28 @@ test("readableTeamColor leaves readable dark colors and rejects near-white", () 
   assert.equal(g.readableTeamColor("#002A5C"), "#002A5C");
   assert.equal(g.readableTeamColor("#FFFFFF"), null);
 });
+
+const dist = (a, b) => Math.hypot(...rgb(a).map((v, i) => v - rgb(b)[i]));
+test("gameTeamColors: Georgia vs Alabama (both crimson, no usable alternates) are guarded: home becomes the site navy", () => {
+  assert.ok(dist("#BA0C2F", "#9E1B32") < 100, "the raw primaries are too close");
+  const c = g.gameTeamColors("Georgia Bulldogs", "Alabama Crimson Tide", "cfb");
+  assert.equal(c.away, "#BA0C2F");
+  assert.equal(c.home, "#0E2238");
+  assert.ok(dist(c.away, c.home) >= 100);
+});
+test("gameTeamColors: a usable alternate is preferred to the navy fallback", () => {
+  // Bills #00338D vs Giants #003C7F are two close blues; the Bills' alternate is a red
+  const c = g.gameTeamColors("Buffalo Bills", "New York Giants", "nfl");
+  assert.ok(dist(c.away, c.home) >= 100, JSON.stringify(c));
+  assert.notEqual(c.home, "#0E2238");
+});
+test("gameTeamColors: two distinct colors are unchanged", () => {
+  assert.deepEqual({ ...g.gameTeamColors("Kansas City Chiefs", "Buffalo Bills", "nfl") }, { away: g.teamAccent("Kansas City Chiefs", "nfl"), home: g.teamAccent("Buffalo Bills", "nfl") });
+  assert.deepEqual({ ...g.gameTeamColors("Georgia Bulldogs", "Michigan Wolverines", "cfb") }, { away: g.teamAccent("Georgia Bulldogs", "cfb"), home: g.teamAccent("Michigan Wolverines", "cfb") });
+});
+test("gameTeamColors: an unmapped team (or a sport with no colors) still falls back to the default blue exactly as before", () => {
+  const blue = g.teamAccent("Nobody FC", "cfb");
+  assert.deepEqual({ ...g.gameTeamColors("Nobody FC", "Nobody United", "cfb") }, { away: blue, home: blue });
+  assert.deepEqual({ ...g.gameTeamColors("Nobody FC", "Alabama Crimson Tide", "cfb") }, { away: blue, home: "#9E1B32" });
+  assert.deepEqual({ ...g.gameTeamColors("Boston Red Sox", "New York Yankees", "mlb") }, { away: blue, home: blue });
+});
