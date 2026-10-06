@@ -74,3 +74,30 @@ def fetch_results(game_pk: int) -> dict[str, Any] | None:
                 }
     return {"home_runs": home_runs, "away_runs": away_runs,
             "batters": batters, "pitchers": pitchers}
+
+
+_BATTER_MARKETS = frozenset({"hits", "total_bases", "home_run", "hrr"})
+_PITCHER_MARKETS = frozenset({"pitcher_ks", "hits_allowed", "outs_recorded"})
+
+
+def actual_for_pick(results: dict[str, Any] | None, player_id, market: str) -> float | None:
+    """The player's realized value for `market` from a `fetch_results` payload, or None
+    if it can't be resolved: no payload, an unknown market, or the player never appears
+    in the box (a DNP / scratched player -- the book voids those, so there is nothing to
+    grade). `player_id` may be an int or a numeric string (ev_prop_picks stores TEXT)."""
+    if not results:
+        return None
+    if market in _BATTER_MARKETS:
+        pool = results.get("batters") or {}
+    elif market in _PITCHER_MARKETS:
+        pool = results.get("pitchers") or {}
+    else:
+        return None
+    try:
+        pid = int(player_id)
+    except (TypeError, ValueError):
+        return None
+    row = pool.get(pid)
+    if row is None or row.get(market) is None:
+        return None
+    return float(row[market])

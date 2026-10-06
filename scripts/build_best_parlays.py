@@ -29,11 +29,13 @@ def _q(sql: str, params: list | None = None) -> list[dict]:
 
 
 def load_game_picks() -> list[dict]:
+    # NFL + CFB only (ruling M2): MLB game-line picks stay out of the best-parlays pool until MLB
+    # has its own published record. (MLB straights and build_ev_board's own per-sport parlay are unaffected.)
     return _q("""
         SELECT e.sport, e.game_pk, e.market, e.side, e.matchup, e.commence_time, e.true_prob, b.line
         FROM ev_current e
         LEFT JOIN ev_best_lines b USING (sport, game_pk, market, side)
-        WHERE e.is_pick
+        WHERE e.is_pick AND e.sport IN ('nfl', 'cfb')
     """)
 
 
@@ -51,9 +53,11 @@ def load_game_odds(game_pks: list[int]) -> list[dict]:
 
 
 def load_prop_picks() -> list[dict]:
+    # NFL props only: grade_best_parlays settles prop legs from nfl_player_actuals, and the
+    # prop-leg pricing keys on the NFL market map. MLB prop picks stay straight bets.
     return _q("""
         SELECT game_pk, player_id, player_name, market, side, line, model_prob, matchup, commence_time
-        FROM ev_prop_picks_current WHERE is_pick
+        FROM ev_prop_picks_current WHERE is_pick AND COALESCE(sport, 'nfl') = 'nfl'
     """)
 
 

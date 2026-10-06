@@ -46,12 +46,13 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 from sportsmodel import config
 from sportsmodel.cfb import espn as cfb_espn
 from sportsmodel.db import get_postgres, upsert_ev_results, upsert_ev_parlay_results
+from sportsmodel.ingest import mlb_statsapi
 from sportsmodel.nfl import espn as nfl_espn
 
 # Results-provider seam: sport key -> module exposing fetch_final(game_pk) ->
-# dict|None. Same seam as grade_desk_picks.FINAL_PROVIDERS -- both NFL and
-# CFB use ESPN event ids as game_pk.
-FINAL_PROVIDERS = {"nfl": nfl_espn, "cfb": cfb_espn}
+# dict|None. Same seam as grade_desk_picks.FINAL_PROVIDERS -- NFL and CFB use
+# ESPN event ids as game_pk, MLB the StatsAPI gamePk (postseason included).
+FINAL_PROVIDERS = {"nfl": nfl_espn, "cfb": cfb_espn, "mlb": mlb_statsapi}
 
 
 def _window_start(days: int, today: date | None = None) -> str:

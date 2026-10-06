@@ -36,10 +36,10 @@ def test_load_latest_prop_odds_empty_game_pks_short_circuits_no_db():
     assert build_ev_props_board.load_latest_prop_odds("nfl", []) == []
 
 
-def test_load_sim_rows_non_nfl_sport_short_circuits_no_db():
-    # C v1 is NFL-only; other sports short-circuit rather than querying
-    # NFL-only tables/views.
-    assert build_ev_props_board.load_sim_rows("mlb") == []
+def test_load_sim_rows_sport_without_a_prop_model_short_circuits_no_db():
+    # Only NFL (sim tables) and MLB (prop_predictions) have a prop model; CFB short-circuits
+    # rather than querying NFL-only tables/views.
+    assert build_ev_props_board.load_sim_rows("cfb") == []
 
 
 def test_load_latest_prop_odds_sport_with_no_prop_markets_short_circuits_no_db():
@@ -212,3 +212,63 @@ def test_drop_pulled_lines_keeps_only_the_latest_pull_per_game_market():
     ]
     kept = {(r["player_name"], r["market"]) for r in drop_pulled_lines(rows)}
     assert kept == {("Case Keenum", "pass_yds"), ("Jalen Hurts", "pass_yds"), ("DJ Moore", "rec_yds")}
+
+
+# -- MLB (reactivated 2026-10-05) ---------------------------------------------------
+
+def test_mlb_prop_market_codes_match_sport_config_and_the_board_map():
+    from sportsmodel.serving.props_ev import MLB_SIM_TO_ODDS_MARKET
+    assert set(sports.get("mlb").prop_market_map) == set(MLB_SIM_TO_ODDS_MARKET) == {
+        "total_bases", "pitcher_ks", "hits_allowed", "outs_recorded"}
+
+
+def test_mlb_sim_cols_have_the_keys_assemble_prop_rows_reads():
+    assert {"game_pk", "player_id", "name", "market", "mean", "dist", "commence_time", "matchup"} <= set(
+        build_ev_props_board.MLB_SIM_COLS)
+    # the MLB SELECT in _load_mlb_sim_rows yields exactly one value per column
+    assert len(build_ev_props_board.MLB_SIM_COLS) == 10
+
+
+def test_mlb_lines_only_is_a_noop_before_any_db_access(monkeypatch, capsys):
+    def boom(*a, **k):
+        raise AssertionError("must not touch the DB")
+
+    monkeypatch.setattr(build_ev_props_board, "load_sim_rows", boom)
+    monkeypatch.setattr(build_ev_props_board, "load_latest_prop_odds", boom)
+    monkeypatch.setattr(build_ev_props_board, "upsert_nfl_prop_lines", boom)
+    build_ev_props_board.main(["--sport", "mlb", "--lines-only"])
+    assert "no-op" in capsys.readouterr().out
+
+
+def test_mlb_main_builds_mlb_rows_without_touching_nfl_prop_lines(monkeypatch):
+    pmf = [0.0] * 11
+    pmf[0], pmf[1], pmf[2], pmf[3], pmf[4] = 0.25, 0.2, 0.2, 0.2, 0.15   # P(>1.5) = 0.55
+    sim = [{"game_pk": 849819, "player_id": "660271", "model_version": "mlb-hybrid-props-v1",
+            "name": "Shohei Ohtani", "team": "Los Angeles Dodgers", "market": "total_bases", "mean": 1.6,
+            "dist": {"kind": "pmf", "pmf": pmf}, "commence_time": "2026-10-06T22:00:00Z",
+            "matchup": "Los Angeles Dodgers @ Atlanta Braves"}]
+    odds_rows = [
+        {"game_pk": 849819, "market": "total_bases", "side": "over", "player_name": "Shohei Ohtani",
+         "book": "draftkings", "line": 1.5, "price": 110, "captured_at": "2026-10-06T21:00:00+00:00"},
+        {"game_pk": 849819, "market": "total_bases", "side": "under", "player_name": "Shohei Ohtani",
+         "book": "fanduel", "line": 1.5, "price": -130, "captured_at": "2026-10-06T21:00:00+00:00"},
+    ]
+    seen = {}
+    monkeypatch.setattr(build_ev_props_board, "load_sim_rows", lambda sport: seen.setdefault("sport", sport) and sim)
+    monkeypatch.setattr(build_ev_props_board, "load_latest_prop_odds", lambda sport, pks: odds_rows)
+    monkeypatch.setattr(build_ev_props_board, "calibration", type("C", (), {"calibrate": staticmethod(lambda m, p: p)}))
+    monkeypatch.setattr(build_ev_props_board, "upsert_nfl_prop_lines",
+                        lambda rows: (_ for _ in ()).throw(AssertionError("NFL lines table touched")))
+    written, cleared = {}, {}
+    monkeypatch.setattr(build_ev_props_board, "upsert_ev_prop_picks", lambda rows: written.setdefault("rows", rows))
+    monkeypatch.setattr(build_ev_props_board, "clear_stale_prop_line_picks",
+                        lambda picks: cleared.setdefault("picks", picks) and 0)
+
+    build_ev_props_board.main(["--sport", "mlb"])
+
+    assert seen["sport"] == "mlb"
+    [row] = written["rows"]
+    assert row["sport"] == "mlb" and row["model_version"] == "props-mlb-v1"
+    assert row["market"] == "total_bases" and row["side"] == "over" and row["is_pick"] is True
+    assert row["player_id"] == "660271"
+    assert cleared["picks"] == [row]

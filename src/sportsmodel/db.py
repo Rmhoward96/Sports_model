@@ -169,7 +169,12 @@ def upsert_game_predictions(records: list[dict]) -> int:
         "sport",
     ]
     key = ("game_pk", "model_version")
-    updates = ", ".join(f"{c} = EXCLUDED.{c}" for c in cols if c not in key)
+    # commence_time: never overwrite a stored first-pitch/kickoff time with NULL (a producer run whose
+    # schedule lookup failed would otherwise blank it and drop the game off the +EV board).
+    updates = ", ".join(
+        "commence_time = COALESCE(EXCLUDED.commence_time, game_predictions.commence_time)"
+        if c == "commence_time" else f"{c} = EXCLUDED.{c}"
+        for c in cols if c not in key)
     placeholders = ", ".join(["%s"] * len(cols))
     sql = (
         f"INSERT INTO game_predictions ({', '.join(cols)}) VALUES ({placeholders}) "

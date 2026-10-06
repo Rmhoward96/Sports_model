@@ -3,7 +3,7 @@ name: grade-ev
 # Forward-grade the +EV board: for each finished game, grade every surfaced
 # pick against the result AND the Pinnacle closing line (CLV) -> ev_results.
 # This is the honest scoreboard -- the board only earns trust once this record
-# is positive. grade_ev.py loops both sports (FINAL_PROVIDERS) internally.
+# is positive. grade_ev.py loops every sport (FINAL_PROVIDERS: NFL, CFB, MLB) internally.
 # DATABASE_URL lives here, not in the session.
 on:
   workflow_dispatch:

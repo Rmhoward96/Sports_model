@@ -7,7 +7,9 @@ NFL player-prop +EV board (sub-project C, Task 5) instead of the game-level
 +EV pilot: "did the actual stat clear the picked line, and did the price
 taken beat what Pinnacle closed at for that same player/market/side/line."
 
-NFL only for C v1 (matches props_ev.py / build_ev_props_board.py scope). No
+NFL and MLB (matches props_ev.py / build_ev_props_board.py scope). MLB actuals
+come from the StatsAPI boxscore (`ingest.mlb_results`) once the game is final; a
+player who never appears in the box (DNP) can't be graded and is skipped. No
 Odds API calls -- reads Supabase (`ev_prop_picks`, `odds_snapshot`) and
 nflverse (weekly stats, schedules) only, same "no live network odds fetch"
 posture as grade_ev.py.
@@ -51,10 +53,12 @@ import pandas as pd
 
 from sportsmodel import config
 from sportsmodel.db import get_postgres, upsert_ev_prop_results
+from sportsmodel.ingest import mlb_results, mlb_statsapi
 from sportsmodel.nfl.data import load_schedules
 from sportsmodel.nfl.injuries_nflverse import nfl_season
 from sportsmodel.nfl.nflverse import load_release
 from sportsmodel.serving.props_ev import (
+    MLB_SIM_TO_ODDS_MARKET,
     SIM_MARKET_TO_WEEKLY,
     grade_prop_pick,
     normalize_player_name,
@@ -72,8 +76,8 @@ def _window_start(days: int, today: date | None = None) -> str:
     return (d - timedelta(days=days)).isoformat()
 
 
-def _pending_prop_picks(cur, start: str) -> list[dict]:
-    """`ev_prop_picks` rows for NFL -- one per (game_pk, player_id, market,
+def _pending_prop_picks(cur, start: str, sport: str = "nfl") -> list[dict]:
+    """`ev_prop_picks` rows for `sport` -- one per (game_pk, player_id, market,
     line) -- whose game has already started (commence_time <= now(), so a
     final stat line should exist) and that haven't been graded yet.
 
@@ -94,7 +98,7 @@ def _pending_prop_picks(cur, start: str) -> list[dict]:
                ep.best_price,
                COALESCE(ep.open_pinnacle_price, ep.pinnacle_price) AS pinnacle_price
         FROM ev_prop_picks ep
-        WHERE ep.sport = 'nfl' AND ep.commence_time >= %(start)s
+        WHERE ep.sport = %(sport)s AND ep.commence_time >= %(start)s
           AND ep.commence_time <= now()
           AND ep.is_pick = true
           AND NOT EXISTS (
@@ -104,7 +108,7 @@ def _pending_prop_picks(cur, start: str) -> list[dict]:
                 AND er.model_version = ep.model_version
           )
         ORDER BY ep.game_pk, ep.player_id, ep.market
-    """, {"start": start})
+    """, {"start": start, "sport": sport})
     return [dict(zip(PICK_COLS, row)) for row in cur.fetchall()]
 
 
@@ -171,12 +175,26 @@ def _actual_for(pick: dict) -> float | None:
     return float(val)
 
 
-def _closing_price(cur, pick: dict) -> int | None:
+_mlb_results_cache: dict[int, dict | None] = {}
+
+
+def _mlb_actual_for(pick: dict) -> float | None:
+    """The player's realized MLB stat for `pick["market"]`, from the final boxscore
+    (None until the game is a completed one, or if the player never played)."""
+    gp = pick.get("game_pk")
+    if gp not in _mlb_results_cache:
+        final = mlb_statsapi.fetch_final(gp)  # not final / postponed -> None
+        _mlb_results_cache[gp] = mlb_results.fetch_results(gp) if final is not None else None
+    return mlb_results.actual_for_pick(_mlb_results_cache[gp], pick.get("player_id"), pick.get("market"))
+
+
+def _closing_price(cur, pick: dict, market_map: dict[str, str] | None = None) -> int | None:
     """The CLOSING Pinnacle price for (game_pk, market, side, line, player):
     the last odds_snapshot row at/before commence_time, matched to the
     pick's player via normalize_player_name (odds_snapshot stores the Odds
     API's own player_name formatting, not nflverse's)."""
-    odds_market = odds_market_for(pick.get("market"))
+    odds_market = (market_map.get(pick.get("market")) if market_map is not None
+                   else odds_market_for(pick.get("market")))
     if odds_market is None:
         return None
     cur.execute("""
@@ -202,21 +220,26 @@ def main() -> None:
     start = _window_start(args.days)
     graded_rows: list[dict] = []
 
+    # sport -> (actual-stat resolver, odds-side market map for the closing-price lookup;
+    # None = the NFL map in props_ev.odds_market_for)
+    legs = {"nfl": (_actual_for, None), "mlb": (_mlb_actual_for, MLB_SIM_TO_ODDS_MARKET)}
     with get_postgres() as conn, conn.cursor() as cur:
-        pending = _pending_prop_picks(cur, start)
-        for pick in pending:
-            try:
-                actual = _actual_for(pick)
-                if actual is None:
-                    continue  # can't resolve the actual -- skip, don't crash
-                closing_price = _closing_price(cur, pick)
-                graded_rows.append(grade_prop_pick(pick, actual, closing_price))
-            except Exception as exc:  # noqa: BLE001 -- one bad pick must not abort the batch
-                print(f"  nfl {pick.get('game_pk')} {pick.get('player_name')} "
-                      f"{pick.get('market')}/{pick.get('side')}: grading failed ({exc}); skipping")
-                continue
-
-    print(f"nfl: {len(pending)} pending, {len(graded_rows)} graded")
+        for sport, (actual_of, market_map) in legs.items():
+            pending = _pending_prop_picks(cur, start, sport)
+            n = 0
+            for pick in pending:
+                try:
+                    actual = actual_of(pick)
+                    if actual is None:
+                        continue  # can't resolve the actual -- skip, don't crash
+                    closing_price = _closing_price(cur, pick, market_map)
+                    graded_rows.append(grade_prop_pick(pick, actual, closing_price))
+                    n += 1
+                except Exception as exc:  # noqa: BLE001 -- one bad pick must not abort the batch
+                    print(f"  {sport} {pick.get('game_pk')} {pick.get('player_name')} "
+                          f"{pick.get('market')}/{pick.get('side')}: grading failed ({exc}); skipping")
+                    continue
+            print(f"{sport}: {len(pending)} pending, {n} graded")
 
     if graded_rows:
         written = upsert_ev_prop_results(graded_rows)

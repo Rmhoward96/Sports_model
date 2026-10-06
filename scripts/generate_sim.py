@@ -26,7 +26,7 @@ from __future__ import annotations
 
 import json
 import sys
-from datetime import date
+from datetime import date, datetime, timezone
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
@@ -35,7 +35,8 @@ import numpy as np
 
 from sportsmodel import config, profiles, teams, venues, weather
 from sportsmodel.db import get_duckdb, upsert_game_predictions, upsert_prop_predictions
-from sportsmodel.ingest import mlb_lineups
+from sportsmodel.ingest import mlb_lineups, mlb_statsapi
+from sportsmodel.ingest.odds import parse_commence
 from sportsmodel.model import calibration, distributions, game, props, rates
 from sportsmodel.sim import engine
 from sportsmodel.sim.mlb import kernel
@@ -95,6 +96,69 @@ def load_schedule() -> list[dict]:
         ).fetchall()
         con.close()
     return [dict(zip(SCHED_COLS, r)) for r in rows]
+
+
+def attach_commence_times(games: list[dict], fetch_schedule=mlb_statsapi.fetch_schedule) -> None:
+    """Set g["commence_time"] (UTC first-pitch ISO string, or None) on each schedule row.
+
+    daily_schedule carries no first-pitch time, but the +EV board only lists games with
+    `commence_time > now()` and the odds/CLV views need it, so it is read from the
+    (free) StatsAPI schedule for the slate's dates. Best-effort: a failed date leaves
+    commence_time None for that date's games (they simply stay off the +EV board until
+    the next run) rather than failing the whole prediction job.
+    """
+    commence: dict[int, str | None] = {}
+    for d in sorted({str(g["game_date"]) for g in games}):
+        try:
+            for rec in fetch_schedule(d):
+                commence[rec["game_pk"]] = rec.get("commence_time")
+        except Exception as exc:  # noqa: BLE001 -- StatsAPI blip must not kill the run
+            print(f"WARN commence_time lookup failed for {d} ({exc!r})")
+    for g in games:
+        g["commence_time"] = commence.get(g["game_pk"])
+
+
+def market_lines_from_rows(rows: list[tuple]) -> dict[int, dict]:
+    """{game_pk: {"market_spread": home line | None, "market_total": line | None}} from
+    (game_pk, market, line) rows, newest capture first per (game_pk, market). Pure."""
+    out: dict[int, dict] = {}
+    for game_pk, market, line in rows:
+        key = {"spread": "market_spread", "total": "market_total"}.get(market)
+        if key is None or line is None:
+            continue
+        slot = out.setdefault(game_pk, {"market_spread": None, "market_total": None})
+        if slot[key] is None:
+            slot[key] = float(line)
+    return out
+
+
+def load_market_lines(game_pks: list[int]) -> dict[int, dict]:
+    """Latest captured Pinnacle home spread (run line) / total per game, so the site can show the
+    model against the market on upcoming games (football gets these from ESPN's pickcenter;
+    MLB's come from capture-odds). Hosted mode only and best-effort: {} when there is no
+    database, no odds yet, or the read fails -- the predictions are written either way."""
+    if not config.DATABASE_URL or not game_pks:
+        return {}
+    try:
+        from sportsmodel.db import get_postgres
+        with get_postgres() as pg, pg.cursor() as cur:
+            cur.execute("""
+                SELECT game_pk, market, line FROM odds_snapshot
+                WHERE game_pk = ANY(%s) AND book = 'pinnacle' AND COALESCE(player_name, '') = ''
+                  AND captured_at <= commence_time
+                  AND ((market = 'spread' AND side = 'home') OR (market = 'total' AND side = 'over'))
+                ORDER BY game_pk, market, captured_at DESC
+            """, [list(game_pks)])
+            return market_lines_from_rows(cur.fetchall())
+    except Exception as exc:  # noqa: BLE001 -- the market columns are a convenience
+        print(f"WARN market line lookup failed ({exc!r}); writing predictions without them")
+        return {}
+
+
+def started(g: dict, now: datetime | None = None) -> bool:
+    """True when the game's first pitch is already past (commence_time known)."""
+    c = parse_commence(g.get("commence_time"))
+    return c is not None and c <= (now or datetime.now(timezone.utc))
 
 
 def sim_batter_rows(order, dists, lineup, lineup_source, team_name, g) -> list[dict]:
@@ -231,6 +295,13 @@ def write_prop_predictions(rows: list[dict]) -> None:
 def main() -> None:
     games = load_schedule()
     print(f"{len(games)} games on today's slate")
+    attach_commence_times(games)
+    # Never re-predict a game that has already started: the stored pre-game projection
+    # is what the accuracy record grades, and a mid/post-game rewrite would blur it.
+    n_started = sum(1 for g in games if started(g))
+    games = [g for g in games if not started(g)]
+    if n_started:
+        print(f"skipping {n_started} game(s) already underway or final")
 
     ids = [g["home_probable_pitcher_id"] for g in games] + \
           [g["away_probable_pitcher_id"] for g in games]
@@ -300,7 +371,7 @@ def main() -> None:
         res["margin_dist"] = json.dumps(engine.margin_pmf(sims))
         game_rows.append({
             "game_pk": g["game_pk"], "model_version": GAME_MODEL_VERSION,
-            "game_date": g["game_date"],
+            "game_date": g["game_date"], "commence_time": g.get("commence_time"),
             "home_team_name": g["home_team_name"], "away_team_name": g["away_team_name"],
             "home_probable_pitcher_name": g["home_probable_pitcher_name"],
             "away_probable_pitcher_name": g["away_probable_pitcher_name"],
@@ -335,6 +406,9 @@ def main() -> None:
     print(f"predicted {len(game_rows)} games, skipped {skipped_starter} (missing starter/"
           f"workload) + {skipped_lineup} (missing/incomplete lineup)")
     print(f"{len(prop_rows)} prop rows")
+    lines = load_market_lines([r["game_pk"] for r in game_rows])
+    for r in game_rows:
+        r.update(lines.get(r["game_pk"], {}))
     if game_rows:
         write_game_predictions(game_rows)
     if prop_rows:

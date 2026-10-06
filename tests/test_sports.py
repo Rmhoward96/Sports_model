@@ -6,8 +6,22 @@ def test_mlb_config_matches_legacy_constants():
     m = get("mlb")
     assert m.odds_sport == "baseball_mlb"
     assert m.game_markets == ["h2h", "totals", "spreads"]
-    assert m.prop_market_map == odds.PROP_MARKET_MAP
+    # The ingester requests only the LIVE props (one credit per market per event); the full
+    # PROP_MARKET_MAP stays the parse vocabulary.
+    assert m.prop_market_map == odds.LIVE_PROP_MARKET_MAP
     assert m.commence_shift_hours == 10
+
+
+def test_mlb_live_props_keep_hits_hrr_and_home_run_dropped():
+    # Commit 206941b: hits (-32U) and hrr (-35U) were the two worst markets over ~1,970 live
+    # graded picks; home_run was never published. Reactivation must not re-buy their credits.
+    from sportsmodel.ingest import odds
+    assert set(get("mlb").prop_market_map) == {"total_bases", "pitcher_ks", "hits_allowed", "outs_recorded"}
+    assert set(get("mlb").prop_market_map.values()) == {
+        "batter_total_bases", "pitcher_strikeouts", "pitcher_hits_allowed", "pitcher_outs"}
+    for dropped in ("hits", "hrr", "home_run"):
+        assert dropped not in odds.LIVE_PROP_MARKET_MAP
+        assert dropped in odds.PROP_MARKET_MAP  # still parseable if a stray row arrives
 
 def test_nfl_config_present_with_eight_prop_markets():
     n = get("nfl")

@@ -20,9 +20,10 @@ const BL_MM = [["spread", "Spread", "Spread"], ["moneyline", "Moneyline", "ML"],
 const BL_CACHE = {};
 
 /* ── pure helpers ─────────────────────────────────────────────────────── */
-// Start of the season the scope runs over: Aug 1 of the season's year for the live leagues (Track Record's "Season" range); a sport
+// Start of the season the scope runs over: Aug 1 of the season's year for the live football leagues (Track Record's "Season" range); a sport
 // with no live model has no season window (its whole record, if any).
-const blSeasonStart = (sport, today) => (LIVE_SPORTS.includes(sport) ? `${+String(today).slice(5, 7) >= 8 ? String(today).slice(0, 4) : +String(today).slice(0, 4) - 1}-08-01` : "0000-00-00");
+// MLB's season runs March to the World Series, so it starts March 1 of seasonOf(today) (the football leagues: Aug 1).
+const blSeasonStart = (sport, today) => (sport === "mlb" ? `${seasonOf(today)}-03-01` : LIVE_SPORTS.includes(sport) ? `${+String(today).slice(5, 7) >= 8 ? String(today).slice(0, 4) : +String(today).slice(0, 4) - 1}-08-01` : "0000-00-00");
 // One row per graded pick inside the published record (Track Record's scope: inRecord, not the archive).
 const blRecordRows = (acc, closingMap, starts) => trackRows(acc, [], closingMap).filter((r) => inTrackRecord(starts, r.sport, r.date));
 const blAccInRecord = (acc, starts) => (acc || []).filter((r) => r && r.actual_winner != null && inTrackRecord(starts, r.sport, r.game_date));
@@ -230,7 +231,7 @@ async function blLoadAll(D) {
     if (sport === "nfl") {
       jobs.push(part("props", sbAll(`nfl_prop_pnl?season=eq.${seasonOf(D.today)}&select=game_pk,player_id,market,line,lean,projection,result&order=game_pk.asc,player_id.asc,market.asc,line.asc`)));
       jobs.push(part("rest", blRestLoad(seasonOf(D.today))));
-    } else jobs.push(part("conf", blCfbConf()));
+    } else if (sport === "cfb") jobs.push(part("conf", blCfbConf()));      // conference rivals are a CFB insight only
   }
   await Promise.all(jobs);
   return L;
@@ -251,7 +252,7 @@ const blHead = (title, right = "") => `<div class="ca-card-head ca-bl-head"><h2>
 // A card with no data: its title plus one honest sentence (a non-live sport says why).
 const blEmpty = (id, title, msg) => blCard(id, `${blHead(title)}${emptyMsg(msg)}`);
 // Why a sport has no model, in one short sentence (the paused date is the newest stored projection, D.lastProj).
-const blNoModel = (D) => (D.lastProj ? `${boardName(D.sport)} model paused since ${shortDate(D.lastProj)}.` : D.sport === "mlb" ? "MLB model paused." : `No ${boardName(D.sport)} model yet.`);
+const blNoModel = (D) => (D.lastProj ? `${boardName(D.sport)} model paused since ${shortDate(D.lastProj)}.` : `No ${boardName(D.sport)} model yet.`);
 // A muted one-line caption under a card's title.
 const blCap = (text) => `<p class="ca-bl-cap">${ctxEsc(text)}</p>`;
 // Model vs. Market and Key Insights always cover the published record / season, whatever period is browsed: off the current period they say so.

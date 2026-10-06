@@ -804,7 +804,7 @@ function pnlChart(profit, wagered) {
 function pnlBody(allRows, markets, sport, s = getSettings()) {
   const k = unitScale(s);
   const rows = sport === "all" ? allRows : allRows.filter((r) => r.sport === sport);
-  const bySport = (rs) => sport !== "all" ? "" : ["nfl", "cfb", "mixed"].map((sp) => { const a = pnlAgg(rs.filter((r) => r.sport === sp)); return a.n ? `${sp === "mixed" ? "MIXED" : sp.toUpperCase()} ${money(a.pnl * k)}` : null; }).filter(Boolean).join(" · ");
+  const bySport = (rs) => sport !== "all" ? "" : ["nfl", "cfb", "mlb", "mixed"].map((sp) => { const a = pnlAgg(rs.filter((r) => r.sport === sp)); return a.n ? `${sp === "mixed" ? "MIXED" : sp.toUpperCase()} ${money(a.pnl * k)}` : null; }).filter(Boolean).join(" · ");
   const card = (label, rs) => {
     const a = pnlAgg(rs);
     if (!a.n) return stat(label, "—", "no graded bets yet");

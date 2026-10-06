@@ -87,12 +87,12 @@ const brSetSplit = (patch, periodKey) => { const st = brState(); st.sp = { ...st
 const brSetProj = (patch, periodKey) => { const st = brState(); st.mp = { ...st.mp, ...patch, for: periodKey }; };
 
 /* ── data ─────────────────────────────────────────────────────────────── */
-// The stored picks (lines + NFL props) of the period and their results, as brStoredOpps takes them. Each source fails on its own.
+// The stored picks (lines + NFL / MLB props) of the period and their results, as brStoredOpps takes them. Each source fails on its own.
 async function brPicksLoad(D) {
   const sport = D.sport, per = D.period, win = `commence_time=gte.${addDays(per.from, -1)}T00:00:00Z&commence_time=lt.${addDays(per.to, 2)}T00:00:00Z`;
   const [lines, props] = await Promise.all([
     sbAll(`ev_picks?is_pick=eq.true&sport=eq.${sport}&${win}&select=sport,game_pk,market,side,matchup,commence_time,true_prob,ev_best,best_book,best_price,best_line_implied,created_at&order=created_at.asc,game_pk.asc,market.asc,side.asc,model_version.asc`),
-    sport === "nfl" ? sbAll(`ev_prop_picks?is_pick=eq.true&sport=eq.${sport}&${win}&select=sport,game_pk,player_id,player_name,market,side,line,model_version,matchup,commence_time,model_prob,ev_best,best_book,best_price,created_at&order=created_at.asc,game_pk.asc,player_id.asc,market.asc,line.asc,side.asc,model_version.asc`) : [],
+    sport === "nfl" || sport === "mlb" ? sbAll(`ev_prop_picks?is_pick=eq.true&sport=eq.${sport}&${win}&select=sport,game_pk,player_id,player_name,market,side,line,model_version,matchup,commence_time,model_prob,ev_best,best_book,best_price,created_at&order=created_at.asc,game_pk.asc,player_id.asc,market.asc,line.asc,side.asc,model_version.asc`) : [],
   ]);
   const chunks = (rows) => { const ids = [...new Set((rows || []).map((r) => r.game_pk).filter((x) => x != null))], out = []; for (let i = 0; i < ids.length; i += BR_CHUNK) out.push(ids.slice(i, i + BR_CHUNK)); return out; };
   const lineRes = (await Promise.all(chunks(lines).map((c) => sb(`ev_results?sport=eq.${sport}&game_pk=in.(${c.join(",")})&select=sport,game_pk,market,side,won`).catch(() => [])))).flat();
