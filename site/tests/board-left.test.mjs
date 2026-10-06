@@ -252,20 +252,19 @@ test("Market Intelligence: the +EV Market Pulse rows of this sport only, escaped
   assert.ok(G.evxPulse({ preds: [], moves: [], splits: new Map(), opps: [], lineBy: new Map(), nowMs: NOW, today: "2026-10-05", graded: [] }).includes("Average Market Divergence"));
 });
 
-test("MLB / NBA: honest empty states in every card; MLB names when it paused; nothing is invented", async () => {
-  const mlb = await populated({ sport: "mlb", acc: [], pnl: [], any: [{ sport: "mlb", game_pk: 1, game_date: "2026-08-31", home_team_name: "Boston Red Sox", away_team_name: "New York Yankees", commence_time: "2026-08-31T23:00:00Z" }] }).G.buildBoardPage("mlb");
+test("MLB (live, no graded picks yet) / NBA (no model): honest empty states in every card; nothing is invented", async () => {
+  const mlb = await populated({ sport: "mlb", acc: [], pnl: [], any: [] }).G.buildBoardPage("mlb");
   const l = leftOf(mlb);
-  assert.ok(!l.includes("ca-board-slot") && !l.includes("ca-bl-grid") && !l.includes("ca-scatter") && !l.includes("ca-bl-in\"") && !l.includes("ca-ev-pr"), "no numbers, chart, insight rows or pulse rows");
-  assert.ok(card(mlb, "board-season-perf").includes("MLB model paused since Aug 31. No graded MLB picks in the published record."), text(card(mlb, "board-season-perf")));
-  assert.ok(card(mlb, "board-model-market").includes("No graded MLB games to compare with the market."));
-  assert.ok(card(mlb, "board-market-intel").includes("No live MLB market to read."));
-  assert.ok(card(mlb, "board-key-insights").includes("No graded games to read insights from."));
+  assert.ok(!l.includes("ca-board-slot") && !l.includes("ca-bl-grid") && !l.includes("ca-scatter") && !l.includes("ca-bl-in\"") && !/paused/.test(l), "no numbers, chart, insight rows, and no hard-coded pause text");
+  assert.ok(card(mlb, "board-season-perf").includes("No graded MLB picks in the published record yet."), text(card(mlb, "board-season-perf")));
+  assert.ok(card(mlb, "board-model-market").includes("No graded games with a market line yet."));
+  assert.ok(card(mlb, "board-market-intel").includes("ca-bl-pulse"), "MLB reads the live market like NFL / CFB");
   const nba = await populated({ sport: "nba", acc: [], pnl: [] }).G.buildBoardPage("nba");
   for (const id of ["board-season-perf", "board-model-market", "board-market-intel", "board-key-insights"]) assert.ok(card(nba, id).includes("No NBA model yet."), id);
   assert.ok(!/NaN|undefined/.test(leftOf(nba)));
-  // an MLB record, if one exists, is shown as its historical record
-  const hist = ACC.slice(0, 6).map((a) => ({ ...a, sport: "mlb", game_date: "2026-08-20" })), rec = await populated({ sport: "mlb", acc: hist, pnl: [] }).G.buildBoardPage("mlb");
-  assert.ok(card(rec, "board-season-perf").includes("ca-bl-grid") && card(rec, "board-season-perf").includes("Published record"), "a historical MLB record is shown");
+  // an MLB record is shown as the MLB season (March 1 on), not the football Aug 1 window
+  const hist = ACC.slice(0, 6).map((a) => ({ ...a, sport: "mlb", game_date: "2026-10-04" })), rec = await populated({ sport: "mlb", acc: hist, pnl: [] }).G.buildBoardPage("mlb");
+  assert.ok(card(rec, "board-season-perf").includes("ca-bl-grid") && card(rec, "board-season-perf").includes("Season 2026"), "an MLB record is shown for the MLB season");
 });
 
 test("data: the left column's reads (record per sport, pnl per sport, props / rest days for NFL only), fail-closed scope, no margin_dist, memoised per sport", async () => {
@@ -282,7 +281,9 @@ test("data: the left column's reads (record per sport, pnl per sport, props / re
   const C = populated({ sport: "cfb", acc: ACC.map((a) => ({ ...a, sport: "cfb" })) }); await C.G.buildBoardPage("cfb");
   assert.ok(C.requested.some((u) => u.startsWith("power_rankings_current?sport=eq.cfb")) && !C.requested.some((u) => u.startsWith("nfl_prop_pnl") || u.startsWith("team_game_log")), "CFB reads conferences, not props / rest days");
   const M = populated({ sport: "mlb", acc: [], pnl: [] }); await M.G.buildBoardPage("mlb");
-  assert.ok(!M.requested.some((u) => u.startsWith("ev_current") || u.startsWith("nfl_prop_pnl") || u.startsWith("power_rankings_current")), "a sport with no model reads only its (empty) record");
+  assert.ok(!M.requested.some((u) => u.startsWith("nfl_prop_pnl") || u.startsWith("team_game_log") || u.startsWith("power_rankings_current")), "MLB reads neither NFL props / rest days nor CFB conferences");
+  const N = populated({ sport: "nba", acc: [], pnl: [] }); await N.G.buildBoardPage("nba");
+  assert.ok(!N.requested.some((u) => u.startsWith("ev_current") || u.startsWith("nfl_prop_pnl") || u.startsWith("power_rankings_current")), "a sport with no model reads only its (empty) record");
   const q = quiet(), F = await populated({ fail: ["prediction_pnl_daily"], q }).G.buildBoardPage("nfl");
   assert.ok(card(F, "board-season-perf").includes("couldn't load") && card(F, "board-key-insights").includes("Home favorites"), "one failed source only affects the cards that need it");
 });

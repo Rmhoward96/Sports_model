@@ -296,7 +296,7 @@ function gmSetTab(tab) {
 // betting trends and team context. Every read is caught -> [] and its card hides or shows its empty state.
 async function gmLoad(sport, rawGame) {
   const game = encodeURIComponent(rawGame);
-  const isNfl = sport === "nfl", live = isNfl || sport === "cfb", none = (v) => Promise.resolve(v);
+  const isNfl = sport === "nfl", live = LIVE_SPORTS.includes(sport), none = (v) => Promise.resolve(v);
   const [predsAny, predsCur, evRows, accRows, servedVersion, mls, opps, moves, lineBy] = await Promise.all([
     sb(`predictions_any?sport=eq.${sport}&game_pk=eq.${game}`).catch(() => []),
     sb(`predictions_current?sport=eq.${sport}&game_pk=eq.${game}`).catch(() => []),
@@ -377,7 +377,7 @@ function gmOddsBox(title, left, right, leanSide) {
   return `<div class="ca-gm-ob"><div class="ca-gm-ob-vals">${cell(left, "l")}${cell(right, "r")}</div><div class="ca-gm-ob-t">${title}</div></div>`;
 }
 function gmHero(D) {
-  const r = D.r, sport = D.sport, o = gmOdds(r, D.evRows, D.mlRow, null, D.lineBy), lean = gmLean(r), live = sport === "nfl" || sport === "cfb";
+  const r = D.r, sport = D.sport, o = gmOdds(r, D.evRows, D.mlRow, null, D.lineBy), lean = gmLean(r), live = LIVE_SPORTS.includes(sport);
   const when = gmWhen(r.commence_time);
   const team = (side) => {
     const rec = gmRecord(D.ctxHist, D.ctxPower, side), nm = side === "home" ? r.home_team_name : r.away_team_name;
@@ -423,10 +423,12 @@ function gmWinCard(D) {
   const wp = numOrNull(D.r.home_win_prob), row = (name, p) => `<div class="ca-gm-wp">${logoImg(name, D.sport)}<b>${p != null ? pct1(p) : "—"}</b></div>`;
   return `<div class="ca-card ca-gm-card"><div class="ca-gm-cl">Win Probability</div>${row(D.r.home_team_name, wp)}${row(D.r.away_team_name, wp != null ? 1 - wp : null)}</div>`;
 }
+// A projected score: whole points for football, one decimal for MLB (a 4.6 - 3.9 game is not "5 - 4").
+const gmScoreNum = (D, x) => (D.sport === "mlb" ? (+x).toFixed(1) : Math.round(x));
 function gmScoreCard(D) {
   const h = numOrNull(D.r.pred_home_score), a = numOrNull(D.r.pred_away_score);
   return `<div class="ca-card ca-gm-card"><div class="ca-gm-cl">Projected Score</div>${h != null && a != null
-    ? `<div class="ca-gm-score">${logoImg(D.r.away_team_name, D.sport)}<b>${Math.round(a)}</b><span>-</span><b>${Math.round(h)}</b>${logoImg(D.r.home_team_name, D.sport)}</div>`
+    ? `<div class="ca-gm-score">${logoImg(D.r.away_team_name, D.sport)}<b>${gmScoreNum(D, a)}</b><span>-</span><b>${gmScoreNum(D, h)}</b>${logoImg(D.r.home_team_name, D.sport)}</div>`
     : `<div class="ca-gm-big">—</div>`}</div>`;
 }
 function gmSpreadCard(D) {
@@ -524,7 +526,7 @@ function gmTrendsTab(D) {
     + trendsSection(r.away_team_name, r.home_team_name, D.trendRecs, D.trendSits, D.awayCol, D.homeCol, r.market_spread, D.sport), "No trends for this game yet.");
 }
 function gmPlayersTab(D) {
-  if (!D.isNfl) return emptyMsg("Player projections are NFL-only for now.");
+  if (!D.isNfl) return emptyMsg(D.sport === "mlb" ? "MLB player projections are not on the game page yet; this game's +EV player props are on the Best Opportunities board." : "Player projections are NFL-only for now.");
   // R24: a star per player (shell-owned) fills the Watchlist's Players tab; id = the player's name as ev_prop_picks carries it.
   const star = (name) => starButton("players", name, name);
   return gmLegacy(propsProjectionSection(D.sims, D.props, D.playerActuals, D.propLines, D.simTag, { star }) + boxscoreSection(D.sims, D.r), "No player projections for this game yet.");
@@ -537,7 +539,7 @@ function gmTabsBar(tab) {
     `<button class="ca-gm-tab${k === tab ? " on" : ""}" data-gm-tab="${k}" role="tab" aria-selected="${k === tab}">${l}</button>`).join("")}</nav>`;
 }
 function gmView(D) {
-  const tab = gmState().tab, live = D.sport === "nfl" || D.sport === "cfb";
+  const tab = gmState().tab, live = LIVE_SPORTS.includes(D.sport);
   const hero = safeCard("Hero", gmHero, D, "ca-gm-hero");
   if (!live) return `<main class="game-view ca-gm">${hero}${emptyMsg(SPORT_STATUS[D.sport] || "No game detail for this sport yet.")}</main>`;
   const panel = safeCard(`${tab} tab`, (x) => GM_PANELS[tab](x), D, "ca-card");

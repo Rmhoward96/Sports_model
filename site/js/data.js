@@ -2,9 +2,10 @@
    the Alpha Score, plus line moves, splits and +EV history. Fetchers never throw:
    a missing view/table yields empty data and the panel hides. Reads go through app.js sb / sbAll (paged). */
 const SPORTS = ["nfl", "cfb", "mlb", "nba"];
-const LIVE_SPORTS = ["nfl", "cfb"];
-const SPORT_STATUS = { mlb: "MLB model paused (last projections Aug 31, 2026)", nba: "NBA model not live yet" };
-const PROP_LABEL = { pass_yds: "Pass Yds", pass_tds: "Pass TDs", rush_yds: "Rush Yds", rec_yds: "Rec Yds", receptions: "Receptions", rush_att: "Rush Att", completions: "Completions", pass_att: "Pass Att", interceptions: "INTs" };
+const LIVE_SPORTS = ["nfl", "cfb", "mlb"];     // sports with a running model: their pages, picks and record are live (a sport's own empty states say why a day has no games)
+const SPORT_STATUS = { nba: "NBA model not live yet" };     // sports with NO model; a live sport never carries a status (no hard-coded "paused" text)
+const PROP_LABEL = { pass_yds: "Pass Yds", pass_tds: "Pass TDs", rush_yds: "Rush Yds", rec_yds: "Rec Yds", receptions: "Receptions", rush_att: "Rush Att", completions: "Completions", pass_att: "Pass Att", interceptions: "INTs",
+  total_bases: "Total Bases", pitcher_ks: "Strikeouts", hits_allowed: "Hits Allowed", outs_recorded: "Outs Recorded" };
 const segmentKey = (sport, kind, market) => `${sport}|${kind === "prop" ? "prop" : market}`;
 const finite = (x) => x != null && x !== "" && Number.isFinite(+x);
 

@@ -347,7 +347,7 @@ test("kickoff cell keeps day and time as two spans with a space between (one lin
   assert.ok(/@container \(min-width:665px\)\{[^@]*\.ca-bd-up \.ca-bd-time span\{display:inline\}/.test(css), "wide card: Kickoff on one line");
 });
 
-test("empty states: a week with no games, MLB paused, NBA without a model", async () => {
+test("empty states: a week with no games, an MLB day with none, NBA without a model", async () => {
   const w = await populated({ search: "?week=19" }).G.buildBoardPage("nfl");
   assert.ok(w.includes("No projections yet for Week 19.") && !w.includes("<tbody>"), "a week still to come: no projections yet");
   const pastEmpty = await populated({ search: "?week=1", any: [], cur: [], acc: [] }).G.buildBoardPage("nfl");
@@ -356,11 +356,11 @@ test("empty states: a week with no games, MLB paused, NBA without a model", asyn
   assert.ok(c.includes("No projections yet for Week 14."));
   const mlbRow = { sport: "mlb", game_pk: 5, home_team_name: "Boston Red Sox", away_team_name: "New York Yankees", commence_time: "2026-08-31T23:00:00Z", game_date: "2026-08-31", pred_home_score: 5, pred_away_score: 4 };
   const mlb = await populated({ sport: "mlb", any: [mlbRow], cur: [], acc: [] }).G.buildBoardPage("mlb");
-  assert.ok(mlb.includes("<h1>MLB</h1>") && mlb.includes("MLB model paused since Aug 31 (last projections Aug 31, 2026).") && !mlb.includes("<tbody>"), "the paused date comes from the newest stored projection");
-  const mlbOct = await populated({ sport: "mlb", any: [{ ...mlbRow, game_date: "2026-09-12", commence_time: "2026-09-12T23:00:00Z" }], cur: [], acc: [] }).G.buildBoardPage("mlb");
-  assert.ok(mlbOct.includes("paused since Sep 12 (last projections Sep 12, 2026)") && !mlbOct.includes("Aug 31"), "no hard-coded date");
+  assert.ok(mlb.includes("<h1>MLB</h1>") && mlb.includes("No MLB games on Oct 5.") && !/paused/.test(mlb) && !mlb.includes("<tbody>"), "MLB is live: an empty day says there are no games, never that the model is paused");
+  const mlbAhead = await populated({ sport: "mlb", search: "?date=2026-10-07", any: [], cur: [], acc: [] }).G.buildBoardPage("mlb");
+  assert.ok(mlbAhead.includes("No projections yet for Oct 7.") && !/paused/.test(mlbAhead), "a day still to come: no projections yet");
   const mlbNone = await populated({ sport: "mlb", any: [], cur: [], acc: [] }).G.buildBoardPage("mlb");
-  assert.ok(mlbNone.includes("MLB model paused.") && !/last projections/.test(mlbNone), "no projections at all: no date");
+  assert.ok(!/paused|last projections/.test(mlbNone), "no hard-coded pause text, whatever the table holds");
   assert.ok(mlb.includes("<h2>Today's Games</h2>") && mlb.includes("data-board-step") && mlb.includes('type="date"') && mlb.includes("Oct 5, 2026"), "the day navigator and the date");
   const nba = await populated({ sport: "nba", any: [], cur: [], acc: [] }).G.buildBoardPage("nba");
   assert.ok(nba.includes("<h1>NBA</h1>") && nba.includes("No NBA model yet") && !nba.includes("<tbody>"));

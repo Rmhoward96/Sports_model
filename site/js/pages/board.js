@@ -360,7 +360,7 @@ const boardEmptyText = (D) => {
 };
 // Why a sport with no live model has nothing to show; the paused date is the newest projection the table holds (D.lastProj).
 const boardStatusText = (D) => (D.lastProj ? `${boardName(D.sport)} model paused since ${shortDate(D.lastProj)} (last projections ${fullDate(D.lastProj)}).`
-  : D.sport === "mlb" ? "MLB model paused." : `No ${boardName(D.sport)} model yet. ${boardName(D.sport)} projections are not live.`);
+  : `No ${boardName(D.sport)} model yet. ${boardName(D.sport)} projections are not live.`);
 
 function boardTools(D, games) {
   const s = boardState(D.sport), propsOk = (D.opps || []).some((o) => o.kind === "prop");

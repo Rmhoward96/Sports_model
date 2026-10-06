@@ -570,7 +570,7 @@ test("T2 Record select: Model picks (default) / +EV picks / NFL archive (pre-<re
   const html = await populated().T.buildTrackPage();
   const opts = optionsOf(html, "data-trk-record");
   assert.ok(opts, "a Record select exists");
-  assert.deepEqual(opts.map((o) => o.slice(0, 2)), [["model", "Model picks"], ["ev", "+EV picks"], ["archive", `NFL archive (pre-${new Date(Date.now() - 5 * 864e5).toLocaleDateString("en-US", { timeZone: "America/New_York", month: "short", day: "numeric" })})`]]);
+  assert.deepEqual(opts.map((o) => o.slice(0, 2)), [["model", "Model picks"], ["ev", "+EV picks"], ["archive", `NFL archive (pre-${new Date(`${dayOff(-5)}T12:00:00Z`).toLocaleDateString("en-US", { timeZone: "UTC", month: "short", day: "numeric" })})`]]);
   assert.deepEqual(opts.filter((o) => o[2]).map((o) => o[0]), ["model"], "default = Model picks");
   const bar = html.slice(html.indexOf('id="trk-filters"'), html.indexOf('id="trk-search"'));
   assert.match(bar, /<label class="ca-f "><span>Record<\/span><select class="ca-select" data-trk-record="record">/, "labelled Record, inside the filter card");

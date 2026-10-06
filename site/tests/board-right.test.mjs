@@ -239,8 +239,8 @@ test("Model Projections: the Week / Season toggle and the select change the numb
   assert.ok(bad.includes("This panel couldn't load."), "no record scope: no numbers (fails closed)");
 });
 
-test("MLB and NBA: every right-column card is an honest empty state, nothing is requested for the live feeds", async () => {
-  for (const [sport, why] of [["mlb", "MLB model paused"], ["nba", "No NBA model yet."]]) {
+test("NBA: every right-column card is an honest empty state, nothing is requested for the live feeds", async () => {
+  for (const [sport, why] of [["nba", "No NBA model yet."]]) {
     const P = populated({ sport, any: [], cur: [], acc: [], picks: [], props: [], live: [] }), html = await P.G.buildBoardPage(sport), r = rightOf(html);
     for (const id of IDS) assert.ok(card(html, id).includes(why) && card(html, id).includes('class="ca-empty"'), `${sport} ${id}: ${text(card(html, id))}`);
     assert.ok(card(html, IDS[0]).includes("No +EV edges to rank.") && card(html, IDS[1]).includes("No betting splits are captured") && card(html, IDS[2]).includes("No graded"));
@@ -318,4 +318,11 @@ test("Top Alpha Edges, current week: a finished game with no result yet is grade
 test("the stored +EV prop picks are read in a total order (side is part of the sort) so paged reads cannot skip or repeat rows", async () => {
   const P = populated({ search: "?week=3" }); await P.G.buildBoardPage("nfl");
   assert.ok(P.requested.some((u) => u.startsWith("ev_prop_picks") && u.includes("line.asc,side.asc,model_version.asc")), P.requested.filter((u) => u.startsWith("ev_prop_picks")).join("\n"));
+});
+
+test("MLB is live: its right column reads MLB +EV lines AND props, never says paused", async () => {
+  const P = populated({ sport: "mlb", any: [], cur: [], acc: [], picks: [], props: [], live: [] }), html = await P.G.buildBoardPage("mlb");
+  assert.ok(!/paused/.test(rightOf(html)), "no pause text");
+  assert.ok(P.requested.some((u) => u.startsWith("ev_picks") && u.includes("sport=eq.mlb")), "MLB +EV lines are read");
+  assert.ok(P.requested.some((u) => u.startsWith("ev_prop_picks") && u.includes("sport=eq.mlb")), "MLB +EV props are read (NFL and MLB have a prop board)");
 });

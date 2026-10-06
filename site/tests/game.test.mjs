@@ -418,12 +418,13 @@ test("tab state: ?tab= selects the panel, invalid tab falls back to overview, th
   assert.equal(E.gmState().tab, "overview");
 });
 
-test("MLB / NBA game page: hero when a prediction exists plus the sport status line; no tabs", async () => {
-  const { D } = populated({ search: "?sport=mlb&game=5", sport: "mlb", pred: { home_team_name: "Boston Red Sox", away_team_name: "New York Yankees" } });
+test("MLB game page is live (hero + read + tabs, one-decimal projected score, no pause text); NBA keeps its status line", async () => {
+  const { D } = populated({ search: "?sport=mlb&game=5", sport: "mlb", pred: { home_team_name: "Boston Red Sox", away_team_name: "New York Yankees", pred_home_score: 4.62, pred_away_score: 3.94 } });
   const html = await D.buildGamePage();
   assert.ok(html.includes("Boston Red Sox") && html.includes("ca-gm-hero"));
-  assert.ok(html.includes("MLB model paused (last projections Aug 31, 2026)"));
-  assert.ok(!html.includes("ca-gm-tabs") && !html.includes("CAPPINGALPHA READ"));
+  assert.ok(!/model paused/.test(html), "no hard-coded pause text");
+  assert.ok(html.includes("ca-gm-tabs") && html.includes("CAPPINGALPHA READ"), "a live sport gets the read and the tabs");
+  assert.ok(html.includes("<b>3.9</b><span>-</span><b>4.6</b>"), "baseball scores keep one decimal");
   const nba = populated({ search: "?sport=nba&game=5", sport: "nba", noPred: true });
   const h2 = await nba.D.buildGamePage();
   assert.ok(h2.includes("NBA model not live yet"));
