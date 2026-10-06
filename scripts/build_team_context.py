@@ -50,7 +50,8 @@ from sportsmodel.context.history import history_for_games  # noqa: E402
 from sportsmodel.context.matchup import cutoffs_for_season, grades_for_games  # noqa: E402
 from sportsmodel.cfb.priors import load_weights, season_priors  # noqa: E402
 from sportsmodel.cfb.teams import load_fbs_ids  # noqa: E402
-from sportsmodel.context.power import rankings  # noqa: E402
+from sportsmodel.context.power import (  # noqa: E402
+    blend_fpi, prev_ranks_from_published, rankings)
 from sportsmodel.context.results_power import (  # noqa: E402
     ResultsParams, load_params, played_games, power_asof)
 from sportsmodel.context.units import (  # noqa: E402
@@ -396,6 +397,36 @@ def regular_season_only(advanced: pd.DataFrame | None) -> pd.DataFrame | None:
     return advanced[advanced["season_type"].fillna("regular") == "regular"].reset_index(drop=True)
 
 
+def load_cfb_fpi(season: int) -> dict[str, float] | None:
+    """ESPN FPI {team id: points} for the ranking season, or None when the fetch fails or comes
+    back empty. CFB is then ranked on the model rating alone for this run; the job never fails
+    over FPI."""
+    from sportsmodel.cfb import espn
+    try:
+        fpi = espn.fetch_fpi(season)
+    except Exception as exc:  # noqa: BLE001
+        warn(f"cfb: ESPN FPI fetch failed ({type(exc).__name__}: {exc}) -- "
+             "ranking on the model rating only")
+        return None
+    if not fpi:
+        warn("cfb: ESPN FPI came back empty -- ranking on the model rating only")
+        return None
+    return fpi
+
+
+def load_cfb_published(season: int) -> pd.DataFrame | None:
+    """This season's published CFB power_rankings rows (season, week, team, rank, fpi): the
+    previous blended week sets prev_rank / move. None (both left blank) without DATABASE_URL."""
+    if not config.DATABASE_URL:
+        warn("cfb: DATABASE_URL unset -- no published rankings, prev_rank / move left blank")
+        return None
+    with db.get_postgres() as pg, pg.cursor() as cur:
+        cur.execute("SELECT season, week, team, rank, fpi FROM power_rankings "
+                    "WHERE sport = 'cfb' AND season = %s", (season,))
+        rows = cur.fetchall()
+    return pd.DataFrame(rows, columns=["season", "week", "team", "rank", "fpi"])
+
+
 def load_cfb_sources(now: pd.Timestamp) -> dict:
     asset = pd.read_parquet(CFB_ASSETS / "schedules.parquet")
     espn_games, st = _espn_games(now)
@@ -405,8 +436,10 @@ def load_cfb_sources(now: pd.Timestamp) -> dict:
     pks = sched.loc[sched["season"] == season, "game_pk"].astype("int64").tolist()
     advanced = regular_season_only(
         pd.read_parquet(ADVANCED_PATH) if ADVANCED_PATH.exists() else None)
+    rs = _cfb_season(sched, now)
     return {"schedules": sched, "lines": pd.read_parquet(CFB_ASSETS / "lines.parquet"),
-            "live_close": load_cfb_odds(pks), "advanced": advanced}
+            "live_close": load_cfb_odds(pks), "advanced": advanced,
+            "fpi": load_cfb_fpi(rs), "published": load_cfb_published(rs)}
 
 
 def _cfb_season(schedules: pd.DataFrame, now: pd.Timestamp) -> int:
@@ -430,7 +463,9 @@ def _cfb_conf(sched: pd.DataFrame) -> dict:
 def build_cfb(schedules: pd.DataFrame, lines: pd.DataFrame, live_close: pd.DataFrame | None,
               advanced: pd.DataFrame | None, now: pd.Timestamp,
               fbs=None, priors: dict | None = None,
-              rp: ResultsParams | None = None) -> dict[str, pd.DataFrame]:
+              rp: ResultsParams | None = None,
+              fpi: dict[str, float] | None = None,
+              published: pd.DataFrame | None = None) -> dict[str, pd.DataFrame]:
     now = _utc(now)
     season = _cfb_season(schedules, now)
     sched = schedules[schedules["season"] >= season - LOG_PRIOR_SEASONS]
@@ -465,10 +500,15 @@ def build_cfb(schedules: pd.DataFrame, lines: pd.DataFrame, live_close: pd.DataF
         pre = {y: cfb_prior_points(y, members) for y in range(s - 3, s)}
         pre[s] = (cfb_prior_points(s, members) if priors is None
                   else _points_from_elo_scale(priors, members))
-        power, prev = power_asof(cfb_results_games(schedules), rp or load_params("cfb"), s, w,
-                                 preseason=pre, members=members)
+        power, _ = power_asof(cfb_results_games(schedules), rp or load_params("cfb"), s, w,
+                              preseason=pre, members=members)
         ur = unit_ratings_asof(ug, s, w, blend_k=POWER_BLEND_K) if ug is not None else None
-        rk = _rank_frame(rankings(power, prev, ur, log), "cfb", _cfb_conf(sched))
+        # 60% ESPN FPI + 40% the results rating; move vs the last PUBLISHED blended week
+        ranked = rankings(blend_fpi(power, fpi), None, ur, log)
+        prev = prev_ranks_from_published(published, s, w)
+        ranked["prev_rank"] = ranked["team"].astype(str).map(prev).astype("Int64")
+        ranked["move"] = (ranked["prev_rank"] - ranked["rank"]).astype("Int64")
+        rk = _rank_frame(ranked, "cfb", _cfb_conf(sched))
     return {"team_game_log": _log_frame(log), "team_history": hist,
             "matchup_grades": grades, "power_rankings": rk}
 
@@ -532,6 +572,8 @@ def print_sample(sport: str, frames: dict[str, pd.DataFrame]) -> None:
     if len(rk):
         print(f"[{sport}] top 5 rankings (season {rk['season'].iloc[0]} week {rk['week'].iloc[0]}):")
         cols = ["rank", "team", "rating", "prev_rank", "move", "sos", "su", "ats"]
+        if sport == "cfb":
+            cols[3:3] = ["fpi", "model_rating"]
         print(rk[cols].head(5).to_string(index=False, float_format=lambda x: f"{x:.2f}"))
 
 
