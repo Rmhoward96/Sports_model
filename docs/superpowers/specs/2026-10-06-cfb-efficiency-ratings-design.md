@@ -81,3 +81,16 @@ Site panels (project 2), live in-game model / GraphQL (project 3), CFB player pr
 - CFBD weather/havoc historical coverage may be patchy before ~2018 → features missing for early seasons are NaN and fitted with missing-indicator handling; the gate still judges 2023–25.
 - Efficiency ratings may mostly duplicate the margin signal → the gate will show it; the per-component report says which pieces helped.
 - v2 already shows no edge vs the close; v3 may improve MAE without ATS gains — the gate requires "no worse", not "beats the close".
+
+## Addendum A (2026-10-06): v3.1 rolling-origin re-test — pre-registered before running
+
+**Context.** The v3 gate (`assets/cfb/v3_gate.json`, `docs/superpowers/reports/2026-10-06-cfb-v3-gate.md`) FAILED: ATS 48.59% vs 48.96% (paired SE 0.80pp, z −0.47) and ECE 0.0218 vs 0.0157+0.005 (bootstrap SE ≈0.0065); margin/total MAE, O/U and log-loss passed. v3's totals ran +1.77 pts high on 2023–25, consistent with the 2023 clock-rule change reducing plays. The user chose to re-test the way the model would actually be run: refit every offseason on all earlier seasons. This addendum fixes the method **before** any v3.1 number is computed; nothing below may be changed after seeing results.
+
+**Method (v3.1 = v3 code, refit yearly).**
+- For each test season S ∈ {2023, 2024, 2025}: fit on seasons 2016 … S−1 only, then predict season S. Fitting = the full v3 pipeline unchanged: `eff_fit` hyperparameters (same grid, same objective), points map, margin/total blends with the same context lasso and fold-SE one-SE rule (folds = the training seasons), sigmas. No new features, no new hyperparameters, no grid changes, no bias correction term.
+- 2015 stays warm-up only, as before. The feature table, leak rules and v2 baseline are exactly those of the v3 gate.
+- Baseline = v2 exactly as served today (fixed weights), reproduced first on the same 2,169 games (12.61 / 13.10 / 49.0%); if it does not reproduce, stop.
+- Gate = the same six criteria, same evaluation set, same win-probability convention (served discrete P(margin ≥ 1)), same 10-bin equal-width ECE, combined verdict; per-season flags reported. The report additionally shows n_ats / n_ou and paired standard errors for ATS / O/U and log-loss, and the per-season bias table (informational; the verdict is unchanged by them).
+- v3.1 is judged ONCE. If it fails, v2 stays live and we stop iterating on this holdout (any further idea needs fresh seasons, i.e. 2026 data, to test).
+- Outputs: `assets/cfb/v31_gate.json`, `docs/superpowers/reports/2026-10-06-cfb-v31-gate.md`, and the per-season fitted configs `assets/cfb/v31/<S>/{eff_config,v3_weights,gameline_v3}.json` (S = 2023, 2024, 2025) for audit. The v3 gate files stay as the historical record.
+- If v3.1 passes and the user approves, serving uses weights refit on 2016–2025 (all completed seasons), and production refits each offseason (a step added to the serving plan). The live switch stays v2 until the user approves.
