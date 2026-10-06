@@ -239,3 +239,56 @@ def test_relative_havoc_is_nan_without_havoc_data_and_other_metrics_are_untouche
     assert none["y_havoc"].isna().all()
     g = eff.build_eff_games(adv, hv, None, meta, sched)
     assert (g["y_ppa"] == 0.1).all() and (g["y_success"] == 0.4).all()
+
+
+# ------------------------------------------------------ review fix round 1 --
+
+def _hfa_states(cur_hfa, prior_hfa, games):
+    mk = lambda hfa: {m: eff.MetricRatings({"a": 0.0, "b": 0.0}, {"a": 0.0, "b": 0.0}, 0.1, hfa)   # noqa: E731
+                      for m in eff.METRICS}
+    prior = eff.EffState(mk(prior_hfa), {}, {}, {}, 70.0, 0.5)
+    cur = eff.EffState(mk(cur_hfa), games, {}, {}, 70.0, 0.5)
+    return cur, prior
+
+
+def test_blend_state_blends_home_field_with_the_mean_prior_weight():
+    cfg = eff.EffConfig(half_life_games=2.0, prior_floor=0.0)
+    cur, prior = _hfa_states(0.08, 0.02, {"a": 2, "b": 4})
+    w_bar = (prior_weight(2, cfg.decay) + prior_weight(4, cfg.decay)) / 2
+    out = eff.blend_state(cur, prior, cfg)
+    assert out.ratings["ppa"].hfa == pytest.approx(w_bar * 0.02 + (1 - w_bar) * 0.08)
+    assert 0.02 < out.ratings["ppa"].hfa < 0.08
+
+
+def test_blend_state_hfa_fallbacks_no_prior_and_no_current_games():
+    cfg = eff.EffConfig()
+    cur, prior = _hfa_states(0.08, 0.02, {"a": 3, "b": 3})
+    assert eff.blend_state(cur, None, cfg).ratings["ppa"].hfa == 0.08
+    empty_cur = eff.raw_state(league_games().iloc[0:0], cfg.ridge)
+    assert eff.blend_state(empty_cur, prior, cfg).ratings["ppa"].hfa == 0.02
+
+
+def test_season_prior_only_reads_priors_rows_of_the_target_season():
+    g = league_games()
+    cfg = eff.EffConfig(k0=0.5, k_ret=0.1, k_tal=0.0)
+    mk = lambda season, f: [{"season": season, "team_espn_id": str(t), "returning_pct": f(t),   # noqa: E731
+                             "recruiting_points": None, "portal_net": None, "prior_sos": None}
+                            for t in range(8)]
+    target = mk(2023, lambda t: 0.2 + 0.1 * t)
+    other = mk(2022, lambda t: 0.9 - 0.1 * t)           # reversed pattern; must not overwrite by team id
+    clean = eff.season_prior(g, 2023, target, None, cfg)
+    mixed = eff.season_prior(g, 2023, other + target, None, cfg)
+    mixed_rev = eff.season_prior(g, 2023, target + other, None, cfg)
+    for st in (mixed, mixed_rev):
+        assert st.ratings["ppa"].off == clean.ratings["ppa"].off
+    assert eff.season_prior(g, 2023, other, None, cfg).ratings["ppa"].off != clean.ratings["ppa"].off
+
+
+def test_season_prior_ignores_current_and_future_season_games():
+    g = league_games()
+    cfg = eff.EffConfig(k0=0.5)
+    full = eff.season_prior(g, 2023, [], None, cfg)
+    past = eff.season_prior(g[g.season < 2023], 2023, [], None, cfg)
+    assert full.ratings["ppa"].off == past.ratings["ppa"].off
+    assert full.pace == past.pace and full.rush_share == past.rush_share
+    assert full.lg_plays == past.lg_plays

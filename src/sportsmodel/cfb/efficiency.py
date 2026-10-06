@@ -159,7 +159,9 @@ def season_prior(eff_games: pd.DataFrame, season: int, priors_rows: list[dict],
         final = raw_state(prev, cfg.ridge)
         if _cache is not None:
             _cache[fkey] = final
-    z_ret = {t: z["returning_pct"] for t, z in season_features_z(priors_rows).items()} if priors_rows else {}
+    # only the target season's preseason rows: multi-season rows must not overwrite by team id
+    rows = [r for r in (priors_rows or []) if r.get("season", season) == season]
+    z_ret = {t: z["returning_pct"] for t, z in season_features_z(rows).items()} if rows else {}
     tal = {}
     if talent is not None and len(talent):
         cur = talent[talent["season"] == season].dropna(subset=["talent"])
@@ -172,6 +174,10 @@ def blend_state(cur: EffState, prior: EffState | None, cfg: EffConfig) -> EffSta
     if prior is None:
         return cur
     ratings = {}
+    # home-field edge: blended with the same decay curve as the ratings, at the mean prior weight
+    # of the teams that have played (the ridge leaves hfa unpenalised, so a thin early-season fit
+    # is noisy); no games yet -> the prior's hfa
+    w_bar = float(np.mean([prior_weight(n, cfg.decay) for n in cur.games.values()])) if cur.games else 1.0
     for m in METRICS:
         c, p = cur.ratings.get(m, EMPTY), prior.ratings.get(m, EMPTY)
         off, deff = {}, {}
@@ -179,7 +185,8 @@ def blend_state(cur: EffState, prior: EffState | None, cfg: EffConfig) -> EffSta
             w = prior_weight(cur.games.get(t, 0), cfg.decay)
             off[t] = w * p.off.get(t, 0.0) + (1 - w) * c.off.get(t, 0.0)
             deff[t] = w * p.deff.get(t, 0.0) + (1 - w) * c.deff.get(t, 0.0)
-        ratings[m] = MetricRatings(off, deff, c.mu if c.mu == c.mu else p.mu, c.hfa if c.off else p.hfa)
+        ratings[m] = MetricRatings(off, deff, c.mu if c.mu == c.mu else p.mu,
+                                   w_bar * p.hfa + (1 - w_bar) * c.hfa if c.off else p.hfa)
     lg_plays = cur.lg_plays if cur.games else prior.lg_plays
     lg_rs = cur.lg_rush_share if cur.games else prior.lg_rush_share
 
@@ -250,7 +257,8 @@ def _relative_havoc(a: pd.DataFrame) -> pd.Series:
 def build_eff_games(adv: pd.DataFrame, havoc: pd.DataFrame | None, drives: pd.DataFrame | None,
                     meta: pd.DataFrame, sched: pd.DataFrame) -> pd.DataFrame:
     """One row per FBS team-game (regular season AND postseason) with the observations the ridge
-    needs: y_<metric> / w_<metric> (y_havoc is relative to the week's league mean, ruling H1), plays, rush_plays, pass_plays, `home` (+1/-1/0) and `week`
+    needs: y_<metric> / w_<metric> (y_havoc is relative to the week's league mean, ruling H1),
+    plays, rush_plays, pass_plays, `home` (+1/-1/0) and `week`
     (the ESPN schedule week, NaN for postseason or games absent from the REG schedule -- those rows
     feed only the previous-season final ratings, never an in-season state)."""
     key = ["season", "game_id", "team"]
