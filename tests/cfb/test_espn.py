@@ -2,6 +2,7 @@ import copy
 import json
 import pathlib
 
+from sportsmodel.cfb import espn
 from sportsmodel.cfb.espn import parse_schedule, parse_final
 
 FIX = json.loads((pathlib.Path(__file__).parent.parent
@@ -122,3 +123,38 @@ def test_fetch_scoreboard_asks_for_the_fbs_group_and_returns_the_raw_payload(mon
     monkeypatch.setattr(espn, "_get", lambda path, params=None: seen.update(path=path, params=params) or {"events": []})
     assert espn.fetch_scoreboard(2026, 6, 2) == {"events": []}
     assert seen == {"path": "/scoreboard", "params": {"dates": 2026, "seasontype": 2, "week": 6, "groups": 80}}
+
+
+_FPI_FIXTURE = pathlib.Path(__file__).resolve().parents[1] / "fixtures" / "cfb" / "espn_fpi.json"
+
+
+def test_parse_fpi_maps_team_id_to_fpi_value_and_skips_items_without_one():
+    payload = json.loads(_FPI_FIXTURE.read_text())
+    assert espn.parse_fpi(payload) == {"194": 28.837, "61": 28.2}
+    assert espn.parse_fpi({}) == {} and espn.parse_fpi(None) == {}
+
+
+def test_parse_fpi_ignores_non_numeric_values():
+    item = {"team": {"$ref": ".../teams/5?lang=en"},
+            "predictives": [{"name": "fpi", "value": None}]}
+    bad = {"team": {"$ref": ".../teams/6?lang=en"},
+           "predictives": [{"name": "fpi", "value": "n/a"}]}
+    assert espn.parse_fpi({"items": [item, bad]}) == {}
+
+
+def test_fetch_fpi_follows_every_page(monkeypatch):
+    pages = {
+        1: {"pageIndex": 1, "pageCount": 2, "items": [
+            {"team": {"$ref": ".../teams/194?x"}, "predictives": [{"name": "fpi", "value": 28.8}]}]},
+        2: {"pageIndex": 2, "pageCount": 2, "items": [
+            {"team": {"$ref": ".../teams/61?x"}, "predictives": [{"name": "fpi", "value": 28.2}]}]},
+    }
+    calls = []
+
+    def fake(path, params=None):
+        calls.append((path, dict(params)))
+        return pages[params["page"]]
+    monkeypatch.setattr(espn, "_get_core", fake)
+    assert espn.fetch_fpi(2026) == {"194": 28.8, "61": 28.2}
+    assert calls == [("/seasons/2026/powerindex", {"limit": 200, "page": 1}),
+                     ("/seasons/2026/powerindex", {"limit": 200, "page": 2})]

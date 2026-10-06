@@ -6,6 +6,8 @@ cfb.teams.normalize (FBS ESPN team id passthrough, everything else -> "FCS").
 """
 from __future__ import annotations
 
+import math
+import re
 from typing import Any
 
 import httpx
@@ -27,6 +29,48 @@ def _get(path: str, params: dict | None = None) -> Any:
     r = httpx.get(f"{_BASE}{path}", params=params, timeout=20)
     r.raise_for_status()
     return r.json()
+
+
+# ESPN's core API (FPI lives here, not on the site API under _BASE).
+_CORE = "https://sports.core.api.espn.com/v2/sports/football/leagues/college-football"
+_TEAM_REF = re.compile(r"/teams/(\d+)")
+
+
+@retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=0.5, max=8))
+def _get_core(path: str, params: dict | None = None) -> Any:
+    """GET {_CORE}{path} -> parsed JSON, same retry policy as `_get`."""
+    r = httpx.get(f"{_CORE}{path}", params=params, timeout=20)
+    r.raise_for_status()
+    return r.json()
+
+
+def parse_fpi(payload: dict | None) -> dict[str, float]:
+    """ESPN /powerindex page -> {ESPN team id: FPI} (points vs an average team on a neutral
+    field). Items whose team ref has no numeric id or whose `fpi` predictive is missing or
+    non-numeric are skipped. Pure."""
+    out: dict[str, float] = {}
+    for item in (payload or {}).get("items") or []:
+        m = _TEAM_REF.search(((item.get("team") or {}).get("$ref")) or "")
+        if not m:
+            continue
+        val = next((p.get("value") for p in item.get("predictives") or []
+                    if p.get("name") == "fpi"), None)
+        if isinstance(val, (int, float)) and not isinstance(val, bool) and math.isfinite(val):
+            out[m.group(1)] = float(val)
+    return out
+
+
+def fetch_fpi(season: int) -> dict[str, float]:
+    """Current ESPN FPI for every team ESPN rates in `season` (all pages). ESPN serves only the
+    latest FPI run; there is no weekly history."""
+    out: dict[str, float] = {}
+    page = 1
+    while True:
+        payload = _get_core(f"/seasons/{season}/powerindex", {"limit": 200, "page": page})
+        out.update(parse_fpi(payload))
+        if page >= int(payload.get("pageCount") or 1):
+            return out
+        page += 1
 
 
 def _competitors(event) -> dict:

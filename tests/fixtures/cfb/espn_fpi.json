@@ -1,0 +1,17 @@
+{
+  "count": 4, "pageIndex": 1, "pageSize": 200, "pageCount": 1,
+  "items": [
+    {"team": {"$ref": "http://sports.core.api.espn.com/v2/sports/football/leagues/college-football/seasons/2026/teams/194?lang=en&region=us"},
+     "season": 2026, "lastUpdated": "2026-10-06T08:00Z",
+     "predictives": [{"name": "fpi", "value": 28.837, "displayValue": "28.8"},
+                     {"name": "fpirank", "value": 1.0, "displayValue": "1st"}]},
+    {"team": {"$ref": "http://sports.core.api.espn.com/v2/sports/football/leagues/college-football/seasons/2026/teams/61?lang=en&region=us"},
+     "season": 2026, "lastUpdated": "2026-10-06T08:00Z",
+     "predictives": [{"name": "fpirank", "value": 2.0}, {"name": "fpi", "value": 28.2, "displayValue": "28.2"}]},
+    {"team": {"$ref": "http://sports.core.api.espn.com/v2/sports/football/leagues/college-football/seasons/2026/teams/2032?lang=en&region=us"},
+     "season": 2026, "lastUpdated": "2026-10-06T08:00Z",
+     "predictives": [{"name": "fpirank", "value": 90.0}]},
+    {"team": {"$ref": "http://example.invalid/not-a-team"},
+     "season": 2026, "predictives": [{"name": "fpi", "value": 1.0}]}
+  ]
+}
