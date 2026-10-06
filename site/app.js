@@ -392,17 +392,23 @@ function teamAccent(name, sport, useAlt = false) {
 }
 // Both teams' game-page colors: each team's PRIMARY (darkened if too light to
 // read on the light bg; the alternate only when the primary is black/gray/white).
-// When the two land too close to tell apart (e.g. two royal blues), the AWAY
-// team switches to its alternate.
+// When the two land too close to tell apart (RGB distance < TEAM_COLOR_MIN_DIST, e.g. two royal
+// blues or Georgia vs Alabama reds) the AWAY team first tries its alternate; if that does not
+// separate them the HOME team takes its own alternate, and failing that the site navy.
+// A team with no color mapping keeps the default blue untouched (the guard only compares real team colors).
+const TEAM_COLOR_MIN_DIST = 100, TEAM_COLOR_FALLBACK = "#0E2238";   // = --navy
 function gameTeamColors(awayName, homeName, sport) {
-  const home = teamAccent(homeName, sport);
+  let home = teamAccent(homeName, sport);
   let away = teamAccent(awayName, sport);
+  const mapped = (n) => !!(sport === "nfl" ? NFL_TEAM_COLORS[n] : sport === "cfb" ? CFB_TEAM_COLORS[n] : null);
+  if (!mapped(awayName) || !mapped(homeName)) return { away, home };
   const rgb = (c) => [1, 3, 5].map((i) => parseInt(c.slice(i, i + 2), 16));
   const dist = (a, b) => { const [x, y] = [rgb(a), rgb(b)]; return Math.hypot(x[0] - y[0], x[1] - y[1], x[2] - y[2]); };
-  if (dist(away, home) < 90) {
-    const alt = teamAccent(awayName, sport, true);
-    if (dist(alt, home) > dist(away, home)) away = alt;
-  }
+  if (dist(away, home) >= TEAM_COLOR_MIN_DIST) return { away, home };
+  const altAway = teamAccent(awayName, sport, true);
+  if (dist(altAway, home) >= TEAM_COLOR_MIN_DIST) return { away: altAway, home };
+  const cands = [teamAccent(homeName, sport, true), TEAM_COLOR_FALLBACK];
+  home = cands.find((c) => dist(c, away) >= TEAM_COLOR_MIN_DIST) || cands.reduce((m, c) => (dist(c, away) > dist(m, away) ? c : m));
   return { away, home };
 }
 

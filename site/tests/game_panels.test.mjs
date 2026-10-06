@@ -290,29 +290,74 @@ test("gmGameFlow hides (null) without a projection, a share row for either team,
   assert.equal(g.gmGameFlow(null), null);
 });
 
-test("Overview: the Projected Game Flow card sits under Key Insights with its tooltip, legend, projected chart and (final games) the actual chart", async () => {
-  const rows = { cfb_quarter_shares: SHARES, game_info: [{ ...INFO, line_score: { home: [7, 3, 10, 7], away: [0, 7, 6, 7] } }],
-    cfb_team_insights: [insRow("333", { def_havoc_rank: 8 }), insRow("61", { off_havoc_allowed_rank: 118 })] };
-  const html = await page({ rows, pred: { commence_time: PAST() } }).D.buildGamePage();
-  const i = html.indexOf('id="gm-insights"'), f = html.indexOf('id="gm-flow"'), c = html.indexOf('id="gm-cover"');
-  assert.ok(i > 0 && i < f && f < c, "insights, then game flow, then cover");
-  const card = html.slice(f, c);
-  assert.ok(card.includes("<h2>Projected Game Flow</h2>") && card.includes("Projected pace (points by quarter)") && card.includes("Actual by quarter (excludes overtime)"));
-  assert.ok(card.includes('class="ca-info"') && card.includes("A pace estimate, not a prediction of the score by quarter"));
-  assert.ok(card.includes(">Georgia<") && card.includes(">Alabama<"), "legend names both teams");
-  for (const t of [">Q1<", ">Q4<", ">8.7<", ">4.5<", ">6.3<", ">10<"]) assert.ok(card.includes(t), t);
-  assert.ok(card.includes("Shares come from Georgia's 29 and Alabama's 31 games"));
-  assert.equal((card.match(/<svg class="ca-bars"/g) || []).length, 2);
-  const upcoming = await page({ rows: { cfb_quarter_shares: SHARES } }).D.buildGamePage();
-  const up = upcoming.slice(upcoming.indexOf('id="gm-flow"'), upcoming.indexOf('id="gm-cover"'));
-  assert.ok(up.includes("Projected pace") && !up.includes("Actual by quarter"), "no line score yet: projection only");
+const MARGIN21 = JSON.stringify({ kind: "margin", offset: 10, pmf: Array(21).fill(1 / 21) });    // home margin -10..10, uniform: home covers -7.5 at margin >= 8 (3 of 21)
+const flowRows = () => ({ cfb_quarter_shares: SHARES, game_info: [{ ...INFO, line_score: { home: [7, 3, 10, 7], away: [0, 7, 6, 7] } }],
+  cfb_team_insights: [insRow("333", { def_havoc_rank: 8 }), insRow("61", { off_havoc_allowed_rank: 118 })] });
+const flowOf = (html) => html.slice(html.indexOf('id="gm-flow"'), html.indexOf("</section>", html.indexOf('id="gm-flow"')) + 10);
+const strokes = (card) => (card.match(/<path d="[^"]*" fill="none"[^>]*>/g) || []).map((p) => ({ color: p.match(/stroke="([^"]*)"/)[1], dash: /stroke-dasharray/.test(p) }));
+
+test("gmFlowCumulative: starts at 0, adds the quarters up and ends at the total", () => {
+  assert.deepEqual([...g.gmFlowCumulative([7, 3, 10, 7])], [0, 7, 10, 20, 27]);
+  const f = g.gmGameFlow(flowD());
+  close(g.gmFlowCumulative(f.home), [0, 8.7, 15, 21.3, 30]);
+  close(g.gmFlowCumulative(f.away), [0, 4.5, 10, 15.5, 20]);
+  assert.ok(Math.abs(g.gmFlowCumulative(f.home)[4] - 30) < 1e-9 && Math.abs(g.gmFlowCumulative(f.away)[4] - 20) < 1e-9, "ends at the projected totals");
 });
 
-test("Overview: no shares, a missing table, no projection or an NFL game -> no Projected Game Flow card, page intact", async () => {
+test("Overview: the Projected Game Flow card is one cumulative line chart (solid projection, dashed actual on a final game) with its tooltip and legend", async () => {
+  const html = await page({ rows: flowRows(), pred: { commence_time: PAST(), margin_dist: MARGIN21 } }).D.buildGamePage();
+  const card = flowOf(html);
+  assert.ok(card.includes("<h2>Projected Game Flow</h2>") && card.includes('class="ca-info"') && card.includes("A pace estimate, not a prediction of the score by quarter"));
+  assert.ok(card.includes(">Georgia<") && card.includes(">Alabama<"), "legend names both teams");
+  assert.ok(!card.includes("ca-bars") && !card.includes("<figure"), "no grouped bars");
+  assert.equal((card.match(/<div class="ca-chart"/g) || []).length, 1, "one chart");
+  const legend = [...card.matchAll(/<i style="background:([^"]*)"><\/i>(Georgia|Alabama)/g)].map((m) => [m[2], m[1]]);
+  assert.deepEqual(legend.map((l) => l[0]), ["Georgia", "Alabama"], "away first");
+  const st = strokes(card);
+  assert.deepEqual(st.map((x) => x.dash), [false, false, true, true], "projected solid, actual dashed");
+  assert.deepEqual(st.map((x) => x.color), [legend[0][1], legend[1][1], legend[0][1], legend[1][1]], "team colours in legend order, shared by projected and actual");
+  for (const q of [">Q1<", ">Q2<", ">Q3<", ">Q4<"]) assert.ok(card.includes(q), q);
+  assert.equal((card.match(/class="ca-dot ca-dot-sm"/g) || []).length, 10, "dot markers on the 5 points of each projected line");
+  assert.ok(card.includes("dashed = actual") && card.includes("excludes overtime"));
+  assert.ok(card.includes("Shares come from Georgia's 29 and Alabama's 31 games"));
+  const upcoming = flowOf(await page({ rows: { cfb_quarter_shares: SHARES } }).D.buildGamePage());
+  assert.ok(upcoming.includes("<h2>Projected Game Flow</h2>") && !/stroke-dasharray|dashed = actual|overtime/.test(upcoming), "no line score yet: projection only");
+  assert.equal(strokes(upcoming).length, 2);
+});
+
+test("Overview: the chart's y axis spans the cumulative totals (0 at the bottom, past the projected 30)", async () => {
+  const card = flowOf(await page({ rows: { cfb_quarter_shares: SHARES } }).D.buildGamePage());
+  const ticks = [...card.matchAll(/class="ca-yl"[^>]*>([^<]*)</g)].map((m) => +m[1]);
+  assert.equal(Math.min(...ticks), 0);
+  assert.ok(Math.max(...ticks) >= 30, ticks.join());
+});
+
+test("Overview: Cover Probability sits inside the flow card under an h3, and there is no standalone Cover card", async () => {
+  const at = new Date().toISOString();
+  const rows = { ...flowRows(), cfb_betting_splits_current: [{ game_pk: 9, market: "spread", side: "away", cash_pct: 61, ticket_pct: 40, captured_at: at }, { game_pk: 9, market: "spread", side: "home", cash_pct: 39, ticket_pct: 60, captured_at: at }] };
+  const html = await page({ rows, pred: { commence_time: PAST(), margin_dist: MARGIN21 } }).D.buildGamePage();
+  assert.ok(!html.includes('id="gm-cover"') && !html.includes("ca-gm-cover"), "no standalone cover card");
+  assert.equal((html.match(/Cover Probability/g) || []).length, 1);
+  const card = flowOf(html);
+  const h3 = card.indexOf("<h3"), chart = card.indexOf('class="ca-chart"');
+  assert.ok(chart > 0 && h3 > chart && /<h3[^>]*>Cover Probability<\/h3>/.test(card), "heading under the chart");
+  assert.ok(card.indexOf("ca-gm-cov") > h3 && card.includes("ca-gm-bar") && card.includes("14.3%") && card.includes("85.7%"), "the cover row, after its heading");
+  assert.ok(/% of Money/.test(card) && card.includes("61%") && card.includes("39%"), "money caption when splits exist");
+  assert.ok(html.indexOf('id="gm-insights"') > 0 && html.indexOf('id="gm-insights"') < html.indexOf('id="gm-flow"'), "insights left, flow right");
+  assert.ok(!html.includes("ca-gm-col"), "flow no longer stacks under insights");
+  const noSplits = flowOf(await page({ rows: flowRows(), pred: { commence_time: PAST(), margin_dist: MARGIN21 } }).D.buildGamePage());
+  assert.ok(noSplits.includes("ca-gm-bar") && !noSplits.includes("% of Money"), "caption only with splits");
+  const noCover = flowOf(await page({ rows: flowRows(), pred: { commence_time: PAST() } }).D.buildGamePage());
+  assert.ok(noCover.includes("Cover Probability") && noCover.includes("Model cover probability isn't available for this game yet."), "no distribution: the message sits under the heading");
+});
+
+test("Overview: no shares, a missing table, no projection or an NFL game -> no flow card, the standalone Cover Probability card stays", async () => {
   for (const o of [{ rows: { cfb_quarter_shares: [] } }, { missing: ["cfb_quarter_shares"] }, { rows: { cfb_quarter_shares: SHARES }, pred: { pred_home_score: null } },
                    { sport: "nfl", rows: { cfb_quarter_shares: SHARES } }]) {
-    const html = await page(o).D.buildGamePage();
-    assert.ok(!html.includes("gm-flow") && !html.includes("Projected Game Flow") && html.includes('id="gm-cover"'), JSON.stringify(Object.keys(o)));
+    const html = await page({ ...o, pred: { ...o.pred, margin_dist: MARGIN21 } }).D.buildGamePage();
+    assert.ok(!html.includes("gm-flow") && !html.includes("Projected Game Flow") && html.includes('id="gm-cover"') && html.includes("ca-gm-cover"), JSON.stringify(Object.keys(o)));
+    assert.equal((html.match(/Cover Probability/g) || []).length, 1);
+    assert.ok(!html.includes("ca-gm-col") && !html.includes("<h3"), "layout unchanged");
     assert.ok(!/NaN|undefined/.test(html.replace(/\bnull\b(?=[^<]*>)/g, "")));
   }
 });

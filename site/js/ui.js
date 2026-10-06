@@ -186,17 +186,19 @@ function histogramChart(bins, { w = 520, h = 180 } = {}) {
   return `<svg class="ca-hist" viewBox="0 0 ${w} ${h}" width="${w}" height="${h}"><line x1="0" x2="${w}" y1="${base}" y2="${base}" class="ca-grid-line"/>${out}</svg>`;
 }
 
-function lineChart(series, xLabels, { w, h = 260, yTicks = 5, unit = "" } = {}) {
+// series: [{label, color, values, dash?}]. Opt-in extras (default output is unchanged without them): `dots: true` puts a small
+// marker on every finite point; `nice: true` rounds the y range to 1 / 2 / 5 x 10^k ticks; a series' `dash` ("6 4") draws it dashed and, being a secondary "overlay" line, without markers.
+function lineChart(series, xLabels, { w, h = 260, yTicks = 5, unit = "", dots = false, nice = false } = {}) {
   const PALETTE = ["var(--green)", "var(--navy)", "var(--blue)", "var(--red)"];
-  const ss = (Array.isArray(series) ? series : []).map((s, si) => ({ label: s && s.label, color: (s && s.color) || PALETTE[si % PALETTE.length], values: (s && Array.isArray(s.values)) ? s.values : [] }))
+  const ss = (Array.isArray(series) ? series : []).map((s, si) => ({ label: s && s.label, color: (s && s.color) || PALETTE[si % PALETTE.length], values: (s && Array.isArray(s.values)) ? s.values : [], dash: s && s.dash ? String(s.dash) : "" }))
     .filter((s) => s.values.filter(uiFin).length >= 2);
   if (!ss.length) return "";
   const n = Math.max(Array.isArray(xLabels) ? xLabels.length : 0, ...ss.map((s) => s.values.length));
-  const F = uiChartFrame(ss.flatMap((s) => uiNums(s.values)), { h, yTicks, unit, includeZero: false, xLabels, n });
-  const lines = ss.map((s) => `<path d="${uiSegPath(uiSegments(s.values), F)}" fill="none" stroke="${ctxEsc(s.color)}" stroke-width="2.5" vector-effect="non-scaling-stroke" stroke-linecap="round" stroke-linejoin="round"/>`).join("");
-  const isolated = ss.map((s) => uiSegments(s.values).filter((sg) => sg.length === 1).map((sg) => F.dot(sg[0].i, sg[0].v, s.color, true)).join("")).join("");
+  const F = uiChartFrame(ss.flatMap((s) => uiNums(s.values)), { h, yTicks, unit, includeZero: false, xLabels, n, nice });
+  const lines = ss.map((s) => `<path d="${uiSegPath(uiSegments(s.values), F)}" fill="none" stroke="${ctxEsc(s.color)}" stroke-width="2.5" vector-effect="non-scaling-stroke" stroke-linecap="round" stroke-linejoin="round"${s.dash ? ` stroke-dasharray="${ctxEsc(s.dash)}"` : ""}/>`).join("");
+  const marks = ss.map((s) => uiSegments(s.values).filter((sg) => (dots && !s.dash) || sg.length === 1).flatMap((sg) => sg).map((p) => F.dot(p.i, p.v, s.color, true)).join("")).join("");
   const legend = ss.filter((s) => s.label != null).map((s) => `<span class="ca-legend-item"><i style="background:${ctxEsc(s.color)}"></i>${ctxEsc(s.label)}</span>`).join("");
-  return `<div class="ca-linechart">${F.render(lines, isolated)}${legend ? `<div class="ca-legend">${legend}</div>` : ""}</div>`;
+  return `<div class="ca-linechart">${F.render(lines, marks)}${legend ? `<div class="ca-legend">${legend}</div>` : ""}</div>`;
 }
 
 // Binned scatter: `dots` [{x, y, n, title}] are the observed points (HTML dots sized by n, so they stay round), `line` [{x, y}] an

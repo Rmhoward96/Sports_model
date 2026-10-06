@@ -104,6 +104,32 @@ test("lineChart: one path per drawable series, gaps for nulls, empty renders not
   assert.equal(g.lineChart(null, null), "");
   assert.equal(g.lineChart([{ label: "x", values: [1] }], ["a"]), "");
 });
+const LC_SERIES = [{ label: "A", color: "#111", values: [0, 5, null, 10] }, { label: "B", color: "#222", values: [0, 2, 3, 4] }];
+test("lineChart: default output is byte-for-byte what it was before dots / dash existed; both are opt-in", () => {
+  const base = g.lineChart(LC_SERIES, ["a", "b", "c", "d"], { h: 120, unit: "%" });
+  assert.equal(base, "<div class=\"ca-linechart\"><div class=\"ca-chart\" style=\"position:relative;height:120px\"><div class=\"ca-plot\"><svg viewBox=\"0 0 1000 100\" preserveAspectRatio=\"none\"><line x1=\"0\" x2=\"1000\" y1=\"100.00\" y2=\"100.00\" class=\"ca-grid-line\"/><line x1=\"0\" x2=\"1000\" y1=\"75.00\" y2=\"75.00\" class=\"ca-grid-line\"/><line x1=\"0\" x2=\"1000\" y1=\"50.00\" y2=\"50.00\" class=\"ca-grid-line\"/><line x1=\"0\" x2=\"1000\" y1=\"25.00\" y2=\"25.00\" class=\"ca-grid-line\"/><line x1=\"0\" x2=\"1000\" y1=\"0.00\" y2=\"0.00\" class=\"ca-grid-line\"/><path d=\"M0.0 100.00 L333.3 50.00 M1000.0 0.00\" fill=\"none\" stroke=\"#111\" stroke-width=\"2.5\" vector-effect=\"non-scaling-stroke\" stroke-linecap=\"round\" stroke-linejoin=\"round\"/><path d=\"M0.0 100.00 L333.3 80.00 L666.7 70.00 L1000.0 60.00\" fill=\"none\" stroke=\"#222\" stroke-width=\"2.5\" vector-effect=\"non-scaling-stroke\" stroke-linecap=\"round\" stroke-linejoin=\"round\"/></svg><span class=\"ca-yl\" style=\"top:100.00%\">0.0%</span><span class=\"ca-yl\" style=\"top:75.00%\">2.5%</span><span class=\"ca-yl\" style=\"top:50.00%\">5.0%</span><span class=\"ca-yl\" style=\"top:25.00%\">7.5%</span><span class=\"ca-yl\" style=\"top:0.00%\">10.0%</span><span class=\"ca-xl ca-xl-start\" style=\"left:0.00%\">a</span><span class=\"ca-xl\" style=\"left:33.33%\">b</span><span class=\"ca-xl\" style=\"left:66.67%\">c</span><span class=\"ca-xl ca-xl-end\" style=\"left:100.00%\">d</span><span class=\"ca-dot ca-dot-sm\" style=\"left:100.00%;top:0.00%;background:#111\"></span></div></div><div class=\"ca-legend\"><span class=\"ca-legend-item\"><i style=\"background:#111\"></i>A</span><span class=\"ca-legend-item\"><i style=\"background:#222\"></i>B</span></div></div>");
+  assert.equal(g.lineChart(LC_SERIES, ["a", "b", "c", "d"], { h: 120, unit: "%", dots: false }), base, "dots:false is the default");
+  assert.equal(g.lineChart(LC_SERIES.map((s) => ({ ...s, dash: "" })), ["a", "b", "c", "d"], { h: 120, unit: "%" }), base, "an empty dash changes nothing");
+  assert.doesNotMatch(base, /stroke-dasharray/);
+});
+test("lineChart: dots:true marks every finite point; dash gives that series a dashed stroke and no markers", () => {
+  const series = [LC_SERIES[0], { ...LC_SERIES[1], dash: "6 4" }];
+  const svg = g.lineChart(series, [null, "a", "b", "c"], { dots: true });
+  assert.equal(count(svg, /class="ca-dot ca-dot-sm"/g), 3, "A has three finite points (isolated one not doubled); the dashed series gets no markers");
+  assert.doesNotMatch(svg, /ca-dot[^>]*background:#222/);
+  const paths = svg.match(/<path [^>]*>/g);
+  assert.equal(paths.length, 2);
+  assert.doesNotMatch(paths[0], /dasharray/); assert.match(paths[1], /stroke-dasharray="6 4"/);
+  assert.doesNotMatch(svg, /<span class="ca-xl[^>]*left:0\.00%/, "a null x label draws nothing");
+  assert.match(g.lineChart([{ ...series[1], dash: '6" onclick="x' }], ["a", "b", "c", "d"]), /stroke-dasharray="6&quot; onclick=&quot;x"/, "dash is escaped");
+  assert.equal(count(g.lineChart(series, ["a", "b", "c", "d"], { dots: true }), /class="ca-dot ca-dot-sm"/g), 3);
+});
+test("lineChart: nice:true rounds the y axis to whole 1 / 2 / 5 steps (0, 10, 20, 30); off by default", () => {
+  const s = [{ color: "#111", values: [0, 12, 30] }];
+  const ticks = (svg) => [...svg.matchAll(/class="ca-yl"[^>]*>([^<]*)</g)].map((x) => x[1]);
+  assert.deepEqual(ticks(g.lineChart(s, ["a", "b", "c"], { nice: true })), ["0", "10", "20", "30"]);
+  assert.deepEqual(ticks(g.lineChart(s, ["a", "b", "c"])), ["0.0", "7.5", "15.0", "22.5", "30.0"]);
+});
 test("donutLegend: one row per labelled row, escapes text, empty renders nothing", () => {
   const html = g.donutLegend([
     { label: "NFL <ML>", pct: 62.4, value: "$1,240", color: "#1E8E4E" },
