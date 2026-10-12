@@ -515,6 +515,9 @@ function gmOddsBox(title, left, right, leanSide) {
   const cell = (v, side) => `<span class="ca-gm-v${leanSide === side ? " lean" : ""}">${gmEsc(v)}</span>`;
   return `<div class="ca-gm-ob"><div class="ca-gm-ob-vals">${cell(left, "l")}${cell(right, "r")}</div><div class="ca-gm-ob-t">${title}</div></div>`;
 }
+// The hero root carries sport-<sport> for the four known sports; css/theme.css maps it to the stadium photo. Anything else keeps the plain gradient.
+const GM_HERO_SPORTS = ["nfl", "cfb", "mlb", "nba"];
+const gmHeroClass = (sport) => `ca-gm-hero${GM_HERO_SPORTS.includes(sport) ? ` sport-${sport}` : ""}`;
 function gmHero(D) {
   const r = D.r, sport = D.sport, o = gmOdds(r, D.evRows, D.mlRow, null, D.lineBy), lean = gmLean(r), live = LIVE_SPORTS.includes(sport);
   const when = gmWhen(r.commence_time);
@@ -530,7 +533,7 @@ function gmHero(D) {
     ${gmOddsBox("SPREAD", L != null ? lineStr(-L) : "—", L != null ? lineStr(L) : "—", lean.spread === "away" ? "l" : lean.spread === "home" ? "r" : "")}
     ${gmOddsBox("TOTAL", T != null ? `O ${T}` : "—", T != null ? `U ${T}` : "—", lean.total === "over" ? "l" : lean.total === "under" ? "r" : "")}</div>` : "";
   const venue = gmVenueLine(D.gameInfo, r.commence_time);
-  return `<section class="ca-gm-hero${boxes ? " has-odds" : ""}"><div class="ca-gm-top"><a class="ca-gm-back" href="${sport}.html">‹ ${SPORT_NAME[sport] || sport.toUpperCase()} Board</a><span class="ca-gm-when">${gmEsc(when)}</span><span></span></div>
+  return `<section class="${gmHeroClass(sport)}${boxes ? " has-odds" : ""}"><div class="ca-gm-top"><a class="ca-gm-back" href="${sport}.html">‹ ${SPORT_NAME[sport] || sport.toUpperCase()} Board</a><span class="ca-gm-when">${gmEsc(when)}</span><span></span></div>
     ${venue ? `<p class="ca-gm-venue">${gmEsc(venue)}</p>` : ""}<div class="ca-gm-teams">${team("away")}<span class="ca-gm-at">@</span>${team("home")}</div>${gmFinalLine(D)}${boxes}</section>`;
 }
 
