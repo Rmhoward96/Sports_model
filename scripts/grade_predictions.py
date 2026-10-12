@@ -26,6 +26,7 @@ from sportsmodel import config
 from sportsmodel.cfb import espn as cfb_espn
 from sportsmodel.db import get_postgres, refresh_prediction_pnl, upsert_prediction_accuracy
 from sportsmodel.ingest import mlb_statsapi
+from sportsmodel.model.distributions import pick_dist, spread_pick_prob, total_pick_prob
 from sportsmodel.nfl import espn as nfl_espn
 
 # Results-provider seam: sport key -> module exposing fetch_final(game_pk) -> dict|None.
@@ -44,10 +45,12 @@ def _window_start(days: int, today: date | None = None) -> str:
     return (d - timedelta(days=days)).isoformat()
 
 
-def _accuracy_row(prediction: dict, final: dict) -> dict:
+def _accuracy_row(prediction: dict, final: dict, sim: dict | None = None) -> dict:
     """Pure accuracy computation: one game_predictions row + its final score ->
     a prediction_accuracy row (dict, columns matching db.upsert_prediction_accuracy).
 
+    `sim`: the NFL sim row ({"margin_dist", "total_dist"}) that backs up a prediction without stored
+    distributions, in the game page's order (prediction row first, then the sim).
     No network, no DB -- easy to unit test in isolation.
     """
     home_wp = prediction.get("home_win_prob")
@@ -112,6 +115,12 @@ def _accuracy_row(prediction: dict, final: dict) -> dict:
     else:
         total_pick_correct = (pred_total > market_total) == (actual_total > market_total)
 
+    #   spread_pick_prob / total_pick_prob: the MODEL's probability that the pick side above wins at the closing
+    #   line, from the stored margin / total distribution (pushes excluded, renormalised -- the game page's
+    #   gmSplit maths). NULL without a distribution: never a normal approximation.
+    spread_pick_prob_ = spread_pick_prob(pick_dist("margin_dist", prediction, sim), pred_margin, market_spread)
+    total_pick_prob_ = total_pick_prob(pick_dist("total_dist", prediction, sim), pred_total, market_total)
+
     return {
         "sport": prediction.get("sport"),
         "game_pk": prediction.get("game_pk"),
@@ -135,6 +144,8 @@ def _accuracy_row(prediction: dict, final: dict) -> dict:
         "market_total": market_total,        # ESPN over/under (may be None)
         "spread_pick_correct": spread_pick_correct,
         "total_pick_correct": total_pick_correct,
+        "spread_pick_prob": spread_pick_prob_,   # P(spread pick wins at market_spread), NULL without a margin_dist
+        "total_pick_prob": total_pick_prob_,     # P(total pick wins at market_total), NULL without a total_dist
     }
 
 
@@ -184,14 +195,28 @@ def _pending_predictions(cur, sport: str, start: str, regrade: bool = False) -> 
     cur.execute(f"""
         SELECT DISTINCT ON (gp.game_pk)
                gp.game_pk, gp.game_date, gp.home_team_name, gp.away_team_name,
-               gp.home_win_prob, gp.pred_home_score, gp.pred_away_score
+               gp.home_win_prob, gp.pred_home_score, gp.pred_away_score,
+               gp.margin_dist, gp.total_dist
         FROM game_predictions gp
         WHERE gp.sport = %(sport)s AND gp.game_date >= %(start)s{skip_graded}
         ORDER BY gp.game_pk, gp.generated_at DESC
     """, {"sport": sport, "start": start})
     cols = ["game_pk", "game_date", "home_team_name", "away_team_name",
-            "home_win_prob", "pred_home_score", "pred_away_score"]
+            "home_win_prob", "pred_home_score", "pred_away_score", "margin_dist", "total_dist"]
     return [dict(zip(cols, row), sport=sport) for row in cur.fetchall()]
+
+
+def _sim_dists_by_game(cur, sport: str, game_pks: list) -> dict:
+    """{game_pk: {"margin_dist", "total_dist"}} from the newest nfl_sim row per game -- the NFL fallback the
+    game page uses when a prediction row carries no distribution. Other sports have no sim table: {}."""
+    if sport != "nfl" or not game_pks:
+        return {}
+    cur.execute("""
+        SELECT DISTINCT ON (game_pk) game_pk, margin_dist, total_dist
+        FROM nfl_sim WHERE game_pk = ANY(%s)
+        ORDER BY game_pk, created_at DESC
+    """, (list(game_pks),))
+    return {pk: {"margin_dist": md, "total_dist": td} for pk, md, td in cur.fetchall()}
 
 
 def main() -> None:
@@ -211,6 +236,7 @@ def main() -> None:
         for sport, provider in FINAL_PROVIDERS.items():
             pending = _pending_predictions(cur, sport, start, regrade=args.regrade)
             n = 0
+            sims = _sim_dists_by_game(cur, sport, [p["game_pk"] for p in pending])
             for pred in pending:
                 try:
                     final = provider.fetch_final(pred["game_pk"])
@@ -224,7 +250,7 @@ def main() -> None:
                     continue  # not final yet -- skip until a later run
                 if sport in CLOSING_LINES_FROM_ODDS:
                     final = {**final, **_closing_market_lines(cur, pred["game_pk"])}
-                graded_rows.append(_accuracy_row(pred, final))
+                graded_rows.append(_accuracy_row(pred, final, sims.get(pred["game_pk"])))
                 n += 1
             counts[sport] = n
             print(f"{sport}: {len(pending)} pending, {n} final and graded")

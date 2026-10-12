@@ -221,3 +221,95 @@ def test_mlb_accuracy_row_grades_total_pick_against_odds_derived_line():
     assert row["winner_correct"] is True
     assert row["total_pick_correct"] is True    # model 8.5 leans over 6.5; the game went 7
     assert row["spread_pick_correct"] is True   # model margin +0.7 -> away +1.5 side; home won by 1
+
+
+# --- spread_pick_prob / total_pick_prob (model's probability that the pick wins at the closing line) ------------
+import json as _json
+import math as _math
+
+_MARGIN = {"kind": "margin", "offset": 2, "pmf": [0.1, 0.2, 0.3, 0.25, 0.15]}   # margins -2..2
+_TOTAL = {"kind": "pmf", "pmf": [0, 0.1, 0.2, 0.4, 0.2, 0.1]}                    # totals 0..5
+
+
+def _final(**o):
+    base = {"home_score": 24, "away_score": 17, "final": True, "market_spread": -1.5, "market_total": 2.5}
+    base.update(o)
+    return base
+
+
+def test_accuracy_row_pick_probs_from_stored_distributions():
+    # pred margin 7 + (-1.5) > 0 -> home pick, covers when margin > 1.5 -> .15 ; total 47 > 2.5 -> over -> .7
+    pred = _prediction(margin_dist=_MARGIN, total_dist=_TOTAL)
+    row = _accuracy_row(pred, _final())
+    assert _math.isclose(row["spread_pick_prob"], 0.15)
+    assert _math.isclose(row["total_pick_prob"], 0.7)
+
+
+def test_accuracy_row_pick_probs_away_and_under():
+    # model margin 1 (27-26) + (-1.5) < 0 -> away pick: covers when margin < 1.5 -> .85
+    pred = _prediction(pred_home_score=27.0, pred_away_score=26.0, margin_dist=_MARGIN,
+                       total_dist={"kind": "pmf", "pmf": [0.25] * 4})
+    row = _accuracy_row(pred, _final(market_total=1.5))
+    assert _math.isclose(row["spread_pick_prob"], 0.85)
+    # pred_total 53 > market 1.5 -> over; uniform pmf on totals 0..3: P(total > 1.5) = .5
+    assert _math.isclose(row["total_pick_prob"], 0.5)
+    under = _accuracy_row(_prediction(pred_home_score=1.0, pred_away_score=0.0, total_dist=_TOTAL), _final(market_total=2.5))
+    assert _math.isclose(under["total_pick_prob"], 0.3)   # pred_total 1 < 2.5 -> under: P(total < 2.5) = .3
+
+
+def test_accuracy_row_pick_probs_none_without_distribution_or_line():
+    row = _accuracy_row(_prediction(), _final())          # no dists stored: NULL, never a normal approximation
+    assert row["spread_pick_prob"] is None and row["total_pick_prob"] is None
+    assert "spread_pick_prob" in row and "total_pick_prob" in row
+    pred = _prediction(margin_dist=_MARGIN, total_dist=_TOTAL)
+    no_lines = _accuracy_row(pred, _final(market_spread=None, market_total=None))
+    assert no_lines["spread_pick_prob"] is None and no_lines["total_pick_prob"] is None
+    # model exactly on the line: not a bet
+    on_line = _accuracy_row(_prediction(pred_home_score=10.0, pred_away_score=8.5, margin_dist=_MARGIN), _final(market_spread=-1.5))
+    assert on_line["spread_pick_prob"] is None
+
+
+def test_accuracy_row_pick_probs_accept_json_text_and_sim_fallback():
+    # a TEXT / unparsed JSONB column arrives as a string; the NFL sim row backs up a prediction without a pmf
+    pred = _prediction(margin_dist=_json.dumps(_MARGIN), total_dist=None)
+    row = _accuracy_row(pred, _final(), sim={"total_dist": _TOTAL})
+    assert _math.isclose(row["spread_pick_prob"], 0.15)
+    assert _math.isclose(row["total_pick_prob"], 0.7)
+
+
+def test_pending_predictions_selects_the_distributions():
+    class Cur:
+        def __init__(self):
+            self.sql = None
+
+        def execute(self, sql, params=None):
+            self.sql = sql
+
+        def fetchall(self):
+            return [(1, "2026-10-01", "H", "A", 0.6, 24.0, 20.0, _MARGIN, _TOTAL)]
+
+    cur = Cur()
+    rows = grade_predictions._pending_predictions(cur, "cfb", "2026-09-01")
+    assert "gp.margin_dist" in cur.sql and "gp.total_dist" in cur.sql
+    assert rows[0]["margin_dist"] == _MARGIN and rows[0]["total_dist"] == _TOTAL and rows[0]["sport"] == "cfb"
+
+
+def test_sim_dists_by_game_nfl_only_latest_per_game():
+    class Cur:
+        def __init__(self):
+            self.calls = []
+
+        def execute(self, sql, params=None):
+            self.calls.append((sql, params))
+
+        def fetchall(self):
+            return [(7, _MARGIN, _TOTAL)]
+
+    cur = Cur()
+    assert grade_predictions._sim_dists_by_game(cur, "cfb", [7]) == {}
+    assert cur.calls == []                                      # only NFL has a sim table
+    assert grade_predictions._sim_dists_by_game(cur, "nfl", []) == {}
+    out = grade_predictions._sim_dists_by_game(cur, "nfl", [7])
+    assert out == {7: {"margin_dist": _MARGIN, "total_dist": _TOTAL}}
+    sql = cur.calls[0][0]
+    assert "FROM nfl_sim" in sql and "created_at DESC" in sql

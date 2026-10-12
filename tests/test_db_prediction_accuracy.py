@@ -135,3 +135,62 @@ def test_multiple_records_all_converted_and_commit_called(monkeypatch):
     assert n == 2
     assert len(sink["rows"]) == 2
     assert conn_holder["conn"].committed is True
+
+
+# --- optional pick-probability columns (db/migration_accuracy_pick_probs.sql) -------------------------------------
+class SchemaCursor(FakeCursor):
+    """FakeCursor that also answers the information_schema probe for the optional columns."""
+
+    def execute(self, sql, params=None):
+        self.sink.setdefault("probes", []).append((sql, params))
+
+    def fetchall(self):
+        return [(c,) for c in self.sink.get("existing_cols", [])]
+
+
+class SchemaConn(FakeConn):
+    def cursor(self):
+        return SchemaCursor(self.sink)
+
+
+def _prob_row(**o):
+    row = {"sport": "cfb", "game_pk": 5, "spread_pick_prob": 0.61, "total_pick_prob": 0.55}
+    row.update(o)
+    return row
+
+
+def test_pick_prob_columns_written_when_the_migration_has_run(monkeypatch):
+    sink = {"existing_cols": ["spread_pick_prob", "total_pick_prob"]}
+    monkeypatch.setattr(db_module, "get_postgres", lambda: SchemaConn(sink))
+    assert db.upsert_prediction_accuracy([_prob_row()]) == 1
+    (tup,) = sink["rows"]
+    assert len(tup) == len(db._PREDICTION_ACCURACY_COLS) + 2
+    assert tup[-2:] == (0.61, 0.55)
+    assert "spread_pick_prob = EXCLUDED.spread_pick_prob" in sink["sql"]
+    assert "total_pick_prob = EXCLUDED.total_pick_prob" in sink["sql"]
+    assert len(sink["probes"]) == 1 and "information_schema.columns" in sink["probes"][0][0]   # probed once per call
+
+
+def test_pick_prob_columns_skipped_with_a_warning_before_the_migration(monkeypatch, capsys):
+    sink = {"existing_cols": []}
+    monkeypatch.setattr(db_module, "get_postgres", lambda: SchemaConn(sink))
+    assert db.upsert_prediction_accuracy([_prob_row(), _prob_row(game_pk=6)]) == 2   # grading still succeeds
+    assert all(len(t) == len(db._PREDICTION_ACCURACY_COLS) for t in sink["rows"])
+    assert "spread_pick_prob" not in sink["sql"] and "total_pick_prob" not in sink["sql"]
+    out = capsys.readouterr().out
+    assert "WARN" in out and "migration_accuracy_pick_probs.sql" in out
+    assert len(sink["probes"]) == 1
+
+
+def test_only_the_existing_optional_column_is_written(monkeypatch, capsys):
+    sink = {"existing_cols": ["total_pick_prob"]}
+    monkeypatch.setattr(db_module, "get_postgres", lambda: SchemaConn(sink))
+    db.upsert_prediction_accuracy([_prob_row()])
+    assert sink["rows"][0][-1] == 0.55 and "spread_pick_prob" not in sink["sql"]
+    assert "spread_pick_prob" in capsys.readouterr().out
+
+
+def test_no_probe_when_records_carry_no_pick_prob_keys(monkeypatch):
+    sink = {}
+    monkeypatch.setattr(db_module, "get_postgres", lambda: FakeConn(sink))   # a cursor without execute(): must not be probed
+    assert db.upsert_prediction_accuracy([{"sport": "mlb", "game_pk": 1}]) == 1

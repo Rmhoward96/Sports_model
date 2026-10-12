@@ -6,6 +6,7 @@ use Poisson-binomial / convolution forms rather than a single Binomial.
 """
 from __future__ import annotations
 
+import json
 from collections.abc import Sequence
 from math import erf, exp, lgamma, log, prod, sqrt
 
@@ -91,6 +92,85 @@ def prob_cover(margin_dist: dict, home_line: float) -> float:
     pmf = margin_dist.get("pmf") or []
     threshold = -home_line
     return sum(p for i, p in enumerate(pmf) if (i - offset) > threshold)
+
+
+# --- pick-side probabilities at the closing line (prediction_accuracy.spread_pick_prob / total_pick_prob) ---------
+# These mirror the game page (site/js/pages/game.js gmDists / gmSplit with app.js distParse / distProbs): the same
+# stored pmf, the same strict comparisons, pushes excluded and the rest renormalised. A missing / unusable
+# distribution gives None -- never a normal approximation.
+
+def _parse_dist(dist) -> dict | None:
+    """A stored distribution (dict, or JSON text from a TEXT / unparsed JSONB column) -> dict, else None."""
+    if dist is None:
+        return None
+    if isinstance(dist, (str, bytes)):
+        try:
+            dist = json.loads(dist)
+        except (ValueError, TypeError):
+            return None
+    return dist if isinstance(dist, dict) else None
+
+
+def pick_dist(key: str, *sources) -> dict | None:
+    """First source row whose `key` ('margin_dist' / 'total_dist') parses to a distribution with a pmf list.
+
+    Mirrors the game page's gmDists: the prediction row (game_predictions / predictions_any) first, then the NFL
+    sim row (nfl_sim). A source that lacks a usable pmf falls through to the next."""
+    for src in sources:
+        d = _parse_dist(src.get(key)) if src else None
+        if d is not None and isinstance(d.get("pmf"), list):
+            return d
+    return None
+
+
+def dist_split(dist, threshold) -> tuple[float, float] | None:
+    """(P(value < threshold), P(value > threshold)) with pushes (value == threshold) excluded and the rest
+    renormalised to sum to 1 -- site gmSplit. `dist` is {"kind": "margin", "offset", "pmf"} (value = i - offset) or
+    {"kind": "pmf", "pmf"} (value = i). None without a pmf, without a threshold, or when only a push has mass."""
+    d = _parse_dist(dist)
+    if d is None or threshold is None or not isinstance(d.get("pmf"), list):
+        return None
+    offset = d.get("offset", 0) if d.get("kind") == "margin" else 0
+    under = over = 0.0
+    for i, p in enumerate(d["pmf"]):
+        v = i - offset
+        if v < threshold:
+            under += p
+        elif v > threshold:
+            over += p
+    s = under + over
+    if not s > 0:
+        return None
+    return under / s, over / s
+
+
+def spread_pick_prob(margin_dist, pred_margin, market_spread) -> float | None:
+    """P(the model's spread pick covers the closing HOME line `market_spread`), from the margin pmf (HOME - AWAY).
+
+    The pick side matches the site's trackRows: edge = pred_margin + market_spread; edge > 0 -> home, < 0 -> away,
+    0 -> no bet (None). Home covers when margin > -market_spread, away when margin < -market_spread."""
+    if pred_margin is None or market_spread is None:
+        return None
+    edge = pred_margin + market_spread
+    if edge == 0:
+        return None
+    split = dist_split(margin_dist, -market_spread)
+    if split is None:
+        return None
+    under, over = split
+    return over if edge > 0 else under
+
+
+def total_pick_prob(total_dist, pred_total, market_total) -> float | None:
+    """P(the model's total pick lands) at the closing total: Over when pred_total > market_total, Under when
+    below, None when equal (no bet) or without a distribution. Pushes excluded."""
+    if pred_total is None or market_total is None or pred_total == market_total:
+        return None
+    split = dist_split(total_dist, market_total)
+    if split is None:
+        return None
+    under, over = split
+    return over if pred_total > market_total else under
 
 
 def apply_affine(dist: dict, loc: float, scale: float) -> dict:
