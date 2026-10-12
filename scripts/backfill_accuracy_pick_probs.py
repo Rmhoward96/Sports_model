@@ -2,7 +2,7 @@
 
 Run AFTER db/migration_accuracy_pick_probs.sql. For each graded row with a NULL probability it reads the
 prediction's stored distribution -- game_predictions.margin_dist / total_dist (latest generated_at per game; the
-CFB and MLB source), backed up for NFL by the newest nfl_sim row -- and computes the model's probability that the
+CFB and MLB source), backed up for NFL by the served-version nfl_sim row (else the newest) -- and computes the model's probability that the
 pick wins at the stored closing line (market_spread / market_total), exactly as grade_predictions.py does.
 Rows with no distribution, no line, or a model exactly on the line stay NULL; stored values are never overwritten.
 Idempotent: a re-run only touches rows that are still NULL.
@@ -25,7 +25,7 @@ from sportsmodel import config
 from sportsmodel.db import _existing_columns, get_postgres
 from sportsmodel.model.distributions import pick_dist, spread_pick_prob, total_pick_prob
 
-from grade_predictions import _sim_dists_by_game  # noqa: E402  (scripts/ is on sys.path above)
+from grade_predictions import _safe_sim_dists, _served_version  # noqa: E402  (scripts/ is on sys.path above)
 
 SPORTS = ("nfl", "cfb", "mlb")
 CHUNK = 500
@@ -93,6 +93,7 @@ def main() -> None:
         raise SystemExit("DATABASE_URL required (the backfill reads/writes Supabase).")
 
     plans: dict[str, list[dict]] = {}
+    served = _served_version()   # prefer the served nfl_sim version's distribution, as the game page does
     with get_postgres() as conn, conn.cursor() as cur:
         have = _existing_columns(cur, "prediction_accuracy", ["spread_pick_prob", "total_pick_prob"])
         have_cols = len(have) == 2
@@ -105,7 +106,7 @@ def main() -> None:
             acc = _load_acc_rows(cur, sport, have_cols)
             pks = [r["game_pk"] for r in acc]
             preds = _load_pred_dists(cur, sport, pks)
-            sims = _sim_dists_by_game(cur, sport, pks)
+            sims = _safe_sim_dists(conn, cur, sport, pks, served)
             plans[sport] = plan_updates(acc, preds, sims)
             n_s = sum(1 for u in plans[sport] if u["spread_pick_prob"] is not None)
             n_t = sum(1 for u in plans[sport] if u["total_pick_prob"] is not None)

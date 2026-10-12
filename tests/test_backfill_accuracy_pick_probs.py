@@ -104,9 +104,65 @@ def test_main_dry_run_never_writes(monkeypatch, capsys):
             return False
 
     monkeypatch.setattr(bf, "get_postgres", lambda: Conn())
+    monkeypatch.setattr(bf, "_served_version", lambda: None)   # never touch a real DB
     monkeypatch.setattr(bf.config, "DATABASE_URL", "postgres://test")
     monkeypatch.setattr("sys.argv", ["backfill", "--dry-run"])
     bf.main()
     out = capsys.readouterr().out
     assert calls["write"] == 0
     assert "dry-run: would update 3 row(s); nothing written." in out   # the fake returns one fillable row per sport
+
+
+
+def test_backfill_survives_a_failing_nfl_sim_lookup_and_passes_the_served_version(monkeypatch, capsys):
+    seen = {"rollbacks": 0, "served": []}
+
+    class Cur:
+        def __init__(self):
+            self.last = ""
+
+        def execute(self, sql, params=None):
+            self.last = sql
+            if "FROM nfl_sim" in sql:
+                seen["served"].append(params[0])
+                raise RuntimeError("permission denied for table nfl_sim")
+
+        def fetchall(self):
+            if "information_schema" in self.last:
+                return [("spread_pick_prob",), ("total_pick_prob",)]
+            if "FROM prediction_accuracy" in self.last:
+                return [("nfl", 1, 7.0, -1.5, 47.0, 2.5, None, None)]
+            if "FROM game_predictions" in self.last:
+                return [(1, MARGIN, TOTAL)]
+            return []
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+    class Conn:
+        def cursor(self):
+            return Cur()
+
+        def rollback(self):
+            seen["rollbacks"] += 1
+
+        def commit(self):
+            pass
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+    monkeypatch.setattr(bf, "get_postgres", lambda: Conn())
+    monkeypatch.setattr(bf, "_served_version", lambda: "nfl-sim-ml-v2")
+    monkeypatch.setattr(bf.config, "DATABASE_URL", "postgres://test")
+    monkeypatch.setattr("sys.argv", ["backfill", "--dry-run", "--sport", "nfl"])
+    bf.main()                                                     # must not raise
+    out = capsys.readouterr().out
+    assert seen["served"] == ["nfl-sim-ml-v2"] and seen["rollbacks"] == 1
+    assert "WARN" in out and "dry-run: would update 1 row(s)" in out   # the prediction's own distributions still count

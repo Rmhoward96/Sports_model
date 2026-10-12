@@ -313,3 +313,81 @@ def test_sim_dists_by_game_nfl_only_latest_per_game():
     assert out == {7: {"margin_dist": _MARGIN, "total_dist": _TOTAL}}
     sql = cur.calls[0][0]
     assert "FROM nfl_sim" in sql and "created_at DESC" in sql
+
+
+# --- grading must survive anything the DB hands back ---------------------------------------------------------------
+def test_accuracy_row_survives_malformed_distributions_and_keeps_the_rest_of_the_row():
+    bad = {"kind": "margin", "offset": None, "pmf": [0.5, None]}
+    row = _accuracy_row(_prediction(margin_dist=bad, total_dist={"kind": "pmf", "pmf": ["a"]}), _final())
+    assert row["spread_pick_prob"] is None and row["total_pick_prob"] is None
+    assert row["winner_correct"] is True and row["spread_pick_correct"] is True   # the real grade is untouched
+
+
+def test_accuracy_row_survives_an_exception_from_the_probability_maths(monkeypatch):
+    def boom(*a, **k):
+        raise RuntimeError("unexpected")
+    monkeypatch.setattr(grade_predictions, "spread_pick_prob", boom)
+    monkeypatch.setattr(grade_predictions, "total_pick_prob", boom)
+    row = _accuracy_row(_prediction(margin_dist=_MARGIN, total_dist=_TOTAL), _final())
+    assert row["spread_pick_prob"] is None and row["total_pick_prob"] is None
+    assert row["winner_correct"] is True
+
+
+def test_accuracy_row_survives_a_distribution_of_the_wrong_type():
+    row = _accuracy_row(_prediction(margin_dist=12345, total_dist=["x"]), _final(), sim={"margin_dist": object()})
+    assert row["spread_pick_prob"] is None and row["total_pick_prob"] is None
+
+
+# --- nfl_sim fallback: served version preferred; a failing lookup must not abort grading -------------------------------
+def test_sim_dists_prefer_the_served_version_then_the_newest_row():
+    class Cur:
+        def __init__(self):
+            self.calls = []
+
+        def execute(self, sql, params=None):
+            self.calls.append((sql, params))
+
+        def fetchall(self):
+            return [(7, _MARGIN, _TOTAL)]
+
+    cur = Cur()
+    grade_predictions._sim_dists_by_game(cur, "nfl", [7], served_version="nfl-sim-ml-v2")
+    sql, params = cur.calls[0]
+    assert "(model_version = %s) DESC" in sql and sql.index("(model_version = %s) DESC") < sql.index("created_at DESC")
+    assert params == ("nfl-sim-ml-v2", [7])
+    cur2 = Cur()
+    grade_predictions._sim_dists_by_game(cur2, "nfl", [7], served_version=None)    # no served version: newest row of any version
+    assert "model_version" not in cur2.calls[0][0] and cur2.calls[0][1] == ([7],)
+
+
+class _RollbackConn:
+    def __init__(self):
+        self.rollbacks = 0
+
+    def rollback(self):
+        self.rollbacks += 1
+
+
+def test_safe_sim_dists_rolls_back_warns_and_returns_empty_on_failure(capsys):
+    class BadCur:
+        def execute(self, *a, **k):
+            raise RuntimeError("relation nfl_sim does not exist")
+
+    conn = _RollbackConn()
+    assert grade_predictions._safe_sim_dists(conn, BadCur(), "nfl", [7], None) == {}
+    assert conn.rollbacks == 1                                   # the aborted transaction is cleared so later reads work
+    out = capsys.readouterr().out
+    assert "WARN" in out and "nfl_sim" in out
+
+
+def test_safe_sim_dists_passes_through_on_success_without_rollback():
+    class Cur:
+        def execute(self, *a, **k):
+            pass
+
+        def fetchall(self):
+            return [(7, _MARGIN, _TOTAL)]
+
+    conn = _RollbackConn()
+    assert grade_predictions._safe_sim_dists(conn, Cur(), "nfl", [7], "v1") == {7: {"margin_dist": _MARGIN, "total_dist": _TOTAL}}
+    assert conn.rollbacks == 0

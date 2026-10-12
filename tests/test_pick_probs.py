@@ -131,3 +131,38 @@ def test_spread_pick_prob_matches_game_page_cover_probs(line):
     away = D.spread_pick_prob(dist, pred_margin=-line - 1, market_spread=line)   # edge = -1 -> away pick
     assert math.isclose(home, expect[t]["over"], abs_tol=1e-12)
     assert math.isclose(away, expect[t]["under"], abs_tol=1e-12)
+
+
+# --- malformed stored distributions: never raise, never invent a number -------------------------------------------
+BAD_DISTS = [
+    {"kind": "margin", "offset": None, "pmf": [0.5, 0.5]},          # offset missing / null
+    {"kind": "margin", "offset": "x", "pmf": [0.5, 0.5]},           # non-numeric offset
+    {"kind": "margin", "offset": 1, "pmf": [0.5, None, 0.5]},       # a null entry
+    {"kind": "pmf", "pmf": ["a", "b"]},                              # strings
+    {"kind": "pmf", "pmf": [[0.5], [0.5]]},                          # nested lists
+    {"kind": "pmf", "pmf": [float("nan"), 0.5]},                     # NaN mass
+    {"kind": "pmf", "pmf": [float("inf"), 0.5]},                     # infinite mass
+    {"kind": "pmf", "pmf": [-1.0, -2.0]},                            # no positive mass
+    {"kind": "margin", "offset": float("nan"), "pmf": [0.5, 0.5]},   # NaN offset
+]
+
+
+@pytest.mark.parametrize("bad", BAD_DISTS, ids=lambda d: json.dumps(d, default=str)[:60])
+def test_dist_split_returns_none_on_a_malformed_distribution(bad):
+    assert D.dist_split(bad, 0.5) is None
+    assert D.spread_pick_prob(bad, 3.0, -1.5) is None
+    assert D.total_pick_prob(bad, 4.0, 3.5) is None
+
+
+def test_dist_split_returns_none_on_a_non_numeric_threshold_or_line():
+    assert D.dist_split(MARGIN, "abc") is None
+    assert D.spread_pick_prob(MARGIN, "x", -1.5) is None
+    assert D.spread_pick_prob(MARGIN, 3.0, "y") is None
+    assert D.total_pick_prob(TOTAL, "x", 3.5) is None
+    assert D.total_pick_prob(TOTAL, 4.0, object()) is None
+
+
+def test_dist_split_handles_json_that_is_not_an_object():
+    for text in ("[1, 2]", "3", "null", '"s"', b"\xff\xfe"):
+        assert D.dist_split(text, 0.5) is None
+    assert D.pick_dist("margin_dist", {"margin_dist": "[1,2]"}, None) is None

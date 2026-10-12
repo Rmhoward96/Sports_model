@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import json
 from collections.abc import Sequence
-from math import erf, exp, lgamma, log, prod, sqrt
+from math import erf, exp, isfinite, lgamma, log, prod, sqrt
 
 
 def nb_pmf(mean: float, var: float, xmax: int = 30) -> list[float]:
@@ -123,33 +123,50 @@ def pick_dist(key: str, *sources) -> dict | None:
     return None
 
 
+def _num(x) -> bool:
+    """A real, finite number (bool and numeric strings are not)."""
+    return isinstance(x, (int, float)) and not isinstance(x, bool) and isfinite(x)
+
+
 def dist_split(dist, threshold) -> tuple[float, float] | None:
     """(P(value < threshold), P(value > threshold)) with pushes (value == threshold) excluded and the rest
     renormalised to sum to 1 -- site gmSplit. `dist` is {"kind": "margin", "offset", "pmf"} (value = i - offset) or
-    {"kind": "pmf", "pmf"} (value = i). None without a pmf, without a threshold, or when only a push has mass."""
-    d = _parse_dist(dist)
-    if d is None or threshold is None or not isinstance(d.get("pmf"), list):
+    {"kind": "pmf", "pmf"} (value = i). None without a pmf, without a threshold, when only a push has mass, and on
+    ANY malformed input (null / non-numeric offset, pmf entry or threshold, NaN / infinite mass): this runs inside
+    grading, which must never crash on what the database hands back."""
+    try:
+        d = _parse_dist(dist)
+        if d is None or not _num(threshold) or not isinstance(d.get("pmf"), list):
+            return None
+        offset = 0
+        if d.get("kind") == "margin":
+            offset = d.get("offset", 0)
+            if not _num(offset):
+                return None
+        under = over = 0.0
+        for i, p in enumerate(d["pmf"]):
+            if not _num(p):
+                return None
+            v = i - offset
+            if v < threshold:
+                under += p
+            elif v > threshold:
+                over += p
+        s = under + over
+        if not (isfinite(s) and s > 0):
+            return None
+        return under / s, over / s
+    except (TypeError, ValueError, OverflowError, ArithmeticError):
         return None
-    offset = d.get("offset", 0) if d.get("kind") == "margin" else 0
-    under = over = 0.0
-    for i, p in enumerate(d["pmf"]):
-        v = i - offset
-        if v < threshold:
-            under += p
-        elif v > threshold:
-            over += p
-    s = under + over
-    if not s > 0:
-        return None
-    return under / s, over / s
 
 
 def spread_pick_prob(margin_dist, pred_margin, market_spread) -> float | None:
     """P(the model's spread pick covers the closing HOME line `market_spread`), from the margin pmf (HOME - AWAY).
 
     The pick side matches the site's trackRows: edge = pred_margin + market_spread; edge > 0 -> home, < 0 -> away,
-    0 -> no bet (None). Home covers when margin > -market_spread, away when margin < -market_spread."""
-    if pred_margin is None or market_spread is None:
+    0 -> no bet (None). Home covers when margin > -market_spread, away when margin < -market_spread.
+    None on any missing / non-numeric input."""
+    if not _num(pred_margin) or not _num(market_spread):
         return None
     edge = pred_margin + market_spread
     if edge == 0:
@@ -163,8 +180,8 @@ def spread_pick_prob(margin_dist, pred_margin, market_spread) -> float | None:
 
 def total_pick_prob(total_dist, pred_total, market_total) -> float | None:
     """P(the model's total pick lands) at the closing total: Over when pred_total > market_total, Under when
-    below, None when equal (no bet) or without a distribution. Pushes excluded."""
-    if pred_total is None or market_total is None or pred_total == market_total:
+    below, None when equal (no bet), without a distribution or on non-numeric input. Pushes excluded."""
+    if not _num(pred_total) or not _num(market_total) or pred_total == market_total:
         return None
     split = dist_split(total_dist, market_total)
     if split is None:

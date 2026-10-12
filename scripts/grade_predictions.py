@@ -24,7 +24,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from sportsmodel import config
 from sportsmodel.cfb import espn as cfb_espn
-from sportsmodel.db import get_postgres, refresh_prediction_pnl, upsert_prediction_accuracy
+from sportsmodel.db import (get_postgres, refresh_prediction_pnl, served_nfl_sim_version,
+                            upsert_prediction_accuracy)
 from sportsmodel.ingest import mlb_statsapi
 from sportsmodel.model.distributions import pick_dist, spread_pick_prob, total_pick_prob
 from sportsmodel.nfl import espn as nfl_espn
@@ -118,8 +119,15 @@ def _accuracy_row(prediction: dict, final: dict, sim: dict | None = None) -> dic
     #   spread_pick_prob / total_pick_prob: the MODEL's probability that the pick side above wins at the closing
     #   line, from the stored margin / total distribution (pushes excluded, renormalised -- the game page's
     #   gmSplit maths). NULL without a distribution: never a normal approximation.
-    spread_pick_prob_ = spread_pick_prob(pick_dist("margin_dist", prediction, sim), pred_margin, market_spread)
-    total_pick_prob_ = total_pick_prob(pick_dist("total_dist", prediction, sim), pred_total, market_total)
+    #   A malformed stored distribution must cost only the probability, never the grade: any failure -> NULL.
+    try:
+        spread_pick_prob_ = spread_pick_prob(pick_dist("margin_dist", prediction, sim), pred_margin, market_spread)
+    except Exception:  # noqa: BLE001
+        spread_pick_prob_ = None
+    try:
+        total_pick_prob_ = total_pick_prob(pick_dist("total_dist", prediction, sim), pred_total, market_total)
+    except Exception:  # noqa: BLE001
+        total_pick_prob_ = None
 
     return {
         "sport": prediction.get("sport"),
@@ -206,17 +214,51 @@ def _pending_predictions(cur, sport: str, start: str, regrade: bool = False) -> 
     return [dict(zip(cols, row), sport=sport) for row in cur.fetchall()]
 
 
-def _sim_dists_by_game(cur, sport: str, game_pks: list) -> dict:
-    """{game_pk: {"margin_dist", "total_dist"}} from the newest nfl_sim row per game -- the NFL fallback the
-    game page uses when a prediction row carries no distribution. Other sports have no sim table: {}."""
+def _sim_dists_by_game(cur, sport: str, game_pks: list, served_version: str | None = None) -> dict:
+    """{game_pk: {"margin_dist", "total_dist"}} from the nfl_sim row per game -- the NFL fallback the game page
+    uses when a prediction row carries no distribution. Prefers the SERVED model_version's row (the page's
+    filter) when `served_version` is given, else (or when a game has none under it) the newest row of any
+    version. Other sports have no sim table: {}."""
     if sport != "nfl" or not game_pks:
         return {}
-    cur.execute("""
-        SELECT DISTINCT ON (game_pk) game_pk, margin_dist, total_dist
-        FROM nfl_sim WHERE game_pk = ANY(%s)
-        ORDER BY game_pk, created_at DESC
-    """, (list(game_pks),))
+    if served_version is not None:
+        cur.execute("""
+            SELECT DISTINCT ON (game_pk) game_pk, margin_dist, total_dist
+            FROM nfl_sim WHERE game_pk = ANY(%s)
+            ORDER BY game_pk, (model_version = %s) DESC, created_at DESC
+        """, (served_version, list(game_pks)))
+    else:
+        cur.execute("""
+            SELECT DISTINCT ON (game_pk) game_pk, margin_dist, total_dist
+            FROM nfl_sim WHERE game_pk = ANY(%s)
+            ORDER BY game_pk, created_at DESC
+        """, (list(game_pks),))
     return {pk: {"margin_dist": md, "total_dist": td} for pk, md, td in cur.fetchall()}
+
+
+def _safe_sim_dists(conn, cur, sport: str, game_pks: list, served_version: str | None) -> dict:
+    """`_sim_dists_by_game`, but a failing lookup (missing table, permissions, ...) costs only the sim fallback:
+    the aborted transaction is rolled back so the later statements work, a warning is printed and {} is used.
+    Rolling back is safe here: everything before this call in the grading transaction is a read (the graded
+    rows live in memory and are upserted afterwards on their own connection), so no work is lost."""
+    try:
+        return _sim_dists_by_game(cur, sport, game_pks, served_version)
+    except Exception as exc:  # noqa: BLE001
+        print(f"WARN {sport}: nfl_sim distribution lookup failed ({exc!r}); grading without the sim fallback")
+        try:
+            conn.rollback()
+        except Exception as rb_exc:  # noqa: BLE001
+            print(f"WARN rollback after the failed nfl_sim lookup also failed ({rb_exc!r})")
+        return {}
+
+
+def _served_version() -> str | None:
+    """The served nfl_sim model_version, or None when it can't be read (missing table, no row, any error)."""
+    try:
+        return served_nfl_sim_version()
+    except Exception as exc:  # noqa: BLE001
+        print(f"WARN served nfl_sim version unreadable ({exc!r}); the sim fallback takes the newest row")
+        return None
 
 
 def main() -> None:
@@ -232,11 +274,12 @@ def main() -> None:
     graded_rows: list[dict] = []
     counts: dict[str, int] = {}
 
+    served = _served_version()   # once per run (own connection), before the grading transaction opens
     with get_postgres() as conn, conn.cursor() as cur:
         for sport, provider in FINAL_PROVIDERS.items():
             pending = _pending_predictions(cur, sport, start, regrade=args.regrade)
             n = 0
-            sims = _sim_dists_by_game(cur, sport, [p["game_pk"] for p in pending])
+            sims = _safe_sim_dists(conn, cur, sport, [p["game_pk"] for p in pending], served)
             for pred in pending:
                 try:
                     final = provider.fetch_final(pred["game_pk"])
