@@ -281,7 +281,7 @@ test("hero odds boxes: consensus moneyline, lines, total; the model's side is ma
   assert.ok(hero.includes("+280"), "median of +280 / +290 / +270 away");
   assert.ok(hero.includes("+3.5") && hero.includes("-3.5"), "spread: away +3.5 / home -3.5");
   assert.ok(hero.includes("O 44.5") && hero.includes("U 44.5"));
-  assert.match(html, /class="ca-gm-hero has-odds"/, "hero with odds boxes lets them straddle its edge");
+  assert.match(html, /class="ca-gm-hero sport-nfl has-odds"/, "hero with odds boxes lets them straddle its edge (and carries its sport class)");
   assert.match(hero, /class="ca-gm-v lean">-340</, "home is the model's moneyline side");
   assert.ok(hero.includes("3-1") && hero.includes("2-2"), "season records");
   assert.ok(!/\(\d+-\d+ [A-Z]+\)/.test(hero), "no conference record is ever invented");
@@ -515,4 +515,17 @@ test("one model-spread formatter on the board and the game page: half-point roun
 test("Alpha Score card without an opportunity says 'No +EV opportunity on this game.'", async () => {
   const none = await populated({ noEdge: true }).D.buildGamePage();
   assert.ok(none.includes("No +EV opportunity on this game.") && !none.includes("No graded opportunity"));
+});
+
+test("hero sport class: NFL, CFB, MLB and NBA heroes carry sport-<sport> (it picks the stadium photo); an unknown sport gets none and keeps the gradient fallback", async () => {
+  assert.deepEqual(["nfl", "cfb", "mlb", "nba"].map((s) => g.gmHeroClass(s)), ["ca-gm-hero sport-nfl", "ca-gm-hero sport-cfb", "ca-gm-hero sport-mlb", "ca-gm-hero sport-nba"]);
+  assert.equal(g.gmHeroClass("zzz"), "ca-gm-hero", "unknown sport: no sport class");
+  assert.equal(g.gmHeroClass('x" onload="'), "ca-gm-hero", "a hostile sport string never reaches the class attribute");
+  assert.equal(g.gmHeroClass(undefined), "ca-gm-hero");
+  for (const s of ["nfl", "cfb", "mlb"]) {
+    const html = await populated({ search: `?sport=${s}&game=5`, sport: s }).D.buildGamePage();
+    assert.match(html, new RegExp(`<section class="ca-gm-hero sport-${s} has-odds"`), `${s} hero renders its sport class`);
+  }
+  const nba = await populated({ search: "?sport=nba&game=5", sport: "nba" }).D.buildGamePage();
+  if (nba.includes("ca-gm-hero")) assert.match(nba, /<section class="ca-gm-hero sport-nba/, "nba hero (when a game renders) carries sport-nba");
 });
