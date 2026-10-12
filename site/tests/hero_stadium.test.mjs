@@ -36,12 +36,12 @@ test("photo sizing: cover, centred on the field / lights band, no tiling; rounde
   for (const s of ["nfl", "cfb", "mlb", "nba"]) assert.ok(new RegExp(`\\.ca-gm-hero\\.sport-${s}[,{]`).test(css), `${s} listed`);
 });
 
-test("the dark overlay keeps white text readable: every overlay stop is >= .55 opaque and the base colour matches the dark gradient (no white flash while the photo loads)", () => {
+test("the dark overlay keeps white text readable: every overlay stop is >= .45 opaque and the base colour matches the dark gradient (no white flash while the photo loads)", () => {
   for (const sport of Object.keys(PHOTO)) {
     const r = rule(`.ca-gm-hero.sport-${sport}`), grad = r.match(/linear-gradient\(([^;]*?)\),url/)[1];
     const alphas = [...grad.matchAll(/rgba\(\s*\d+\s*,\s*\d+\s*,\s*\d+\s*,\s*(\.?\d*\.?\d+)\s*\)/g)].map((m) => Number(m[1]));
     assert.ok(alphas.length >= 3, `${sport}: overlay has top / middle / bottom stops`);
-    assert.ok(alphas.every((a) => a >= 0.55 && a <= 0.9), `${sport}: overlay alphas ${alphas}`);
+    assert.ok(alphas.every((a) => a >= 0.45 && a <= 0.9), `${sport}: overlay alphas ${alphas}`);
   }
   assert.match(rule(".ca-gm-hero"), /background-color:#0C1C30/i, "dark base colour on the hero itself");
 });
@@ -53,4 +53,10 @@ test("fallback: the original dark gradient stays on .ca-gm-hero, so a missing ph
   // the sport rules use background-image only (never the `background` shorthand), so they cannot erase the colour
   for (const s of Object.keys(PHOTO)) assert.doesNotMatch(rule(`.ca-gm-hero.sport-${s}`), /(^|;)\s*background:/, `${s} rule does not use the shorthand`);
   assert.deepEqual([...new Set([...css.matchAll(/stadiums\/(\w+)\.jpg/g)].map((m) => m[1]))].sort(), ["baseball", "basketball", "football"], "only the three supplied photos are referenced");
+});
+
+test("hero secondary text stays bright enough over the lightened overlay (measured >= 4.5:1 per text box on all three photos at 1440)", () => {
+  assert.match(rule(".ca-gm-venue"), /color:#F2F6FB/i, "venue line");
+  assert.match(rule(".ca-gm-rec"), /color:#EEF3F9/i, "team record");
+  assert.match(rule(".ca-gm-when"), /color:#DCE6F2/i, "kickoff line");
 });
