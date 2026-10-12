@@ -353,6 +353,101 @@ test("closing prices are fetched in parallel chunks of 60 game ids; a failed chu
   assert.ok(!/NaN|undefined/.test(clean(html)));
 });
 
+/* ── Model Prob. for spread / total rows ────────────────────────────────────────────────────────────────────────────── */
+test("trackRows: spread / total rows carry the stored pick probability as prob; moneyline keeps the favourite win_prob; conf stays moneyline-only", () => {
+  const [ml, sp, tot] = g.trackRows([A({ spread_pick_prob: 0.5843, total_pick_prob: 0.6127 })], []);
+  assert.ok(Math.abs(ml.prob - 0.6) < 1e-12 && Math.abs(ml.conf - 0.6) < 1e-12, "win_prob 0.4 -> away favourite at 0.6");
+  assert.equal(sp.prob, 0.5843); assert.equal(tot.prob, 0.6127);
+  assert.equal(sp.conf, null); assert.equal(tot.conf, null);
+  const missing = g.trackRows([A({})], []), nulls = g.trackRows([A({ spread_pick_prob: null, total_pick_prob: "x" })], []);
+  for (const rs of [missing, nulls]) { assert.equal(rs[1].prob, null); assert.equal(rs[2].prob, null); assert.ok(rs[0].prob != null); }
+});
+
+test("Model Prob. cell: spread / total show the stored probability, '—' without one; the tooltip says what it means per market", async () => {
+  const acc = [A({ sport: "cfb", game_pk: 61, game_date: dayOff(-1), spread_pick_prob: 0.5843, total_pick_prob: null })];
+  const { T } = selectHarness(() => null, { acc });
+  const html = await T.buildTrackPage();
+  const tbody = html.slice(html.indexOf("<tbody>"), html.indexOf("</tbody>")), rows = tbody.split("<tr ").slice(1);
+  const cell = (tr) => tr.split("</td>")[6];       // Date, League, Matchup, Market, Prediction, Closing Line, Model Prob.
+  assert.match(cell(rows.find((tr) => tr.includes(">Moneyline<"))), /60\.0%/);
+  assert.match(cell(rows.find((tr) => tr.includes(">Spread<"))), /58\.4%/);
+  assert.match(cell(rows.find((tr) => tr.includes(">Total<"))), />—$/);
+  const th = html.match(/<th title="([^"]*)">Model Prob\.<\/th>/);
+  assert.ok(th, "the column header carries a tooltip");
+  for (const word of ["Moneyline", "Spread", "Total", "Pushes are excluded"]) assert.ok(th[1].includes(word), `tooltip mentions ${word}`);
+});
+
+test("moneyline-only consumers of prob (calibration, Brier, average confidence) ignore spread / total rows that now carry a prob", () => {
+  const ml = R("W", "2026-10-04", { prob: 0.7 });
+  const sp = R("L", "2026-10-04", { market: "spread", prob: 0.9, conf: null });
+  const tot = R("L", "2026-10-04", { market: "total", prob: 0.9, conf: null });
+  const cal = g.trackModelCalibration([ml, sp, tot]);
+  assert.equal(cal.n, 1); assert.ok(Math.abs(cal.predicted - 0.7) < 1e-12);
+  assert.equal(g.trackCalibration([ml, sp, tot]).bands.reduce((s, b) => s + b.n, 0), 1);
+  const card = g.trackStatAvg({ scope: [ml, sp, tot] });
+  assert.ok(card.includes("70.0%") && !card.includes("83"), "average confidence is over the moneyline pick only");
+});
+
+/* ── prediction_accuracy select: the new columns, with a fallback before the migration ──────────────────────────────── */
+function selectHarness(handler, { acc = [A({ sport: "cfb", game_pk: 71, game_date: dayOff(-1) })] } = {}) {
+  const st = { accSelects: [], warns: [] };
+  const fetch = async (url) => {
+    const { path, q } = urlParts(url);
+    if (path === "prediction_accuracy") {
+      const select = (q.match(/select=([^&]*)/) || [, ""])[1]; st.accSelects.push(select);
+      const res = handler(select);
+      if (res) return res;
+      return { ok: true, json: async () => acc.map((r) => (select.includes("spread_pick_prob") ? { spread_pick_prob: 0.55, total_pick_prob: 0.57, ...r } : r)) };
+    }
+    if (path === "track_record_start") return { ok: true, json: async () => [] };
+    return { ok: true, json: async () => [] };
+  };
+  const T = loadScripts(["app.js", "js/metrics.js", "js/ui.js", "js/shell.js", "js/data.js", "js/pages/track.js", "js/boot.js"], { page: "track", globals: {
+    console: { ...console, error() {}, warn: (m) => st.warns.push(String(m)) }, location: { search: "", href: "http://localhost/track-record.html" }, fetch } });
+  return { T, st };
+}
+const COLUMN_400 = { ok: false, status: 400, text: async () => '{"code":"42703","message":"column prediction_accuracy.spread_pick_prob does not exist"}', json: async () => ({}) };
+
+test("TRACK_ACC_SELECT asks for the pick probabilities; the base select never does", () => {
+  assert.ok(g.TRACK_ACC_SELECT.endsWith(",spread_pick_prob,total_pick_prob"));
+  assert.ok(g.TRACK_ACC_SELECT.startsWith(g.TRACK_ACC_BASE_SELECT) && !g.TRACK_ACC_BASE_SELECT.includes("pick_prob"));
+});
+
+test("select fallback: after the migration one extended query, no fallback; the probabilities reach the table", async () => {
+  const { T, st } = selectHarness(() => null);
+  const html = await T.buildTrackPage();
+  assert.equal(st.accSelects.length, 1); assert.ok(st.accSelects[0].includes("spread_pick_prob,total_pick_prob"));
+  assert.ok(html.includes("55.0%") && html.includes("57.0%"), "spread 55.0% and total 57.0% shown");
+  assert.equal(st.warns.length, 0);
+});
+
+test("select fallback: before the migration the unknown-column 400 falls back to the old select once, and the table is unbroken", async () => {
+  const { T, st } = selectHarness((select) => (select.includes("pick_prob") ? COLUMN_400 : null));
+  const html = await T.buildTrackPage();
+  assert.equal(st.accSelects.length, 2, "extended try, then the old select");
+  assert.ok(st.accSelects[0].includes("pick_prob") && !st.accSelects[1].includes("pick_prob"));
+  const rows = html.slice(html.indexOf("<tbody>"), html.indexOf("</tbody>")).split("<tr ").slice(1);
+  assert.equal(rows.length, 3, "moneyline + spread + total still render");
+  const probCell = (tr) => tr.split("</td>")[6];
+  assert.match(probCell(rows.find((tr) => tr.includes(">Spread<"))), />—$/);
+  assert.match(probCell(rows.find((tr) => tr.includes(">Total<"))), />—$/);
+  assert.match(probCell(rows.find((tr) => tr.includes(">Moneyline<"))), /60\.0%/, "moneyline keeps win_prob");
+  assert.ok(st.warns.some((w) => /migration_accuracy_pick_probs\.sql/.test(w)));
+  // remembered: the next load goes straight to the old select
+  await T.buildTrackPage();
+  assert.equal(st.accSelects.length, 3); assert.ok(!st.accSelects[2].includes("pick_prob"));
+});
+
+test("select fallback: only the unknown-column 400 falls back; a timeout / 5xx is still a failure (no silent downgrade)", async () => {
+  const { T, st } = selectHarness(() => ({ ok: false, status: 500, text: async () => "statement timeout", json: async () => ({}) }));
+  const html = await T.buildTrackPage();
+  assert.equal(st.accSelects.length, 1, "no retry on the base select");
+  assert.ok(html.includes("Couldn't load graded picks."));
+  const other400 = selectHarness(() => ({ ok: false, status: 400, text: async () => '{"message":"bad request"}', json: async () => ({}) }));
+  await other400.T.buildTrackPage();
+  assert.equal(other400.st.accSelects.length, 1, "a 400 that names no pick-prob column is not the missing-column case");
+});
+
 test("pagination: 25 rows at a time with Show more; the shown count lives in the URL state", async () => {
   const many = Array.from({ length: 20 }, (_, i) => A({ sport: "cfb", game_pk: 500 + i, game_date: dayOff(-1 - (i % 5)) }));   // 60 rows
   const html = await populated({ acc: many }).T.buildTrackPage();
@@ -644,7 +739,7 @@ test("T7 structure: row 2 pair, row 3 trio, row 4 = full-width filter row (filte
 
 test("T7 results table: exact column list, Result chip, row height content; one search card, no dead filters", async () => {
   const html = await populated().T.buildTrackPage();
-  const heads = [...html.slice(html.indexOf("<thead>"), html.indexOf("</thead>")).matchAll(/<th>([^<]*)<\/th>/g)].map((m) => m[1]);
+  const heads = [...html.slice(html.indexOf("<thead>"), html.indexOf("</thead>")).matchAll(/<th(?: title="[^"]*")?>([^<]*)<\/th>/g)].map((m) => m[1]);
   assert.deepEqual(heads, ["Date", "League", "Matchup / Player", "Market", "Model Prediction", "Closing Line", "Model Prob.", "Result", "Confidence", "Final Score / Outcome", "View"]);
   const tbody = html.slice(html.indexOf("<tbody>"), html.indexOf("</tbody>"));
   for (const tr of tbody.split("<tr ").slice(1)) assert.equal((tr.match(/<td/g) || []).length, heads.length, "every row has one cell per column");

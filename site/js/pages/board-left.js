@@ -219,7 +219,7 @@ async function blLoadAll(D) {
   const startsP = trackStarts();      // the record scope, loaded once for the record and the pulse (fails closed)
   const part = (k, p) => p.then((v) => { L[k] = v; }).catch((e) => { L.failed[k] = true; console.error(`board left: ${k} failed to load`, e); });
   const recordP = (async () => {
-    const [acc, st] = await Promise.all([sbAll(`prediction_accuracy?sport=eq.${sport}&actual_winner=not.is.null&select=${TRACK_ACC_SELECT}&order=game_date.asc,game_pk.asc`), startsP]);
+    const [acc, st] = await Promise.all([trackAccRead((sel) => sbAll(`prediction_accuracy?sport=eq.${sport}&actual_winner=not.is.null&select=${sel}&order=game_date.asc,game_pk.asc`)), startsP]);
     if (st.failed) throw new Error("track_record_start");      // fail closed: without the record scope no record number is shown
     L.starts = st.starts;
     const rows = blAccInRecord(acc, st.starts), closing = trackClosingMap(await trackClosing(rows.map((r) => r.game_pk)).catch(() => []));

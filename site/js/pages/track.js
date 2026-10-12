@@ -6,8 +6,9 @@
    Range, archive, view, league tab, segment tab, filters, sort, search and the page size live in window.__caTrk AND in
    the URL (so a reload or share keeps them) and survive the 5-minute re-render; changing them redraws from the cached
    load (window.__caTrkData) without a refetch (only the +EV view refetches, it needs different data).
-   Probabilities are the MODEL's (win_prob); the prediction carries no spread / total probability, so those rows show
-   "—". prediction_pnl (per-pick P&L) times out under the anon 3s statement limit and is never requested, so `units`
+   Probabilities are the MODEL's: win_prob for moneyline; spread / total rows carry spread_pick_prob / total_pick_prob (the
+   pick's probability at the closing line, stored at grading from the margin / total distribution), "—" until the
+   migration + backfill have run or when no distribution was stored. prediction_pnl (per-pick P&L) times out under the anon 3s statement limit and is never requested, so `units`
    stays null in the page (trackRows still joins it when given); the moneyline closing price comes from
    game_closing_prices (market = moneyline, fetched per chunk of game ids: the unfiltered view scan is near the limit), spread / total closing
    lines are the stored market_spread / market_total.
@@ -99,7 +100,7 @@ function trackSegments(rows, kind) {
 
 // Confidence calibration (moneyline picks with a model probability): the metrics `calibration` bands as paired bars.
 function trackCalibration(rows) {
-  const ml = (rows || []).filter((r) => r && finite(r.prob) && (r.won === true || r.won === false));
+  const ml = (rows || []).filter((r) => r && r.market === "moneyline" && finite(r.prob) && (r.won === true || r.won === false));
   const bands = calibration(ml, TRACK_BANDS);
   const groups = bands.map((b, i) => ({ label: TRACK_BAND_LABELS[i], sub: `(${b.n})`, bars: b.n ? [
     { value: b.predicted * 100, color: "var(--navy)", label: `${Math.round(b.predicted * 100)}%` },
@@ -118,7 +119,7 @@ const trackForms = (rows) => [10, 25, 50, 100].map((n) => ({ label: `Last ${n}`,
 
 // Model Calibration card (moneyline picks): Brier score, predicted vs actual, difference in points and the verdict chip.
 function trackModelCalibration(rows) {
-  const ml = (rows || []).filter((r) => r && finite(r.prob) && (r.won === true || r.won === false));
+  const ml = (rows || []).filter((r) => r && r.market === "moneyline" && finite(r.prob) && (r.won === true || r.won === false));
   if (!ml.length) return null;
   const predicted = ml.reduce((s, r) => s + +r.prob, 0) / ml.length, actual = ml.filter((r) => r.won).length / ml.length, diff = (actual - predicted) * 100;
   return { n: ml.length, brier: brier(ml), predicted, actual, diff, chip: Math.abs(diff) <= 3 + 1e-9 ? "Well Calibrated" : diff < 0 ? "Overconfident" : "Underconfident" };
@@ -181,7 +182,7 @@ async function trackLoad() {
   const today = etDateStr(new Date().toISOString());
   let picksFailed = false;
   const [acc, scope, predPnl] = await Promise.all([
-    sb(`prediction_accuracy?actual_winner=not.is.null&order=game_date.desc&limit=${TRACK_ROWS_CAP}&select=${TRACK_ACC_SELECT}`).catch((e) => { picksFailed = true; console.error("track record: prediction_accuracy failed to load", e); return []; }),
+    trackAccRead((sel) => sb(`prediction_accuracy?actual_winner=not.is.null&order=game_date.desc&limit=${TRACK_ROWS_CAP}&select=${sel}`)).catch((e) => { picksFailed = true; console.error("track record: prediction_accuracy failed to load", e); return []; }),
     trackStarts(),
     sb("prediction_pnl_daily?select=*").catch(() => []),
   ]);
@@ -215,6 +216,8 @@ function trackPickText(r) {
 }
 // Final score as the table shows it: the winner's short name ("Ravens by 6 · 42 total"); the full text is the cell's tooltip.
 const trackFinalText = (r) => (r.winner && r.finalScore.startsWith(r.winner) ? `${shortTeam(r.winner, r.sport)}${r.finalScore.slice(r.winner.length)}` : r.finalScore);
+// What the Model Prob. column means, per market.
+const TRACK_PROB_TIP = "The model's probability that this pick wins. Moneyline: the model's win probability for the side it picked. Spread: the probability that side covers the closing spread. Total: the probability of the Over or Under at the closing total. Pushes are excluded. Shows — when no probability was stored for the game.";
 const trackClosingText = (r) => (r.closing == null ? "—" : r.market === "moneyline" ? oddsStr(r.closing) : r.market === "total" ? (+r.closing).toFixed(1) : trackLine(r.closing));
 
 /* ── stat cards ───────────────────────────────────────────────────────── */
@@ -256,7 +259,7 @@ function trackStatStreak(C) {
     sub: `Last 5: ${s.w} - ${s.l} - ${s.p}` });
 }
 function trackStatAvg(C) {
-  const ps = C.scope.map((r) => r.prob).filter(finite).map(Number), mean = ps.length ? ps.reduce((a, b) => a + b, 0) / ps.length : null;
+  const ps = C.scope.filter((r) => r.market === "moneyline").map((r) => r.prob).filter(finite).map(Number), mean = ps.length ? ps.reduce((a, b) => a + b, 0) / ps.length : null;
   if (mean == null) return statCard({ label: "AVERAGE CONFIDENCE", value: "—", sub: "No graded moneyline picks in this range." });
   return statCard({ label: "AVERAGE CONFIDENCE", value: trackPct(mean), sub: "On moneyline picks", visual: donut(mean, { size: 72, stroke: 11 }) });
 }
@@ -316,7 +319,7 @@ function trackTableCard(C) {
   if (!C.scope.length) body = emptyMsg(s.archive ? "No archived pre-restart picks in this range." : "No graded picks in this range yet.");
   else if (!list.length) body = `${emptyMsg("No predictions match these filters.")}<p class="ca-trk-reset"><button class="ca-btn" data-trk-reset>Reset filters</button></p>`;
   else {
-    body = `<div class="ca-table-wrap"><table class="ca-table ca-dash-table ca-trk-table"><thead><tr><th>Date</th><th>League</th><th>Matchup / Player</th><th>Market</th><th>Model Prediction</th><th>Closing Line</th><th>Model Prob.</th><th>Result</th><th>Confidence</th><th>Final Score / Outcome</th><th>View</th></tr></thead><tbody>${shown.map(trackTr).join("")}</tbody></table></div>
+    body = `<div class="ca-table-wrap"><table class="ca-table ca-dash-table ca-trk-table"><thead><tr><th>Date</th><th>League</th><th>Matchup / Player</th><th>Market</th><th>Model Prediction</th><th>Closing Line</th><th title="${ctxEsc(TRACK_PROB_TIP)}">Model Prob.</th><th>Result</th><th>Confidence</th><th>Final Score / Outcome</th><th>View</th></tr></thead><tbody>${shown.map(trackTr).join("")}</tbody></table></div>
       <div class="ca-trk-more"><span class="muted">Showing ${shown.length} of ${list.length}${C.capped ? ` <span class="ca-trk-capnote">· Showing the most recent ${TRACK_ROWS_CAP.toLocaleString("en-US")} graded games.</span>` : ""}</span>${shown.length < list.length ? `<button class="ca-btn" data-trk-more>Show more</button>` : ""}</div>`;
   }
   return `<section class="ca-card ca-trk-tablecard" id="trk-table">${body}</section>`;

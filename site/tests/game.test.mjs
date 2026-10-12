@@ -529,3 +529,14 @@ test("hero sport class: NFL, CFB, MLB and NBA heroes carry sport-<sport> (it pic
   const nba = await populated({ search: "?sport=nba&game=5", sport: "nba" }).D.buildGamePage();
   if (nba.includes("ca-gm-hero")) assert.match(nba, /<section class="ca-gm-hero sport-nba/, "nba hero (when a game renders) carries sport-nba");
 });
+
+/* ── parity with the grading side: tests/fixtures/pick_prob_parity.json holds gmSplit's output per pmf / line; the Python tests
+   (tests/test_pick_probs.py) assert the same numbers, so the stored spread_pick_prob / total_pick_prob match this page ──── */
+test("gmSplit reproduces the shared pick-probability fixture used by the Python grading maths", () => {
+  const fx = JSON.parse(fs.readFileSync(new URL("../../tests/fixtures/pick_prob_parity.json", import.meta.url), "utf8"));
+  assert.ok(fx.cases.length > 20);
+  for (const c of fx.cases) {
+    const s = g.gmSplit(fx.dists[c.dist], c.threshold);
+    assert.ok(Math.abs(s.over - c.over) < 1e-12 && Math.abs(s.under - c.under) < 1e-12, `${c.dist} @ ${c.threshold}`);
+  }
+});
