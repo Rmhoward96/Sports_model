@@ -442,7 +442,7 @@ test("no game, no prediction: friendly states", async () => {
 
 test("empty sources: every card renders its empty state, no throw, no NaN / undefined", async () => {
   const E = loadScripts(FILES, { page: "game", globals: { location: { search: "?sport=cfb&game=7", href: "http://localhost/game.html?sport=cfb&game=7" },
-    fetch: async (url) => ({ ok: true, json: async () => (urlParts(url).path === "predictions_any" ? [{ ...cfbPred, market_spread: null, market_total: null, pred_home_score: null, pred_away_score: null, home_win_prob: null }] : []) }) } });
+    fetch: async (url) => ({ ok: true, json: async () => (urlParts(url).path === "predictions_any" ? [{ ...cfbPred, commence_time: "2099-01-01T00:00:00Z", market_spread: null, market_total: null, pred_home_score: null, pred_away_score: null, home_win_prob: null }] : []) }) } });
   const html = await E.buildGamePage();
   for (const t of ["Alpha Score", "Win Probability", "Projected Score", "Model Projection", "No model edge on this game"]) assert.ok(html.includes(t), t);
   assert.ok(!/NaN|undefined/.test(clean(html)));
