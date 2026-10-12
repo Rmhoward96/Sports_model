@@ -331,26 +331,117 @@ test("table rows: shell-owned row click (data-href to the game page), no star, W
   assert.match(tbody, /class="ca-go"/);
 });
 
-test("closing prices are fetched in parallel chunks of 60 game ids; a failed chunk only leaves its games unpriced", async () => {
-  const many = Array.from({ length: 130 }, (_, i) => A({ sport: "cfb", game_pk: 1000 + i, game_date: dayOff(-1) }));
-  const reqs = [];
+/* ── closing-price loading: small chunks, limited concurrency, one retry, honest failures ─────────────────────────── */
+// A fake Supabase: records every game_closing_prices request, how many ran at once, and answers per chunk via `answer(ids, attempt)`.
+function closingHarness(answer, { acc = [], extra = {} } = {}) {
+  const st = { reqs: [], active: 0, maxActive: 0, attempts: new Map(), warns: [] };
+  const fetch = async (url) => {
+    const { path, q } = urlParts(url);
+    if (path === "prediction_accuracy") return { ok: true, json: async () => acc };
+    if (path !== "game_closing_prices") return { ok: true, json: async () => [] };
+    const ids = (q.match(/game_pk=in\.\(([^)]*)\)/) || [, ""])[1].split(",").map(Number);
+    st.reqs.push(ids);
+    const key = ids.join(","), attempt = (st.attempts.get(key) || 0) + 1;
+    st.attempts.set(key, attempt);
+    st.active++; st.maxActive = Math.max(st.maxActive, st.active);
+    await new Promise((r) => setTimeout(r, 5));
+    st.active--;
+    const res = answer(ids, attempt);
+    return res === "fail" ? { ok: false, status: 500, text: async () => "timeout", json: async () => ({}) } : { ok: true, json: async () => res };
+  };
   const T = loadScripts(["app.js", "js/metrics.js", "js/ui.js", "js/shell.js", "js/data.js", "js/pages/track.js", "js/boot.js"], { page: "track", globals: {
-    console: { ...console, error() {}, warn() {} }, location: { search: "?n=1000", href: "http://localhost/track-record.html?n=1000" },
-    fetch: async (url) => {
-      const { path, q } = urlParts(url); reqs.push(path + "?" + q);
-      if (path === "prediction_accuracy") return { ok: true, json: async () => many };
-      if (path === "game_closing_prices") {
-        if (q.includes("game_pk=in.(1060,")) return { ok: false, status: 500, text: async () => "timeout", json: async () => ({}) };
-        return { ok: true, json: async () => [{ game_pk: 1000, side: "away", close_dec: 2 }, { game_pk: 1120, side: "away", close_dec: 3 }] };
-      }
-      return { ok: true, json: async () => [] };
-    } } });
-  const rows = await T.trackClosing(many.map((r) => r.game_pk));
-  assert.equal(reqs.filter((r) => r.startsWith("game_closing_prices")).length, 3, "130 games -> 60 + 60 + 10");
-  assert.equal(rows.length, 4, "the failed chunk contributes nothing, the others still do");
+    console: { ...console, error() {}, warn: (m) => st.warns.push(String(m)) }, location: { search: "?n=1000", href: "http://localhost/track-record.html?n=1000" }, fetch, ...extra } });
+  return { T, st };
+}
+const ids130 = Array.from({ length: 130 }, (_, i) => 1000 + i);
+
+test("trackClosingLoad: ids go in chunks of 25, at most 3 requests in flight", async () => {
+  const { T, st } = closingHarness((ids) => ids.map((id) => ({ game_pk: id, side: "home", close_dec: 2 })));
+  const out = await T.trackClosingLoad(ids130, { retryMs: 0 });
+  assert.deepEqual(st.reqs.map((r) => r.length), [25, 25, 25, 25, 25, 5], "130 games -> 5 x 25 + 5");
+  assert.equal(st.maxActive, 3, "concurrency is limited to 3 (and reached)");
+  assert.equal(out.rows.length, 130); assert.equal(out.failed.size, 0);
+  assert.deepEqual(st.reqs.flat(), ids130, "every id requested exactly once, in order");
+  assert.equal(st.warns.length, 0);
+});
+
+test("trackClosingLoad: duplicate / null ids are dropped; no ids, no requests", async () => {
+  const { T, st } = closingHarness(() => []);
+  assert.deepEqual((await T.trackClosingLoad([5, 5, null, undefined, 6], { retryMs: 0 })).rows, []);
+  assert.deepEqual(st.reqs, [[5, 6]]);
+  const none = await T.trackClosingLoad([], { retryMs: 0 });
+  assert.equal(none.rows.length, 0); assert.equal(none.failed.size, 0); assert.equal(st.reqs.length, 1);
+});
+
+test("trackClosingLoad: a failed chunk is retried once and its prices are kept when the retry works", async () => {
+  const { T, st } = closingHarness((ids, attempt) => (ids[0] === 1025 && attempt === 1 ? "fail" : ids.map((id) => ({ game_pk: id, side: "home", close_dec: 2 }))));
+  const out = await T.trackClosingLoad(ids130, { retryMs: 1 });
+  assert.equal(st.attempts.get(st.reqs.find((r) => r[0] === 1025).join(",")), 2, "one retry");
+  assert.equal(out.rows.length, 130); assert.equal(out.failed.size, 0);
+  assert.equal(st.warns.length, 0, "a recovered chunk is not a warning");
+});
+
+test("trackClosingLoad: a chunk that fails twice leaves its games unpriced, is reported by id, and warns with the count", async () => {
+  const { T, st } = closingHarness((ids) => (ids[0] === 1050 ? "fail" : ids.map((id) => ({ game_pk: id, side: "home", close_dec: 2 }))));
+  const out = await T.trackClosingLoad(ids130, { retryMs: 1 });
+  assert.equal(st.attempts.get(st.reqs.find((r) => r[0] === 1050).join(",")), 2, "tried twice, not more");
+  assert.equal(out.rows.length, 105);
+  assert.deepEqual([...out.failed].sort(), Array.from({ length: 25 }, (_, i) => String(1050 + i)));
+  assert.equal(st.warns.length, 1);
+  assert.match(st.warns[0], /25 game\(s\) have no closing price because loading it failed/);
+  const plain = await T.trackClosing(ids130, { retryMs: 1 });
+  assert.equal(plain.length, 105, "trackClosing keeps returning the rows array for the sport pages");
+});
+
+test("closing prices on the page: a failed chunk only leaves its games unpriced; priced games still show their price", async () => {
+  const many = Array.from({ length: 130 }, (_, i) => A({ sport: "cfb", game_pk: 1000 + i, game_date: dayOff(-1) }));
+  const { T, st } = closingHarness((ids) => (ids[0] === 1050 ? "fail" : [{ game_pk: 1000, side: "away", close_dec: 2 }, { game_pk: 1120, side: "away", close_dec: 3 }].filter((r) => ids.includes(r.game_pk))), { acc: many });
   const html = await T.buildTrackPage();
+  assert.equal(st.reqs.length, 6 + 1, "6 chunks + the retry of the failed one");
   assert.ok(html.includes("+100") && html.includes("+200"), "priced games show their closing price");
   assert.ok(!/NaN|undefined/.test(clean(html)));
+});
+
+/* ── the dash in the Closing Line column says why ───────────────────────────────────────────────────────────────────── */
+const NO_CLOSE = 'title="No closing price was captured for this game"', FAILED_CLOSE = 'title="Closing price failed to load — refresh to retry"';
+const mlRows = (html) => html.slice(html.indexOf("<tbody>"), html.indexOf("</tbody>")).split("<tr ").slice(1).filter((tr) => tr.includes(">Moneyline<"));
+
+test("dash tooltip: the fetch worked but no price was captured -> 'No closing price was captured for this game'", async () => {
+  const acc = [A({ sport: "cfb", game_pk: 21, game_date: dayOff(-1) }), A({ sport: "cfb", game_pk: 22, game_date: dayOff(-2) })];
+  const { T } = closingHarness((ids) => ids.filter((id) => id === 21).map((id) => ({ game_pk: id, side: "away", close_dec: 2 })), { acc });
+  const html = await T.buildTrackPage();
+  const [priced, unpriced] = [mlRows(html).find((tr) => tr.includes("game=21")), mlRows(html).find((tr) => tr.includes("game=22"))];
+  assert.ok(priced.includes("+100") && !priced.includes(NO_CLOSE) && !priced.includes(FAILED_CLOSE), "a priced row has no dash tooltip");
+  assert.ok(unpriced.includes(NO_CLOSE) && !unpriced.includes(FAILED_CLOSE));
+  assert.match(unpriced, new RegExp(`<td ${NO_CLOSE}>—</td>`));
+});
+
+test("dash tooltip: the fetch failed (after the retry) -> 'Closing price failed to load — refresh to retry'", async () => {
+  const acc = [A({ sport: "cfb", game_pk: 31, game_date: dayOff(-1) })];
+  const { T } = closingHarness(() => "fail", { acc });
+  const html = await T.buildTrackPage();
+  const [row] = mlRows(html);
+  assert.ok(row.includes(FAILED_CLOSE) && !row.includes(NO_CLOSE));
+  assert.match(row, new RegExp(`<td ${FAILED_CLOSE}>—</td>`));
+});
+
+test("dash tooltip: spread and total rows keep their closing line and never get a dash tooltip", async () => {
+  const acc = [A({ sport: "cfb", game_pk: 41, game_date: dayOff(-1) })];
+  const { T } = closingHarness(() => "fail", { acc });
+  const html = await T.buildTrackPage();
+  const tbody = html.slice(html.indexOf("<tbody>"), html.indexOf("</tbody>")), rows = tbody.split("<tr ").slice(1);
+  const sp = rows.find((tr) => tr.includes(">Spread<")), tot = rows.find((tr) => tr.includes(">Total<"));
+  assert.ok(sp.includes("-1.5") && tot.includes("46.5"), "closing lines from market_spread / market_total");
+  for (const tr of [sp, tot]) assert.ok(!tr.includes(NO_CLOSE) && !tr.includes(FAILED_CLOSE));
+});
+
+test("trackRows closingState: failed / none only when the failed set is supplied and the pick side has no price", () => {
+  const closing = g.trackClosingMap([{ game_pk: 51, side: "away", close_dec: 2 }]);
+  const rows = g.trackRows([A({ game_pk: 51 }), A({ game_pk: 52 }), A({ game_pk: 53 })], [], closing, new Set(["53"]));
+  const ml = Object.fromEntries(rows.filter((r) => r.market === "moneyline").map((r) => [r.game_pk, r.closingState]));
+  assert.deepEqual(ml, { 51: undefined, 52: "none", 53: "failed" });
+  assert.ok(rows.filter((r) => r.market !== "moneyline").every((r) => r.closingState === undefined));
+  assert.equal(g.trackRows([A({ game_pk: 54 })], [], closing)[0].closingState, undefined, "no failed set: no claim either way");
 });
 
 /* ── Model Prob. for spread / total rows ────────────────────────────────────────────────────────────────────────────── */

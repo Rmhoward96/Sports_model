@@ -10,7 +10,7 @@
    pick's probability at the closing line, stored at grading from the margin / total distribution), "—" until the
    migration + backfill have run or when no distribution was stored. prediction_pnl (per-pick P&L) times out under the anon 3s statement limit and is never requested, so `units`
    stays null in the page (trackRows still joins it when given); the moneyline closing price comes from
-   game_closing_prices (market = moneyline, fetched per chunk of game ids: the unfiltered view scan is near the limit), spread / total closing
+   game_closing_prices (market = moneyline, fetched in small, throttled chunks of game ids: the unfiltered view scan is near the limit; a missing price says whether none was captured or the fetch failed), spread / total closing
    lines are the stored market_spread / market_total.
    Depends on app.js (sb, trackRecordStarts, inTrackRecord, etDateStr, ctxEsc, logoImg, getSettings, unitLabel, pnlSection,
    wirePnl, wirePropGames, evResultsRows, evGradedPicks, propResultsRows, propLineGradesRows, parlayResultsRows,
@@ -190,8 +190,8 @@ async function trackLoad() {
   if (error) return { today, rows: [], starts, predPnl: [], error, capped: false };
   const capped = (acc || []).length >= TRACK_ROWS_CAP;
   if (capped) console.warn(`track record: hit the ${TRACK_ROWS_CAP}-row cap on prediction_accuracy; older graded games may be missing`);
-  const closingRows = await trackClosing((acc || []).map((r) => r.game_pk));
-  const rows = trackRows(acc, [], trackClosingMap(closingRows)).map((r) => ({ ...r, inRecord: inTrackRecord(starts, r.sport, r.date) }));
+  const closing = await trackClosingLoad((acc || []).map((r) => r.game_pk));
+  const rows = trackRows(acc, [], trackClosingMap(closing.rows), closing.failed).map((r) => ({ ...r, inRecord: inTrackRecord(starts, r.sport, r.date) }));
   return { today, rows, starts, predPnl: predPnl || [], error: null, capped };
 }
 // One render context: the cached load plus the URL state and the rows inside range / record.
@@ -218,6 +218,9 @@ function trackPickText(r) {
 const trackFinalText = (r) => (r.winner && r.finalScore.startsWith(r.winner) ? `${shortTeam(r.winner, r.sport)}${r.finalScore.slice(r.winner.length)}` : r.finalScore);
 // What the Model Prob. column means, per market.
 const TRACK_PROB_TIP = "The model's probability that this pick wins. Moneyline: the model's win probability for the side it picked. Spread: the probability that side covers the closing spread. Total: the probability of the Over or Under at the closing total. Pushes are excluded. Shows — when no probability was stored for the game.";
+// Why a moneyline row has no closing price (the cell shows "—" either way): none was captured for the game, or its fetch failed.
+const TRACK_NO_CLOSE_TIP = "No closing price was captured for this game", TRACK_FAILED_CLOSE_TIP = "Closing price failed to load — refresh to retry";
+const trackClosingTitle = (r) => (r.closing != null || r.market !== "moneyline" ? "" : r.closingState === "failed" ? ` title="${ctxEsc(TRACK_FAILED_CLOSE_TIP)}"` : r.closingState === "none" ? ` title="${ctxEsc(TRACK_NO_CLOSE_TIP)}"` : "");
 const trackClosingText = (r) => (r.closing == null ? "—" : r.market === "moneyline" ? oddsStr(r.closing) : r.market === "total" ? (+r.closing).toFixed(1) : trackLine(r.closing));
 
 /* ── stat cards ───────────────────────────────────────────────────────── */
@@ -309,7 +312,7 @@ function trackTr(r) {
   const text = trackPickText(r);
   return `<tr data-href="${gameHref(r.sport, r.game_pk)}"><td class="ca-trk-date">${fullDate(r.date)}</td><td><span class="ca-team">${leagueLogo(r.sport)}<span class="ca-trk-lgt">${ctxEsc(trackSportName(r.sport))}</span></span></td>
     <td><span class="ca-team" title="${ctxEsc(r.matchup)}">${logoImg(team || r.away, r.sport)}<span class="ca-ell">${ctxEsc(shortMatchup(r.away, r.home, r.sport))}</span></span></td>
-    <td class="muted">${TRACK_MKT_LABEL[r.market]}</td><td><span class="ca-ell ca-trk-pick" title="${ctxEsc(text)}">${ctxEsc(text)}</span></td><td>${ctxEsc(trackClosingText(r))}</td>
+    <td class="muted">${TRACK_MKT_LABEL[r.market]}</td><td><span class="ca-ell ca-trk-pick" title="${ctxEsc(text)}">${ctxEsc(text)}</span></td><td${trackClosingTitle(r)}>${ctxEsc(trackClosingText(r))}</td>
     <td>${pct1(r.prob)}</td><td><span class="ca-trk-chip ${r.result}"${chipTitle}>${r.result === "P" ? "Push" : r.result}</span></td>
     <td>${r.conf == null ? "—" : `${Math.round(r.conf * 100)}%`}</td><td><span class="ca-ell ca-trk-fs" title="${ctxEsc(r.finalScore)}">${ctxEsc(trackFinalText(r))}</span></td><td>${goLink(r.sport, r.game_pk)}</td></tr>`;
 }
