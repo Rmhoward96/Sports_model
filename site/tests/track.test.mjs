@@ -321,7 +321,7 @@ test("buildTrackPage: URL range / filters narrow the table; cards follow the ran
 });
 
 test("table rows: shell-owned row click (data-href to the game page), no star, W / L / Push chips, em-dash for unknown probability", async () => {
-  const html = await populated().T.buildTrackPage();
+  const html = await settledHtml(populated().T);
   const tbody = html.slice(html.indexOf("<tbody>"), html.indexOf("</tbody>"));
   assert.match(tbody, /<tr data-href="game\.html\?sport=cfb&game=1"/);
   assert.ok(!/data-star|ca-star/.test(tbody), "pages own no star logic");
@@ -333,7 +333,7 @@ test("table rows: shell-owned row click (data-href to the game page), no star, W
 
 /* ── closing-price loading: small chunks, limited concurrency, one retry, honest failures ─────────────────────────── */
 // A fake Supabase: records every game_closing_prices request, how many ran at once, and answers per chunk via `answer(ids, attempt)`.
-function closingHarness(answer, { acc = [], extra = {} } = {}) {
+function closingHarness(answer, { acc = [], extra = {}, gate = null } = {}) {
   const st = { reqs: [], active: 0, maxActive: 0, attempts: new Map(), warns: [] };
   const fetch = async (url) => {
     const { path, q } = urlParts(url);
@@ -345,6 +345,7 @@ function closingHarness(answer, { acc = [], extra = {} } = {}) {
     st.attempts.set(key, attempt);
     st.active++; st.maxActive = Math.max(st.maxActive, st.active);
     await new Promise((r) => setTimeout(r, 5));
+    if (gate) await gate;                       // a test can hold every closing response until it opens the gate
     st.active--;
     const res = answer(ids, attempt);
     return res === "fail" ? { ok: false, status: 500, text: async () => "timeout", json: async () => ({}) } : { ok: true, json: async () => res };
@@ -354,11 +355,14 @@ function closingHarness(answer, { acc = [], extra = {} } = {}) {
   return { T, st };
 }
 const ids130 = Array.from({ length: 130 }, (_, i) => 1000 + i);
+// The page paints the table first and fills the moneyline closing cells when the prices arrive: build, wait for the fill, read the final table.
+async function settledHtml(T) { await T.buildTrackPage(); await T.trackClosingSettled(); return T.trackCurrentModelHtml(); }
+const NO_RETRY_WAIT = { retryMs: 0, jitterMs: 0 };
 
-test("trackClosingLoad: ids go in chunks of 25, at most 3 requests in flight", async () => {
+test("trackClosingLoad: ids go in chunks of 30, at most 3 requests in flight (90 ids)", async () => {
   const { T, st } = closingHarness((ids) => ids.map((id) => ({ game_pk: id, side: "home", close_dec: 2 })));
-  const out = await T.trackClosingLoad(ids130, { retryMs: 0 });
-  assert.deepEqual(st.reqs.map((r) => r.length), [25, 25, 25, 25, 25, 5], "130 games -> 5 x 25 + 5");
+  const out = await T.trackClosingLoad(ids130, NO_RETRY_WAIT);
+  assert.deepEqual(st.reqs.map((r) => r.length), [30, 30, 30, 30, 10], "130 games -> 4 x 30 + 10");
   assert.equal(st.maxActive, 3, "concurrency is limited to 3 (and reached)");
   assert.equal(out.rows.length, 130); assert.equal(out.failed.size, 0);
   assert.deepEqual(st.reqs.flat(), ids130, "every id requested exactly once, in order");
@@ -367,39 +371,121 @@ test("trackClosingLoad: ids go in chunks of 25, at most 3 requests in flight", a
 
 test("trackClosingLoad: duplicate / null ids are dropped; no ids, no requests", async () => {
   const { T, st } = closingHarness(() => []);
-  assert.deepEqual((await T.trackClosingLoad([5, 5, null, undefined, 6], { retryMs: 0 })).rows, []);
+  assert.deepEqual((await T.trackClosingLoad([5, 5, null, undefined, 6], NO_RETRY_WAIT)).rows, []);
   assert.deepEqual(st.reqs, [[5, 6]]);
-  const none = await T.trackClosingLoad([], { retryMs: 0 });
+  const none = await T.trackClosingLoad([], NO_RETRY_WAIT);
   assert.equal(none.rows.length, 0); assert.equal(none.failed.size, 0); assert.equal(st.reqs.length, 1);
 });
 
 test("trackClosingLoad: a failed chunk is retried once and its prices are kept when the retry works", async () => {
-  const { T, st } = closingHarness((ids, attempt) => (ids[0] === 1025 && attempt === 1 ? "fail" : ids.map((id) => ({ game_pk: id, side: "home", close_dec: 2 }))));
-  const out = await T.trackClosingLoad(ids130, { retryMs: 1 });
-  assert.equal(st.attempts.get(st.reqs.find((r) => r[0] === 1025).join(",")), 2, "one retry");
+  const { T, st } = closingHarness((ids, attempt) => (ids[0] === 1030 && attempt === 1 ? "fail" : ids.map((id) => ({ game_pk: id, side: "home", close_dec: 2 }))));
+  const out = await T.trackClosingLoad(ids130, { retryMs: 1, jitterMs: 0 });
+  assert.equal(st.attempts.get(st.reqs.find((r) => r[0] === 1030).join(",")), 2, "one retry");
   assert.equal(out.rows.length, 130); assert.equal(out.failed.size, 0);
   assert.equal(st.warns.length, 0, "a recovered chunk is not a warning");
 });
 
 test("trackClosingLoad: a chunk that fails twice leaves its games unpriced, is reported by id, and warns with the count", async () => {
-  const { T, st } = closingHarness((ids) => (ids[0] === 1050 ? "fail" : ids.map((id) => ({ game_pk: id, side: "home", close_dec: 2 }))));
-  const out = await T.trackClosingLoad(ids130, { retryMs: 1 });
-  assert.equal(st.attempts.get(st.reqs.find((r) => r[0] === 1050).join(",")), 2, "tried twice, not more");
-  assert.equal(out.rows.length, 105);
-  assert.deepEqual([...out.failed].sort(), Array.from({ length: 25 }, (_, i) => String(1050 + i)));
+  const { T, st } = closingHarness((ids) => (ids[0] === 1060 ? "fail" : ids.map((id) => ({ game_pk: id, side: "home", close_dec: 2 }))));
+  const out = await T.trackClosingLoad(ids130, { retryMs: 1, jitterMs: 0 });
+  assert.equal(st.attempts.get(st.reqs.find((r) => r[0] === 1060).join(",")), 2, "tried twice, not more");
+  assert.equal(out.rows.length, 100);
+  assert.deepEqual([...out.failed].sort(), Array.from({ length: 30 }, (_, i) => String(1060 + i)));
   assert.equal(st.warns.length, 1);
-  assert.match(st.warns[0], /25 game\(s\) have no closing price because loading it failed/);
-  const plain = await T.trackClosing(ids130, { retryMs: 1 });
-  assert.equal(plain.length, 105, "trackClosing keeps returning the rows array for the sport pages");
+  assert.match(st.warns[0], /30 game\(s\) have no closing price because loading it failed/);
+  const plain = await T.trackClosing(ids130, { retryMs: 1, jitterMs: 0 });
+  assert.equal(plain.length, 100, "trackClosing keeps returning the rows array for the sport pages");
 });
 
 test("closing prices on the page: a failed chunk only leaves its games unpriced; priced games still show their price", async () => {
   const many = Array.from({ length: 130 }, (_, i) => A({ sport: "cfb", game_pk: 1000 + i, game_date: dayOff(-1) }));
-  const { T, st } = closingHarness((ids) => (ids[0] === 1050 ? "fail" : [{ game_pk: 1000, side: "away", close_dec: 2 }, { game_pk: 1120, side: "away", close_dec: 3 }].filter((r) => ids.includes(r.game_pk))), { acc: many });
-  const html = await T.buildTrackPage();
-  assert.equal(st.reqs.length, 6 + 1, "6 chunks + the retry of the failed one");
+  const { T, st } = closingHarness((ids) => (ids[0] === 1060 ? "fail" : [{ game_pk: 1000, side: "away", close_dec: 2 }, { game_pk: 1120, side: "away", close_dec: 3 }].filter((r) => ids.includes(r.game_pk))), { acc: many });
+  const html = await settledHtml(T);
+  assert.equal(st.reqs.length, 5 + 1, "5 chunks + the retry of the failed one");
   assert.ok(html.includes("+100") && html.includes("+200"), "priced games show their closing price");
   assert.ok(!/NaN|undefined/.test(clean(html)));
+});
+
+/* ── the table paints first; closing prices fill in afterwards ─────────────────────────────────────────────────────── */
+const LOADING_CLOSE = 'title="Loading closing price"';
+const tbodyOf = (html) => html.slice(html.indexOf("<tbody>"), html.indexOf("</tbody>"));
+
+test("table first: buildTrackPage resolves before any closing price arrives; moneyline closing cells show '…' with a loading title", async () => {
+  let open; const gate = new Promise((r) => { open = r; });
+  const acc = [A({ sport: "cfb", game_pk: 81, game_date: dayOff(-1) }), A({ sport: "cfb", game_pk: 82, game_date: dayOff(-2) })];
+  const { T, st } = closingHarness((ids) => ids.filter((id) => id === 81).map((id) => ({ game_pk: id, side: "away", close_dec: 2 })), { acc, gate });
+  const first = await T.buildTrackPage();                  // resolves while every game_closing_prices request is still held
+  assert.ok(st.reqs.length >= 1 && st.active >= 1, "the closing request is in flight, not awaited");
+  const rows = tbodyOf(first).split("<tr ").slice(1), ml = rows.filter((tr) => tr.includes(">Moneyline<"));
+  assert.equal(ml.length, 2);
+  for (const tr of ml) assert.match(tr, new RegExp(`<td ${LOADING_CLOSE}>…</td>`));
+  assert.ok(!first.includes(NO_CLOSE) && !first.includes(FAILED_CLOSE), "no 'missing' claim while loading");
+  const sp = rows.find((tr) => tr.includes(">Spread<"));
+  assert.ok(sp.includes("-1.5") && !sp.includes("…"), "spread / total rows are complete right away");
+  assert.ok(first.includes("OVERALL RECORD") && !/NaN|undefined/.test(clean(first)), "the whole page is there");
+  open();
+  await T.trackClosingSettled();
+  const done = T.trackCurrentModelHtml();
+  assert.ok(!done.includes("…") && !done.includes(LOADING_CLOSE));
+  assert.ok(tbodyOf(done).includes("+100") && done.includes(NO_CLOSE), "price filled in; the uncaptured game says so");
+});
+
+test("fill-in redraws only the table card; row order, URL state and the cached data stay correct", async () => {
+  const D = fakeTrackDoc(), urls = [];
+  let open; const gate = new Promise((r) => { open = r; });
+  const acc = [A({ sport: "cfb", game_pk: 91, game_date: dayOff(-1) }), A({ sport: "cfb", game_pk: 92, game_date: dayOff(-2) }), A({ sport: "cfb", game_pk: 93, game_date: dayOff(-3) })];
+  const { T } = closingHarness((ids) => ids.map((id) => ({ game_pk: id, side: "away", close_dec: 3 })), { acc, gate,
+    extra: { document: D.doc, location: { search: "?market=moneyline&sort=conf", href: "http://localhost/track-record.html?market=moneyline&sort=conf" }, history: { replaceState: (a, b, u) => urls.push(u) } } });
+  await T.buildTrackPage();
+  const before = [...tbodyOf(T.trackCurrentModelHtml()).matchAll(/<tr data-href="[^"]*game=(\d+)"/g)].map((m) => m[1]);
+  open(); await T.trackClosingSettled();
+  const after = [...tbodyOf(T.trackCurrentModelHtml()).matchAll(/<tr data-href="[^"]*game=(\d+)"/g)].map((m) => m[1]);
+  assert.deepEqual(after, before, "same rows in the same order once the prices are in");
+  assert.equal(before.length, 3);
+  assert.deepEqual(Object.keys(D.els), ["trk-table"], "only the table card is redrawn (the search box and filters are untouched)");
+  assert.ok(D.els["trk-table"].outerHTML.includes("+200") && !D.els["trk-table"].outerHTML.includes("…"));
+  assert.equal(urls.length, 0, "the fill-in never touches the URL");
+});
+
+test("a newer load supersedes a slow one: the stale fill-in does not redraw", async () => {
+  const D = fakeTrackDoc();
+  let open; const gate = new Promise((r) => { open = r; });
+  const acc = [A({ sport: "cfb", game_pk: 95, game_date: dayOff(-1) })];
+  const { T } = closingHarness(() => [{ game_pk: 95, side: "away", close_dec: 2 }], { acc, gate, extra: { document: D.doc } });
+  await T.buildTrackPage();                        // load 1, held
+  const stale = T.trackClosingSettled();
+  await T.buildTrackPage();                        // load 2 replaces the cached data
+  open(); await stale; await T.trackClosingSettled();
+  assert.ok(D.els["trk-table"] && D.els["trk-table"].outerHTML.includes("+100"), "only the current load redraws");
+});
+
+test("the 5-minute refresh reuses prices already loaded: no '…' flash for known games", async () => {
+  const acc = [A({ sport: "cfb", game_pk: 96, game_date: dayOff(-1) })];
+  let open, gate = null;
+  const { T } = closingHarness(() => [{ game_pk: 96, side: "away", close_dec: 2 }], { acc, gate: { then: (f, r) => (gate ? gate.then(f, r) : f()) } });
+  await T.buildTrackPage(); await T.trackClosingSettled();
+  gate = new Promise((r) => { open = r; });
+  const again = await T.buildTrackPage();           // the refresh: its closing request is held
+  assert.ok(tbodyOf(again).includes("+100") && !again.includes("…"), "the known price is shown while the new fetch runs");
+  open(); await T.trackClosingSettled();
+});
+
+test("a closing load that throws outright is shown as 'failed to load', never stuck on '…'", async () => {
+  const acc = [A({ sport: "cfb", game_pk: 97, game_date: dayOff(-1) })];
+  const { T } = closingHarness(() => "fail", { acc });
+  const html = await settledHtml(T);
+  assert.ok(!html.includes("…") && html.includes(FAILED_CLOSE));
+});
+
+test("retry waits 700 ms plus up to 300 ms of jitter", async () => {
+  for (const [rand, lo, hi] of [[0, 700, 700], [0.999, 999, 1000], [0.5, 850, 850]]) {
+    const delays = [];
+    const { T } = closingHarness((ids, attempt) => (attempt === 1 ? "fail" : ids.map((id) => ({ game_pk: id, side: "home", close_dec: 2 }))), { extra: {
+      Math: Object.assign(Object.create(Math), { random: () => rand }), setTimeout: (f, ms) => { if (ms >= 100) delays.push(ms); return setTimeout(f, ms >= 100 ? 0 : ms); } } });
+    const out = await T.trackClosingLoad([1, 2, 3]);
+    assert.equal(out.rows.length, 3);
+    assert.equal(delays.length, 1); assert.ok(delays[0] >= lo - 0.5 && delays[0] <= hi, `delay ${delays[0]} for random ${rand}`);
+  }
 });
 
 /* ── the dash in the Closing Line column says why ───────────────────────────────────────────────────────────────────── */
@@ -409,7 +495,7 @@ const mlRows = (html) => html.slice(html.indexOf("<tbody>"), html.indexOf("</tbo
 test("dash tooltip: the fetch worked but no price was captured -> 'No closing price was captured for this game'", async () => {
   const acc = [A({ sport: "cfb", game_pk: 21, game_date: dayOff(-1) }), A({ sport: "cfb", game_pk: 22, game_date: dayOff(-2) })];
   const { T } = closingHarness((ids) => ids.filter((id) => id === 21).map((id) => ({ game_pk: id, side: "away", close_dec: 2 })), { acc });
-  const html = await T.buildTrackPage();
+  const html = await settledHtml(T);
   const [priced, unpriced] = [mlRows(html).find((tr) => tr.includes("game=21")), mlRows(html).find((tr) => tr.includes("game=22"))];
   assert.ok(priced.includes("+100") && !priced.includes(NO_CLOSE) && !priced.includes(FAILED_CLOSE), "a priced row has no dash tooltip");
   assert.ok(unpriced.includes(NO_CLOSE) && !unpriced.includes(FAILED_CLOSE));
@@ -419,7 +505,7 @@ test("dash tooltip: the fetch worked but no price was captured -> 'No closing pr
 test("dash tooltip: the fetch failed (after the retry) -> 'Closing price failed to load — refresh to retry'", async () => {
   const acc = [A({ sport: "cfb", game_pk: 31, game_date: dayOff(-1) })];
   const { T } = closingHarness(() => "fail", { acc });
-  const html = await T.buildTrackPage();
+  const html = await settledHtml(T);
   const [row] = mlRows(html);
   assert.ok(row.includes(FAILED_CLOSE) && !row.includes(NO_CLOSE));
   assert.match(row, new RegExp(`<td ${FAILED_CLOSE}>—</td>`));
@@ -428,7 +514,7 @@ test("dash tooltip: the fetch failed (after the retry) -> 'Closing price failed 
 test("dash tooltip: spread and total rows keep their closing line and never get a dash tooltip", async () => {
   const acc = [A({ sport: "cfb", game_pk: 41, game_date: dayOff(-1) })];
   const { T } = closingHarness(() => "fail", { acc });
-  const html = await T.buildTrackPage();
+  const html = await settledHtml(T);
   const tbody = html.slice(html.indexOf("<tbody>"), html.indexOf("</tbody>")), rows = tbody.split("<tr ").slice(1);
   const sp = rows.find((tr) => tr.includes(">Spread<")), tot = rows.find((tr) => tr.includes(">Total<"));
   assert.ok(sp.includes("-1.5") && tot.includes("46.5"), "closing lines from market_spread / market_total");
@@ -527,6 +613,17 @@ test("select fallback: before the migration the unknown-column 400 falls back to
   // remembered: the next load goes straight to the old select
   await T.buildTrackPage();
   assert.equal(st.accSelects.length, 3); assert.ok(!st.accSelects[2].includes("pick_prob"));
+});
+
+test("select fallback: an unknown-column 400 about some OTHER column is not the missing-pick-prob case (no fallback)", async () => {
+  const other = { ok: false, status: 400, text: async () => '{"code":"42703","message":"column prediction_accuracy.win_prob does not exist"}', json: async () => ({}) };
+  const { T, st } = selectHarness(() => other);
+  const html = await T.buildTrackPage();
+  assert.equal(st.accSelects.length, 1, "no downgrade to the base select");
+  assert.ok(html.includes("Couldn't load graded picks."));
+  const named = selectHarness((sel) => (sel.includes("pick_prob") ? { ok: false, status: 400, text: async () => '{"message":"column prediction_accuracy.total_pick_prob does not exist"}', json: async () => ({}) } : null));
+  await named.T.buildTrackPage();
+  assert.equal(named.st.accSelects.length, 2, "a 400 naming a *_pick_prob column falls back");
 });
 
 test("select fallback: only the unknown-column 400 falls back; a timeout / 5xx is still a failure (no silent downgrade)", async () => {

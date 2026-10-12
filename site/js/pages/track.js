@@ -178,6 +178,7 @@ function trackSync(s) {
 /* ── data ─────────────────────────────────────────────────────────────── */
 // trackStarts() (the record scope, fails closed) lives in data.js: the sport pages use it too.
 const TRACK_ERRORS = { scope: "Couldn't load the record scope — try again.", picks: "Couldn't load graded picks." };
+let trackKnownClosing = new Map();   // "game_pk|side" -> closing price from the last load
 async function trackLoad() {
   const today = etDateStr(new Date().toISOString());
   let picksFailed = false;
@@ -190,9 +191,23 @@ async function trackLoad() {
   if (error) return { today, rows: [], starts, predPnl: [], error, capped: false };
   const capped = (acc || []).length >= TRACK_ROWS_CAP;
   if (capped) console.warn(`track record: hit the ${TRACK_ROWS_CAP}-row cap on prediction_accuracy; older graded games may be missing`);
-  const closing = await trackClosingLoad((acc || []).map((r) => r.game_pk));
-  const rows = trackRows(acc, [], trackClosingMap(closing.rows), closing.failed).map((r) => ({ ...r, inRecord: inTrackRecord(starts, r.sport, r.date) }));
-  return { today, rows, starts, predPnl: predPnl || [], error: null, capped };
+  // The table must not wait on the closing prices (the slowest request by far): the rows are built now with the moneyline closing
+  // cell in a "loading" state (prices already known from an earlier load of this page are reused, so the 5-minute refresh doesn't
+  // blank them), and the rows are rebuilt (same data, same sort) once trackClosingLoad() resolves; only the table card is redrawn.
+  const inRec = (r) => ({ ...r, inRecord: inTrackRecord(starts, r.sport, r.date) });
+  const rows = trackRows(acc, [], trackKnownClosing).map((r) => inRec(r.market === "moneyline" && r.closing == null ? { ...r, closingState: "loading" } : r));
+  const D = { today, rows, starts, predPnl: predPnl || [], error: null, capped, closingLoading: true };
+  D.closingP = trackClosingLoad((acc || []).map((r) => r.game_pk)).catch((e) => { console.error("track record: closing prices failed", e); return { rows: [], failed: new Set((acc || []).map((r) => String(r.game_pk))) }; });
+  D.closingDone = D.closingP.then((closing) => new Promise((resolve) => setTimeout(() => {   // after the caller has put the page in the DOM
+    const map = trackClosingMap(closing.rows);
+    for (const [k, v] of trackKnownClosing) if (!map.has(k) && closing.failed.has(k.split("|")[0])) map.set(k, v);   // a failed chunk keeps what an earlier load had
+    trackKnownClosing = map;
+    D.rows = trackRows(acc, [], map, closing.failed).map(inRec);
+    D.closingLoading = false;
+    if (window.__caTrkData === D) trackRedraw("trk-table");   // only the table card: the search box, scroll and URL state are untouched
+    resolve();
+  }, 0)));
+  return D;
 }
 // One render context: the cached load plus the URL state and the rows inside range / record.
 const trackCtx = (D) => { const s = trackState(); return { ...D, s, scope: trackScope(D.rows, s, D.today) }; };
@@ -220,8 +235,9 @@ const trackFinalText = (r) => (r.winner && r.finalScore.startsWith(r.winner) ? `
 const TRACK_PROB_TIP = "The model's probability that this pick wins. Moneyline: the model's win probability for the side it picked. Spread: the probability that side covers the closing spread. Total: the probability of the Over or Under at the closing total. Pushes are excluded. Shows — when no probability was stored for the game.";
 // Why a moneyline row has no closing price (the cell shows "—" either way): none was captured for the game, or its fetch failed.
 const TRACK_NO_CLOSE_TIP = "No closing price was captured for this game", TRACK_FAILED_CLOSE_TIP = "Closing price failed to load — refresh to retry";
-const trackClosingTitle = (r) => (r.closing != null || r.market !== "moneyline" ? "" : r.closingState === "failed" ? ` title="${ctxEsc(TRACK_FAILED_CLOSE_TIP)}"` : r.closingState === "none" ? ` title="${ctxEsc(TRACK_NO_CLOSE_TIP)}"` : "");
-const trackClosingText = (r) => (r.closing == null ? "—" : r.market === "moneyline" ? oddsStr(r.closing) : r.market === "total" ? (+r.closing).toFixed(1) : trackLine(r.closing));
+const TRACK_LOADING_CLOSE_TIP = "Loading closing price";
+const trackClosingTitle = (r) => (r.closing != null || r.market !== "moneyline" ? "" : r.closingState === "loading" ? ` title="${ctxEsc(TRACK_LOADING_CLOSE_TIP)}"` : r.closingState === "failed" ? ` title="${ctxEsc(TRACK_FAILED_CLOSE_TIP)}"` : r.closingState === "none" ? ` title="${ctxEsc(TRACK_NO_CLOSE_TIP)}"` : "");
+const trackClosingText = (r) => (r.closing == null ? (r.market === "moneyline" && r.closingState === "loading" ? "…" : "—") : r.market === "moneyline" ? oddsStr(r.closing) : r.market === "total" ? (+r.closing).toFixed(1) : trackLine(r.closing));
 
 /* ── stat cards ───────────────────────────────────────────────────────── */
 // The record mixes two kinds of graded pick, so the card says so (tooltip on the label + a caption).
@@ -424,9 +440,12 @@ function trackRerender() {   // everything from the cached load (range / archive
   const root = document.getElementById("trk-root"), D = window.__caTrkData;
   if (!root || !D) return;
   window.__caPnl = [];
-  root.innerHTML = trackModelHtml(trackCtx(D));
+  root.innerHTML = trackCurrentModelHtml();
   wirePnl();
 }
+const trackCurrentModelHtml = () => trackModelHtml(trackCtx(window.__caTrkData));
+// Resolves once the closing prices of the current load have been applied to the table (tests, callers that need the final rows).
+const trackClosingSettled = () => (window.__caTrkData && window.__caTrkData.closingDone) || Promise.resolve();
 function trackRedraw(...ids) {
   const D = window.__caTrkData;
   if (!D) return;

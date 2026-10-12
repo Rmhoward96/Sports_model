@@ -248,13 +248,15 @@ function lineMoveInfo(m, p, splits) {
    Moved from track.js: trackRows turns prediction_accuracy rows into one row per graded market; trackClosing fetches the
    moneyline closing prices of those games. Depend on app.js (sb), metrics.js (numOrNull, unitsFromPnl) and this file. */
 const TRACK_MARKETS = ["moneyline", "spread", "total"];
-const TRACK_CLOSING_CHUNK = 25, TRACK_CLOSING_CONCURRENCY = 3, TRACK_CLOSING_RETRY_MS = 400;
+// Chunk x concurrency bounds the ids in flight (30 x 3 = 90); the retry waits 700 ms plus up to 300 ms of jitter so parallel chunks don't retry in lockstep.
+const TRACK_CLOSING_CHUNK = 30, TRACK_CLOSING_CONCURRENCY = 3, TRACK_CLOSING_RETRY_MS = 700, TRACK_CLOSING_JITTER_MS = 300;
 const TRACK_ACC_BASE_SELECT = "sport,game_pk,game_date,home_team_name,away_team_name,win_prob,predicted_winner,actual_winner,winner_correct,pred_margin,actual_margin,pred_total,actual_total,market_spread,market_total,spread_pick_correct,total_pick_correct";
 // spread_pick_prob / total_pick_prob exist after db/migration_accuracy_pick_probs.sql. Asking PostgREST for a column that is not
 // there makes the WHOLE query a 400, so trackAccRead tries the extended select first and falls back to the base one on that error.
 const TRACK_ACC_SELECT = `${TRACK_ACC_BASE_SELECT},spread_pick_prob,total_pick_prob`;
 let trackProbCols = true;   // flips to false (for the page's lifetime) once the API says those columns are missing
-const trackMissingProbCols = (e) => !!e && /Supabase 400/.test(String(e.message)) && /spread_pick_prob|total_pick_prob|42703|PGRST204/.test(String(e.message));
+// Only a 400 whose message names one of the new columns ("pick_prob") is the missing-column case; any other 400 is a real error.
+const trackMissingProbCols = (e) => !!e && /Supabase 400/.test(String(e.message)) && /pick_prob/.test(String(e.message));
 // `read(select)` runs one prediction_accuracy query with the given select list. Only the "unknown column" 400 falls back: a timeout
 // or a 5xx is a real failure and propagates.
 async function trackAccRead(read) {
@@ -333,10 +335,10 @@ function trackTally(rows) {
   return { w, l, p, n: rs.length, pct: w + l ? w / (w + l) : null };
 }
 // Moneyline closing prices of the graded games. The unfiltered view scan is near the 3s anon statement limit, so the ids go in
-// small chunks (25), at most 3 in flight at once (seven at once pushed chunks past the limit and blanked whole batches). A failed
-// chunk is retried once after a short delay; one that fails twice leaves its games unpriced AND is reported, so the table can say
+// small chunks (30), at most 3 in flight at once (seven at once pushed chunks past the limit and blanked whole batches). A failed
+// chunk is retried once after a short, jittered delay; one that fails twice leaves its games unpriced AND is reported, so the table can say
 // "failed to load" instead of "not captured". Resolves { rows, failed } -- `failed` is a Set of String(game_pk) whose chunk failed.
-async function trackClosingLoad(gamePks, { chunk = TRACK_CLOSING_CHUNK, concurrency = TRACK_CLOSING_CONCURRENCY, retryMs = TRACK_CLOSING_RETRY_MS } = {}) {
+async function trackClosingLoad(gamePks, { chunk = TRACK_CLOSING_CHUNK, concurrency = TRACK_CLOSING_CONCURRENCY, retryMs = TRACK_CLOSING_RETRY_MS, jitterMs = TRACK_CLOSING_JITTER_MS } = {}) {
   const ids = [...new Set((gamePks || []).filter((x) => x != null))], chunks = [];
   for (let i = 0; i < ids.length; i += chunk) chunks.push(ids.slice(i, i + chunk));
   const parts = new Array(chunks.length), failed = new Set();
@@ -347,7 +349,7 @@ async function trackClosingLoad(gamePks, { chunk = TRACK_CLOSING_CHUNK, concurre
       const i = next++, c = chunks[i];
       try { parts[i] = await fetchChunk(c); }
       catch (e1) {
-        await new Promise((r) => setTimeout(r, retryMs));
+        await new Promise((r) => setTimeout(r, retryMs + Math.random() * jitterMs));
         try { parts[i] = await fetchChunk(c); }
         catch (e2) { parts[i] = []; for (const id of c) failed.add(String(id)); console.error("track record: closing prices failed to load for a chunk of games", e2); }
       }
