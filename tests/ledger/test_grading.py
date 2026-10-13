@@ -22,7 +22,7 @@ def snap(market, side, book, price, line=None, player="", at=KICK - timedelta(mi
 
 
 PIN_SPREAD = [snap("spread", "home", "pinnacle", -110, -3.5), snap("spread", "away", "pinnacle", -110, 3.5)]
-FINAL_HOME_BY_7 = {7: {"actual_margin": 7.0, "actual_total": 44.0}}
+FINAL_HOME_BY_7 = {("nfl", 7): {"actual_margin": 7.0, "actual_total": 44.0}}
 
 
 def close_of(rows):
@@ -104,11 +104,11 @@ def test_prop_pick_uses_player_actuals_and_the_props_close():
     rows = [snap("reception_yds", "over", "pinnacle", -120, 64.5, "A. Brown"),
             snap("reception_yds", "under", "pinnacle", 100, 64.5, "A. Brown")]
     close = grading.merge_close(rows, [])
-    out = grading.grade_rows([prop], {}, {(7, "00-1", "rec_yds"): 80.0}, close)
+    out = grading.grade_rows([prop], {}, {("nfl", 7, "00-1", "rec_yds"): 80.0}, close)
     g = [g for g in out if g["basis"] == "first"][0]
     assert g["result"] == "W" and g["close_kind"] == "pinnacle_novig" and g["close_same_line"] is True
     assert g["clv_prob"] == pytest.approx(grading.ref.novig(-120, 100) - 105 / 205)
-    push = grading.grade_rows([prop], {}, {(7, "00-1", "rec_yds"): 64.5}, close)
+    push = grading.grade_rows([prop], {}, {("nfl", 7, "00-1", "rec_yds"): 64.5}, close)
     assert push[0]["result"] == "P" and push[0]["units_at_pick"] == 0.0
 
 
@@ -130,16 +130,24 @@ def test_capture_rows_beat_the_stale_fallback_per_game_and_kind():
 
 # ---- rulings: same_line gates CLV, graded at the row's own line, model moneyline has no CLV ---------------
 
-def test_consensus_close_with_a_moved_pinnacle_line_does_not_compute_clv_prob():
-    # Pinnacle quotes -4.5 (moved); four US books price the pick's own -3.5. fair_prob exists at -3.5, but the close
-    # line moved, so same_line is False and clv_prob must stay NULL (the move is measured in points instead).
+def test_consensus_clv_prob_survives_a_moved_pinnacle_line():
+    # Pinnacle quotes -4.5 (moved); four US books price the pick's own -3.5. fair_prob is always AT THE PICK'S LINE
+    # (or None), so the probability CLV is valid even though close_same_line is False; the move is also in points.
     rows = [snap("spread", "home", "pinnacle", -110, -4.5), snap("spread", "away", "pinnacle", -110, 4.5)]
     for b in ("draftkings", "fanduel", "betmgm", "caesars"):
         rows += [snap("spread", "home", b, -110, -3.5), snap("spread", "away", b, -110, 3.5)]
     (g,) = [g for g in grading.grade_rows([lrow()], FINAL_HOME_BY_7, {}, close_of(rows)) if g["basis"] == "first"]
     assert g["close_kind"] == "us_consensus_novig" and g["close_same_line"] is False
-    assert g["close_fair_prob"] == pytest.approx(0.5) and g["clv_prob"] is None
+    assert g["close_fair_prob"] == pytest.approx(0.5)
+    assert g["clv_prob"] == pytest.approx(0.5 - 105 / 205)          # best_price -105 in lrow()
     assert g["clv_pts"] == pytest.approx(1.0) and g["beat_close"] is True
+
+
+def test_finals_and_actuals_are_keyed_by_sport_and_game():
+    other_sport = {("mlb", 7): {"actual_margin": 7.0, "actual_total": 44.0}}
+    assert grading.grade_rows([lrow()], other_sport, {}, close_of(PIN_SPREAD)) == []        # same game_pk, other sport
+    prop = lrow(source="ev_prop", market="rec_yds", side="over", line=64.5, player_id="00-1", player_name="A. Brown")
+    assert grading.grade_rows([prop], {}, {("mlb", 7, "00-1", "rec_yds"): 80.0}, {}) == []
 
 
 def test_graded_at_the_ledger_rows_own_line_not_the_close_line():
@@ -163,4 +171,4 @@ def test_model_game_clv_never_uses_a_stored_price():
 
 
 def test_postponed_or_unfinished_game_is_skipped_not_graded():
-    assert grading.grade_rows([lrow()], {7: {"actual_margin": None, "actual_total": None}}, {}, close_of(PIN_SPREAD)) == []
+    assert grading.grade_rows([lrow()], {("nfl", 7): {"actual_margin": None, "actual_total": None}}, {}, close_of(PIN_SPREAD)) == []

@@ -10,8 +10,9 @@ def test_grade_ledger_runs_nightly_after_the_other_graders_and_never_spends_cred
     (job,) = wf["jobs"].values()
     steps = steps_of(job)
     step = steps[step_index(steps, runs("scripts/grade_ledger.py"))]
-    assert step["env"] == {"DATABASE_URL": "${{ secrets.DATABASE_URL }}"}          # no ODDS_API_KEY: grading is free
-    assert step["run"] == 'uv run python scripts/grade_ledger.py --days "${{ github.event.inputs.days || \'14\' }}"'
+    # no ODDS_API_KEY: grading is free; the dispatch input goes through env, never inline in the shell command
+    assert step["env"] == {"DATABASE_URL": "${{ secrets.DATABASE_URL }}", "DAYS": "${{ github.event.inputs.days || '14' }}"}
+    assert step["run"] == 'uv run python scripts/grade_ledger.py --days "$DAYS"'
     assert step_index(steps, runs("uv sync")) < step_index(steps, runs("grade_ledger.py"))
     text = (WF / "grade-ledger.yml").read_text()
     assert "git push" not in text and "ODDS_API_KEY" not in text.split("jobs:")[1]

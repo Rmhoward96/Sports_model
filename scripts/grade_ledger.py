@@ -23,6 +23,7 @@ from sportsmodel.ledger.grading import grade_rows, merge_close  # noqa: E402
 from sportsmodel.ledger.record import writes_disabled  # noqa: E402
 
 STALE_CLOSE_MIN = 180      # no capture for a game: use its last pre-kick snapshot if it is at most this old
+MIN_DAYS, MAX_DAYS = 1, 60     # --days is clamped to this range
 SETTLE_HOURS = 4           # grade a key only this long after kickoff (results and actuals have landed)
 
 
@@ -80,17 +81,18 @@ def _db_loaders() -> Loaders:
                  f"ORDER BY pick_key, observed_at, id", (keys,))
 
     def finals(pks):
-        rows = q("SELECT game_pk, actual_margin, actual_total FROM prediction_accuracy WHERE game_pk = ANY(%s)", (pks,))
-        return {r["game_pk"]: r for r in rows}
+        rows = q("SELECT sport, game_pk, actual_margin, actual_total FROM prediction_accuracy "
+                 "WHERE game_pk = ANY(%s)", (pks,))
+        return {(r["sport"], r["game_pk"]): r for r in rows}
 
     def prop_actuals(pks):
         out = {}
-        for sql in ("SELECT game_pk, player_id, market, actual FROM nfl_player_actuals "
+        for sql in ("SELECT 'nfl' AS sport, game_pk, player_id, market, actual FROM nfl_player_actuals "
                     "WHERE game_pk = ANY(%s) AND actual IS NOT NULL",
-                    "SELECT game_pk, player_id, market, actual FROM ev_prop_results "
+                    "SELECT sport, game_pk, player_id, market, actual FROM ev_prop_results "
                     "WHERE game_pk = ANY(%s) AND actual IS NOT NULL"):
             for r in q(sql, (pks,)):
-                out[(r["game_pk"], str(r["player_id"]), r["market"])] = float(r["actual"])
+                out[(r["sport"], r["game_pk"], str(r["player_id"]), r["market"])] = float(r["actual"])
         return out
 
     def close_rows(pks):
@@ -100,10 +102,12 @@ def _db_loaders() -> Loaders:
             "WHERE c.game_pk = ANY(%s) AND c.status = 'ok' "
             "AND ((c.kind = 'lines' AND s.player_name = '') OR (c.kind = 'props' AND s.player_name <> ''))", (pks,))
         fallback = q(
-            "WITH latest AS (SELECT game_pk, (player_name <> '') AS is_prop, max(captured_at) AS ts "
-            "  FROM odds_snapshot WHERE game_pk = ANY(%s) AND captured_at <= commence_time "
-            f"  AND captured_at >= commence_time - interval '{STALE_CLOSE_MIN} minutes' "
-            "  GROUP BY game_pk, (player_name <> '')) "
+            "WITH latest AS (SELECT o.game_pk, (o.player_name <> '') AS is_prop, max(o.captured_at) AS ts "
+            "  FROM odds_snapshot o WHERE o.game_pk = ANY(%s) AND o.captured_at <= o.commence_time "
+            "  AND NOT EXISTS (SELECT 1 FROM close_capture c WHERE c.game_pk = o.game_pk AND c.status = 'ok' "
+            "    AND c.kind = CASE WHEN o.player_name = '' THEN 'lines' ELSE 'props' END) "
+            f"  AND o.captured_at >= o.commence_time - interval '{STALE_CLOSE_MIN} minutes' "
+            "  GROUP BY o.game_pk, (o.player_name <> '')) "
             "SELECT s.game_pk, s.market, s.side, s.player_name, s.book, s.line, s.price, s.captured_at "
             "FROM odds_snapshot s JOIN latest l ON l.game_pk = s.game_pk AND l.is_prop = (s.player_name <> '') "
             "AND l.ts = s.captured_at", (pks,))
@@ -116,8 +120,9 @@ def _db_loaders() -> Loaders:
 
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
-    ap.add_argument("--days", type=int, default=14, help="grade games that started within this many days")
+    ap.add_argument("--days", type=int, default=14, help="grade games that started within this many days (1-60)")
     args = ap.parse_args(argv)
+    args.days = max(MIN_DAYS, min(MAX_DAYS, args.days))
     if writes_disabled():
         print("grade-ledger: SM_LEDGER_OFF is set; refusing to run", flush=True)
         return 0

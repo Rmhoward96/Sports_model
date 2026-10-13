@@ -24,7 +24,7 @@ def loaders(**over):
                                    "market": "moneyline", "side": "home", "line": None, "player_id": None,
                                    "player_name": None, "best_price": 120, "observed_at": KICK - timedelta(hours=30),
                                    "commence_time": KICK, "minutes_to_kick": 1800.0}],
-        finals=lambda pks: {7: {"actual_margin": 3.0, "actual_total": 40.0}},
+        finals=lambda pks: {("nfl", 7): {"actual_margin": 3.0, "actual_total": 40.0}},
         prop_actuals=lambda pks: {},
         close_rows=lambda pks: ([{"game_pk": 7, "market": "moneyline", "side": "home", "book": "pinnacle", "price": 110,
                                   "line": None, "player_name": "", "captured_at": KICK - timedelta(minutes=15)},
@@ -98,3 +98,14 @@ def test_default_queries(monkeypatch):
     assert "JOIN odds_snapshot s ON s.game_pk = c.game_pk AND s.captured_at = c.captured_at" in sql[5]
     assert "c.status = 'ok'" in sql[5] and "interval '180 minutes'" in sql[6]
     assert not any(w in s.upper().split() for s in sql for w in ("INSERT", "UPDATE", "DELETE"))
+
+
+def test_days_is_clamped_to_1_60(monkeypatch):
+    seen = []
+    monkeypatch.setattr(gl, "grade_all", lambda ld, days: seen.append(days) or {})
+    monkeypatch.setattr(gl, "_db_loaders", lambda: None)
+    monkeypatch.setattr(gl, "writes_disabled", lambda: False)
+    monkeypatch.setenv("DATABASE_URL", "postgres://x")
+    for arg in ("0", "-5", "14", "9999"):
+        assert gl.main(["--days", arg]) == 0
+    assert seen == [1, 1, 14, 60]

@@ -45,14 +45,15 @@ def merge_close(primary: list[dict], fallback: list[dict]) -> dict[tuple, dict]:
 def grade_pick_row(row: dict, basis: str, finals: dict, actuals: dict, close: dict) -> dict | None:
     """One pick_ledger_results row for ledger `row`, or None while its result is unknown.
 
-    finals: {game_pk: {'actual_margin', 'actual_total'}}; actuals: {(game_pk, player_id, market): float};
+    finals: {(sport, game_pk): {'actual_margin', 'actual_total'}};
+    actuals: {(sport, game_pk, player_id, market): float};
     close: merge_close output."""
     is_prop = row.get("player_id") is not None
     if is_prop:
         result = ref.settle_prop(row["side"], row.get("line"),
-                                 actuals.get((row["game_pk"], str(row["player_id"]), row["market"])))
+                                 actuals.get((row["sport"], row["game_pk"], str(row["player_id"]), row["market"])))
     else:
-        f = finals.get(row["game_pk"]) or {}
+        f = finals.get((row["sport"], row["game_pk"])) or {}
         result = ref.settle_game(row["market"], row["side"], row.get("line"), f.get("actual_margin"),
                                  f.get("actual_total"))
     if result is None:
@@ -69,9 +70,10 @@ def grade_pick_row(row: dict, basis: str, finals: dict, actuals: dict, close: di
     snap = close.get((row["game_pk"], is_prop))
     reference = ref.close_reference(row, snap["rows"]) if snap else \
         {"close_kind": "missing", "fair_prob": None, "close_line": None, "same_line": None, "books": 0}
-    # Probability CLV only when the close sits at the pick's own line (`same_line`, not inferred from close_kind:
-    # a consensus close can report Pinnacle's moved line); a moved line is measured in points instead.
-    prob_clv = ref.clv_prob(reference["fair_prob"], clv_price) if reference["same_line"] else None
+    # `fair_prob` is, by contract, the no-vig probability AT THE PICK'S OWN LINE (None when no such price exists),
+    # so it is comparable with the price taken whether or not the close line moved. `same_line` only says whether
+    # close_line == the pick's line (a consensus close can report Pinnacle's moved line); it does not gate this.
+    prob_clv = ref.clv_prob(reference["fair_prob"], clv_price)
     pts_clv = ref.clv_pts(row["market"], row["side"], row.get("line"), reference["close_line"])
     kick = as_utc(row["commence_time"])
     close_minutes = None

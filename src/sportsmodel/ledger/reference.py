@@ -89,7 +89,9 @@ def close_reference(pick: dict, rows: list[dict]) -> dict:
     `pick`: sport, market, side, line, player_name, player_id (props are the picks carrying a player_id).
     Returns {close_kind, fair_prob, close_line, same_line, books}: `fair_prob` is the side's no-vig probability
     AT THE PICK'S LINE (None when only a moved-line Pinnacle quote exists); `close_line` is the side's own line
-    at the close (Pinnacle's when it quotes one, else the pick's line)."""
+    at the close (Pinnacle's when it quotes one, else the pick's line). `same_line` means close_line == the pick's
+    line; it does NOT restrict `fair_prob` (a consensus close at the pick's line can coexist with a moved
+    Pinnacle line, same_line False)."""
     sport, market, side, line = pick["sport"], pick["market"], pick["side"], pick.get("line")
     is_prop = pick.get("player_id") is not None
     omarket = odds_market(sport, market, is_prop)
