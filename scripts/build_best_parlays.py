@@ -14,6 +14,8 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from sportsmodel.db import get_postgres, locked_leg_keys, replace_unlocked_best_parlays
+from sportsmodel.ledger.record import safe_record
+from sportsmodel.ledger.sources import parlay_leg_candidates
 from sportsmodel.serving.best_parlays import (
     assemble_game_legs, assemble_prop_legs, build_best_parlays)
 from sportsmodel.serving.props_ev import SIM_TO_ODDS_MARKET, drop_pulled_lines, latest_capture_only
@@ -88,6 +90,8 @@ def main() -> None:
     for t in tickets:
         t["model_version"] = MODEL_VERSION
     n = replace_unlocked_best_parlays(tickets)
+    # Pick ledger: every leg of every ticket as built. Best-effort -- never fails the build.
+    safe_record(lambda: parlay_leg_candidates(tickets), writer="build_best_parlays")
     priced = sum(1 for l in legs if l["book_prices"])
     print(f"[build_best_parlays] legs={len(legs)} priced={priced} tickets={n}")
     for t in tickets:

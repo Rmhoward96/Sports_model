@@ -58,6 +58,8 @@ from sportsmodel.cfb.priors import (
 from sportsmodel.cfb.teams import FCS
 from sportsmodel.cfb.walkforward import SeasonState, live_week_state, model_margin_total
 from sportsmodel.db import upsert_game_predictions
+from sportsmodel.ledger.record import safe_record
+from sportsmodel.ledger.sources import model_game_candidates
 from sportsmodel.nfl.elo import EloConfig
 from sportsmodel.nfl.gameline import GameLineConfig, build_gameline
 from sportsmodel.nfl.ratings import BlendConfig
@@ -297,6 +299,13 @@ def _season_to_date_ratings(sched: pd.DataFrame, season: int, week: int,
             "blend_cfg": blend_cfg}
 
 
+def write_game_rows(game_rows: list[dict]) -> None:
+    """Persist the week's game_predictions, then record the model's game picks in the pick ledger
+    (best-effort -- a ledger problem never fails the job)."""
+    upsert_game_predictions(game_rows)
+    safe_record(lambda: model_game_candidates(game_rows), writer="generate_cfb")
+
+
 def main() -> None:
     cur = espn.fetch_current_week()
     season, week, season_type = int(cur["season"]), int(cur["week"]), int(cur["season_type"])
@@ -321,7 +330,7 @@ def main() -> None:
                  "total_dist": json.dumps(row["total_dist"])} for row in game_rows_raw]
 
     if config.DATABASE_URL:
-        upsert_game_predictions(game_rows)
+        write_game_rows(game_rows)
 
     print(f"predicted {len(game_rows)} games")
 

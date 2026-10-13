@@ -32,6 +32,8 @@ from sportsmodel.db import (
 from sportsmodel.serving.ev_pilot import (
     assemble_games, ev_rows_for_game, MIN_EV, EV_CEILING, MAX_STRAIGHT_JUICE,
 )
+from sportsmodel.ledger.record import safe_record
+from sportsmodel.ledger.sources import ev_game_candidates
 from sportsmodel.serving.parlay import build_parlay
 
 MODEL_VERSION = "ev-pilot-v1"
@@ -132,6 +134,9 @@ def main() -> None:
     # moves with the line); demote the stale opposite side so a two-way market
     # never shows both sides as picks.
     cleared = clear_other_side_picks(all_rows)
+
+    # Pick ledger: the surfaced picks exactly as they stand now. Best-effort -- never fails the build.
+    safe_record(lambda: ev_game_candidates(picks, games), writer="build_ev_board")
 
     # Auto-parlay the juiced-favorite legs into a single +EV ticket. Non-fatal:
     # if the ev_parlays table isn't migrated yet, the straight board above is

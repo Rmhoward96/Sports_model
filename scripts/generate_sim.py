@@ -37,6 +37,8 @@ from sportsmodel import config, profiles, teams, venues, weather
 from sportsmodel.db import get_duckdb, upsert_game_predictions, upsert_prop_predictions
 from sportsmodel.ingest import mlb_lineups, mlb_statsapi
 from sportsmodel.ingest.odds import parse_commence
+from sportsmodel.ledger.record import safe_record
+from sportsmodel.ledger.sources import model_game_candidates
 from sportsmodel.model import calibration, distributions, game, props, rates
 from sportsmodel.sim import engine
 from sportsmodel.sim.mlb import kernel
@@ -243,6 +245,9 @@ def write_game_predictions(preds: list[dict]) -> None:
     if config.DATABASE_URL:
         n = upsert_game_predictions(preds)
         print(f"Upserted {n} rows into Supabase game_predictions.")
+        # Pick ledger: the model's game picks at generation time. Best-effort -- never fails the job.
+        safe_record(lambda: model_game_candidates([{**p, "sport": "mlb"} for p in preds]),
+                    writer="generate_sim")
         return
     con = get_duckdb()
     con.execute("""
