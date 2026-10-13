@@ -226,7 +226,7 @@ def _sim_dists_by_game(cur, sport: str, game_pks: list, served_version: str | No
             SELECT DISTINCT ON (game_pk) game_pk, margin_dist, total_dist
             FROM nfl_sim WHERE game_pk = ANY(%s)
             ORDER BY game_pk, (model_version = %s) DESC, created_at DESC
-        """, (served_version, list(game_pks)))
+        """, (list(game_pks), served_version))
     else:
         cur.execute("""
             SELECT DISTINCT ON (game_pk) game_pk, margin_dist, total_dist

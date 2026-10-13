@@ -124,7 +124,7 @@ def test_backfill_survives_a_failing_nfl_sim_lookup_and_passes_the_served_versio
         def execute(self, sql, params=None):
             self.last = sql
             if "FROM nfl_sim" in sql:
-                seen["served"].append(params[0])
+                seen["served"].append(params[1])
                 raise RuntimeError("permission denied for table nfl_sim")
 
         def fetchall(self):
