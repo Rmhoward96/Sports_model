@@ -354,10 +354,37 @@ def test_sim_dists_prefer_the_served_version_then_the_newest_row():
     grade_predictions._sim_dists_by_game(cur, "nfl", [7], served_version="nfl-sim-ml-v2")
     sql, params = cur.calls[0]
     assert "(model_version = %s) DESC" in sql and sql.index("(model_version = %s) DESC") < sql.index("created_at DESC")
-    assert params == ("nfl-sim-ml-v2", [7])
+    assert params == ([7], "nfl-sim-ml-v2")
     cur2 = Cur()
     grade_predictions._sim_dists_by_game(cur2, "nfl", [7], served_version=None)    # no served version: newest row of any version
     assert "model_version" not in cur2.calls[0][0] and cur2.calls[0][1] == ([7],)
+
+
+def test_sim_dists_params_are_positionally_aligned_with_the_placeholders():
+    """Regression: the served-version branch passed (version, game_pks) against `game_pk = ANY(%s) ... model_version = %s`,
+    so Postgres raised `operator does not exist: text = integer[]` and the sim fallback was skipped on every run."""
+    class Cur:
+        def __init__(self):
+            self.calls = []
+
+        def execute(self, sql, params=None):
+            self.calls.append((sql, params))
+
+        def fetchall(self):
+            return []
+
+    for version in ("nfl-sim-ml-v2", None):
+        cur = Cur()
+        grade_predictions._sim_dists_by_game(cur, "nfl", (7, 8), served_version=version)
+        sql, params = cur.calls[0]
+        assert sql.count("%s") == len(params)
+        # the first placeholder is the game_pk = ANY(...) one; the second (served branch only) is the version string
+        assert sql.index("ANY(%s)") < (sql.index("model_version = %s") if version else len(sql))
+        assert params[0] == [7, 8] and isinstance(params[0], list)
+        if version is None:
+            assert params == ([7, 8],) and "model_version = %s" not in sql
+        else:
+            assert params == ([7, 8], version) and isinstance(params[1], str)
 
 
 class _RollbackConn:
