@@ -140,7 +140,9 @@ def test_job_runs_the_script_with_secrets_regions_and_serialises_runs():
     assert step["env"]["DATABASE_URL"] == "${{ secrets.DATABASE_URL }}"
     assert step["env"]["ODDS_API_KEY"] == "${{ secrets.ODDS_API_KEY }}"
     assert step["env"]["CLOSE_PROP_REGIONS"] == "${{ vars.CLOSE_PROP_REGIONS }}"
-    assert "'--dry-run'" in step["run"]
+    assert step["env"]["DRY_RUN"] == "${{ inputs.dry_run }}"
+    assert '[ "$DRY_RUN" = "true" ]' in step["run"] and "--dry-run" in step["run"]
+    assert "${{" not in step["run"]                                   # no expression interpolated into the shell script
     uv = steps[step_index(steps, lambda st: "setup-uv" in str(st.get("uses", "")))]
     assert str(uv["with"]["enable-cache"]).lower() == "true"
     assert step_index(steps, runs("uv sync")) < step_index(steps, runs("capture_close.py"))

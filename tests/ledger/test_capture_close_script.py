@@ -328,6 +328,7 @@ def test_naive_now_is_read_as_utc():
 
 def test_main_passes_a_utc_aware_now_to_the_run(monkeypatch):
     seen = {}
+    monkeypatch.delenv("SM_LEDGER_OFF", raising=False)          # the root conftest sets the guard; this test exercises the run
     monkeypatch.setenv("DATABASE_URL", "postgres://unused")
     monkeypatch.setattr(cc, "_db_deps", lambda: object())
     monkeypatch.setattr(cc, "run_capture", lambda now, deps, **kw: seen.update(now=now, **kw) or {"status": "idle"})
@@ -383,6 +384,14 @@ def test_one_sport_failing_does_not_stop_the_next():
 
 def test_main_refuses_under_the_test_ledger_guard(capsys):
     assert cc.main([]) == 0 and "SM_LEDGER_OFF" in capsys.readouterr().out
+
+
+def test_dry_run_is_also_refused_under_the_test_ledger_guard(monkeypatch, capsys):
+    # A dry run still reads the production DB and ESPN, so --dry-run must not bypass the guard.
+    monkeypatch.setenv("SM_LEDGER_OFF", "1")
+    monkeypatch.setattr(cc, "_db_deps", lambda: pytest.fail("dry run must not build DB deps under the guard"))
+    monkeypatch.setattr(cc, "run_capture", lambda *a, **kw: pytest.fail("dry run must not run under the guard"))
+    assert cc.main(["--dry-run"]) == 0 and "SM_LEDGER_OFF" in capsys.readouterr().out
 
 
 def test_default_db_queries(monkeypatch):

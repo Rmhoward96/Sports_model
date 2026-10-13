@@ -261,7 +261,7 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--dry-run", action="store_true", help="select targets and print the plan; no Odds API call, no writes")
     ap.add_argument("--now", default=None, help="as-of time (ISO, default: now UTC)")
     args = ap.parse_args(argv)
-    if writes_disabled() and not args.dry_run:
+    if writes_disabled():
         print("capture-close: SM_LEDGER_OFF is set; refusing to run", flush=True)
         return 0
     if not os.getenv("DATABASE_URL"):

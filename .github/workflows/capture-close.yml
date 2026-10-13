@@ -53,4 +53,10 @@ jobs:
           DATABASE_URL: ${{ secrets.DATABASE_URL }}
           ODDS_API_KEY: ${{ secrets.ODDS_API_KEY }}
           CLOSE_PROP_REGIONS: ${{ vars.CLOSE_PROP_REGIONS }}
-        run: uv run python scripts/capture_close.py ${{ github.event.inputs.dry_run == 'true' && '--dry-run' || '' }}
+          DRY_RUN: ${{ inputs.dry_run }}      # empty on schedule events, "true"/"false" on workflow_dispatch
+        run: |
+          if [ "$DRY_RUN" = "true" ]; then
+            uv run python scripts/capture_close.py --dry-run
+          else
+            uv run python scripts/capture_close.py
+          fi
