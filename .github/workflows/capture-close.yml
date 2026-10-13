@@ -13,8 +13,8 @@ name: capture-close
 # (Thu-night, Fri-night, Sat-night, SNF, MNF kickoffs). Months: football Aug-Feb, baseball Mar-Nov.
 # Credits: 6 per sport-run that has a target (3 markets x 2 regions) plus (markets with picks x regions) per prop event.
 # Rough weekly cost in season: football lines ~100-120, NFL props ~110-225 (regions us / us,eu), MLB lines ~300-380 and
-# MLB props ~200-420 (regular season; playoffs far less). The script's budget guard skips props below 3,000 credits
-# left and everything below 1,000. Idle runs (about 670 a week football-only, 500 baseball-only, 1,180 in the Oct-Nov overlap) make zero paid calls.
+# MLB props ~200-420 (regular season; playoffs far less). The script's budget guard skips props below 600 credits
+# left and everything below 200 (the regular ingest stops earlier, at 2,500 / 800). Idle runs (about 670 a week football-only, 500 baseball-only, 1,180 in the Oct-Nov overlap) make zero paid calls.
 on:
   schedule:
     - cron: "3-59/10 13-23 * 1,2,8-12 *"

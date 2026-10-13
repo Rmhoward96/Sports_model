@@ -21,6 +21,12 @@ entirely and fall back to game-lines-only behavior.
 ODDS_SPORTS (comma list, default "nfl,cfb,mlb") picks which sports a run covers, so the
 daily MLB-only crons in capture-odds.yml don't re-pull the football slates.
 
+Credit guard (odds.ingest_budget_decision, from the x-requests-remaining header of the last
+response): below INGEST_PROPS_FLOOR (2,500) player-prop pulls are skipped; below
+INGEST_LINES_FLOOR (800) the remaining sports' game-line pulls are skipped too. Both floors sit
+above the pre-kick close capture's, so the close capture keeps the last credits. Header unknown
+(e.g. before the first response) -> no guard.
+
 Usage:
     uv run python scripts/ingest_odds.py
 Requires ODDS_API_KEY.
@@ -215,6 +221,11 @@ def run_sport(sport: str, captured_at: str) -> list[dict]:
 
     window_min = sport_prop_window_minutes(sport, os.environ)
     if cfg.prop_market_map and props_enabled(os.environ, window_min):
+        # Credit guard: the game-line call above has just refreshed odds.last_requests_remaining.
+        _, props_ok, reason = odds.ingest_budget_decision(odds.last_requests_remaining)
+        if not props_ok:
+            print(f"[{sport}] WARNING: {reason}")
+            return rows
         prop_markets = list(cfg.prop_market_map.values())
         in_window = events_in_prop_window(
             events, matcher_fn, espn_games, datetime.now(timezone.utc), window_min
@@ -241,6 +252,11 @@ def main() -> None:
     captured_at = datetime.now(timezone.utc).isoformat()
 
     for sport in sports_to_run(os.environ):
+        # Credit guard: remaining is None until the first API response of the run (no guard then).
+        lines_ok, _, reason = odds.ingest_budget_decision(odds.last_requests_remaining)
+        if not lines_ok:
+            print(f"[{sport}] WARNING: {reason}")
+            continue
         # The whole per-sport pipeline -- fetch, match, parse AND store -- is
         # inside the boundary: a transient failure anywhere (ESPN, the Odds API,
         # or the odds_snapshot write) logs and moves on to the next sport rather

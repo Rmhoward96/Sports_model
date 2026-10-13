@@ -44,9 +44,16 @@ def test_prefilter_lists_only_sports_with_a_kickoff_in_the_next_hour_in_fixed_or
     assert close.prefilter_sports([], NOW) == []
 
 
+def test_budget_floors_are_below_the_regular_ingest_floors():
+    # the close capture is the highest-priority credit use: the regular ingest must stop first
+    from sportsmodel.ingest import odds
+    assert (close.BUDGET_PROPS_FLOOR, close.BUDGET_ALL_FLOOR) == (600, 200)
+    assert close.BUDGET_ALL_FLOOR < close.BUDGET_PROPS_FLOOR < odds.INGEST_LINES_FLOOR < odds.INGEST_PROPS_FLOOR
+
+
 @pytest.mark.parametrize("remaining, lines, props, warns", [
-    (30000, True, True, False), (3000, True, True, False), (2999, True, False, True), (1000, True, False, True),
-    (999, False, False, True), (0, False, False, True), (None, True, True, True)])
+    (30000, True, True, False), (600, True, True, False), (599, True, False, True), (200, True, False, True),
+    (199, False, False, True), (0, False, False, True), (None, True, True, True)])
 def test_budget_thresholds(remaining, lines, props, warns):
     d = close.budget_decision(remaining)
     assert (d.lines, d.props, d.warning is not None) == (lines, props, warns)

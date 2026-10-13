@@ -280,3 +280,86 @@ def test_mlb_event_flows_through_lookup_and_parse_to_game_pk():
     rows = odds.parse_game_odds(events, lookup, "2026-10-06T20:00:00+00:00")
     assert {(r["game_pk"], r["market"], r["side"], r["price"]) for r in rows} == {
         (849826, "moneyline", "home", -140), (849826, "moneyline", "away", 120)}
+
+
+# --- credit guard: the regular ingest runs out of credits before the pre-kick close capture ----------
+
+@pytest.mark.parametrize("remaining, lines_ok, props_ok, warns", [
+    ("30000", True, True, False), ("2500", True, True, False), ("2499", True, False, True),
+    ("800", True, False, True), ("799", False, False, True), ("0", False, False, True),
+    (2499, True, False, True), ("2499.0", True, False, True),
+    (None, True, True, False), ("n/a", True, True, False), ("", True, True, False)])
+def test_ingest_budget_decision_boundaries(remaining, lines_ok, props_ok, warns):
+    lines, props, reason = odds.ingest_budget_decision(remaining)
+    assert (lines, props, reason is not None) == (lines_ok, props_ok, warns)
+
+
+def test_ingest_floors_sit_above_the_close_capture_floors():
+    from sportsmodel.ledger import close
+    assert (odds.INGEST_PROPS_FLOOR, odds.INGEST_LINES_FLOOR) == (2500, 800)
+    assert odds.INGEST_LINES_FLOOR > close.BUDGET_PROPS_FLOOR > close.BUDGET_ALL_FLOOR
+
+
+def _stub_run_sport_env(monkeypatch, remaining_after_lines):
+    """Stub every network edge of run_sport; one NFL event inside the prop window."""
+    soon = (datetime.now(timezone.utc) + timedelta(hours=1)).isoformat()
+    ev = {"id": "e1", "home_team": "H", "away_team": "A", "commence_time": soon, "bookmakers": []}
+    monkeypatch.setitem(ingest_odds._ESPN_FETCHERS, "nfl", lambda: [{"game_pk": 1}])
+    monkeypatch.setattr(ingest_odds, "_matcher_for", lambda sport: (lambda e, games: 1))
+
+    def fake_game_odds(cfg, *a, **k):
+        monkeypatch.setattr(odds, "last_requests_remaining", remaining_after_lines)
+        return [ev]
+
+    prop_calls = []
+    monkeypatch.setattr(odds, "fetch_game_odds", fake_game_odds)
+    monkeypatch.setattr(odds, "fetch_event_props", lambda *a, **k: prop_calls.append(a) or {})
+    monkeypatch.setattr(odds, "parse_prop_odds", lambda *a, **k: [])
+    monkeypatch.setenv("PROP_SCOPE", "slate")
+    monkeypatch.delenv("INGEST_PROPS", raising=False)
+    return prop_calls
+
+
+def test_run_sport_skips_prop_fetching_when_credits_below_props_floor(monkeypatch, capsys):
+    prop_calls = _stub_run_sport_env(monkeypatch, "2499")
+    ingest_odds.run_sport("nfl", "2026-10-13T00:00:00+00:00")
+    assert prop_calls == []
+    out = capsys.readouterr().out
+    assert sum("skipping player-prop" in line for line in out.splitlines()) == 1
+
+
+def test_run_sport_fetches_props_when_credits_ok_or_unknown(monkeypatch):
+    for remaining in ("2500", None, "garbage"):
+        prop_calls = _stub_run_sport_env(monkeypatch, remaining)
+        ingest_odds.run_sport("nfl", "2026-10-13T00:00:00+00:00")
+        assert len(prop_calls) == 1, remaining
+
+
+def test_main_skips_remaining_sports_line_pulls_below_lines_floor(monkeypatch, capsys):
+    monkeypatch.setenv("ODDS_API_KEY", "test")
+    monkeypatch.setenv("ODDS_SPORTS", "nfl,cfb,mlb")
+    monkeypatch.setattr(odds, "last_requests_remaining", None)
+    ran = []
+
+    def fake_run_sport(sport, captured_at):
+        ran.append(sport)
+        monkeypatch.setattr(odds, "last_requests_remaining", "799")
+        return []
+
+    monkeypatch.setattr(ingest_odds, "run_sport", fake_run_sport)
+    monkeypatch.setattr(ingest_odds, "upsert_odds_snapshot", lambda rows: len(rows))
+    ingest_odds.main()
+    assert ran == ["nfl"]            # the first pull ran (credits unknown), the rest were skipped
+    out = capsys.readouterr().out
+    assert sum("skipping game-line" in line for line in out.splitlines()) == 2
+
+
+def test_main_runs_every_sport_when_credits_are_healthy(monkeypatch):
+    monkeypatch.setenv("ODDS_API_KEY", "test")
+    monkeypatch.setenv("ODDS_SPORTS", "nfl,cfb,mlb")
+    monkeypatch.setattr(odds, "last_requests_remaining", None)
+    ran = []
+    monkeypatch.setattr(ingest_odds, "run_sport", lambda sport, at: ran.append(sport) or [])
+    monkeypatch.setattr(ingest_odds, "upsert_odds_snapshot", lambda rows: len(rows))
+    ingest_odds.main()
+    assert ran == ["nfl", "cfb", "mlb"]

@@ -5,7 +5,7 @@ Run every ~10 minutes during game windows (.github/workflows/capture-close.yml).
   1. Idle check, DB only: no kickoff known within the next hour -> exit with ZERO network calls.
   2. For each sport with a nearby kickoff: fetch the live schedule (ESPN / StatsAPI, free), keep the games kicking
      off in WINDOW_MIN..WINDOW_MAX minutes that have no final (ok / empty) close_capture yet. None -> no Odds API call.
-  3. Free Odds API events call: reads x-requests-remaining for the budget guard (< 3,000 skips props, < 1,000
+  3. Free Odds API events call: reads x-requests-remaining for the budget guard (< 600 skips props, < 200
      skips everything) and gives the event ids.
   4. Game lines: ONE call per sport (h2h / spreads / totals, regions us,eu) stored to odds_snapshot for the
      target games only. Props: one call per target event that holds >= 1 prop pick in the ledger, only for the
