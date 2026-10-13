@@ -1,0 +1,40 @@
+name: grade-ledger
+
+# Nightly: grade the pick ledger against results and the pre-kick close -> pick_ledger_results
+# (scripts/grade_ledger.py; db/migration_pick_ledger.sql). Every pick_key whose game started more than 4 hours ago and has
+# no result yet is graded from its FIRST ledger row (earliest bettable observation) and its LAST pre-kick row:
+# result, units at the price taken, and CLV against the captured close. Reads rows we already store
+# (prediction_accuracy, ev_prop_results, nfl_player_actuals, odds_snapshot, close_capture): no Odds API credits,
+# no network. Daily 14:10 UTC, after grade-predictions (every 6h), grade-ev (13:20) and grade-ev-props (13:30) so
+# the prior night's finals and actuals are in. Idempotent.
+on:
+  workflow_dispatch:
+    inputs:
+      days:
+        description: "Grade games that started within this many days"
+        type: string
+        default: "14"
+  schedule:
+    - cron: "10 14 * * *"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: grade-ledger
+  cancel-in-progress: false
+
+jobs:
+  grade:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v5
+      - name: Install uv
+        uses: astral-sh/setup-uv@v10.0.1
+      - name: Sync deps
+        run: uv sync
+      - name: Grade ledger picks (result, units, CLV vs the close)
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+        run: uv run python scripts/grade_ledger.py --days "${{ github.event.inputs.days || '14' }}"
