@@ -45,8 +45,10 @@ _ODDS_TO_OURS = {v: k for k, v in PROP_MARKET_MAP.items()}
 LIVE_PROP_MARKET_MAP = {k: v for k, v in PROP_MARKET_MAP.items()
                         if k in ("total_bases", "pitcher_ks", "hits_allowed", "outs_recorded")}
 
-# credits remaining, updated from the last response header (for logging)
+# credits remaining and credits the LAST call cost, updated from the last response headers
+# (x-requests-remaining / x-requests-last) -- for logging and the close-capture budget guard
 last_requests_remaining: str | None = None
+last_requests_last: str | None = None
 
 
 def _key() -> str:
@@ -58,11 +60,12 @@ def _key() -> str:
 
 @retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=0.5, max=8))
 def _get(path: str, params: dict[str, Any]) -> Any:
-    global last_requests_remaining
+    global last_requests_remaining, last_requests_last
     with httpx.Client(timeout=25) as client:
         resp = client.get(f"{BASE}{path}", params={**params, "apiKey": _key()})
         resp.raise_for_status()
         last_requests_remaining = resp.headers.get("x-requests-remaining")
+        last_requests_last = resp.headers.get("x-requests-last")
         return resp.json()
 
 

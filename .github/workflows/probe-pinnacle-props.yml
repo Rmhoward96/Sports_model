@@ -1,0 +1,26 @@
+name: probe-pinnacle-props
+
+# ONE-OFF, manual only: does Pinnacle publish NFL player props through The Odds API? Costs about 8 credits
+# (8 prop markets x regions=eu x one upcoming event; listing events is free). Prints
+# PROBE_VERDICT=pinnacle_has_props | pinnacle_absent | inconclusive in the log and the job summary.
+# Never touches the database. Result decides CLOSE_PROP_REGIONS for capture-close.yml (see the pick-ledger plan).
+on:
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v5
+      - name: Install uv
+        uses: astral-sh/setup-uv@v10.0.1
+      - name: Sync deps
+        run: uv sync
+      - name: Probe Pinnacle NFL props (about 8 credits)
+        env:
+          ODDS_API_KEY: ${{ secrets.ODDS_API_KEY }}
+        run: uv run python scripts/probe_pinnacle_props.py

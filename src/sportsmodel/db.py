@@ -17,8 +17,11 @@ def get_duckdb(read_only: bool = False) -> duckdb.DuckDBPyConnection:
     return con
 
 
-def get_postgres():
-    """Open a Supabase/Postgres connection, or raise if DATABASE_URL is unset."""
+def get_postgres(connect_timeout: int | None = None):
+    """Open a Supabase/Postgres connection, or raise if DATABASE_URL is unset.
+
+    `connect_timeout` (seconds) is passed to libpq only when given; every existing caller leaves it out and keeps
+    the driver default. The pick ledger passes a short one so a dead database cannot hang a pick writer."""
     if not config.DATABASE_URL:
         raise RuntimeError(
             "DATABASE_URL is not set. Copy .env.example to .env and add your "
@@ -26,7 +29,14 @@ def get_postgres():
         )
     import psycopg  # imported lazily so local-only workflows need no driver
 
+    if connect_timeout is not None:
+        return psycopg.connect(config.DATABASE_URL, connect_timeout=int(connect_timeout))
     return psycopg.connect(config.DATABASE_URL)
+
+
+def _pg(connect_timeout: int | None = None):
+    """get_postgres(), with the timeout argument only when one was asked for."""
+    return get_postgres() if connect_timeout is None else get_postgres(connect_timeout=connect_timeout)
 
 
 def read_parquet_glob(con: duckdb.DuckDBPyConnection, pattern: str | Path):
@@ -1159,14 +1169,20 @@ def upsert_cfb_quarter_shares(rows: list[dict]) -> int:
     return _upsert_site_panel("cfb_quarter_shares", rows)
 
 
-def missing_site_panel_tables(tables: list[str]) -> list[str]:
-    """The subset of `tables` (keys of SITE_PANEL_COLUMNS) that do not exist in the `public` schema yet, in
-    the order given. Lets the site-panel jobs warn and exit cleanly until db/migration_site_panels.sql has
-    been run. One read-only connection; any connection error propagates (a real outage still fails the job)."""
-    unknown = [t for t in tables if t not in SITE_PANEL_COLUMNS]
-    if unknown:
-        raise KeyError(f"not a site-panel table: {unknown}")
-    with get_postgres() as conn, conn.cursor() as cur:
+def _limit_statements(cur, statement_timeout_ms: int | None) -> None:
+    """Cap every statement of the current transaction (SET LOCAL: gone at commit/rollback, so it cannot leak to
+    other clients of a pooled connection, and it needs no startup parameter a pooler might reject). No-op when
+    no timeout was asked for, so existing callers are untouched."""
+    if statement_timeout_ms is not None:
+        cur.execute(f"SET LOCAL statement_timeout = {int(statement_timeout_ms)}")
+
+
+def _missing_public_tables(tables: list[str], connect_timeout: int | None = None,
+                           statement_timeout_ms: int | None = None) -> list[str]:
+    """The subset of `tables` that do not exist in the `public` schema, in the order given (one read-only
+    connection, `to_regclass` per table). Any connection error propagates (a real outage still fails the job)."""
+    with _pg(connect_timeout) as conn, conn.cursor() as cur:
+        _limit_statements(cur, statement_timeout_ms)
         missing = []
         for t in tables:
             cur.execute("SELECT to_regclass(%s)", (f"public.{t}",))
@@ -1175,5 +1191,119 @@ def missing_site_panel_tables(tables: list[str]) -> list[str]:
     return missing
 
 
+def missing_site_panel_tables(tables: list[str]) -> list[str]:
+    """The subset of `tables` (keys of SITE_PANEL_COLUMNS) that do not exist in the `public` schema yet, in
+    the order given. Lets the site-panel jobs warn and exit cleanly until db/migration_site_panels.sql has
+    been run. One read-only connection; any connection error propagates (a real outage still fails the job)."""
+    unknown = [t for t in tables if t not in SITE_PANEL_COLUMNS]
+    if unknown:
+        raise KeyError(f"not a site-panel table: {unknown}")
+    return _missing_public_tables(tables)
+
+
 def site_panel_tables_ready(tables: list[str]) -> bool:
     return not missing_site_panel_tables(tables)
+
+
+# ------------------------------------------------------------------ pick ledger
+# db/migration_pick_ledger.sql. pick_ledger is APPEND-ONLY (trigger + revoked privileges): the only write
+# helper for it is insert_pick_ledger. close_capture / pick_ledger_results are ordinary upsert tables.
+LEDGER_COLUMNS: dict[str, list[str]] = {
+    "pick_ledger": ["pick_key", "source", "sport", "game_pk", "market", "side", "line", "player_id",
+                    "player_name", "parlay_id", "model_version", "model_prob", "best_price", "best_book",
+                    "ref_prob", "ref_kind", "ref_books", "ev_pct", "observed_at", "commence_time",
+                    "minutes_to_kick", "writer", "writer_run"],
+    "close_capture": ["sport", "game_pk", "event_id", "kind", "captured_at", "commence_time",
+                      "minutes_to_kick", "credits_used", "status", "regions", "markets"],
+    "pick_ledger_results": ["pick_key", "basis", "ledger_id", "source", "sport", "game_pk", "market", "side",
+                            "line", "player_id", "player_name", "best_price", "observed_at", "commence_time",
+                            "minutes_to_kick", "result", "units_at_pick", "close_kind", "close_fair_prob",
+                            "close_line", "close_same_line", "close_books", "close_minutes_to_kick",
+                            "clv_prob", "clv_pts", "beat_close"],
+}
+LEDGER_KEYS: dict[str, tuple[str, ...]] = {
+    "pick_ledger": ("pick_key", "observed_at"), "close_capture": ("sport", "game_pk", "kind"),
+    "pick_ledger_results": ("pick_key", "basis"),
+}
+# What the append rule needs from a key's most recent row.
+LEDGER_LAST_COLS = ["pick_key", "best_price", "line", "model_prob", "ref_prob", "observed_at"]
+
+
+LEDGER_CONNECT_TIMEOUT = 10   # seconds; the pick writers' ledger hooks must never hang a job on a dead database
+LEDGER_STATEMENT_TIMEOUT_MS = 15_000   # ...nor on a stalled query
+
+
+def missing_ledger_tables(tables: list[str] | None = None, *, connect_timeout: int | None = None,
+                          statement_timeout_ms: int | None = None) -> list[str]:
+    """The ledger tables (default: all three) that do not exist in `public` yet, in the order given. Lets the
+    ledger jobs warn and exit 0 until db/migration_pick_ledger.sql has been run (same guard as the site panels)."""
+    tables = list(LEDGER_COLUMNS) if tables is None else tables
+    unknown = [t for t in tables if t not in LEDGER_COLUMNS]
+    if unknown:
+        raise KeyError(f"not a ledger table: {unknown}")
+    return _missing_public_tables(tables, connect_timeout, statement_timeout_ms)
+
+
+def insert_pick_ledger(rows: list[dict], *, connect_timeout: int | None = None,
+                       statement_timeout_ms: int | None = None) -> int:
+    """Append observations to `pick_ledger`. INSERT only (the table refuses anything else); a retried
+    observation (same pick_key + observed_at) is a no-op via ON CONFLICT DO NOTHING. Returns the number of rows
+    ATTEMPTED, not the number actually written (conflicting rows are skipped silently)."""
+    if not rows:
+        return 0
+    cols = LEDGER_COLUMNS["pick_ledger"]
+    sql = (f"INSERT INTO pick_ledger ({', '.join(cols)}) VALUES ({', '.join(['%s'] * len(cols))}) "
+           f"ON CONFLICT (pick_key, observed_at) DO NOTHING")
+    vals = [tuple(r.get(c) for c in cols) for r in rows]
+    with _pg(connect_timeout) as conn, conn.cursor() as cur:
+        _limit_statements(cur, statement_timeout_ms)
+        cur.executemany(sql, vals)
+        conn.commit()
+    return len(vals)
+
+
+def latest_pick_ledger_rows(pick_keys: list[str], *, connect_timeout: int | None = None,
+                            statement_timeout_ms: int | None = None) -> dict[str, dict]:
+    """{pick_key: its most recent row (LEDGER_LAST_COLS)} for the keys that have one. Read-only."""
+    if not pick_keys:
+        return {}
+    with _pg(connect_timeout) as conn, conn.cursor() as cur:
+        _limit_statements(cur, statement_timeout_ms)
+        cur.execute(
+            f"SELECT DISTINCT ON (pick_key) {', '.join(LEDGER_LAST_COLS)} FROM pick_ledger "
+            "WHERE pick_key = ANY(%s) ORDER BY pick_key, observed_at DESC, id DESC", (list(pick_keys),))
+        return {r[0]: dict(zip(LEDGER_LAST_COLS, r)) for r in cur.fetchall()}
+
+
+def upsert_close_capture(rows: list[dict]) -> int:
+    """Record close captures. Idempotent on (sport, game_pk, kind); an existing 'ok' or 'empty' row is final and
+    NEVER replaced (an event is captured once), while a 'failed' row is superseded by the next attempt. Returns the number of rows ATTEMPTED, not the number
+    actually written. `credits_used` is NOT NULL DEFAULT 0 in the table, so a missing/None value is sent as 0."""
+    if not rows:
+        return 0
+    cols, key = LEDGER_COLUMNS["close_capture"], LEDGER_KEYS["close_capture"]
+    sets = ", ".join(f"{c} = EXCLUDED.{c}" for c in cols if c not in key)
+    sql = (f"INSERT INTO close_capture ({', '.join(cols)}) VALUES ({', '.join(['%s'] * len(cols))}) "
+           f"ON CONFLICT ({', '.join(key)}) DO UPDATE SET {sets}, updated_at = now() "
+           f"WHERE close_capture.status = 'failed'")
+    vals = [tuple((r.get(c) or 0) if c == "credits_used" else r.get(c) for c in cols) for r in rows]
+    with get_postgres() as conn, conn.cursor() as cur:
+        cur.executemany(sql, vals)
+        conn.commit()
+    return len(vals)
+
+
+def upsert_pick_ledger_results(rows: list[dict]) -> int:
+    """Upsert graded ledger results; idempotent on (pick_key, basis) (a re-grade overwrites in place).
+    Returns the number of rows ATTEMPTED, not the number actually written."""
+    if not rows:
+        return 0
+    cols, key = LEDGER_COLUMNS["pick_ledger_results"], LEDGER_KEYS["pick_ledger_results"]
+    sets = ", ".join(f"{c} = EXCLUDED.{c}" for c in cols if c not in key)
+    sql = (f"INSERT INTO pick_ledger_results ({', '.join(cols)}) VALUES ({', '.join(['%s'] * len(cols))}) "
+           f"ON CONFLICT ({', '.join(key)}) DO UPDATE SET {sets}, graded_at = now()")
+    vals = [tuple(r.get(c) for c in cols) for r in rows]
+    with get_postgres() as conn, conn.cursor() as cur:
+        cur.executemany(sql, vals)
+        conn.commit()
+    return len(vals)
