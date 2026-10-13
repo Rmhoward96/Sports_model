@@ -39,6 +39,9 @@ def pick_key(source: str, sport: str, game_pk, market: str, side: str, *, player
     game; each is its own track record). parlay_id comes last because it may itself contain '|'."""
     if source not in SOURCES:
         raise ValueError(f"unknown ledger source: {source!r}")
+    for name, part in (("sport", sport), ("market", market), ("side", side)):
+        if part is None or part == "":
+            raise ValueError(f"{name} is required")
     for name, part in (("market", market), ("side", side)):
         if "|" in str(part):
             raise ValueError(f"{name} must not contain '|': {part!r}")

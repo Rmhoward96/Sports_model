@@ -137,3 +137,10 @@ def test_string_kickoffs_and_naive_datetimes_are_read_as_utc():
 def test_a_malformed_candidate_is_counted_as_skipped_and_the_rest_still_plan():
     rows, counts = plan([_obs(), {"no": "pick_key"}, None])
     assert len(rows) == 1 and counts == {"first": 1, "skipped": 2}
+
+
+def test_pick_key_requires_sport_market_and_side():
+    for kw in ({"sport": None}, {"market": None}, {"side": ""}):
+        args = {"source": "ev_game", "sport": "nfl", "game_pk": 1, "market": "spread", "side": "home", **kw}
+        with pytest.raises(ValueError):
+            core.pick_key(**args)

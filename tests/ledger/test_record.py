@@ -145,3 +145,17 @@ def test_one_bad_candidate_is_skipped_not_the_batch(capsys):
                              store=store)
     assert out["status"] == "ok" and out["appended"] == 2 and out["skipped"] == 2
     assert len(store.inserted) == 2
+
+
+def test_any_error_in_one_candidate_callable_is_skipped_not_raised():
+    """KeyError / AttributeError / ZeroDivisionError from a deferred candidate must not escape safe_record
+    (the pick writers call it bare, so an escape would fail the writer)."""
+    def boom(exc):
+        def thunk():
+            raise exc
+        return thunk
+
+    store = FakeStore()
+    out = record.safe_record(lambda: [boom(KeyError("x")), boom(AttributeError("y")), boom(ZeroDivisionError()),
+                                      lambda: _obs()], writer="w", now=NOW, store=store)
+    assert out["status"] == "ok" and out["appended"] == 1 and out["skipped"] == 3

@@ -98,8 +98,8 @@ def safe_record(build: Callable[[], Iterable], *, writer: str, **kw) -> dict:
     """`record_observations(build(), ...)` with the candidate adapter inside the same safety net.
 
     `build()` yields candidate dicts and/or zero-argument callables that produce one (so an adapter can defer
-    `core.observation(...)`): a callable that raises ValueError/TypeError skips only that candidate and is
-    counted under `skipped` in the returned dict."""
+    `core.observation(...)`): a callable that raises skips only that candidate (a bad
+    `core.observation(...)` argument, a missing field) and is counted under `skipped` in the returned dict."""
     try:
         items = list(build())
     except Exception as exc:  # noqa: BLE001
@@ -109,7 +109,7 @@ def safe_record(build: Callable[[], Iterable], *, writer: str, **kw) -> dict:
     for item in items:
         try:
             candidates.append(item() if callable(item) else item)
-        except (ValueError, TypeError):
+        except Exception:  # noqa: BLE001 -- one bad candidate (any error) is skipped; it must not escape the writer
             skipped += 1
     out = record_observations(candidates, writer=writer, **kw)
     if skipped:
