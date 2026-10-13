@@ -3,8 +3,9 @@
 A football weekend passes when ALL hold:
   * >= 95% of graded NFL / CFB games have a game-lines close captured within 30 minutes of kickoff,
   * >= 90% of graded prop picks have a Pinnacle or >= 3-book US close at their exact line,
-  * no ledger row was updated or deleted (the row count and a content fingerprint of every row older than the
-    previous report are unchanged since that report),
+  * no ledger row was updated or deleted (the row count and a content fingerprint of every column of every row up
+    to the previous report's max id are unchanged since that report; ids follow insert order, so a late insert
+    with an old observed_at never disturbs the fingerprint),
 and step 1 passes only after TWO CONSECUTIVE passing weekends. A miss blocks steps 2-3 of the profit roadmap.
 """
 from __future__ import annotations
@@ -47,15 +48,20 @@ def props_coverage(prop_results: list[dict]) -> dict:
     return {"covered": covered, "total": n, "pct": 100.0 * covered / n if n else None}
 
 
+def is_prop_pick(source: str | None, player_id) -> bool:
+    """An ev_prop pick, or a parlay leg that names a player (a parlay leg that is a prop is a prop pick)."""
+    return source == "ev_prop" or (source == "parlay_leg" and bool(player_id))
+
+
 def audit_check(previous: dict | None, recomputed: dict | None) -> dict:
-    """Compare the previous report's audit block ({'n', 'md5', 'as_of'}) with the same measurement recomputed
-    NOW over rows observed up to that same instant. Any difference means a row changed or vanished."""
+    """Compare the previous report's audit block ({'n', 'md5', 'max_id', 'as_of'}) with the same measurement
+    recomputed NOW over the rows with id <= that max_id. Any difference means a row changed or vanished."""
     if previous is None:
         return {"passed": True, "detail": "baseline established (no previous report to compare with)"}
     rec = recomputed or {}
     if rec.get("n") == previous.get("n") and rec.get("md5") == previous.get("md5"):
-        return {"passed": True, "detail": f"{previous['n']} rows up to {previous['as_of']} unchanged"}
-    return {"passed": False, "detail": f"rows up to {previous.get('as_of')}: was {previous.get('n')} / "
+        return {"passed": True, "detail": f"{previous['n']} rows up to id {previous.get('max_id')} unchanged"}
+    return {"passed": False, "detail": f"rows up to id {previous.get('max_id')}: was {previous.get('n')} / "
                                        f"{previous.get('md5')}, now {rec.get('n')} / {rec.get('md5')}"}
 
 

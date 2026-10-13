@@ -55,9 +55,17 @@ def test_props_coverage_needs_a_kind_and_the_exact_line():
     assert gate.props_coverage([])["pct"] is None
 
 
+def test_is_prop_pick_counts_parlay_legs_that_have_a_player():
+    assert gate.is_prop_pick("ev_prop", None) is True
+    assert gate.is_prop_pick("parlay_leg", "p123") is True
+    assert gate.is_prop_pick("parlay_leg", None) is False                                  # a game-line leg
+    assert gate.is_prop_pick("parlay_leg", "") is False
+    assert gate.is_prop_pick("ev_game", "p1") is False and gate.is_prop_pick("model_game", None) is False
+
+
 # ---- audit -------------------------------------------------------------------------------------------
 
-PREV = {"n": 100, "md5": "abc", "as_of": "2026-10-13T12:00:00+00:00"}
+PREV = {"n": 100, "md5": "abc", "max_id": 100, "as_of": "2026-10-13T12:00:00+00:00"}
 
 
 def test_audit_baseline_unchanged_and_tampered():
@@ -104,7 +112,7 @@ def test_step_one_needs_two_consecutive_passing_weekends():
 def _report(pass_week=True, streak=1):
     ev = gate.evaluate_week(GOOD_LINES if pass_week else {"covered": 1, "total": 20, "pct": 5.0}, GOOD_PROPS, GOOD_AUDIT)
     st = {"streak": streak, "step1_pass": streak >= 2}
-    audit = {**GOOD_AUDIT, "state": {"n": 7, "md5": "m", "as_of": END.isoformat()}}
+    audit = {**GOOD_AUDIT, "state": {"n": 7, "md5": "m", "max_id": 7, "as_of": END.isoformat()}}
     return gate.render_report(window_start=START, window_end=END, evaluation=ev, status=st, audit=audit,
                               lines=GOOD_LINES, props=GOOD_PROPS,
                               summary=[{"source": "ev_prop", "n": 50, "mean_clv_prob": -0.021, "beat_close_pct": 0.31, "units": -2.5}])
@@ -116,7 +124,7 @@ def test_report_round_trips_through_its_machine_block():
     assert "| ev_prop | 50 | -2.10 pp | 31.0% | -2.50 |" in text
     p = gate.parse_report(text)
     assert p["week_pass"] is True and p["streak"] == 1 and p["window_end"] == END.isoformat()
-    assert p["audit"] == {"n": 7, "md5": "m", "as_of": END.isoformat()}
+    assert p["audit"] == {"n": 7, "md5": "m", "max_id": 7, "as_of": END.isoformat()}
 
 
 def test_report_states_whether_pinnacle_was_requested_for_props():
@@ -147,10 +155,13 @@ def test_latest_previous_picks_the_nearest_earlier_report_and_ignores_junk():
 # ---- the script on a fake query function --------------------------------------------------------------
 
 def fake_q(games=(), lines=(), props=(), summary=(), audit=(7, "m"), regions=()):
+    """props rows are (close_kind, close_same_line) for ev_prop picks, or the full (source, player_id, kind, same)."""
     seen = []
 
     def q(sql, params=()):
         seen.append(sql)
+        if "max(id) FROM pick_ledger" in sql:
+            return [(audit[0],)]
         if "FROM pick_ledger t" in sql:
             return [audit]
         if "kind = 'props'" in sql:
@@ -160,7 +171,7 @@ def fake_q(games=(), lines=(), props=(), summary=(), audit=(7, "m"), regions=())
         if "FROM close_capture" in sql:
             return list(lines)
         if "close_same_line FROM" in sql:
-            return list(props)
+            return [("ev_prop", None) + tuple(r) if len(r) == 2 else tuple(r) for r in props]
         return list(summary)
 
     q.seen = seen
@@ -197,3 +208,66 @@ def test_second_clean_weekend_passes_step_one():
 
 def test_main_refuses_under_the_test_ledger_guard(capsys):
     assert rg.main([]) == 0 and "SM_LEDGER_OFF" in capsys.readouterr().out
+
+
+# ---- the audit by insertion order (id), on a tiny in-memory ledger -------------------------------------------
+
+def ledger_q(rows):
+    """Answers the two audit queries from `rows` (list of dicts with an `id`), like Postgres would: max(id), and
+    count + md5 over every column of the rows with id <= the bound, ordered by id."""
+    import hashlib
+
+    def q(sql, params=()):
+        if "max(id) FROM pick_ledger" in sql:
+            return [(max((r["id"] for r in rows), default=0),)]
+        if "FROM pick_ledger t" in sql:
+            assert "t.id <= %s" in sql and "ORDER BY t.id" in sql and "observed_at" not in sql
+            sel = sorted((r for r in rows if r["id"] <= params[0]), key=lambda r: r["id"])
+            md5 = hashlib.md5("".join(hashlib.md5(repr(sorted(r.items())).encode()).hexdigest() for r in sel).encode()).hexdigest() if sel else None
+            return [(len(sel), md5)]
+        return []
+    return q
+
+
+def _ledger():
+    return [{"id": i, "pick_key": f"k{i}", "observed_at": "2026-10-15T00:00:00+00:00", "best_price": -110} for i in (1, 2, 3)]
+
+
+def _week(rows, end, previous):
+    data = rg.collect(ledger_q(rows), end - timedelta(days=7), end, previous)
+    text, res = rg.build_report(end, data, previous)
+    return gate.parse_report(text), res
+
+
+def test_audit_records_the_max_id_and_ignores_a_late_insert_with_an_old_observed_at():
+    rows = _ledger()
+    prev, _ = _week(rows, END, None)
+    assert prev["audit"]["max_id"] == 3 and prev["audit"]["n"] == 3
+    rows.append({"id": 4, "pick_key": "late", "observed_at": "2026-10-10T00:00:00+00:00", "best_price": 120})   # old observed_at
+    _, res = _week(rows, END + timedelta(days=7), prev)
+    assert res["evaluation"]["checks"][2]["passed"] is True
+
+
+def test_audit_fails_on_an_updated_row_in_any_column():
+    rows = _ledger()
+    prev, _ = _week(rows, END, None)
+    rows[1]["best_price"] = -105
+    _, res = _week(rows, END + timedelta(days=7), prev)
+    assert res["evaluation"]["checks"][2]["passed"] is False
+
+
+def test_audit_fails_on_a_deleted_row():
+    rows = _ledger()
+    prev, _ = _week(rows, END, None)
+    del rows[0]
+    _, res = _week(rows, END + timedelta(days=7), prev)
+    chk = res["evaluation"]["checks"][2]
+    assert chk["passed"] is False and "was 3 /" in chk["detail"] and "now 2 /" in chk["detail"]
+
+
+def test_parlay_prop_legs_count_toward_prop_coverage():
+    props = [("ev_prop", None, "pinnacle_novig", True)] * 4 + [
+        ("parlay_leg", "p1", "us_consensus_novig", True), ("parlay_leg", "p2", "missing", None),
+        ("parlay_leg", None, "missing", None)]                                              # game-line leg: not a prop
+    data = rg.collect(fake_q(props=props), START, END, None)
+    assert gate.props_coverage(data["props"]) == {"covered": 5, "total": 6, "pct": pytest.approx(100 * 5 / 6)}
