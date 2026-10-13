@@ -57,8 +57,9 @@ def _stub_board(mod, monkeypatch, events):
     monkeypatch.setattr(mod, "load_latest_odds", lambda pks: odds)
     monkeypatch.setattr(mod, "upsert_ev_picks", lambda rows: events.append(("upsert", len(rows))) or len(rows))
     monkeypatch.setattr(mod, "clear_other_side_picks", lambda rows: events.append(("clear", 0)) or 0)
-    monkeypatch.setattr(mod, "upsert_ev_parlays", lambda rows: 0)
-    monkeypatch.setattr(mod, "demote_stale_parlays", lambda *a: 0)
+    monkeypatch.setattr(mod, "build_parlay", lambda cands: {"parlay_id": "p1", "n_legs": 2, "parlay_price": 260, "ev": 0.1})
+    monkeypatch.setattr(mod, "upsert_ev_parlays", lambda rows: events.append(("parlay_upsert", len(rows))) or 0)
+    monkeypatch.setattr(mod, "demote_stale_parlays", lambda *a: events.append(("demote", 0)) or 0)
     monkeypatch.setattr(sys, "argv", ["build_ev_board.py", "--sport", "nfl"])
 
 
@@ -73,7 +74,7 @@ def _stub_props(mod, monkeypatch, events, rows=None):
     monkeypatch.setattr(mod, "load_sim_rows", lambda sport: [{"game_pk": 1}])
     monkeypatch.setattr(mod, "load_latest_prop_odds", lambda sport, pks: [])
     monkeypatch.setattr(mod, "assemble_prop_line_rows", lambda a, b: [])
-    monkeypatch.setattr(mod, "upsert_nfl_prop_lines", lambda r: 0)
+    monkeypatch.setattr(mod, "upsert_nfl_prop_lines", lambda r: events.append(("lines", len(r))) or 0)
     monkeypatch.setattr(mod, "assemble_prop_rows", lambda *a, **k: rows)
     monkeypatch.setattr(mod, "upsert_ev_prop_picks", lambda r: events.append(("upsert", len(r))))
     monkeypatch.setattr(mod, "clear_stale_prop_line_picks", lambda picks: events.append(("clear", len(picks))) or 0)
@@ -113,6 +114,7 @@ def _stub_sim_nfl(mod, monkeypatch, events):
 
 def _stub_sim_mlb(mod, monkeypatch, events):
     monkeypatch.setattr(mod, "upsert_game_predictions", lambda rows: events.append(("upsert", len(rows))) or len(rows))
+    monkeypatch.setattr(mod, "upsert_prop_predictions", lambda rows: events.append(("props", len(rows))) or len(rows))
     monkeypatch.setattr(mod.config, "DATABASE_URL", "postgresql://x")
 
 
@@ -128,7 +130,7 @@ WRITERS = {
     "generate_cfb": ("generate_cfb", _stub_cfb, lambda mod: mod.write_game_rows([_pred_row(sport="cfb")])),
     "generate_sim_nfl": ("generate_sim_nfl", _stub_sim_nfl,
                          lambda mod: mod._write_game_lines([{"game_pk": 5}], {5: object()}, {5})),
-    "generate_sim": ("generate_sim", _stub_sim_mlb, lambda mod: mod.write_game_predictions([_mlb_pred()])),
+    "generate_sim": ("generate_sim", _stub_sim_mlb, lambda mod: mod.write_predictions([_mlb_pred()], [{"game_pk": 5}])),
 }
 
 
@@ -140,7 +142,7 @@ def test_build_ev_board_records_its_surfaced_picks_after_its_own_writes(monkeypa
     rec = Recorder(events)
     monkeypatch.setattr(mod, "safe_record", rec)
     mod.main()
-    assert [e[0] for e in events] == ["upsert", "clear", "ledger"]
+    assert [e[0] for e in events] == ["upsert", "clear", "parlay_upsert", "demote", "ledger"]
     ((writer, obs),) = rec.calls
     assert writer == "build_ev_board"
     (o,) = obs
@@ -153,7 +155,7 @@ def test_build_ev_board_records_its_surfaced_picks_after_its_own_writes(monkeypa
 def test_build_ev_board_survives_a_ledger_failure(monkeypatch, capsys):
     mod, events = load_script("build_ev_board"), []
     _stub_board(mod, monkeypatch, events)
-    monkeypatch.setattr(mod, "ev_game_candidates", lambda *a: (_ for _ in ()).throw(KeyError("boom")))
+    monkeypatch.setattr(sources, "ev_game_candidates", lambda *a: (_ for _ in ()).throw(KeyError("boom")))
     mod.main()                                                    # real safe_record: must not raise
     assert "::warning::pick-ledger: build_ev_board: building observations failed" in capsys.readouterr().out
     assert ("upsert", 3) in events and ("clear", 0) in events   # the board itself was written
@@ -167,7 +169,7 @@ def test_build_ev_props_board_records_only_is_pick_rows_after_the_upsert(monkeyp
     rec = Recorder(events)
     monkeypatch.setattr(mod, "safe_record", rec)
     mod.main(["--sport", "nfl"])
-    assert [e[0] for e in events][:2] == ["upsert", "ledger"]
+    assert [e[0] for e in events] == ["lines", "upsert", "clear", "ledger"]
     ((writer, obs),) = rec.calls
     assert writer == "build_ev_props_board" and [o["player_id"] for o in obs] == ["00-1"]
     assert obs[0]["line"] == 64.5 and obs[0]["ref_prob"] == 0.5 and obs[0]["model_prob"] == 0.58
@@ -237,13 +239,13 @@ def test_generate_sim_nfl_game_lines_record_the_rows_they_wrote(monkeypatch):
     assert rec.calls[0][0] == "generate_sim_nfl" and len(rec.calls[0][1]) >= 1
 
 
-def test_generate_sim_records_mlb_picks_only_on_the_database_branch(monkeypatch):
+def test_generate_sim_records_after_the_prop_predictions_too(monkeypatch):
     mod, events = load_script("generate_sim"), []
     _stub_sim_mlb(mod, monkeypatch, events)
     rec = Recorder(events)
     monkeypatch.setattr(mod, "safe_record", rec)
-    mod.write_game_predictions([_mlb_pred()])
-    assert [e[0] for e in events] == ["upsert", "ledger"]
+    mod.write_predictions([_mlb_pred()], [{"game_pk": 5}])
+    assert [e[0] for e in events] == ["upsert", "props", "ledger"]
     (writer, obs) = rec.calls[0]
     assert writer == "generate_sim" and {o["sport"] for o in obs} == {"mlb"}
 
@@ -255,14 +257,14 @@ def test_generate_sim_without_a_database_never_records(monkeypatch):
     monkeypatch.setattr(mod.config, "DATABASE_URL", "")
     monkeypatch.setattr(mod, "get_duckdb", lambda: (_ for _ in ()).throw(RuntimeError("stop at the duckdb branch")))
     with pytest.raises(RuntimeError, match="duckdb branch"):
-        mod.write_game_predictions([_mlb_pred()])
+        mod.write_predictions([_mlb_pred()], [{"game_pk": 5}])
     assert rec.calls == []
 
 
 def test_a_ledger_failure_never_fails_a_model_game_writer(monkeypatch, capsys):
     mod = load_script("generate_cfb")
     monkeypatch.setattr(mod, "upsert_game_predictions", lambda rows: None)
-    monkeypatch.setattr(mod, "model_game_candidates", lambda rows: (_ for _ in ()).throw(RuntimeError("x")))
+    monkeypatch.setattr(sources, "model_game_candidates", lambda rows: (_ for _ in ()).throw(RuntimeError("x")))
     mod.write_game_rows([_pred_row()])                            # real safe_record swallows the adapter error
     assert "::warning::pick-ledger: generate_cfb" in capsys.readouterr().out
 
@@ -311,6 +313,38 @@ def _run_writer(name, monkeypatch):
     mod, events = load_script(modname), []
     stub(mod, monkeypatch, events)
     return mod, events, run
+
+
+@pytest.mark.parametrize("name", sorted(WRITERS))
+def test_the_ledger_is_the_last_database_step_of_every_writer(name, monkeypatch):
+    """A slow or dead ledger must never delay or skip one of the writer's own writes: every one comes first."""
+    modname, stub, run = WRITERS[name]
+    mod, events = load_script(modname), []
+    stub(mod, monkeypatch, events)
+    monkeypatch.setattr(mod, "safe_record", Recorder(events))
+    run(mod)
+    assert [e for e in events if e[0] == "ledger"] == [("ledger", name)]
+    assert events[-1] == ("ledger", name) and len(events) >= 2
+
+
+def test_generate_sim_ledger_is_last_even_without_prop_rows(monkeypatch):
+    mod, events = load_script("generate_sim"), []
+    _stub_sim_mlb(mod, monkeypatch, events)
+    monkeypatch.setattr(mod, "safe_record", Recorder(events))
+    mod.write_predictions([_mlb_pred()], [])
+    assert [e[0] for e in events] == ["upsert", "ledger"]
+
+
+@pytest.mark.parametrize("name", sorted(WRITERS))
+def test_a_broken_sources_import_cannot_crash_a_writer(name, monkeypatch, capsys):
+    """sportsmodel.ledger.sources is imported inside the hook, so even an ImportError there is just a warning."""
+    modname, stub, run = WRITERS[name]
+    mod, events = load_script(modname), []
+    stub(mod, monkeypatch, events)
+    monkeypatch.setitem(sys.modules, "sportsmodel.ledger.sources", None)       # `import` now raises ImportError
+    run(mod)
+    assert [e[0] for e in events]                                                # the writer still wrote
+    assert f"::warning::pick-ledger: {name}: building observations failed" in capsys.readouterr().out
 
 
 @pytest.mark.parametrize("name", sorted(WRITERS))

@@ -42,7 +42,6 @@ from sportsmodel.db import (
     upsert_nfl_prop_lines,
 )
 from sportsmodel.ledger.record import safe_record
-from sportsmodel.ledger.sources import ev_prop_candidates
 from sportsmodel.serving.props_ev import (
     MLB_SIM_TO_ODDS_MARKET,
     always_propable,
@@ -208,14 +207,20 @@ def main(argv: list[str] | None = None) -> None:
     upsert_ev_prop_picks(rows)
 
     picks = [r for r in rows if r["is_pick"]]
-    # Pick ledger: the surfaced picks exactly as they stand now. Best-effort -- never fails the build.
-    safe_record(lambda: ev_prop_candidates(picks), writer="build_ev_props_board")
     # A player's main line can shift between builds (books move the number);
     # since `line` is part of ev_prop_picks' primary key, the OLD line's row
     # would otherwise persist with is_pick=true and surface as a phantom
     # pick alongside the new line. Demote every other line for each player
     # just picked.
     cleared = clear_stale_prop_line_picks(picks)
+
+    # Pick ledger: the surfaced picks exactly as they stand now. LAST, after every write the board makes, and
+    # best-effort -- a slow or broken ledger never delays or fails the build.
+    def ledger_candidates():
+        from sportsmodel.ledger.sources import ev_prop_candidates
+        return ev_prop_candidates(picks)
+
+    safe_record(ledger_candidates, writer="build_ev_props_board")
 
     print(f"[build_ev_props_board] sport={args.sport} games={len(game_pks)} "
           f"sim_rows={len(sim_rows)} prop_picks={len(rows)} plus_ev={len(picks)} "

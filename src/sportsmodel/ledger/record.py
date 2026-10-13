@@ -47,17 +47,17 @@ class DbStore:
     def missing_tables(self) -> list[str]:
         _require_enabled()
         from sportsmodel import db
-        return db.missing_ledger_tables(["pick_ledger"])
+        return db.missing_ledger_tables(["pick_ledger"], connect_timeout=db.LEDGER_CONNECT_TIMEOUT)
 
     def latest(self, keys: list[str]) -> dict[str, dict]:
         _require_enabled()
         from sportsmodel import db
-        return db.latest_pick_ledger_rows(keys)
+        return db.latest_pick_ledger_rows(keys, connect_timeout=db.LEDGER_CONNECT_TIMEOUT)
 
     def insert(self, rows: list[dict]) -> int:
         _require_enabled()
         from sportsmodel import db
-        return db.insert_pick_ledger(rows)
+        return db.insert_pick_ledger(rows, connect_timeout=db.LEDGER_CONNECT_TIMEOUT)
 
 
 def record_observations(candidates: Iterable[dict], *, writer: str, now=None, store=None,

@@ -174,7 +174,6 @@ from sportsmodel.model.props_eval import gate_population
 from sportsmodel.db import (get_postgres, served_nfl_sim_version, upsert_game_predictions,
                             upsert_nfl_player_sim, upsert_nfl_sim, upsert_nfl_sim_slate)
 from sportsmodel.ledger.record import safe_record
-from sportsmodel.ledger.sources import model_game_candidates
 from sportsmodel.nfl import config as nfl_config
 from sportsmodel.nfl.injuries_nflverse import nfl_season
 from sportsmodel.nfl.injury_report import current_report, live_injury_rows, resolve_target_week
@@ -695,8 +694,13 @@ def _write_game_lines(games: list[dict], sims_for_game: dict, ml_served: set,
         rows.append({**row, "margin_dist": json.dumps(row["margin_dist"]),
                      "total_dist": json.dumps(row["total_dist"])})
     upsert_game_predictions(rows)
-    # Pick ledger: the model's game picks at generation time. Best-effort -- never fails the job.
-    safe_record(lambda: model_game_candidates(rows), writer="generate_sim_nfl")
+    # Pick ledger: the model's game picks at generation time. The last DB step on every path through main();
+    # best-effort -- never fails the job.
+    def ledger_candidates():
+        from sportsmodel.ledger.sources import model_game_candidates
+        return model_game_candidates(rows)
+
+    safe_record(ledger_candidates, writer="generate_sim_nfl")
     n_ml = sum(1 for r in rows if r["game_pk"] in ml_served)
     print(f"game_lines: wrote {len(rows)} game_predictions rows under {model_version} "
           f"(ml_sim={n_ml} current_sim={len(rows) - n_ml})", flush=True)

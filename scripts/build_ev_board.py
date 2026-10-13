@@ -33,7 +33,6 @@ from sportsmodel.serving.ev_pilot import (
     assemble_games, ev_rows_for_game, MIN_EV, EV_CEILING, MAX_STRAIGHT_JUICE,
 )
 from sportsmodel.ledger.record import safe_record
-from sportsmodel.ledger.sources import ev_game_candidates
 from sportsmodel.serving.parlay import build_parlay
 
 MODEL_VERSION = "ev-pilot-v1"
@@ -135,9 +134,6 @@ def main() -> None:
     # never shows both sides as picks.
     cleared = clear_other_side_picks(all_rows)
 
-    # Pick ledger: the surfaced picks exactly as they stand now. Best-effort -- never fails the build.
-    safe_record(lambda: ev_game_candidates(picks, games), writer="build_ev_board")
-
     # Auto-parlay the juiced-favorite legs into a single +EV ticket. Non-fatal:
     # if the ev_parlays table isn't migrated yet, the straight board above is
     # already written -- log and carry on rather than failing the whole build.
@@ -157,6 +153,14 @@ def main() -> None:
     print(f"[build_ev_board] sport={args.sport} games={len(games)} rows={len(all_rows)} "
           f"picks={len(picks)} passes={len(passes)} cleared_stale={cleared} "
           f"parlay={parlay_desc} demoted_parlays={demoted}")
+
+    # Pick ledger: the surfaced picks exactly as they stand now. LAST, after every write the board makes, and
+    # best-effort -- a slow or broken ledger never delays or fails the build.
+    def ledger_candidates():
+        from sportsmodel.ledger.sources import ev_game_candidates
+        return ev_game_candidates(picks, games)
+
+    safe_record(ledger_candidates, writer="build_ev_board")
 
 
 if __name__ == "__main__":

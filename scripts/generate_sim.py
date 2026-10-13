@@ -38,7 +38,6 @@ from sportsmodel.db import get_duckdb, upsert_game_predictions, upsert_prop_pred
 from sportsmodel.ingest import mlb_lineups, mlb_statsapi
 from sportsmodel.ingest.odds import parse_commence
 from sportsmodel.ledger.record import safe_record
-from sportsmodel.ledger.sources import model_game_candidates
 from sportsmodel.model import calibration, distributions, game, props, rates
 from sportsmodel.sim import engine
 from sportsmodel.sim.mlb import kernel
@@ -245,9 +244,6 @@ def write_game_predictions(preds: list[dict]) -> None:
     if config.DATABASE_URL:
         n = upsert_game_predictions(preds)
         print(f"Upserted {n} rows into Supabase game_predictions.")
-        # Pick ledger: the model's game picks at generation time. Best-effort -- never fails the job.
-        safe_record(lambda: model_game_candidates([{**p, "sport": "mlb"} for p in preds]),
-                    writer="generate_sim")
         return
     con = get_duckdb()
     con.execute("""
@@ -295,6 +291,22 @@ def write_prop_predictions(rows: list[dict]) -> None:
             f"VALUES ({','.join(['?'] * len(cols))})", [r[c] for c in cols])
     con.close()
     print(f"Wrote {len(rows)} rows into local DuckDB prop_predictions.")
+
+
+def write_predictions(game_rows: list[dict], prop_rows: list[dict]) -> None:
+    """Persist the game and prop predictions, then (database branch only) record the model's game picks in the
+    pick ledger. The ledger is the LAST database step, after both writes, and best-effort: a slow or broken
+    ledger never delays or fails the job."""
+    if game_rows:
+        write_game_predictions(game_rows)
+    if prop_rows:
+        write_prop_predictions(prop_rows)
+    if game_rows and config.DATABASE_URL:
+        def ledger_candidates():
+            from sportsmodel.ledger.sources import model_game_candidates
+            return model_game_candidates([{**p, "sport": "mlb"} for p in game_rows])
+
+        safe_record(ledger_candidates, writer="generate_sim")
 
 
 def main() -> None:
@@ -414,10 +426,7 @@ def main() -> None:
     lines = load_market_lines([r["game_pk"] for r in game_rows])
     for r in game_rows:
         r.update(lines.get(r["game_pk"], {}))
-    if game_rows:
-        write_game_predictions(game_rows)
-    if prop_rows:
-        write_prop_predictions(prop_rows)
+    write_predictions(game_rows, prop_rows)
 
 
 if __name__ == "__main__":

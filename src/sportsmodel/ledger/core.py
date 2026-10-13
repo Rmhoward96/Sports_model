@@ -31,6 +31,21 @@ def as_utc(value) -> datetime | None:
     return value.replace(tzinfo=timezone.utc) if value.tzinfo is None else value.astimezone(timezone.utc)
 
 
+def whole_game_pk(game_pk) -> int:
+    """`game_pk` as an int. A fractional value (401.5) is rejected with ValueError, never truncated; 401.0 and
+    "401" are fine; a bool, None, NaN or infinity is not a game id."""
+    if isinstance(game_pk, bool) or game_pk is None:
+        raise ValueError(f"game_pk must be a whole number: {game_pk!r}")
+    try:
+        n = int(game_pk)
+        whole = float(game_pk) == n
+    except (OverflowError, TypeError) as exc:
+        raise ValueError(f"game_pk must be a whole number: {game_pk!r}") from exc
+    if not whole:
+        raise ValueError(f"game_pk must be a whole number: {game_pk!r}")
+    return n
+
+
 def pick_key(source: str, sport: str, game_pk, market: str, side: str, *, player_id=None,
              parlay_id: str | None = None, model_version: str | None = None) -> str:
     """Deterministic key of a bet slot. Fixed positions, never the price or the line.
@@ -42,11 +57,12 @@ def pick_key(source: str, sport: str, game_pk, market: str, side: str, *, player
     for name, part in (("sport", sport), ("market", market), ("side", side)):
         if part is None or part == "":
             raise ValueError(f"{name} is required")
-    for name, part in (("market", market), ("side", side)):
-        if "|" in str(part):
+    for name, part in (("sport", sport), ("market", market), ("side", side), ("player_id", player_id),
+                       ("model_version", model_version)):
+        if part is not None and "|" in str(part):
             raise ValueError(f"{name} must not contain '|': {part!r}")
     mv = (model_version or "") if source == "model_game" else ""
-    return "|".join([source, str(sport), str(int(game_pk)), str(market), str(side),
+    return "|".join([source, str(sport), str(whole_game_pk(game_pk)), str(market), str(side),
                      "" if player_id is None else str(player_id), mv, parlay_id or ""])
 
 
@@ -65,7 +81,7 @@ def observation(*, source: str, sport: str, game_pk, market: str, side: str, com
     return {
         "pick_key": pick_key(source, sport, game_pk, market, side, player_id=player_id,
                              parlay_id=parlay_id, model_version=model_version),
-        "source": source, "sport": sport, "game_pk": int(game_pk), "market": market, "side": side,
+        "source": source, "sport": sport, "game_pk": whole_game_pk(game_pk), "market": market, "side": side,
         "line": _f(line), "player_id": None if player_id is None else str(player_id),
         "player_name": player_name, "parlay_id": parlay_id, "model_version": model_version,
         "model_prob": _f(model_prob), "best_price": None if best_price is None else int(best_price),

@@ -144,3 +144,29 @@ def test_pick_key_requires_sport_market_and_side():
         args = {"source": "ev_game", "sport": "nfl", "game_pk": 1, "market": "spread", "side": "home", **kw}
         with pytest.raises(ValueError):
             core.pick_key(**args)
+
+
+@pytest.mark.parametrize("kw", [{"sport": "nf|l"}, {"player_id": "00|1"}, {"model_version": "v|2"}])
+def test_pick_key_rejects_the_separator_in_every_free_text_part(kw):
+    args = {"source": "model_game", "sport": "nfl", "game_pk": 1, "market": "spread", "side": "home", **kw}
+    with pytest.raises(ValueError):
+        core.pick_key(**args)
+
+
+def test_pick_key_rejects_the_separator_in_model_version_for_every_source():
+    with pytest.raises(ValueError):
+        core.pick_key("ev_game", "nfl", 1, "spread", "home", model_version="a|b")
+
+
+def test_pick_key_rejects_a_non_integral_game_pk_but_accepts_whole_numbers():
+    for bad in (401.5, "401.5", float("nan"), float("inf"), None, True):
+        with pytest.raises((ValueError, TypeError)):
+            core.pick_key("ev_game", "nfl", bad, "spread", "home")
+    assert core.pick_key("ev_game", "nfl", 401.0, "spread", "home") == core.pick_key("ev_game", "nfl", 401, "spread", "home")
+    assert core.pick_key("ev_game", "nfl", "401", "spread", "home").split("|")[2] == "401"
+
+
+def test_observation_with_a_fractional_game_pk_is_rejected_not_truncated():
+    with pytest.raises(ValueError):
+        core.observation(source="ev_game", sport="nfl", game_pk=401.5, market="spread", side="home",
+                         commence_time=KICK)
