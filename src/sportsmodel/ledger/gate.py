@@ -43,7 +43,7 @@ def lines_coverage(graded_games: list[tuple], lines_minutes: dict[tuple, float |
 def props_coverage(prop_results: list[dict]) -> dict:
     """Share of graded prop picks with a Pinnacle or >= 3-book close at their exact line."""
     covered = sum(1 for r in prop_results if r.get("close_kind") in ("pinnacle_novig", "us_consensus_novig")
-                  and r.get("close_same_line") is True)
+                  and r.get("close_fair_prob") is not None)
     n = len(prop_results)
     return {"covered": covered, "total": n, "pct": 100.0 * covered / n if n else None}
 

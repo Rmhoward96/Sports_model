@@ -46,11 +46,18 @@ def test_lines_coverage_boundaries_and_an_empty_window():
     assert gate.lines_coverage([], {}) == {"covered": 0, "total": 0, "pct": None}
 
 
+def test_consensus_close_counts_when_pinnacle_moved_to_another_number():
+    # close_same_line only says the close LINE equals the pick's line; a US-consensus fair price at the pick's own
+    # line can exist while Pinnacle moved (same_line False, fair prob set): that is covered.
+    rows = [{"close_kind": "us_consensus_novig", "close_same_line": False, "close_fair_prob": 0.48}]
+    assert gate.props_coverage(rows) == {"covered": 1, "total": 1, "pct": 100.0}
+
+
 def test_props_coverage_needs_a_kind_and_the_exact_line():
-    rows = [{"close_kind": "pinnacle_novig", "close_same_line": True},
-            {"close_kind": "us_consensus_novig", "close_same_line": True},
-            {"close_kind": "pinnacle_novig", "close_same_line": False},          # Pinnacle on another number
-            {"close_kind": "missing", "close_same_line": None}]
+    rows = [{"close_kind": "pinnacle_novig", "close_fair_prob": 0.52},
+            {"close_kind": "us_consensus_novig", "close_fair_prob": 0.49},
+            {"close_kind": "pinnacle_novig", "close_fair_prob": None},           # no fair price at the pick's line
+            {"close_kind": "missing", "close_fair_prob": None}]
     assert gate.props_coverage(rows) == {"covered": 2, "total": 4, "pct": 50.0}
     assert gate.props_coverage([])["pct"] is None
 
@@ -155,7 +162,7 @@ def test_latest_previous_picks_the_nearest_earlier_report_and_ignores_junk():
 # ---- the script on a fake query function --------------------------------------------------------------
 
 def fake_q(games=(), lines=(), props=(), summary=(), audit=(7, "m"), regions=()):
-    """props rows are (close_kind, close_same_line) for ev_prop picks, or the full (source, player_id, kind, same)."""
+    """props rows are (close_kind, close_fair_prob) for ev_prop picks, or the full (source, player_id, kind, fair_prob)."""
     seen = []
 
     def q(sql, params=()):
@@ -170,7 +177,7 @@ def fake_q(games=(), lines=(), props=(), summary=(), audit=(7, "m"), regions=())
             return list(games)
         if "FROM close_capture" in sql:
             return list(lines)
-        if "close_same_line FROM" in sql:
+        if "close_fair_prob FROM" in sql:
             return [("ev_prop", None) + tuple(r) if len(r) == 2 else tuple(r) for r in props]
         return list(summary)
 
@@ -181,13 +188,13 @@ def fake_q(games=(), lines=(), props=(), summary=(), audit=(7, "m"), regions=())
 def test_collect_and_build_report_pass_then_fail_on_a_tampered_ledger():
     games = [("nfl", 1), ("cfb", 2)]
     q = fake_q(games=games, lines=[("nfl", 1, 14.0), ("cfb", 2, 9.0)],
-               props=[("pinnacle_novig", True)] * 9 + [("missing", None)], audit=(7, "m"))
+               props=[("pinnacle_novig", 0.5)] * 9 + [("missing", None)], audit=(7, "m"))
     data = rg.collect(q, START, END, None)
     text, res = rg.build_report(END, data, None)
     assert res["evaluation"]["week_pass"] is True and res["status"] == {"streak": 1, "step1_pass": False}
     assert "Prop closes captured this weekend: none." in text
     prev = gate.parse_report(text)
-    q2 = fake_q(games=games, lines=[("nfl", 1, 14.0), ("cfb", 2, 9.0)], props=[("pinnacle_novig", True)] * 10, audit=(7, "CHANGED"))
+    q2 = fake_q(games=games, lines=[("nfl", 1, 14.0), ("cfb", 2, 9.0)], props=[("pinnacle_novig", 0.5)] * 10, audit=(7, "CHANGED"))
     data2 = rg.collect(q2, END, END + timedelta(days=7), prev)
     _, res2 = rg.build_report(END + timedelta(days=7), data2, prev)
     assert res2["evaluation"]["week_pass"] is False
@@ -196,7 +203,7 @@ def test_collect_and_build_report_pass_then_fail_on_a_tampered_ledger():
 
 
 def test_second_clean_weekend_passes_step_one():
-    q = fake_q(games=[("nfl", 1)], lines=[("nfl", 1, 14.0)], props=[("us_consensus_novig", True)] * 10)
+    q = fake_q(games=[("nfl", 1)], lines=[("nfl", 1, 14.0)], props=[("us_consensus_novig", 0.5)] * 10)
     data = rg.collect(q, START, END, None)
     text, _ = rg.build_report(END, data, None)
     prev = gate.parse_report(text)
@@ -266,8 +273,8 @@ def test_audit_fails_on_a_deleted_row():
 
 
 def test_parlay_prop_legs_count_toward_prop_coverage():
-    props = [("ev_prop", None, "pinnacle_novig", True)] * 4 + [
-        ("parlay_leg", "p1", "us_consensus_novig", True), ("parlay_leg", "p2", "missing", None),
+    props = [("ev_prop", None, "pinnacle_novig", 0.5)] * 4 + [
+        ("parlay_leg", "p1", "us_consensus_novig", 0.5), ("parlay_leg", "p2", "missing", None),
         ("parlay_leg", None, "missing", None)]                                              # game-line leg: not a prop
     data = rg.collect(fake_q(props=props), START, END, None)
     assert gate.props_coverage(data["props"]) == {"covered": 5, "total": 6, "pct": pytest.approx(100 * 5 / 6)}

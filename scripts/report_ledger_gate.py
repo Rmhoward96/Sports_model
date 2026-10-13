@@ -67,8 +67,8 @@ def collect(q, start: datetime, end: datetime, previous: dict | None) -> dict:
         for s, pk, m in q("SELECT sport, game_pk, min(minutes_to_kick) FROM close_capture WHERE kind = 'lines' "
                           "AND status = 'ok' AND game_pk = ANY(%s) GROUP BY sport, game_pk", ([pk for _, pk in games],)):
             lines_minutes[(s, pk)] = m
-    props = [{"close_kind": k, "close_same_line": same} for src, pid, k, same in q(
-        "SELECT source, player_id, close_kind, close_same_line FROM pick_ledger_results WHERE basis = 'first' "
+    props = [{"close_kind": k, "close_fair_prob": fair} for src, pid, k, fair in q(
+        "SELECT source, player_id, close_kind, close_fair_prob FROM pick_ledger_results WHERE basis = 'first' "
         "AND source IN ('ev_prop', 'parlay_leg') AND commence_time >= %s AND commence_time < %s", (start, end))
         if gate.is_prop_pick(src, pid)]
     summary = [{"source": s, "n": n, "mean_clv_prob": c, "beat_close_pct": b, "units": u} for s, n, c, b, u in q(
