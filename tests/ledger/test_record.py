@@ -1,6 +1,8 @@
 """Best-effort recording: a ledger failure logs a warning and never fails the writer."""
 from datetime import datetime, timedelta, timezone
 
+import pytest
+
 from sportsmodel import db
 from sportsmodel.ledger import core, record
 
@@ -11,6 +13,13 @@ KICK = NOW + timedelta(hours=5)
 def _obs(**kw):
     return core.observation(**{**dict(source="ev_game", sport="cfb", game_pk=9, market="spread", side="home",
                                       commence_time=KICK, line=-3.5, best_price=-110), **kw})
+
+
+@pytest.fixture(autouse=True)
+def _fresh_warnings():
+    record.reset_warnings()
+    yield
+    record.reset_warnings()
 
 
 class FakeStore:
@@ -67,6 +76,7 @@ def test_missing_table_warns_and_skips(capsys):
 
 def test_every_failure_mode_is_swallowed_with_a_warning(capsys):
     for mode in ("missing", "latest", "insert"):
+        record.reset_warnings()               # warnings are once-per-(writer, status); reset between modes
         out = record.record_observations([_obs()], writer="w", now=NOW, store=FakeStore(fail=mode))
         assert out["status"] == "error", mode
     assert capsys.readouterr().out.count("::warning::pick-ledger") == 3
@@ -98,3 +108,40 @@ def test_the_test_suite_cannot_reach_the_production_ledger(monkeypatch):
     assert record.record_observations([_obs()], writer="w", now=NOW) == {"status": "disabled"}
     monkeypatch.setenv("SM_LEDGER_OFF", "0")
     assert not record.writes_disabled()
+
+
+def test_warnings_are_printed_once_per_writer_and_status(capsys):
+    for _ in range(3):
+        record.record_observations([_obs()], writer="w", now=NOW, store=FakeStore(fail="latest"))
+        record.record_observations([_obs()], writer="w", now=NOW, store=FakeStore(missing=["pick_ledger"]))
+    record.record_observations([_obs()], writer="other", now=NOW, store=FakeStore(fail="latest"))
+    assert capsys.readouterr().out.count("::warning::pick-ledger") == 3     # w/error, w/no_table, other/error
+
+
+def test_exception_text_in_the_warning_and_result_is_truncated(capsys):
+    class Loud(FakeStore):
+        def latest(self, keys):
+            raise RuntimeError("x" * 5000)
+
+    out = record.record_observations([_obs()], writer="w", now=NOW, store=Loud())
+    assert len(out["error"]) <= 200 and len(capsys.readouterr().out) < 400
+
+
+def test_the_db_store_refuses_every_call_while_writes_are_disabled(monkeypatch):
+    monkeypatch.setattr(db, "get_postgres", lambda: (_ for _ in ()).throw(AssertionError("DB touched")))
+    store = record.DbStore()
+    for call in (store.missing_tables, lambda: store.latest(["k"]), lambda: store.insert([{}])):
+        with pytest.raises(RuntimeError, match="SM_LEDGER_OFF"):
+            call()
+    out = record.record_observations([_obs()], writer="w", now=NOW, store=store)   # swallowed, not raised
+    assert out["status"] == "error"
+
+
+def test_one_bad_candidate_is_skipped_not_the_batch(capsys):
+    store = FakeStore()
+    bad_thunk = lambda: _obs(ref_kind="vibes")
+    good_thunk = lambda: _obs(game_pk=10)
+    out = record.safe_record(lambda: [_obs(), bad_thunk, good_thunk, {"no": "pick_key"}], writer="w", now=NOW,
+                             store=store)
+    assert out["status"] == "ok" and out["appended"] == 2 and out["skipped"] == 2
+    assert len(store.inserted) == 2

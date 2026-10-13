@@ -39,8 +39,11 @@ def pick_key(source: str, sport: str, game_pk, market: str, side: str, *, player
     game; each is its own track record). parlay_id comes last because it may itself contain '|'."""
     if source not in SOURCES:
         raise ValueError(f"unknown ledger source: {source!r}")
+    for name, part in (("market", market), ("side", side)):
+        if "|" in str(part):
+            raise ValueError(f"{name} must not contain '|': {part!r}")
     mv = (model_version or "") if source == "model_game" else ""
-    return "|".join([source, str(sport), str(game_pk), str(market), str(side),
+    return "|".join([source, str(sport), str(int(game_pk)), str(market), str(side),
                      "" if player_id is None else str(player_id), mv, parlay_id or ""])
 
 
@@ -106,7 +109,12 @@ def plan_appends(candidates: list[dict], last_by_key: dict[str, dict], *, now, w
     and neither is one with no usable commence_time."""
     now = as_utc(now)
     counts: Counter = Counter()
-    by_key = {c["pick_key"]: c for c in candidates}
+    by_key: dict[str, dict] = {}
+    for c in candidates:
+        try:
+            by_key[c["pick_key"]] = c
+        except (KeyError, TypeError):          # one malformed candidate must not sink the batch
+            counts["skipped"] += 1
     rows: list[dict] = []
     for key, cand in by_key.items():
         kick = as_utc(cand.get("commence_time"))

@@ -46,6 +46,16 @@ def test_pick_key_includes_model_version_only_for_model_game():
     assert _obs(model_version="props-sim-v1")["pick_key"] == _obs(model_version="props-sim-v2")["pick_key"]
 
 
+def test_pick_key_normalises_integral_game_pks():
+    assert _obs(game_pk=401.0)["pick_key"] == _obs(game_pk=401)["pick_key"] == _obs(game_pk="401")["pick_key"]
+
+
+@pytest.mark.parametrize("change", [dict(market="a|b"), dict(side="over|x")])
+def test_pick_key_rejects_a_pipe_in_market_or_side(change):
+    with pytest.raises(ValueError):
+        _obs(**change)
+
+
 def test_pick_key_rejects_an_unknown_source_and_observation_an_unknown_ref_kind():
     with pytest.raises(ValueError):
         core.pick_key("desk", "nfl", 1, "spread", "home")
@@ -122,3 +132,8 @@ def test_string_kickoffs_and_naive_datetimes_are_read_as_utc():
     rows, _ = plan([_obs(commence_time="2026-10-15T17:00:00Z"),
                     _obs(player_id="9", commence_time=datetime(2026, 10, 15, 17))])
     assert {r["commence_time"] for r in rows} == {datetime(2026, 10, 15, 17, tzinfo=timezone.utc)}
+
+
+def test_a_malformed_candidate_is_counted_as_skipped_and_the_rest_still_plan():
+    rows, counts = plan([_obs(), {"no": "pick_key"}, None])
+    assert len(rows) == 1 and counts == {"first": 1, "skipped": 2}
