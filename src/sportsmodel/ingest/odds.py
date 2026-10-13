@@ -110,6 +110,16 @@ def fetch_game_odds(cfg: "SportConfig | None" = None, regions: str = "us,eu") ->
     })
 
 
+def fetch_bookmaker_odds(cfg: "SportConfig | None", bookmakers: list[str], markets: list[str]) -> list[dict]:
+    """Game-line odds for exactly the named bookmakers (the early-week monitor), using the `bookmakers` parameter in
+    place of `regions`. Ten or fewer bookmakers bill as ONE region, so the cost is one credit per market."""
+    cfg = cfg or _mlb()
+    return _get(f"/sports/{cfg.odds_sport}/odds", {
+        "bookmakers": ",".join(bookmakers), "markets": ",".join(markets),
+        "oddsFormat": "american", "dateFormat": "iso",
+    })
+
+
 def fetch_event_props(event_id: str, markets: list[str], cfg: "SportConfig | None" = None, regions: str = "us") -> dict:
     cfg = cfg or _mlb()
     return _get(f"/sports/{cfg.odds_sport}/events/{event_id}/odds", {
