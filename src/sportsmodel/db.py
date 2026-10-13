@@ -1307,3 +1307,74 @@ def upsert_pick_ledger_results(rows: list[dict]) -> int:
         cur.executemany(sql, vals)
         conn.commit()
     return len(vals)
+
+
+# ------------------------------------------------------------------ early-week monitor
+# db/migration_early_tickets.sql. early_tickets is APPEND-ONLY (trigger + revoked privileges): the only write helper for
+# it is insert_early_tickets. early_ticket_results is an ordinary upsert table written by the daily grader.
+EARLY_COLUMNS: dict[str, list[str]] = {
+    "early_tickets": ["sport", "game_pk", "market", "side", "book", "book_line", "price", "pinnacle_line",
+                      "pinnacle_fair", "p_win", "p_push", "p_loss", "ev", "observed_at", "commence_time",
+                      "hours_to_kick", "poll_run_id"],
+    "early_ticket_results": ["ticket_id", "sport", "game_pk", "market", "side", "book", "book_line", "price",
+                             "observed_at", "commence_time", "result", "units", "close_kind", "close_fair",
+                             "close_line", "close_minutes_to_kick", "close_ev", "beat_close", "clv_pts",
+                             "available_next_poll"],
+}
+EARLY_KEYS: dict[str, tuple[str, ...]] = {
+    "early_tickets": ("sport", "game_pk", "market", "side"), "early_ticket_results": ("ticket_id",),
+}
+
+
+def missing_early_tables(tables: list[str] | None = None, *, connect_timeout: int | None = None,
+                         statement_timeout_ms: int | None = None) -> list[str]:
+    """The early-monitor tables (default: both) that do not exist in `public` yet, in the order given. Lets the
+    monitor jobs warn and exit 0 until db/migration_early_tickets.sql has been run (same guard as the ledger)."""
+    tables = list(EARLY_COLUMNS) if tables is None else tables
+    unknown = [t for t in tables if t not in EARLY_COLUMNS]
+    if unknown:
+        raise KeyError(f"not an early-monitor table: {unknown}")
+    return _missing_public_tables(tables, connect_timeout, statement_timeout_ms)
+
+
+def insert_early_tickets(rows: list[dict], *, connect_timeout: int | None = None,
+                         statement_timeout_ms: int | None = None) -> int:
+    """Append paper tickets. INSERT only (the table refuses anything else); a ticket for a (sport, game_pk, market,
+    side) that already has one is a no-op via ON CONFLICT DO NOTHING. Returns the number of rows ATTEMPTED."""
+    if not rows:
+        return 0
+    cols, key = EARLY_COLUMNS["early_tickets"], EARLY_KEYS["early_tickets"]
+    sql = (f"INSERT INTO early_tickets ({', '.join(cols)}) VALUES ({', '.join(['%s'] * len(cols))}) "
+           f"ON CONFLICT ({', '.join(key)}) DO NOTHING")
+    vals = [tuple(r.get(c) for c in cols) for r in rows]
+    with _pg(connect_timeout) as conn, conn.cursor() as cur:
+        _limit_statements(cur, statement_timeout_ms)
+        cur.executemany(sql, vals)
+        conn.commit()
+    return len(vals)
+
+
+def upsert_early_ticket_results(rows: list[dict]) -> int:
+    """Upsert graded tickets; idempotent on ticket_id (a re-grade overwrites in place). Returns rows ATTEMPTED."""
+    if not rows:
+        return 0
+    cols, key = EARLY_COLUMNS["early_ticket_results"], EARLY_KEYS["early_ticket_results"]
+    sets = ", ".join(f"{c} = EXCLUDED.{c}" for c in cols if c not in key)
+    sql = (f"INSERT INTO early_ticket_results ({', '.join(cols)}) VALUES ({', '.join(['%s'] * len(cols))}) "
+           f"ON CONFLICT ({', '.join(key)}) DO UPDATE SET {sets}, graded_at = now()")
+    vals = [tuple(r.get(c) for c in cols) for r in rows]
+    with get_postgres() as conn, conn.cursor() as cur:
+        cur.executemany(sql, vals)
+        conn.commit()
+    return len(vals)
+
+
+def early_ticket_keys(sport: str, after, *, connect_timeout: int | None = None,
+                      statement_timeout_ms: int | None = None) -> set[tuple]:
+    """{(sport, game_pk, market, side)} of the tickets already logged for `sport` games kicking off after `after`
+    (the monitor's one-ticket-per-side rule; a game already started can never flag again). Read-only."""
+    with _pg(connect_timeout) as conn, conn.cursor() as cur:
+        _limit_statements(cur, statement_timeout_ms)
+        cur.execute("SELECT sport, game_pk, market, side FROM early_tickets WHERE sport = %s AND commence_time > %s",
+                    (sport, after))
+        return {(r[0], int(r[1]), r[2], r[3]) for r in cur.fetchall()}
