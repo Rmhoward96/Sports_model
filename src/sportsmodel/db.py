@@ -1159,13 +1159,9 @@ def upsert_cfb_quarter_shares(rows: list[dict]) -> int:
     return _upsert_site_panel("cfb_quarter_shares", rows)
 
 
-def missing_site_panel_tables(tables: list[str]) -> list[str]:
-    """The subset of `tables` (keys of SITE_PANEL_COLUMNS) that do not exist in the `public` schema yet, in
-    the order given. Lets the site-panel jobs warn and exit cleanly until db/migration_site_panels.sql has
-    been run. One read-only connection; any connection error propagates (a real outage still fails the job)."""
-    unknown = [t for t in tables if t not in SITE_PANEL_COLUMNS]
-    if unknown:
-        raise KeyError(f"not a site-panel table: {unknown}")
+def _missing_public_tables(tables: list[str]) -> list[str]:
+    """The subset of `tables` that do not exist in the `public` schema, in the order given (one read-only
+    connection, `to_regclass` per table). Any connection error propagates (a real outage still fails the job)."""
     with get_postgres() as conn, conn.cursor() as cur:
         missing = []
         for t in tables:
@@ -1175,5 +1171,107 @@ def missing_site_panel_tables(tables: list[str]) -> list[str]:
     return missing
 
 
+def missing_site_panel_tables(tables: list[str]) -> list[str]:
+    """The subset of `tables` (keys of SITE_PANEL_COLUMNS) that do not exist in the `public` schema yet, in
+    the order given. Lets the site-panel jobs warn and exit cleanly until db/migration_site_panels.sql has
+    been run. One read-only connection; any connection error propagates (a real outage still fails the job)."""
+    unknown = [t for t in tables if t not in SITE_PANEL_COLUMNS]
+    if unknown:
+        raise KeyError(f"not a site-panel table: {unknown}")
+    return _missing_public_tables(tables)
+
+
 def site_panel_tables_ready(tables: list[str]) -> bool:
     return not missing_site_panel_tables(tables)
+
+
+# ------------------------------------------------------------------ pick ledger
+# db/migration_pick_ledger.sql. pick_ledger is APPEND-ONLY (trigger + revoked privileges): the only write
+# helper for it is insert_pick_ledger. close_capture / pick_ledger_results are ordinary upsert tables.
+LEDGER_COLUMNS: dict[str, list[str]] = {
+    "pick_ledger": ["pick_key", "source", "sport", "game_pk", "market", "side", "line", "player_id",
+                    "player_name", "parlay_id", "model_version", "model_prob", "best_price", "best_book",
+                    "ref_prob", "ref_kind", "ref_books", "ev_pct", "observed_at", "commence_time",
+                    "minutes_to_kick", "writer", "writer_run"],
+    "close_capture": ["sport", "game_pk", "event_id", "kind", "captured_at", "commence_time",
+                      "minutes_to_kick", "credits_used", "status", "regions", "markets"],
+    "pick_ledger_results": ["pick_key", "basis", "ledger_id", "source", "sport", "game_pk", "market", "side",
+                            "line", "player_id", "player_name", "best_price", "observed_at", "commence_time",
+                            "minutes_to_kick", "result", "units_at_pick", "close_kind", "close_fair_prob",
+                            "close_line", "close_same_line", "close_books", "close_minutes_to_kick",
+                            "clv_prob", "clv_pts", "beat_close"],
+}
+LEDGER_KEYS: dict[str, tuple[str, ...]] = {
+    "pick_ledger": ("pick_key", "observed_at"), "close_capture": ("sport", "game_pk", "kind"),
+    "pick_ledger_results": ("pick_key", "basis"),
+}
+# What the append rule needs from a key's most recent row.
+LEDGER_LAST_COLS = ["pick_key", "best_price", "line", "model_prob", "ref_prob", "observed_at"]
+
+
+def missing_ledger_tables(tables: list[str] | None = None) -> list[str]:
+    """The ledger tables (default: all three) that do not exist in `public` yet, in the order given. Lets the
+    ledger jobs warn and exit 0 until db/migration_pick_ledger.sql has been run (same guard as the site panels)."""
+    tables = list(LEDGER_COLUMNS) if tables is None else tables
+    unknown = [t for t in tables if t not in LEDGER_COLUMNS]
+    if unknown:
+        raise KeyError(f"not a ledger table: {unknown}")
+    return _missing_public_tables(tables)
+
+
+def insert_pick_ledger(rows: list[dict]) -> int:
+    """Append observations to `pick_ledger`. INSERT only (the table refuses anything else); a retried
+    observation (same pick_key + observed_at) is a no-op via ON CONFLICT DO NOTHING."""
+    if not rows:
+        return 0
+    cols = LEDGER_COLUMNS["pick_ledger"]
+    sql = (f"INSERT INTO pick_ledger ({', '.join(cols)}) VALUES ({', '.join(['%s'] * len(cols))}) "
+           f"ON CONFLICT (pick_key, observed_at) DO NOTHING")
+    vals = [tuple(r.get(c) for c in cols) for r in rows]
+    with get_postgres() as conn, conn.cursor() as cur:
+        cur.executemany(sql, vals)
+        conn.commit()
+    return len(vals)
+
+
+def latest_pick_ledger_rows(pick_keys: list[str]) -> dict[str, dict]:
+    """{pick_key: its most recent row (LEDGER_LAST_COLS)} for the keys that have one. Read-only."""
+    if not pick_keys:
+        return {}
+    with get_postgres() as conn, conn.cursor() as cur:
+        cur.execute(
+            f"SELECT DISTINCT ON (pick_key) {', '.join(LEDGER_LAST_COLS)} FROM pick_ledger "
+            "WHERE pick_key = ANY(%s) ORDER BY pick_key, observed_at DESC, id DESC", (list(pick_keys),))
+        return {r[0]: dict(zip(LEDGER_LAST_COLS, r)) for r in cur.fetchall()}
+
+
+def upsert_close_capture(rows: list[dict]) -> int:
+    """Record close captures. Idempotent on (sport, game_pk, kind); an existing 'ok' or 'empty' row is final and
+    NEVER replaced (an event is captured once), while a 'failed' row is superseded by the next attempt."""
+    if not rows:
+        return 0
+    cols, key = LEDGER_COLUMNS["close_capture"], LEDGER_KEYS["close_capture"]
+    sets = ", ".join(f"{c} = EXCLUDED.{c}" for c in cols if c not in key)
+    sql = (f"INSERT INTO close_capture ({', '.join(cols)}) VALUES ({', '.join(['%s'] * len(cols))}) "
+           f"ON CONFLICT ({', '.join(key)}) DO UPDATE SET {sets}, updated_at = now() "
+           f"WHERE close_capture.status = 'failed'")
+    vals = [tuple(r.get(c) for c in cols) for r in rows]
+    with get_postgres() as conn, conn.cursor() as cur:
+        cur.executemany(sql, vals)
+        conn.commit()
+    return len(vals)
+
+
+def upsert_pick_ledger_results(rows: list[dict]) -> int:
+    """Upsert graded ledger results; idempotent on (pick_key, basis) (a re-grade overwrites in place)."""
+    if not rows:
+        return 0
+    cols, key = LEDGER_COLUMNS["pick_ledger_results"], LEDGER_KEYS["pick_ledger_results"]
+    sets = ", ".join(f"{c} = EXCLUDED.{c}" for c in cols if c not in key)
+    sql = (f"INSERT INTO pick_ledger_results ({', '.join(cols)}) VALUES ({', '.join(['%s'] * len(cols))}) "
+           f"ON CONFLICT ({', '.join(key)}) DO UPDATE SET {sets}, graded_at = now()")
+    vals = [tuple(r.get(c) for c in cols) for r in rows]
+    with get_postgres() as conn, conn.cursor() as cur:
+        cur.executemany(sql, vals)
+        conn.commit()
+    return len(vals)
