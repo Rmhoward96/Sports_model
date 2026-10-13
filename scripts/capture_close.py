@@ -2,7 +2,9 @@
 
 Run every ~10 minutes during game windows (.github/workflows/capture-close.yml). Each run:
 
-  1. Idle check, DB only: no kickoff known within the next hour -> exit with ZERO network calls.
+  1. Idle check, DB only: no kickoff known within the next hour -> exit with ZERO network calls. The kickoffs come from
+     predictions_current, pick_ledger and (once its migration has run) early_tickets, so every game the early-week
+     monitor ticketed gets its pre-kick line capture too.
   2. For each sport with a nearby kickoff: fetch the live schedule (ESPN / StatsAPI, free), keep the games kicking
      off in WINDOW_MIN..WINDOW_MAX minutes that have no final (ok / empty) close_capture yet. None -> no Odds API call.
   3. Free Odds API events call: reads x-requests-remaining for the budget guard (< 600 skips props, < 200
@@ -57,6 +59,8 @@ class Deps:
     last_cost: Callable[[], Any]
     store_snapshots: Callable[[list[dict]], int]
     store_captures: Callable[[list[dict]], int]
+    # games holding an early-week monitor ticket (same shape as load_candidates); none until its migration has run
+    load_early_candidates: Callable[[datetime, datetime], list[dict]] = lambda now, end: []
 
 
 def _warn(msg: str) -> None:
@@ -192,7 +196,8 @@ def run_capture(now: datetime, deps: Deps, *, prop_regions: str = close.DEFAULT_
     if gone:
         _warn(f"table {gone[0]} missing — run db/migration_pick_ledger.sql")
         return {"status": "no_table"}
-    candidates = deps.load_candidates(now, now + timedelta(minutes=close.PREFILTER_MIN))
+    horizon = now + timedelta(minutes=close.PREFILTER_MIN)
+    candidates = deps.load_candidates(now, horizon) + deps.load_early_candidates(now, horizon)
     live = close.prefilter_sports(candidates, now)
     if not live:
         return {"status": "idle"}
@@ -237,6 +242,15 @@ def _db_deps() -> Deps:
             out.setdefault(pk, set()).add(market)
         return out
 
+    def early_candidates(now, end):
+        # Games with an early-week monitor ticket may have no model prediction and no ledger pick (a CFB total the model
+        # does not cover), so they are added here. Skipped until db/migration_early_tickets.sql has run.
+        if db.missing_early_tables(["early_tickets"]):
+            return []
+        rows = q("SELECT DISTINCT sport, game_pk, commence_time FROM early_tickets "
+                 "WHERE commence_time > %s AND commence_time <= %s", (now, end))
+        return [{"sport": s, "game_pk": pk, "commence_time": c} for s, pk, c in rows]
+
     return Deps(
         missing_tables=lambda: db.missing_ledger_tables(["pick_ledger", "close_capture"]),
         load_candidates=candidates, load_captured=captured, load_prop_markets=prop_markets,
@@ -245,7 +259,8 @@ def _db_deps() -> Deps:
         fetch_events=odds.fetch_events, fetch_game_odds=odds.fetch_game_odds,
         fetch_event_props=lambda eid, markets, cfg, regions: odds.fetch_event_props(eid, markets, cfg, regions=regions),
         remaining=lambda: odds.last_requests_remaining, last_cost=lambda: odds.last_requests_last,
-        store_snapshots=db.upsert_odds_snapshot, store_captures=db.upsert_close_capture)
+        store_snapshots=db.upsert_odds_snapshot, store_captures=db.upsert_close_capture,
+        load_early_candidates=early_candidates)
 
 
 def _parse_now(value: str) -> datetime:
