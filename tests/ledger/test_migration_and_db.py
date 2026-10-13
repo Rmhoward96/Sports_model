@@ -40,6 +40,8 @@ def test_pick_ledger_is_append_only_by_trigger_for_update_delete_and_truncate():
     assert re.search(r"CREATE TRIGGER pick_ledger_no_truncate\s+BEFORE TRUNCATE ON pick_ledger\s+"
                      r"FOR EACH STATEMENT EXECUTE FUNCTION pick_ledger_append_only\(\);", MIGRATION)
     assert MIGRATION.count("DROP TRIGGER IF EXISTS") == 2          # re-runnable
+    assert re.search(r"CREATE OR REPLACE FUNCTION pick_ledger_append_only\(\) RETURNS trigger\s+"
+                     r"LANGUAGE plpgsql SET search_path = ''", MIGRATION)   # Supabase function-search-path advisor
 
 
 def test_rls_select_policy_and_write_revokes_for_every_table():
@@ -164,6 +166,16 @@ def test_close_capture_upsert_only_supersedes_a_failed_row(monkeypatch):
     assert "ON CONFLICT (sport, game_pk, kind) DO UPDATE SET" in sql
     assert sql.rstrip().endswith("WHERE close_capture.status = 'failed'")
     assert "status = EXCLUDED.status" in sql and "sport = EXCLUDED.sport" not in sql
+
+
+@pytest.mark.parametrize("given", [{}, {"credits_used": None}, {"credits_used": 3}])
+def test_close_capture_credits_used_defaults_to_zero_not_null(monkeypatch, given):
+    sink = {}
+    monkeypatch.setattr(db, "get_postgres", lambda: FakeConn(sink))
+    row = {"sport": "nfl", "game_pk": 1, "kind": "lines"} | given
+    db.upsert_close_capture([row])
+    cols = db.LEDGER_COLUMNS["close_capture"]
+    assert sink["rows"][0][cols.index("credits_used")] == (given.get("credits_used") or 0)
 
 
 def test_results_upsert_keys_on_pick_key_and_basis(monkeypatch):

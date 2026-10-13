@@ -1221,7 +1221,8 @@ def missing_ledger_tables(tables: list[str] | None = None) -> list[str]:
 
 def insert_pick_ledger(rows: list[dict]) -> int:
     """Append observations to `pick_ledger`. INSERT only (the table refuses anything else); a retried
-    observation (same pick_key + observed_at) is a no-op via ON CONFLICT DO NOTHING."""
+    observation (same pick_key + observed_at) is a no-op via ON CONFLICT DO NOTHING. Returns the number of rows
+    ATTEMPTED, not the number actually written (conflicting rows are skipped silently)."""
     if not rows:
         return 0
     cols = LEDGER_COLUMNS["pick_ledger"]
@@ -1247,7 +1248,8 @@ def latest_pick_ledger_rows(pick_keys: list[str]) -> dict[str, dict]:
 
 def upsert_close_capture(rows: list[dict]) -> int:
     """Record close captures. Idempotent on (sport, game_pk, kind); an existing 'ok' or 'empty' row is final and
-    NEVER replaced (an event is captured once), while a 'failed' row is superseded by the next attempt."""
+    NEVER replaced (an event is captured once), while a 'failed' row is superseded by the next attempt. Returns the number of rows ATTEMPTED, not the number
+    actually written. `credits_used` is NOT NULL DEFAULT 0 in the table, so a missing/None value is sent as 0."""
     if not rows:
         return 0
     cols, key = LEDGER_COLUMNS["close_capture"], LEDGER_KEYS["close_capture"]
@@ -1255,7 +1257,7 @@ def upsert_close_capture(rows: list[dict]) -> int:
     sql = (f"INSERT INTO close_capture ({', '.join(cols)}) VALUES ({', '.join(['%s'] * len(cols))}) "
            f"ON CONFLICT ({', '.join(key)}) DO UPDATE SET {sets}, updated_at = now() "
            f"WHERE close_capture.status = 'failed'")
-    vals = [tuple(r.get(c) for c in cols) for r in rows]
+    vals = [tuple((r.get(c) or 0) if c == "credits_used" else r.get(c) for c in cols) for r in rows]
     with get_postgres() as conn, conn.cursor() as cur:
         cur.executemany(sql, vals)
         conn.commit()
@@ -1263,7 +1265,8 @@ def upsert_close_capture(rows: list[dict]) -> int:
 
 
 def upsert_pick_ledger_results(rows: list[dict]) -> int:
-    """Upsert graded ledger results; idempotent on (pick_key, basis) (a re-grade overwrites in place)."""
+    """Upsert graded ledger results; idempotent on (pick_key, basis) (a re-grade overwrites in place).
+    Returns the number of rows ATTEMPTED, not the number actually written."""
     if not rows:
         return 0
     cols, key = LEDGER_COLUMNS["pick_ledger_results"], LEDGER_KEYS["pick_ledger_results"]

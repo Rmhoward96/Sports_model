@@ -48,7 +48,7 @@ CREATE INDEX IF NOT EXISTS pick_ledger_game_idx ON pick_ledger (sport, game_pk);
 CREATE UNIQUE INDEX IF NOT EXISTS pick_ledger_key_observed_idx ON pick_ledger (pick_key, observed_at);
 
 CREATE OR REPLACE FUNCTION pick_ledger_append_only() RETURNS trigger
-LANGUAGE plpgsql AS $$
+LANGUAGE plpgsql SET search_path = '' AS $$
 BEGIN
   RAISE EXCEPTION 'pick_ledger is append-only: % is not allowed', TG_OP
     USING ERRCODE = 'restrict_violation';
