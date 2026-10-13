@@ -51,6 +51,8 @@ class Fake:
         self.line_events = over.pop("line_events", [])
         self.props_payload = over.pop("props_payload", {"bookmakers": []})
         self.fail = over.pop("fail", set())
+        self.fail_event = over.pop("fail_event", {})              # Odds API event id -> exception to raise on props
+        self.store_log = []
         self.missing = over.pop("missing", [])
         assert not over, over
 
@@ -66,6 +68,8 @@ class Fake:
 
         def fetch_event_props(eid, markets, cfg, regions):
             self._log("props", eid, tuple(markets), regions)
+            if eid in self.fail_event:
+                raise self.fail_event[eid]
             if "props" in self.fail:
                 raise RuntimeError("odds api 500")
             return self.props_payload
@@ -74,14 +78,14 @@ class Fake:
             missing_tables=lambda: self.missing,
             load_candidates=lambda now, end: self.candidates,
             load_captured=lambda pks: self.captured,
-            load_prop_markets=lambda pks: self.prop_markets,
+            load_prop_markets=lambda sport, pks: self.prop_markets,
             fetch_schedule=lambda sport: self._log("schedule", sport) or self.schedule.get(sport, []),
             match=cc.ingest_odds._matcher_for,
             fetch_events=lambda cfg: self._log("events", cfg.key) or self.events,
             fetch_game_odds=fetch_game_odds, fetch_event_props=fetch_event_props,
             remaining=lambda: self.remaining_value, last_cost=lambda: self.cost,
-            store_snapshots=lambda rows: self.stored_snaps.extend(rows) or len(rows),
-            store_captures=lambda rows: self.stored_caps.extend(rows) or len(rows))
+            store_snapshots=lambda rows: self.store_log.append("snaps") or self.stored_snaps.extend(rows) or len(rows),
+            store_captures=lambda rows: self.store_log.append("caps") or self.stored_caps.extend(rows) or len(rows))
 
     def network_calls(self):
         return [c for c in self.calls if c[0] in ("events", "lines", "props", "schedule")]
@@ -240,6 +244,97 @@ def test_cfb_has_no_props_and_never_asks_for_the_ledger():
     assert [c[0] for c in fake.calls if c[0] in ("lines", "props")] == ["lines"]
 
 
+# ---- incremental storage ----------------------------------------------------------------------------
+
+def _three_prop_games(**kw):
+    games = [(i, 10 + i, f"H{i}", f"A{i}") for i in (1, 2, 3)]
+    base = dict(candidates=[cand("nfl", pk, m) for pk, m, _, _ in games],
+                schedule={"nfl": [game(pk, m, h, a) for pk, m, h, a in games]},
+                events=[event(f"ev{pk}", m, h, a) for pk, m, h, a in games],
+                line_events=[odds_event(f"ev{pk}", m, h, a) for pk, m, h, a in games],
+                prop_markets={pk: {"rec_yds"} for pk, *_ in games}, props_payload=PROP_PAYLOAD, cost="2")
+    return Fake(**{**base, **kw})
+
+
+def test_storage_order_is_snapshots_then_captures_after_the_lines_call_and_after_each_props_event():
+    fake = _three_prop_games()
+    run(fake)
+    assert fake.store_log == ["snaps", "caps"] * 4                  # lines, then props for events 1-3
+
+
+def test_snapshots_are_stored_before_their_capture_rows():
+    seen = []
+    fake = _nfl_fake(prop_markets={1: {"rec_yds"}}, props_payload=PROP_PAYLOAD)
+    deps = fake.deps()
+    deps.store_snapshots = lambda rows: seen.append(("snaps", len(rows))) or len(rows)
+    deps.store_captures = lambda rows: seen.append(("caps", [r["status"] for r in rows])) or len(rows)
+    cc.run_capture(NOW, deps)
+    assert [k for k, _ in seen] == ["snaps", "caps", "snaps", "caps"]
+
+
+def test_an_error_in_the_third_props_event_keeps_the_lines_and_events_one_and_two():
+    fake = _three_prop_games(fail_event={"ev3": RuntimeError("odds api 500")})
+    out = run(fake)
+    got = {(c["game_pk"], c["kind"]): c["status"] for c in fake.stored_caps}
+    assert got == {(1, "lines"): "ok", (2, "lines"): "ok", (3, "lines"): "ok",
+                   (1, "props"): "ok", (2, "props"): "ok", (3, "props"): "failed"}
+    assert out["credits"] == 2 + 2 + 2                  # lines (header cost 2) + props 1 and 2
+
+
+def test_an_interrupt_in_the_third_props_event_still_leaves_everything_bought_so_far_stored():
+    fake = _three_prop_games(fail_event={"ev3": KeyboardInterrupt()})
+    with pytest.raises(KeyboardInterrupt):
+        run(fake)
+    got = {(c["game_pk"], c["kind"]) for c in fake.stored_caps}
+    assert got == {(1, "lines"), (2, "lines"), (3, "lines"), (1, "props"), (2, "props")}
+    assert {r["game_pk"] for r in fake.stored_snaps if r["player_name"]} == {1, 2}
+
+
+def test_a_failed_lines_row_is_stored_immediately_even_if_props_then_raise():
+    fake = _three_prop_games(fail={"lines"}, fail_event={"ev1": KeyboardInterrupt()})
+    with pytest.raises(KeyboardInterrupt):
+        run(fake)
+    assert {(c["game_pk"], c["kind"], c["status"]) for c in fake.stored_caps} == {
+        (1, "lines", "failed"), (2, "lines", "failed"), (3, "lines", "failed")}
+
+
+def test_props_targets_with_only_unmapped_markets_are_recorded_empty_and_never_retried():
+    fake = _nfl_fake(prop_markets={1: {"nonsense"}}, captured={("nfl", 1, "lines")})
+    out = run(fake)
+    assert out["rows"] == [("nfl", 1, "props", "empty")] and not [c for c in fake.calls if c[0] in ("lines", "props")]
+    (cap,) = fake.stored_caps
+    assert cap["credits_used"] == 0 and cap["markets"] == ""
+    # 'empty' is final: the next run selects nothing
+    fake2 = _nfl_fake(prop_markets={1: {"nonsense"}}, captured={("nfl", 1, "lines"), ("nfl", 1, "props")})
+    assert run(fake2)["rows"] == []
+
+
+def test_mapped_and_unmapped_props_targets_mix():
+    fake = _three_prop_games(prop_markets={1: {"rec_yds"}, 2: {"nonsense"}}, captured={("nfl", 3, "lines")})
+    out = run(fake)
+    got = {(pk, k): s for _, pk, k, s in out["rows"]}
+    assert got[(1, "props")] == "ok" and got[(2, "props")] == "empty"
+    assert [c[1] for c in fake.calls if c[0] == "props"] == ["ev1"]
+
+
+# ---- the as-of time ----------------------------------------------------------------------------------
+
+def test_naive_now_is_read_as_utc():
+    assert cc._parse_now("2026-10-18T16:40:00") == NOW
+    assert cc._parse_now("2026-10-18T16:40:00Z") == NOW
+    assert cc._parse_now("2026-10-18T12:40:00-04:00") == NOW
+    assert cc._parse_now("2026-10-18T16:40:00").tzinfo is not None
+
+
+def test_main_passes_a_utc_aware_now_to_the_run(monkeypatch):
+    seen = {}
+    monkeypatch.setenv("DATABASE_URL", "postgres://unused")
+    monkeypatch.setattr(cc, "_db_deps", lambda: object())
+    monkeypatch.setattr(cc, "run_capture", lambda now, deps, **kw: seen.update(now=now, **kw) or {"status": "idle"})
+    assert cc.main(["--dry-run", "--now", "2026-10-18T16:40:00"]) == 0
+    assert seen["now"] == NOW and seen["dry_run"] is True
+
+
 # ---- budget guard ------------------------------------------------------------------------------------
 
 def test_below_three_thousand_credits_skips_props_but_keeps_lines(capsys):
@@ -315,8 +410,11 @@ def test_default_db_queries(monkeypatch):
     deps = cc._db_deps()
     deps.load_candidates(NOW, NOW + timedelta(hours=1))
     deps.load_captured([1, 2])
-    deps.load_prop_markets([1])
+    deps.load_prop_markets("nfl", [1])
     sqls = [s for s, _ in seen]
     assert "FROM predictions_current" in sqls[0] and "commence_time > %s AND commence_time <= %s" in sqls[0]
+    assert "UNION" in sqls[0] and "SELECT DISTINCT sport, game_pk, commence_time FROM pick_ledger" in sqls[0]
+    assert seen[0][1] == (NOW, NOW + timedelta(hours=1), NOW, NOW + timedelta(hours=1))
     assert "status IN ('ok', 'empty')" in sqls[1] and seen[1][1] == ([1, 2],)
     assert "FROM pick_ledger" in sqls[2] and "source IN ('ev_prop', 'parlay_leg')" in sqls[2]
+    assert "sport = %s" in sqls[2] and seen[2][1] == ("nfl", [1])

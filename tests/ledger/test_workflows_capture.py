@@ -90,6 +90,9 @@ def test_seasons_football_aug_to_feb_baseball_mar_to_nov(crons):
     ("Saturday NFL in December", utc(2026, 12, 19, 21, 30), True),
     ("Bowl game in January", utc(2027, 1, 2, 1, 0), True),
     ("Super Bowl Sunday", utc(2027, 2, 14, 23, 30), True),
+    ("Wednesday bowl-week kickoff 8pm ET", utc(2026, 12, 24, 1, 0), True),            # Thu 01:00 UTC
+    ("Tuesday MACtion 7pm ET", utc(2026, 11, 4, 0, 0), True),                         # Wed 00:00 UTC
+    ("Thursday MACtion noon ET", utc(2026, 11, 5, 16, 0), True),
     ("MLB day game", utc(2026, 10, 21, 17, 8), True),
     ("MLB west-coast night game", utc(2026, 10, 22, 2, 10), True),
     ("MLB 1:05pm ET Sunday in April", utc(2027, 4, 11, 17, 5), True),
@@ -99,9 +102,15 @@ def test_every_kickoff_has_a_run_inside_its_capture_window(crons, label, kick, m
     assert any_fire_in(crons, lo, hi), label
 
 
-def test_midweek_and_the_offseason_never_fire(crons):
+def test_football_covers_every_weekday_in_season_so_midweek_bowls_and_maction_are_caught(crons):
+    football = crons[:2]
+    for day in range(19, 26):                                    # a full Mon-Sun week of October
+        assert any_fire_in(football, utc(2026, 10, day, 13, 0), utc(2026, 10, day, 23, 59)), day
+        assert any_fire_in(football, utc(2026, 10, day, 0, 0), utc(2026, 10, day, 4, 59)), day
+
+
+def test_the_offseason_never_fires(crons):
     football, baseball = crons[:2], crons[2:]
-    assert not any_fire_in(football, utc(2026, 10, 21, 0, 0), utc(2026, 10, 22, 12, 59))   # Wed 00:00 - Thu 12:59 UTC
     assert not any_fire_in(football, utc(2026, 7, 5, 0, 0), utc(2026, 7, 12, 0, 0))        # football in July
     assert not any_fire_in(baseball, utc(2027, 1, 5, 0, 0), utc(2027, 1, 12, 0, 0))        # baseball in January
     assert not any_fire_in(baseball, utc(2026, 10, 21, 3, 0), utc(2026, 10, 21, 14, 59))   # baseball overnight / morning
@@ -112,7 +121,7 @@ def test_runs_per_week_are_bounded(crons):
     while t < utc(2026, 10, 19, 0, 0):
         n += any(fires(c, t) for c in crons)
         t += timedelta(minutes=1)
-    assert 700 <= n <= 1100          # idle-by-design runs; each exits after one DB read
+    assert 700 <= n <= 1250          # idle-by-design runs (October overlap is the peak); each exits after one DB read
 
 
 def test_dispatch_has_a_dry_run_input():
@@ -132,6 +141,8 @@ def test_job_runs_the_script_with_secrets_regions_and_serialises_runs():
     assert step["env"]["ODDS_API_KEY"] == "${{ secrets.ODDS_API_KEY }}"
     assert step["env"]["CLOSE_PROP_REGIONS"] == "${{ vars.CLOSE_PROP_REGIONS }}"
     assert "'--dry-run'" in step["run"]
+    uv = steps[step_index(steps, lambda st: "setup-uv" in str(st.get("uses", "")))]
+    assert str(uv["with"]["enable-cache"]).lower() == "true"
     assert step_index(steps, runs("uv sync")) < step_index(steps, runs("capture_close.py"))
 
 
