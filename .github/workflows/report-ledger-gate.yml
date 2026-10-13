@@ -1,0 +1,54 @@
+name: report-ledger-gate
+
+# Weekly step-1 gate for the pick ledger: every Tuesday after Monday-night football has finished and been graded,
+# check the weekend that just ended (scripts/report_ledger_gate.py) and commit docs/superpowers/reports/
+# YYYY-MM-DD-ledger-gate.md. Passing needs, for two consecutive football weekends: >= 95% of graded games with a
+# game-lines close captured within 30 minutes of kickoff, >= 90% of graded prop picks with a Pinnacle or >= 3-book
+# close at their exact line, and no ledger row updated or deleted. A miss blocks steps 2-3 of the profit roadmap.
+# Read-only against the database; writes only the markdown report. Tuesday 15:47 UTC, after grade-ledger (14:10).
+on:
+  workflow_dispatch: {}
+  schedule:
+    - cron: "47 15 * * 2"
+
+permissions:
+  contents: write
+
+concurrency:
+  group: report-ledger-gate
+  cancel-in-progress: false
+
+jobs:
+  report:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v5
+      - name: Install uv
+        uses: astral-sh/setup-uv@v10.0.1
+      - name: Sync deps
+        run: uv sync
+      - name: Write the gate report
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+        run: uv run python scripts/report_ledger_gate.py
+      - name: Commit the report
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add docs/superpowers/reports/
+          if git diff --staged --quiet; then
+            echo "no new report"
+            exit 0
+          fi
+          git commit -m "docs(report): pick ledger gate [skip ci]"
+          # other data workflows push to the same branch: rebase onto theirs and retry
+          for attempt in 1 2 3; do
+            if git push; then
+              exit 0
+            fi
+            echo "push rejected (attempt $attempt)"
+            [ "$attempt" -lt 3 ] && git pull --rebase
+          done
+          echo "push failed after 3 attempts" >&2
+          exit 1
