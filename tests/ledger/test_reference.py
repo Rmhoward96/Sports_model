@@ -205,3 +205,56 @@ def test_units_at_pick():
     assert ref.units_at_pick("W", 150) == pytest.approx(1.5)
     assert ref.units_at_pick("L", 150) == -1.0 and ref.units_at_pick("P", -110) == 0.0
     assert ref.units_at_pick("W", None) is None and ref.units_at_pick(None, -110) is None
+
+
+# ---- fix round 1 ---------------------------------------------------------------------------------------
+
+@pytest.mark.parametrize("pick", [
+    {"sport": "nfl", "market": "spread", "side": "home", "line": None, "player_id": None, "player_name": None},
+    {"sport": "nfl", "market": "total", "side": "over", "line": None, "player_id": None, "player_name": None},
+    {"sport": "nfl", "market": "rec_yds", "side": "over", "line": None, "player_id": "00-1", "player_name": "A.J. Brown"},
+])
+def test_a_lineless_non_moneyline_pick_is_missing(pick):
+    rows = []
+    for b in ("pinnacle", "draftkings", "fanduel", "betmgm"):
+        rows += two_way("spread", b, -110, -110, -3.5, 3.5)
+        rows += two_way("total", b, -110, -110, 47.5, 47.5, ("over", "under"))
+        rows += two_way("reception_yds", b, -110, -110, 64.5, 64.5, ("over", "under"), player="A.J. Brown")
+    assert ref.close_reference(pick, rows) == {
+        "close_kind": "missing", "fair_prob": None, "close_line": None, "same_line": None, "books": 0}
+
+
+def test_a_one_legged_caesars_quote_does_not_knock_out_a_complete_williamhill_quote():
+    pick = {"sport": "nfl", "market": "total", "side": "over", "line": 47.5, "player_id": None, "player_name": None}
+    rows = (two_way("total", "draftkings", -110, -110, 47.5, 47.5, ("over", "under"))
+            + two_way("total", "fanduel", -110, -110, 47.5, 47.5, ("over", "under"))
+            + two_way("total", "williamhill_us", -115, -105, 47.5, 47.5, ("over", "under"))
+            + [row("total", "over", "caesars", -110, 47.5)])
+    out = ref.close_reference(pick, rows)
+    assert out["close_kind"] == "us_consensus_novig" and out["books"] == 3
+    assert out["fair_prob"] == pytest.approx(sorted([0.5, 0.5, ref.novig(-115, -105)])[1])
+
+
+def test_caesars_wins_when_both_caesars_slugs_are_complete():
+    pick = {"sport": "nfl", "market": "total", "side": "over", "line": 47.5, "player_id": None, "player_name": None}
+    rows = (two_way("total", "draftkings", -110, -110, 47.5, 47.5, ("over", "under"))
+            + two_way("total", "fanduel", -110, -110, 47.5, 47.5, ("over", "under"))
+            + two_way("total", "williamhill_us", -130, 110, 47.5, 47.5, ("over", "under"))
+            + two_way("total", "caesars", -110, -110, 47.5, 47.5, ("over", "under")))
+    out = ref.close_reference(pick, rows)
+    assert out["books"] == 3 and out["fair_prob"] == pytest.approx(0.5)
+
+
+@pytest.mark.parametrize("market, side, line", [
+    ("spread", "over", -3.5), ("spread", "bogus", -3.5), ("moneyline", "over", None), ("moneyline", None, None),
+    ("total", "home", 40.5), ("total", "away", 40.5), ("total", "bogus", 40.5),
+])
+def test_settle_game_rejects_an_invalid_side(market, side, line):
+    assert ref.settle_game(market, side, line, 7, 40) is None
+
+
+@pytest.mark.parametrize("result, price", [
+    ("X", -110), ("w", -110), ("W", 50), ("W", -99), ("W", 0), ("W", "abc"), ("L", 0), ("P", "abc"), ("L", 99),
+])
+def test_units_at_pick_rejects_bad_inputs(result, price):
+    assert ref.units_at_pick(result, price) is None

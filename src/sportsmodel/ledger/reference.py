@@ -68,16 +68,19 @@ def _book_fair(sides: dict[str, list[tuple]], market: str, side: str, line) -> f
     return None if mine is None or theirs is None else novig(mine, theirs)
 
 
-def _us_books(book_entries: dict) -> dict[str, dict]:
-    """US books deduplicated by display name (williamhill_us and caesars are one book); Pinnacle excluded."""
-    seen, out = set(), {}
-    for book, sides in sorted(book_entries.items()):
+def _us_fairs(book_entries: dict, market: str, side: str, line) -> list[float]:
+    """No-vig probabilities of the US books that quote BOTH legs at the exact line, deduplicated by display
+    name (williamhill_us and caesars are one book; Caesars is kept when both are complete). Pinnacle and
+    offshore books are excluded. A one-legged quote never displaces a complete one."""
+    by_name: dict[str, float] = {}
+    for book in sorted(book_entries, reverse=True):          # 'williamhill_us' first, so 'caesars' overwrites it
         name = MAJOR_BOOKS.get(book)
-        if book == PINNACLE or name is None or name in seen:
+        if book == PINNACLE or name is None:
             continue
-        seen.add(name)
-        out[book] = sides
-    return out
+        fair = _book_fair(book_entries[book], market, side, line)
+        if fair is not None:
+            by_name[name] = fair
+    return list(by_name.values())
 
 
 def close_reference(pick: dict, rows: list[dict]) -> dict:
@@ -92,6 +95,8 @@ def close_reference(pick: dict, rows: list[dict]) -> dict:
     omarket = odds_market(sport, market, is_prop)
     missing = {"close_kind": "missing", "fair_prob": None, "close_line": None, "same_line": None, "books": 0}
     if omarket is None or side not in OTHER_SIDE:
+        return missing
+    if market != "moneyline" and line is None:          # a lineless spread / total / prop matches nothing
         return missing
     player_key = normalize_player_name(pick.get("player_name")) if is_prop else None
     entries = _book_entries(rows, omarket, player_key)
@@ -110,8 +115,7 @@ def close_reference(pick: dict, rows: list[dict]) -> dict:
         if cands:
             pin_line = min(cands, key=lambda lp: abs(float(lp[0]) - float(line)))[0]
 
-    us = _us_books(entries)
-    fairs = [f for f in (_book_fair(s, market, side, line) for s in us.values()) if f is not None]
+    fairs = _us_fairs(entries, market, side, line)
     if len(fairs) >= MIN_CONSENSUS_BOOKS:
         close_line = pin_line if pin_line is not None else line
         return {"close_kind": "us_consensus_novig", "fair_prob": median(fairs), "close_line": close_line,
@@ -156,6 +160,10 @@ def beat_close(prob_clv: float | None, pts_clv: float | None) -> bool | None:
 def settle_game(market: str, side: str, line, margin: float | None, total: float | None) -> str | None:
     """W / L / P for a game-line pick. `margin` = home - away; `line` is the SIDE's own line (spread) or the
     total. None when the inputs needed are missing."""
+    if market in ("moneyline", "spread") and side not in ("home", "away"):
+        return None
+    if market == "total" and side not in ("over", "under"):
+        return None
     if market == "moneyline":
         if margin is None:
             return None
@@ -183,6 +191,12 @@ def settle_prop(side: str, line, actual: float | None) -> str | None:
 
 def units_at_pick(result: str | None, price: int | None) -> float | None:
     """Profit in units for 1 unit staked at `price`."""
-    if result is None or price is None:
+    if result not in ("W", "L", "P") or price is None:
         return None
-    return {"W": decimal_odds(int(price)) - 1.0, "L": -1.0, "P": 0.0}[result]
+    try:
+        p = int(price)
+    except (TypeError, ValueError):
+        return None
+    if abs(p) < 100:
+        return None
+    return {"W": decimal_odds(p) - 1.0, "L": -1.0, "P": 0.0}[result]
