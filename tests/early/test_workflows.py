@@ -93,3 +93,40 @@ def test_grading_runs_daily_at_1420_after_the_other_graders_and_never_spends_cre
     text = (WF / GRADE).read_text()
     assert "git push" not in text and "ODDS_API_KEY" not in text.split("jobs:")[1]
     assert "10 14 * * *" in (WF / "grade-ledger.yml").read_text()                                # after grade-ledger
+
+
+# ---- report-early-tickets.yml --------------------------------------------------------------------------------
+
+def test_report_runs_tuesday_1552_and_commits_only_the_reports_folder():
+    wf = load(REPORT)
+    (cron,) = [c["cron"] for c in wf["on"]["schedule"]]
+    m, h, mon, dow = cron_sets(cron)
+    assert dow == {2} and h == {15} and m == {52}                                                # after grade-early-tickets 14:20
+    assert wf["permissions"] == {"contents": "write"} and "workflow_dispatch" in wf["on"]
+    assert wf["concurrency"]["group"] == "report-early-tickets"
+    (job,) = wf["jobs"].values()
+    steps = steps_of(job)
+    gen = steps[step_index(steps, runs("scripts/report_early_tickets.py"))]
+    assert gen["env"] == {"DATABASE_URL": "${{ secrets.DATABASE_URL }}"}
+    commit = steps[step_index(steps, runs("git commit"))]
+    assert "git add docs/superpowers/reports/\n" in commit["run"] and "[skip ci]" in commit["run"]
+    assert "git add ." not in commit["run"] and "git add -A" not in commit["run"]
+    assert step_index(steps, runs("scripts/report_early_tickets.py")) < step_index(steps, runs("git commit"))
+
+
+def test_only_the_report_workflow_writes_to_git_and_none_sets_the_test_guard():
+    for name in (MONITOR, GRADE):
+        text = (WF / name).read_text()
+        assert "git push" not in text and "git commit" not in text, name
+    for name in (MONITOR, GRADE, REPORT):
+        assert "SM_LEDGER_OFF" not in (WF / name).read_text(), name
+
+
+def test_report_job_has_a_timeout_and_no_expression_in_any_run_script():
+    wf = load(REPORT)
+    (job,) = wf["jobs"].values()
+    assert str(job["timeout-minutes"]) == "10"
+    assert all("${{" not in st.get("run", "") for st in steps_of(job))
+    steps = steps_of(job)
+    assert step_index(steps, runs("uv sync")) < step_index(steps, runs("report_early_tickets.py"))
+    assert "ODDS_API_KEY" not in (WF / REPORT).read_text().split("jobs:")[1]                      # the report spends no credits
