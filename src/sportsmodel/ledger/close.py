@@ -16,8 +16,10 @@ from ..serving.props_ev import MLB_SIM_TO_ODDS_MARKET, SIM_TO_ODDS_MARKET
 WINDOW_MIN = 5
 WINDOW_MAX = 25
 PREFILTER_MIN = 60               # DB look-ahead that decides whether a run is idle (no network at all)
-BUDGET_PROPS_FLOOR = 3000        # remaining credits below this: skip prop captures
-BUDGET_ALL_FLOOR = 1000          # remaining credits below this: skip everything
+# The close capture is the highest-priority use of Odds API credits, so its floors sit BELOW the regular
+# ingest's (odds.INGEST_PROPS_FLOOR=2500, odds.INGEST_LINES_FLOOR=800): the regular pulls run out first.
+BUDGET_PROPS_FLOOR = 600         # remaining credits below this: skip prop captures
+BUDGET_ALL_FLOOR = 200           # remaining credits below this: skip everything
 LINES_REGIONS = "us,eu"
 DEFAULT_PROP_REGIONS = "us,eu"
 SIM_TO_ODDS_BY_SPORT = {"nfl": SIM_TO_ODDS_MARKET, "mlb": MLB_SIM_TO_ODDS_MARKET}
@@ -98,7 +100,7 @@ class BudgetDecision:
 
 
 def budget_decision(remaining: int | None) -> BudgetDecision:
-    """< 1,000 credits remaining: skip everything; < 3,000: skip props, keep game lines; otherwise capture all.
+    """< 200 credits remaining: skip everything; < 600: skip props, keep game lines; otherwise capture all.
     An unreadable header fails open (the capture is the point) but says so."""
     if remaining is None:
         return BudgetDecision(True, True, "x-requests-remaining unavailable; capturing without a budget check")

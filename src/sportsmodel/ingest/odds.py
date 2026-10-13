@@ -50,6 +50,28 @@ LIVE_PROP_MARKET_MAP = {k: v for k, v in PROP_MARKET_MAP.items()
 last_requests_remaining: str | None = None
 last_requests_last: str | None = None
 
+# Credit guard for the REGULAR ingest (scripts/ingest_odds.py). Both floors sit above the pre-kick close
+# capture's (ledger.close.BUDGET_PROPS_FLOOR=600 / BUDGET_ALL_FLOOR=200) so the regular pulls run out first.
+INGEST_PROPS_FLOOR = 2500   # remaining credits below this: skip player-prop pulls
+INGEST_LINES_FLOOR = 800    # remaining credits below this: also skip further game-line pulls
+
+
+def ingest_budget_decision(remaining: Any) -> tuple[bool, bool, str | None]:
+    """(lines_ok, props_ok, reason) for the regular ingest given `x-requests-remaining`.
+    < INGEST_LINES_FLOOR: nothing; < INGEST_PROPS_FLOOR: game lines only; otherwise everything.
+    Unknown or unparsable remaining -> no guard (current behaviour), reason None. Pure."""
+    try:
+        credits = int(float(remaining))
+    except (TypeError, ValueError, OverflowError):
+        return True, True, None
+    if credits < INGEST_LINES_FLOOR:
+        return False, False, (f"{credits} Odds API credits left (< {INGEST_LINES_FLOOR}): "
+                              "skipping game-line and player-prop pulls to keep credits for the close capture")
+    if credits < INGEST_PROPS_FLOOR:
+        return True, False, (f"{credits} Odds API credits left (< {INGEST_PROPS_FLOOR}): "
+                             "skipping player-prop pulls")
+    return True, True, None
+
 
 def _key() -> str:
     k = os.getenv("ODDS_API_KEY")

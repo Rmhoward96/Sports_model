@@ -338,15 +338,15 @@ def test_main_passes_a_utc_aware_now_to_the_run(monkeypatch):
 
 # ---- budget guard ------------------------------------------------------------------------------------
 
-def test_below_three_thousand_credits_skips_props_but_keeps_lines(capsys):
-    fake = _nfl_fake(prop_markets={1: {"rec_yds"}}, remaining="2500")
+def test_below_600_credits_skips_props_but_keeps_lines(capsys):
+    fake = _nfl_fake(prop_markets={1: {"rec_yds"}}, remaining="500")
     run(fake)
     assert [c[0] for c in fake.calls if c[0] in ("lines", "props")] == ["lines"]
     assert "skipping prop close captures" in capsys.readouterr().out
 
 
-def test_below_one_thousand_credits_skips_everything_and_stores_nothing(capsys):
-    fake = _nfl_fake(prop_markets={1: {"rec_yds"}}, remaining="999")
+def test_below_200_credits_skips_everything_and_stores_nothing(capsys):
+    fake = _nfl_fake(prop_markets={1: {"rec_yds"}}, remaining="199")
     out = run(fake)
     assert [c[0] for c in fake.calls if c[0] in ("lines", "props")] == [] and fake.stored_snaps == [] and fake.stored_caps == []
     assert out["credits"] == 0 and "skipping ALL close captures" in capsys.readouterr().out

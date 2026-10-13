@@ -29,7 +29,7 @@ Push `feat/pick-ledger`, open the PR, merge to `main`. Merge before Thursday Oct
 | `grade-ledger` | daily 14:10 |
 | `report-ledger-gate` | Tuesday 15:47 |
 
-Existing workflows are unchanged. The PR description should carry the probe verdict (step 3), the credit table (about 360 credits a week added, covering football and the MLB postseason only; a full MLB regular season, Mar-Sep, adds roughly 500-800 more a week, and the 30,000 a month budget still holds; props stop below 3,000 credits, everything below 1,000) and the list of resolved ambiguities from the plan's decisions table.
+Existing workflows are unchanged. The PR description should carry the probe verdict (step 3), the credit table (about 360 credits a week added, covering football and the MLB postseason only; a full MLB regular season, Mar-Sep, adds roughly 500-800 more a week, and the 30,000 a month budget still holds; props stop below 600 credits, everything below 200; the regular odds ingest stops props below 2,500 and game lines below 800, so it runs out first) and the list of resolved ambiguities from the plan's decisions table.
 
 Note: the "close" is captured about 15-25 minutes before kickoff, not at kickoff.
 
