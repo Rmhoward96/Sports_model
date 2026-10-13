@@ -1,0 +1,54 @@
+name: capture-close
+
+# Pre-kick CLOSING prices for the pick ledger (scripts/capture_close.py; db/migration_pick_ledger.sql). Every ~10
+# minutes inside game-day hours the job looks for games kicking off in 5-25 minutes that have no close yet, pulls
+# ONE game-lines call per sport (h2h / spreads / totals, regions us,eu) and one props call per event that holds
+# a ledger prop pick (regions CLOSE_PROP_REGIONS, default us,eu), and stores the prices in odds_snapshot plus one
+# close_capture row per event. A run with no kickoff in range exits after a database read: zero API calls.
+#
+# Cron is UTC and GitHub delays or skips firings under load, so: minutes are off the :00/:30 peaks (:03 football,
+# :08 baseball, so the two schedules never fire together), the capture window is 20 minutes wide (two runs per
+# event), and a failed or skipped attempt is simply retried by the next run. Football days are Thu-Mon (ET): the
+# first block is 13:00-23:59 UTC on Sun/Mon/Thu/Fri/Sat, the second the late spill 00:00-04:59 UTC on
+# Sun/Mon/Tue/Fri/Sat (Thu-night, Fri-night, Sat-night, SNF, MNF kickoffs). Months: football Aug-Feb, baseball Mar-Nov.
+# Credits: 6 per sport-run that has a target (3 markets x 2 regions) plus (markets with picks x regions) per prop event.
+# Rough weekly cost in season: football lines ~100-120, NFL props ~110-225 (regions us / us,eu), MLB lines ~300-380 and
+# MLB props ~200-420 (regular season; playoffs far less). The script's budget guard skips props below 3,000 credits
+# left and everything below 1,000. Idle runs (about 480-980 a week) make zero paid calls.
+on:
+  schedule:
+    - cron: "3-59/10 13-23 * 1,2,8-12 0,1,4,5,6"
+    - cron: "3-59/10 0-4 * 1,2,8-12 0,1,2,5,6"
+    - cron: "8-59/10 15-23 * 3-11 *"
+    - cron: "8-59/10 0-2 * 3-11 *"
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: "Plan only: print the targets, make no Odds API call and no writes"
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+# Overlapping runs would both buy the same close; queue instead (one run may wait, none is cancelled mid-call).
+concurrency:
+  group: capture-close
+  cancel-in-progress: false
+
+jobs:
+  capture:
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    steps:
+      - uses: actions/checkout@v5
+      - name: Install uv
+        uses: astral-sh/setup-uv@v10.0.1
+      - name: Sync deps
+        run: uv sync
+      - name: Capture pre-kick closing prices
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+          ODDS_API_KEY: ${{ secrets.ODDS_API_KEY }}
+          CLOSE_PROP_REGIONS: ${{ vars.CLOSE_PROP_REGIONS }}
+        run: uv run python scripts/capture_close.py ${{ github.event.inputs.dry_run == 'true' && '--dry-run' || '' }}
