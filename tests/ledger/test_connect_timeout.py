@@ -95,10 +95,67 @@ def test_db_store_uses_the_ledger_timeout_for_every_call(monkeypatch):
     monkeypatch.setattr(db, "insert_pick_ledger", lambda r, **kw: seen.append(("insert", kw)) or 0)
     store = record.DbStore()
     store.missing_tables(), store.latest(["k"]), store.insert([{}])
-    assert seen == [(n, {"connect_timeout": db.LEDGER_CONNECT_TIMEOUT}) for n in ("missing", "latest", "insert")]
+    assert seen == [(n, {"connect_timeout": db.LEDGER_CONNECT_TIMEOUT,
+                         "statement_timeout_ms": db.LEDGER_STATEMENT_TIMEOUT_MS})
+                    for n in ("missing", "latest", "insert")]
 
 
 def test_other_ledger_helpers_are_not_given_a_timeout_they_do_not_take():
     import inspect
     for fn in (db.upsert_close_capture, db.upsert_pick_ledger_results):
         assert "connect_timeout" not in inspect.signature(fn).parameters
+
+
+# ---- statement timeout: a stalled query must never hang a writer ------------------------------------------
+# Applied as `SET LOCAL statement_timeout` inside the helper's own transaction (not a startup `options`
+# parameter): that works on a direct connection and on any pooler mode, and cannot leak to other clients.
+
+class _RecCur(_Cur):
+    def __init__(self, log):
+        super().__init__()
+        self.log = log
+
+    def execute(self, sql, *a, **k):
+        self.log.append(str(sql))
+
+    def executemany(self, sql, *a, **k):
+        self.log.append(str(sql))
+
+
+class _RecConn(_Conn):
+    def __init__(self, log):
+        self.log = log
+
+    def cursor(self):
+        return _RecCur(self.log)
+
+
+def test_the_ledger_statement_timeout_is_short_but_not_tiny():
+    assert 5_000 <= db.LEDGER_STATEMENT_TIMEOUT_MS <= 30_000
+
+
+def test_ledger_helpers_set_a_local_statement_timeout_before_their_first_query(monkeypatch):
+    log = []
+    monkeypatch.setattr(db, "get_postgres", lambda **kw: _RecConn(log))
+    db.missing_ledger_tables(["pick_ledger"], statement_timeout_ms=15000)
+    assert log[0] == "SET LOCAL statement_timeout = 15000" and len(log) == 2
+    log.clear()
+    db.latest_pick_ledger_rows(["k"], statement_timeout_ms=15000)
+    assert log[0] == "SET LOCAL statement_timeout = 15000" and len(log) == 2
+    log.clear()
+    db.insert_pick_ledger([{"pick_key": "k"}], statement_timeout_ms=15000)
+    assert log[0] == "SET LOCAL statement_timeout = 15000" and "INSERT INTO pick_ledger" in log[1]
+
+
+def test_without_a_statement_timeout_no_set_is_issued(monkeypatch):
+    log = []
+    monkeypatch.setattr(db, "get_postgres", lambda *a, **kw: _RecConn(log))
+    db.missing_ledger_tables(["pick_ledger"])
+    db.latest_pick_ledger_rows(["k"])
+    db.insert_pick_ledger([{"pick_key": "k"}])
+    assert not [q for q in log if "statement_timeout" in q]
+
+
+def test_get_postgres_has_no_statement_timeout_parameter():
+    import inspect
+    assert list(inspect.signature(db.get_postgres).parameters) == ["connect_timeout"]

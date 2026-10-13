@@ -1169,10 +1169,20 @@ def upsert_cfb_quarter_shares(rows: list[dict]) -> int:
     return _upsert_site_panel("cfb_quarter_shares", rows)
 
 
-def _missing_public_tables(tables: list[str], connect_timeout: int | None = None) -> list[str]:
+def _limit_statements(cur, statement_timeout_ms: int | None) -> None:
+    """Cap every statement of the current transaction (SET LOCAL: gone at commit/rollback, so it cannot leak to
+    other clients of a pooled connection, and it needs no startup parameter a pooler might reject). No-op when
+    no timeout was asked for, so existing callers are untouched."""
+    if statement_timeout_ms is not None:
+        cur.execute(f"SET LOCAL statement_timeout = {int(statement_timeout_ms)}")
+
+
+def _missing_public_tables(tables: list[str], connect_timeout: int | None = None,
+                           statement_timeout_ms: int | None = None) -> list[str]:
     """The subset of `tables` that do not exist in the `public` schema, in the order given (one read-only
     connection, `to_regclass` per table). Any connection error propagates (a real outage still fails the job)."""
     with _pg(connect_timeout) as conn, conn.cursor() as cur:
+        _limit_statements(cur, statement_timeout_ms)
         missing = []
         for t in tables:
             cur.execute("SELECT to_regclass(%s)", (f"public.{t}",))
@@ -1220,19 +1230,22 @@ LEDGER_LAST_COLS = ["pick_key", "best_price", "line", "model_prob", "ref_prob", 
 
 
 LEDGER_CONNECT_TIMEOUT = 10   # seconds; the pick writers' ledger hooks must never hang a job on a dead database
+LEDGER_STATEMENT_TIMEOUT_MS = 15_000   # ...nor on a stalled query
 
 
-def missing_ledger_tables(tables: list[str] | None = None, *, connect_timeout: int | None = None) -> list[str]:
+def missing_ledger_tables(tables: list[str] | None = None, *, connect_timeout: int | None = None,
+                          statement_timeout_ms: int | None = None) -> list[str]:
     """The ledger tables (default: all three) that do not exist in `public` yet, in the order given. Lets the
     ledger jobs warn and exit 0 until db/migration_pick_ledger.sql has been run (same guard as the site panels)."""
     tables = list(LEDGER_COLUMNS) if tables is None else tables
     unknown = [t for t in tables if t not in LEDGER_COLUMNS]
     if unknown:
         raise KeyError(f"not a ledger table: {unknown}")
-    return _missing_public_tables(tables, connect_timeout)
+    return _missing_public_tables(tables, connect_timeout, statement_timeout_ms)
 
 
-def insert_pick_ledger(rows: list[dict], *, connect_timeout: int | None = None) -> int:
+def insert_pick_ledger(rows: list[dict], *, connect_timeout: int | None = None,
+                       statement_timeout_ms: int | None = None) -> int:
     """Append observations to `pick_ledger`. INSERT only (the table refuses anything else); a retried
     observation (same pick_key + observed_at) is a no-op via ON CONFLICT DO NOTHING. Returns the number of rows
     ATTEMPTED, not the number actually written (conflicting rows are skipped silently)."""
@@ -1243,16 +1256,19 @@ def insert_pick_ledger(rows: list[dict], *, connect_timeout: int | None = None) 
            f"ON CONFLICT (pick_key, observed_at) DO NOTHING")
     vals = [tuple(r.get(c) for c in cols) for r in rows]
     with _pg(connect_timeout) as conn, conn.cursor() as cur:
+        _limit_statements(cur, statement_timeout_ms)
         cur.executemany(sql, vals)
         conn.commit()
     return len(vals)
 
 
-def latest_pick_ledger_rows(pick_keys: list[str], *, connect_timeout: int | None = None) -> dict[str, dict]:
+def latest_pick_ledger_rows(pick_keys: list[str], *, connect_timeout: int | None = None,
+                            statement_timeout_ms: int | None = None) -> dict[str, dict]:
     """{pick_key: its most recent row (LEDGER_LAST_COLS)} for the keys that have one. Read-only."""
     if not pick_keys:
         return {}
     with _pg(connect_timeout) as conn, conn.cursor() as cur:
+        _limit_statements(cur, statement_timeout_ms)
         cur.execute(
             f"SELECT DISTINCT ON (pick_key) {', '.join(LEDGER_LAST_COLS)} FROM pick_ledger "
             "WHERE pick_key = ANY(%s) ORDER BY pick_key, observed_at DESC, id DESC", (list(pick_keys),))
