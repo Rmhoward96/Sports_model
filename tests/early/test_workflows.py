@@ -75,3 +75,21 @@ def test_job_has_the_secrets_serialises_runs_and_caches_uv():
     uv = steps[step_index(steps, lambda st: "setup-uv" in str(st.get("uses", "")))]
     assert str(uv["with"]["enable-cache"]).lower() == "true"
     assert step_index(steps, runs("uv sync")) < step_index(steps, runs("early_monitor.py"))
+
+
+# ---- grade-early-tickets.yml ---------------------------------------------------------------------------------
+
+def test_grading_runs_daily_at_1420_after_the_other_graders_and_never_spends_credits():
+    wf = load(GRADE)
+    assert [c["cron"] for c in wf["on"]["schedule"]] == ["20 14 * * *"]
+    assert wf["on"]["workflow_dispatch"]["inputs"]["days"]["default"] == "14"
+    assert wf["permissions"] == {"contents": "read"} and wf["concurrency"]["group"] == "grade-early-tickets"
+    (job,) = wf["jobs"].values()
+    steps = steps_of(job)
+    step = steps[step_index(steps, runs("scripts/grade_early_tickets.py"))]
+    assert step["env"] == {"DATABASE_URL": "${{ secrets.DATABASE_URL }}", "DAYS": "${{ github.event.inputs.days || '14' }}"}
+    assert step["run"] == 'uv run python scripts/grade_early_tickets.py --days "$DAYS"'
+    assert step_index(steps, runs("uv sync")) < step_index(steps, runs("grade_early_tickets.py"))
+    text = (WF / GRADE).read_text()
+    assert "git push" not in text and "ODDS_API_KEY" not in text.split("jobs:")[1]
+    assert "10 14 * * *" in (WF / "grade-ledger.yml").read_text()                                # after grade-ledger
