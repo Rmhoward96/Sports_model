@@ -216,7 +216,7 @@ async function boardLoad(sport, view) {
   const [anyRows, curRows, accRows, lastRows] = await Promise.all([
     sbAll(`predictions_any?sport=eq.${sport}&game_date=gte.${widen(-1)}&game_date=lte.${upTo}&select=${BOARD_PRED_SELECT}&order=commence_time.asc,game_pk.asc`).catch(() => []),
     period.to >= today ? predictions(sport).catch(() => []) : [],
-    sbAll(`prediction_accuracy?sport=eq.${sport}&game_date=gte.${period.from}&game_date=lte.${period.to}&select=${TRACK_ACC_SELECT}&order=game_date.asc,game_pk.asc`).catch(() => []),
+    trackAccRead((sel) => sbAll(`prediction_accuracy?sport=eq.${sport}&game_date=gte.${period.from}&game_date=lte.${period.to}&select=${sel}&order=game_date.asc,game_pk.asc`)).catch(() => []),
     live ? [] : sb(`predictions_any?sport=eq.${sport}&select=game_date&order=game_date.desc&limit=1`).catch(() => []),   // a paused sport: when its model last projected
   ]);
   const lastProj = (lastRows || []).map((r) => r && r.game_date).filter(boardIsDate).sort().pop() || null;

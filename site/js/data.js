@@ -248,8 +248,28 @@ function lineMoveInfo(m, p, splits) {
    Moved from track.js: trackRows turns prediction_accuracy rows into one row per graded market; trackClosing fetches the
    moneyline closing prices of those games. Depend on app.js (sb), metrics.js (numOrNull, unitsFromPnl) and this file. */
 const TRACK_MARKETS = ["moneyline", "spread", "total"];
-const TRACK_CLOSING_CHUNK = 60;
-const TRACK_ACC_SELECT = "sport,game_pk,game_date,home_team_name,away_team_name,win_prob,predicted_winner,actual_winner,winner_correct,pred_margin,actual_margin,pred_total,actual_total,market_spread,market_total,spread_pick_correct,total_pick_correct";
+// Chunk x concurrency bounds the ids in flight (30 x 3 = 90); the retry waits 700 ms plus up to 300 ms of jitter so parallel chunks don't retry in lockstep.
+const TRACK_CLOSING_CHUNK = 30, TRACK_CLOSING_CONCURRENCY = 3, TRACK_CLOSING_RETRY_MS = 700, TRACK_CLOSING_JITTER_MS = 300;
+const TRACK_ACC_BASE_SELECT = "sport,game_pk,game_date,home_team_name,away_team_name,win_prob,predicted_winner,actual_winner,winner_correct,pred_margin,actual_margin,pred_total,actual_total,market_spread,market_total,spread_pick_correct,total_pick_correct";
+// spread_pick_prob / total_pick_prob exist after db/migration_accuracy_pick_probs.sql. Asking PostgREST for a column that is not
+// there makes the WHOLE query a 400, so trackAccRead tries the extended select first and falls back to the base one on that error.
+const TRACK_ACC_SELECT = `${TRACK_ACC_BASE_SELECT},spread_pick_prob,total_pick_prob`;
+let trackProbCols = true;   // flips to false (for the page's lifetime) once the API says those columns are missing
+// Only a 400 whose message names one of the new columns ("pick_prob") is the missing-column case; any other 400 is a real error.
+const trackMissingProbCols = (e) => !!e && /Supabase 400/.test(String(e.message)) && /pick_prob/.test(String(e.message));
+// `read(select)` runs one prediction_accuracy query with the given select list. Only the "unknown column" 400 falls back: a timeout
+// or a 5xx is a real failure and propagates.
+async function trackAccRead(read) {
+  if (trackProbCols) {
+    try { return await read(TRACK_ACC_SELECT); }
+    catch (e) {
+      if (!trackMissingProbCols(e)) throw e;
+      trackProbCols = false;
+      console.warn("track record: prediction_accuracy has no spread_pick_prob / total_pick_prob yet (run db/migration_accuracy_pick_probs.sql); spread and total rows show no probability");
+    }
+  }
+  return read(TRACK_ACC_BASE_SELECT);
+}
 
 // Decimal odds -> American price (null when unusable or not above 1.00).
 function decToAmerican(dec) {
@@ -272,9 +292,13 @@ const trackGradeOf = (b) => (b === true ? "W" : b === false ? "L" : "P");
 // One row per graded pick of a graded game: moneyline (always), spread (when a market line is stored AND the model has a side), total
 // (likewise). A spread / total with no model pick (model exactly on the line, or no model numbers) is not a bet and gets no row,
 // like prediction_pnl's no-bet exclusion (R23). Confidence is the model's moneyline win probability, so only moneyline rows carry it. A game without actual_winner is ungraded and gives no rows (the same population as prediction_pnl).
-// prob = the model's favorite-side win probability (moneyline only; spread / total rows carry none). units = the matching
-// prediction_pnl row's pnl / 10, else null. `closing`: Map "game_pk|side" -> moneyline closing price (from trackClosingMap).
-function trackRows(accuracyRows, pnlRows, closing) {
+// prob = the model's probability that the pick wins: the favorite-side win probability for moneyline (win_prob), and for spread /
+// total the probability at the closing line stored at grading (spread_pick_prob / total_pick_prob, pushes excluded), null when
+// not stored. conf stays moneyline-only. units = the matching prediction_pnl row's pnl / 10, else null. `closing`: Map
+// "game_pk|side" -> moneyline closing price (from trackClosingMap). `closingFailed` (optional Set of game_pks whose closing fetch
+// failed) lets a moneyline row without a price say why: closingState "failed" (the fetch failed) or "none" (the fetch worked and
+// no price was captured); null when the price is known or `closingFailed` was not supplied.
+function trackRows(accuracyRows, pnlRows, closing, closingFailed) {
   const units = new Map();
   for (const p of pnlRows || []) if (p && finite(p.pnl)) units.set(`${p.game_pk}|${p.market}`, unitsFromPnl(p.pnl));
   const out = [];
@@ -289,16 +313,17 @@ function trackRows(accuracyRows, pnlRows, closing) {
       result: trackGradeOf(grade), won: grade === true ? true : grade === false ? false : null, units: units.get(`${r.game_pk}|${market}`) ?? null });
     const mlSide = r.predicted_winner === r.home_team_name ? "home" : r.predicted_winner === r.away_team_name ? "away" : null;
     push("moneyline", mlSide, r.predicted_winner ?? null, mlSide && closing && closing.has(`${r.game_pk}|${mlSide}`) ? closing.get(`${r.game_pk}|${mlSide}`) : null, null, conf, r.winner_correct);
+    if (closingFailed && mlSide && !(closing && closing.has(`${r.game_pk}|${mlSide}`))) out[out.length - 1].closingState = closingFailed.has(String(r.game_pk)) ? "failed" : "none";
     const ms = numOrNull(r.market_spread), pm = numOrNull(r.pred_margin);
     if (ms != null) {
       const edge = pm == null ? null : pm + ms, side = edge == null || edge === 0 ? null : edge > 0 ? "home" : "away";
       if (side) push("spread", side, side === "home" ? r.home_team_name : r.away_team_name,
-        trackNum0(side === "home" ? ms : -ms), trackNum0(side === "home" ? r05(-pm) : r05(pm)), null, r.spread_pick_correct);
+        trackNum0(side === "home" ? ms : -ms), trackNum0(side === "home" ? r05(-pm) : r05(pm)), numOrNull(r.spread_pick_prob), r.spread_pick_correct);
     }
     const mt = numOrNull(r.market_total), pt = numOrNull(r.pred_total);
     if (mt != null) {
       const side = pt == null || pt === mt ? null : pt > mt ? "over" : "under";
-      if (side) push("total", side, side === "over" ? "Over" : "Under", mt, r05(pt), null, r.total_pick_correct);
+      if (side) push("total", side, side === "over" ? "Over" : "Under", mt, r05(pt), numOrNull(r.total_pick_prob), r.total_pick_correct);
     }
   }
   const mkt = (r) => TRACK_MARKETS.indexOf(r.market);
@@ -309,14 +334,33 @@ function trackTally(rows) {
   const rs = rows || [], w = rs.filter((r) => r.result === "W").length, l = rs.filter((r) => r.result === "L").length, p = rs.filter((r) => r.result === "P").length;
   return { w, l, p, n: rs.length, pct: w + l ? w / (w + l) : null };
 }
-// Moneyline closing prices of the graded games, in parallel chunks of 60 game ids: the whole view scan takes 1.3-2.7s against the
-// 3s anon statement limit (a timeout would drop every price), a chunk answers in ~0.5s. A failed chunk leaves its games unpriced.
-async function trackClosing(gamePks) {
+// Moneyline closing prices of the graded games. The unfiltered view scan is near the 3s anon statement limit, so the ids go in
+// small chunks (30), at most 3 in flight at once (seven at once pushed chunks past the limit and blanked whole batches). A failed
+// chunk is retried once after a short, jittered delay; one that fails twice leaves its games unpriced AND is reported, so the table can say
+// "failed to load" instead of "not captured". Resolves { rows, failed } -- `failed` is a Set of String(game_pk) whose chunk failed.
+async function trackClosingLoad(gamePks, { chunk = TRACK_CLOSING_CHUNK, concurrency = TRACK_CLOSING_CONCURRENCY, retryMs = TRACK_CLOSING_RETRY_MS, jitterMs = TRACK_CLOSING_JITTER_MS } = {}) {
   const ids = [...new Set((gamePks || []).filter((x) => x != null))], chunks = [];
-  for (let i = 0; i < ids.length; i += TRACK_CLOSING_CHUNK) chunks.push(ids.slice(i, i + TRACK_CLOSING_CHUNK));
-  const parts = await Promise.all(chunks.map((c) => sb(`game_closing_prices?market=eq.moneyline&game_pk=in.(${c.join(",")})&select=game_pk,side,close_dec`).catch(() => [])));
-  return parts.flat();
+  for (let i = 0; i < ids.length; i += chunk) chunks.push(ids.slice(i, i + chunk));
+  const parts = new Array(chunks.length), failed = new Set();
+  const fetchChunk = (c) => sb(`game_closing_prices?market=eq.moneyline&game_pk=in.(${c.join(",")})&select=game_pk,side,close_dec`);
+  let next = 0;
+  const worker = async () => {
+    while (next < chunks.length) {
+      const i = next++, c = chunks[i];
+      try { parts[i] = await fetchChunk(c); }
+      catch (e1) {
+        await new Promise((r) => setTimeout(r, retryMs + Math.random() * jitterMs));
+        try { parts[i] = await fetchChunk(c); }
+        catch (e2) { parts[i] = []; for (const id of c) failed.add(String(id)); console.error("track record: closing prices failed to load for a chunk of games", e2); }
+      }
+    }
+  };
+  await Promise.all(Array.from({ length: Math.min(Math.max(1, concurrency), chunks.length) }, worker));
+  if (failed.size) console.warn(`track record: ${failed.size} game(s) have no closing price because loading it failed`);
+  return { rows: parts.flat().filter(Boolean), failed };
 }
+// The rows alone (board / sport pages, which don't distinguish "failed" from "not captured").
+async function trackClosing(gamePks, opts) { return (await trackClosingLoad(gamePks, opts)).rows; }
 
 // The record scope (track_record_start). trackRecordStarts() swallows errors into "no restarts", which would pull the archived
 // pre-restart rows into the published record, so the record pages load it themselves and fail closed.

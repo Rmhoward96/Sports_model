@@ -117,6 +117,20 @@ _PREDICTION_ACCURACY_COLS = [
     "market_spread", "market_total", "spread_pick_correct", "total_pick_correct",
 ]
 
+# Columns added later by db/migration_accuracy_pick_probs.sql. Written only when the table has them (checked once per
+# upsert call via information_schema), so grading keeps working in the window before the migration is run.
+_PREDICTION_ACCURACY_OPTIONAL_COLS = ["spread_pick_prob", "total_pick_prob"]
+
+
+def _existing_columns(cur, table: str, columns: list[str]) -> set[str]:
+    """The subset of `columns` that exist on `table` (visible schemas), via information_schema."""
+    cur.execute(
+        "SELECT column_name FROM information_schema.columns "
+        "WHERE table_schema = ANY (current_schemas(false)) AND table_name = %s AND column_name = ANY (%s)",
+        (table, list(columns)),
+    )
+    return {row[0] for row in cur.fetchall()}
+
 
 def refresh_prediction_pnl() -> None:
     """Rebuild the materialized `prediction_pnl_daily` (db/migration_pnl_materialize.sql).
@@ -133,20 +147,29 @@ def upsert_prediction_accuracy(records: list[dict]) -> int:
 
     Idempotent on (sport, game_pk) -- re-grading a game overwrites in place.
     Requires DATABASE_URL and the prediction_accuracy table
-    (db/migration_prediction_tool.sql).
+    (db/migration_prediction_tool.sql). The optional spread_pick_prob / total_pick_prob columns
+    (db/migration_accuracy_pick_probs.sql) are written only if the records carry them AND the table has them;
+    before the migration they are skipped with a warning and the rest of the row is still written.
     """
     if not records:
         return 0
-    key = ("sport", "game_pk")
-    updates = ", ".join(f"{c} = EXCLUDED.{c}" for c in _PREDICTION_ACCURACY_COLS if c not in key)
-    placeholders = ", ".join(["%s"] * len(_PREDICTION_ACCURACY_COLS))
-    sql = (
-        f"INSERT INTO prediction_accuracy ({', '.join(_PREDICTION_ACCURACY_COLS)}) "
-        f"VALUES ({placeholders}) "
-        f"ON CONFLICT (sport, game_pk) DO UPDATE SET {updates}, graded_at = now()"
-    )
-    rows = [tuple(r.get(c) for c in _PREDICTION_ACCURACY_COLS) for r in records]
+    wanted = [c for c in _PREDICTION_ACCURACY_OPTIONAL_COLS if any(c in r for r in records)]
     with get_postgres() as conn, conn.cursor() as cur:
+        present = _existing_columns(cur, "prediction_accuracy", wanted) if wanted else set()
+        missing = [c for c in wanted if c not in present]
+        if missing:
+            print(f"WARN prediction_accuracy has no {', '.join(missing)} column(s) -- run "
+                  "db/migration_accuracy_pick_probs.sql; graded without them")
+        cols = _PREDICTION_ACCURACY_COLS + [c for c in wanted if c in present]
+        key = ("sport", "game_pk")
+        updates = ", ".join(f"{c} = EXCLUDED.{c}" for c in cols if c not in key)
+        placeholders = ", ".join(["%s"] * len(cols))
+        sql = (
+            f"INSERT INTO prediction_accuracy ({', '.join(cols)}) "
+            f"VALUES ({placeholders}) "
+            f"ON CONFLICT (sport, game_pk) DO UPDATE SET {updates}, graded_at = now()"
+        )
+        rows = [tuple(r.get(c) for c in cols) for r in records]
         cur.executemany(sql, rows)
         conn.commit()
     return len(rows)

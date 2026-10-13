@@ -221,3 +221,173 @@ def test_mlb_accuracy_row_grades_total_pick_against_odds_derived_line():
     assert row["winner_correct"] is True
     assert row["total_pick_correct"] is True    # model 8.5 leans over 6.5; the game went 7
     assert row["spread_pick_correct"] is True   # model margin +0.7 -> away +1.5 side; home won by 1
+
+
+# --- spread_pick_prob / total_pick_prob (model's probability that the pick wins at the closing line) ------------
+import json as _json
+import math as _math
+
+_MARGIN = {"kind": "margin", "offset": 2, "pmf": [0.1, 0.2, 0.3, 0.25, 0.15]}   # margins -2..2
+_TOTAL = {"kind": "pmf", "pmf": [0, 0.1, 0.2, 0.4, 0.2, 0.1]}                    # totals 0..5
+
+
+def _final(**o):
+    base = {"home_score": 24, "away_score": 17, "final": True, "market_spread": -1.5, "market_total": 2.5}
+    base.update(o)
+    return base
+
+
+def test_accuracy_row_pick_probs_from_stored_distributions():
+    # pred margin 7 + (-1.5) > 0 -> home pick, covers when margin > 1.5 -> .15 ; total 47 > 2.5 -> over -> .7
+    pred = _prediction(margin_dist=_MARGIN, total_dist=_TOTAL)
+    row = _accuracy_row(pred, _final())
+    assert _math.isclose(row["spread_pick_prob"], 0.15)
+    assert _math.isclose(row["total_pick_prob"], 0.7)
+
+
+def test_accuracy_row_pick_probs_away_and_under():
+    # model margin 1 (27-26) + (-1.5) < 0 -> away pick: covers when margin < 1.5 -> .85
+    pred = _prediction(pred_home_score=27.0, pred_away_score=26.0, margin_dist=_MARGIN,
+                       total_dist={"kind": "pmf", "pmf": [0.25] * 4})
+    row = _accuracy_row(pred, _final(market_total=1.5))
+    assert _math.isclose(row["spread_pick_prob"], 0.85)
+    # pred_total 53 > market 1.5 -> over; uniform pmf on totals 0..3: P(total > 1.5) = .5
+    assert _math.isclose(row["total_pick_prob"], 0.5)
+    under = _accuracy_row(_prediction(pred_home_score=1.0, pred_away_score=0.0, total_dist=_TOTAL), _final(market_total=2.5))
+    assert _math.isclose(under["total_pick_prob"], 0.3)   # pred_total 1 < 2.5 -> under: P(total < 2.5) = .3
+
+
+def test_accuracy_row_pick_probs_none_without_distribution_or_line():
+    row = _accuracy_row(_prediction(), _final())          # no dists stored: NULL, never a normal approximation
+    assert row["spread_pick_prob"] is None and row["total_pick_prob"] is None
+    assert "spread_pick_prob" in row and "total_pick_prob" in row
+    pred = _prediction(margin_dist=_MARGIN, total_dist=_TOTAL)
+    no_lines = _accuracy_row(pred, _final(market_spread=None, market_total=None))
+    assert no_lines["spread_pick_prob"] is None and no_lines["total_pick_prob"] is None
+    # model exactly on the line: not a bet
+    on_line = _accuracy_row(_prediction(pred_home_score=10.0, pred_away_score=8.5, margin_dist=_MARGIN), _final(market_spread=-1.5))
+    assert on_line["spread_pick_prob"] is None
+
+
+def test_accuracy_row_pick_probs_accept_json_text_and_sim_fallback():
+    # a TEXT / unparsed JSONB column arrives as a string; the NFL sim row backs up a prediction without a pmf
+    pred = _prediction(margin_dist=_json.dumps(_MARGIN), total_dist=None)
+    row = _accuracy_row(pred, _final(), sim={"total_dist": _TOTAL})
+    assert _math.isclose(row["spread_pick_prob"], 0.15)
+    assert _math.isclose(row["total_pick_prob"], 0.7)
+
+
+def test_pending_predictions_selects_the_distributions():
+    class Cur:
+        def __init__(self):
+            self.sql = None
+
+        def execute(self, sql, params=None):
+            self.sql = sql
+
+        def fetchall(self):
+            return [(1, "2026-10-01", "H", "A", 0.6, 24.0, 20.0, _MARGIN, _TOTAL)]
+
+    cur = Cur()
+    rows = grade_predictions._pending_predictions(cur, "cfb", "2026-09-01")
+    assert "gp.margin_dist" in cur.sql and "gp.total_dist" in cur.sql
+    assert rows[0]["margin_dist"] == _MARGIN and rows[0]["total_dist"] == _TOTAL and rows[0]["sport"] == "cfb"
+
+
+def test_sim_dists_by_game_nfl_only_latest_per_game():
+    class Cur:
+        def __init__(self):
+            self.calls = []
+
+        def execute(self, sql, params=None):
+            self.calls.append((sql, params))
+
+        def fetchall(self):
+            return [(7, _MARGIN, _TOTAL)]
+
+    cur = Cur()
+    assert grade_predictions._sim_dists_by_game(cur, "cfb", [7]) == {}
+    assert cur.calls == []                                      # only NFL has a sim table
+    assert grade_predictions._sim_dists_by_game(cur, "nfl", []) == {}
+    out = grade_predictions._sim_dists_by_game(cur, "nfl", [7])
+    assert out == {7: {"margin_dist": _MARGIN, "total_dist": _TOTAL}}
+    sql = cur.calls[0][0]
+    assert "FROM nfl_sim" in sql and "created_at DESC" in sql
+
+
+# --- grading must survive anything the DB hands back ---------------------------------------------------------------
+def test_accuracy_row_survives_malformed_distributions_and_keeps_the_rest_of_the_row():
+    bad = {"kind": "margin", "offset": None, "pmf": [0.5, None]}
+    row = _accuracy_row(_prediction(margin_dist=bad, total_dist={"kind": "pmf", "pmf": ["a"]}), _final())
+    assert row["spread_pick_prob"] is None and row["total_pick_prob"] is None
+    assert row["winner_correct"] is True and row["spread_pick_correct"] is True   # the real grade is untouched
+
+
+def test_accuracy_row_survives_an_exception_from_the_probability_maths(monkeypatch):
+    def boom(*a, **k):
+        raise RuntimeError("unexpected")
+    monkeypatch.setattr(grade_predictions, "spread_pick_prob", boom)
+    monkeypatch.setattr(grade_predictions, "total_pick_prob", boom)
+    row = _accuracy_row(_prediction(margin_dist=_MARGIN, total_dist=_TOTAL), _final())
+    assert row["spread_pick_prob"] is None and row["total_pick_prob"] is None
+    assert row["winner_correct"] is True
+
+
+def test_accuracy_row_survives_a_distribution_of_the_wrong_type():
+    row = _accuracy_row(_prediction(margin_dist=12345, total_dist=["x"]), _final(), sim={"margin_dist": object()})
+    assert row["spread_pick_prob"] is None and row["total_pick_prob"] is None
+
+
+# --- nfl_sim fallback: served version preferred; a failing lookup must not abort grading -------------------------------
+def test_sim_dists_prefer_the_served_version_then_the_newest_row():
+    class Cur:
+        def __init__(self):
+            self.calls = []
+
+        def execute(self, sql, params=None):
+            self.calls.append((sql, params))
+
+        def fetchall(self):
+            return [(7, _MARGIN, _TOTAL)]
+
+    cur = Cur()
+    grade_predictions._sim_dists_by_game(cur, "nfl", [7], served_version="nfl-sim-ml-v2")
+    sql, params = cur.calls[0]
+    assert "(model_version = %s) DESC" in sql and sql.index("(model_version = %s) DESC") < sql.index("created_at DESC")
+    assert params == ("nfl-sim-ml-v2", [7])
+    cur2 = Cur()
+    grade_predictions._sim_dists_by_game(cur2, "nfl", [7], served_version=None)    # no served version: newest row of any version
+    assert "model_version" not in cur2.calls[0][0] and cur2.calls[0][1] == ([7],)
+
+
+class _RollbackConn:
+    def __init__(self):
+        self.rollbacks = 0
+
+    def rollback(self):
+        self.rollbacks += 1
+
+
+def test_safe_sim_dists_rolls_back_warns_and_returns_empty_on_failure(capsys):
+    class BadCur:
+        def execute(self, *a, **k):
+            raise RuntimeError("relation nfl_sim does not exist")
+
+    conn = _RollbackConn()
+    assert grade_predictions._safe_sim_dists(conn, BadCur(), "nfl", [7], None) == {}
+    assert conn.rollbacks == 1                                   # the aborted transaction is cleared so later reads work
+    out = capsys.readouterr().out
+    assert "WARN" in out and "nfl_sim" in out
+
+
+def test_safe_sim_dists_passes_through_on_success_without_rollback():
+    class Cur:
+        def execute(self, *a, **k):
+            pass
+
+        def fetchall(self):
+            return [(7, _MARGIN, _TOTAL)]
+
+    conn = _RollbackConn()
+    assert grade_predictions._safe_sim_dists(conn, Cur(), "nfl", [7], "v1") == {7: {"margin_dist": _MARGIN, "total_dist": _TOTAL}}
+    assert conn.rollbacks == 0
