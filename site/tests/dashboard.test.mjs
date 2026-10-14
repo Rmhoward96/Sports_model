@@ -231,14 +231,15 @@ test("safeCard: a throwing card renders a placeholder and logs, it does not thro
 
 // ---- populated render ------------------------------------------------------------------------
 const EVIL_AWAY = 'Evil "Q" <b>Crew</b>', HOME = 'Kansas City "Chiefs"', PLAYER = 'O"Brien <i>Zed</i>';
-function populated({ search = "", watch = null, predH = 0 } = {}) {
+function populated({ search = "", watch = null, predH = 0, value = false } = {}) {
   const NOW = Date.now(), iso = (h) => new Date(NOW + h * 36e5).toISOString(), dayAgo = (d) => new Date(NOW - d * 864e5).toISOString().slice(0, 10);
   const line = (o) => ({ sport: "nfl", game_pk: 1, matchup: `${EVIL_AWAY} @ ${HOME}`, market: "moneyline", side: "home", true_prob: 0.7, best_line_implied: 0.5,
     best_price: 100, best_book: "draftkings", ev_best: 0.3, is_pick: true, commence_time: iso(48), ...o });
   const evCurrentNfl = [line({}),                                                     // +2d  EV 30
     line({ game_pk: 2, commence_time: iso(24 * 10), ev_best: 0.4 }),                  // +10d: outside the 7-day board
     line({ game_pk: 3, commence_time: iso(-24), ev_best: 0.5 }),                      // yesterday: not upcoming
-    line({ game_pk: 4, commence_time: iso(96), ev_best: 0.12, true_prob: 0.6, side: "away" })];   // +4d  EV 12
+    line({ game_pk: 4, commence_time: iso(96), ev_best: 0.12, true_prob: 0.6, side: "away" }),   // +4d  EV 12
+    ...(value ? [line({ game_pk: 6, matchup: "Value Bears @ Value Lions", commence_time: iso(24), ev_best: 0.02, true_prob: 0.52, side: "away" })] : [])];   // +1d EV 2: Alpha < 65, tier VALUE
   const props = [{ sport: "nfl", game_pk: 5, matchup: `${EVIL_AWAY} @ ${HOME}`, market: "rec_yds", side: "over", line: 64.5, player_name: PLAYER, model_prob: 0.62,
     best_price: -110, best_book: "fanduel", ev_best: 0.15, is_pick: true, commence_time: iso(72) }];
   const pred = { game_pk: 1, home_team_name: HOME, away_team_name: EVIL_AWAY, commence_time: iso(predH), home_win_prob: 0.6,
@@ -286,6 +287,21 @@ test("populated render (today): board lists the next 7 days by EV (kickoff in th
   assert.ok(html.includes("(game lines)"), "vs-market is labelled as game lines");
   assert.ok(html.includes("Graded +EV picks, last 30 days"));
   assert.ok(!/NaN|undefined/.test(html), "no NaN / undefined leaks");
+});
+
+test("a 2% EV pick (VALUE tier) kicking off tomorrow: listed in Best Opportunities today, counted in Active Signals -> Value and Live +EV on its own date", async () => {
+  const { D, NOW } = populated({ value: true }), html = await D.buildDashboard();
+  const opps = slice(html, "dash-opps", "dash-perf");
+  assert.equal((opps.match(/<tr data-href/g) || []).length, 4, "the VALUE pick joins A, prop, D");
+  assert.ok(opps.includes("game=6") && opps.includes('<span class="ca-conf VALUE">Value</span>'));
+  const d = new Date(NOW + 24 * 36e5).toLocaleDateString("en-CA", { timeZone: "America/New_York" });
+  const day = await populated({ value: true, search: `?date=${d}` }).D.buildDashboard();
+  assert.match(statBlock(day, "Live +EV Opportunities"), /<b>1<\/b>|ca-stat-v[^>]*>1</, "Live +EV on its date includes the pick");
+  const sig = statBlock(day, "Active Signals");
+  assert.match(sig, /<b>1<\/b><span>Value<\/span>/, "Active Signals -> Value counts it");
+  assert.match(sig, /<b>0<\/b><span>High Conviction<\/span>/);
+  assert.equal((sig.match(/ca-dash-sig-row/g) || []).length, 4, "High, Strong, Medium, Value");
+  assert.ok(sig.indexOf("Medium Value") < sig.indexOf("<span>Value</span>"), "Value comes last");
 });
 
 test("populated render (a date): the board is date-scoped to that date", async () => {

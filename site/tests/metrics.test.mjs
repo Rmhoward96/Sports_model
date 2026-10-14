@@ -12,7 +12,7 @@ test("alpha score formula and tiers", () => {
   assert.equal(g.alphaScore({ evPct: 4, edgePp: 4, segRoiPct: 10, segN: 100 }), 73);
   assert.equal(g.alphaTier(85), "HIGH"); assert.equal(g.alphaTier(84), "STRONG");
   assert.equal(g.alphaTier(75), "STRONG"); assert.equal(g.alphaTier(74), "MEDIUM");
-  assert.equal(g.alphaTier(65), "MEDIUM"); assert.equal(g.alphaTier(64), null);
+  assert.equal(g.alphaTier(65), "MEDIUM"); assert.equal(g.alphaTier(64), null); assert.equal(g.alphaTier(45), null, "the zero-edge baseline of a non-pick row stays unlabelled (VALUE is toOpportunity's label, not alphaTier's)");
 });
 
 test("pnl aggregation in units", () => {

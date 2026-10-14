@@ -1,5 +1,5 @@
 /* +EV page (ev.html) — mockup #3. Real data only: every card has an empty state and the mockup's numbers are
-   never rendered. Opportunities = current is_pick rows (game lines + props) with a non-null Alpha tier.
+   never rendered. Opportunities = current is_pick rows (game lines + props) with valid numbers (Alpha and its tier rank and label them; none is hidden).
    Filters / tab / sort live in window.__caEv AND in the URL query (so a reload or share keeps them) and survive the
    5-minute re-render. The stat cards and the right rail describe the whole board; the filters narrow the table and
    the tab counts. Performance numbers (Model Hit Rate 30D, ROI 30D, Performance by Edge Bucket, Average Market
@@ -8,7 +8,7 @@
    evParlaysCurrent, bestParlaysSection, parlaySection, bookSelected, getSettings, trackRecordStarts,
    inTrackRecord, etDateStr, timeET, logoImg, logoPair, evBookName, ctxEsc, pStr, uStr, pct1, render),
    metrics.js, ui.js, shell.js and data.js. */
-const EV_TIERS = ["HIGH", "STRONG", "MEDIUM"];
+const EV_TIERS = ["HIGH", "STRONG", "MEDIUM", "VALUE"];
 const EV_SORTS = [["edge", "Highest Edge"], ["ev", "Highest EV"], ["alpha", "Alpha Score"], ["time", "Game Time"]];
 const EV_DATES = [["", "All Dates"], ["today", "Today"], ["tomorrow", "Tomorrow"], ["week", "This Week"]];
 const EV_MIN_EDGES = [0, 2, 5, 10];
@@ -139,7 +139,7 @@ async function evxLoad() {
     evBestParlays().catch(() => []),
     ...LIVE_SPORTS.map((s) => evParlaysCurrent(s).catch(() => [])),
   ]);
-  const opps = (oppsAll || []).filter((o) => o.tier);
+  const opps = oppsAll || [];     // every is_pick row with valid numbers is an opportunity; Alpha and its tier are a ranking / label
   const gradedLines = gradedLinePicks(results, picks, starts), gradedProps = gradedPropPicks(propRes, propPicks, starts);
   const stamps = [...(lastLine || []), ...(lastProp || [])].map((r) => r && r.created_at).filter(Boolean).sort();
   return { nowMs, today, preds: (predsBy || []).flat(), opps, lineBy, hist: hist || [], pnl: evPnl || [],

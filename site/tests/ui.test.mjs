@@ -1,5 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import fs from "node:fs";
 import { loadScripts } from "./load.mjs";
 const g = loadScripts(["app.js", "js/metrics.js", "tests/fixtures/shrink-k-identity.js", "js/shrink.js", "js/ui.js", "js/shell.js", "js/boot.js"]);
 const count = (s, re) => (s.match(re) || []).length;
@@ -7,11 +8,17 @@ const count = (s, re) => (s.match(re) || []).length;
 test("conf pill + alpha cell", () => {
   assert.equal(g.confPill(null), "");
   assert.match(g.confPill("STRONG"), /class="ca-conf STRONG">STRONG</);
+  assert.equal(g.confPill("VALUE"), '<span class="ca-conf VALUE">Value</span>', "VALUE is a neutral pill labelled Value");
+  assert.match(g.confPill('x"><b>'), /ca-conf x&quot;&gt;&lt;b&gt;/, "the tier is escaped");
   assert.match(g.alphaCell(89), /ca-alpha-cell hi/);
   assert.doesNotMatch(g.alphaCell(70), / hi/);
   assert.equal(g.alphaCell(null), "");
   assert.equal(g.oddsStr(128), "+128"); assert.equal(g.oddsStr(-110), "-110");
   assert.equal(g.oddsStr(null), "");
+});
+test("the VALUE pill has a CSS rule (muted, not a colour of the HIGH / STRONG / MEDIUM scale)", () => {
+  const css = fs.readFileSync(new URL("../css/theme.css", import.meta.url), "utf8");
+  assert.match(css, /\.ca-conf\.VALUE\{[^}]*color:var\(--muted\)/);
 });
 test("sparkline points and empty input", () => {
   assert.equal(g.sparkline([1]), "");

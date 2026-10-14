@@ -27,17 +27,17 @@ const brKey = (o) => (o.kind === "prop" ? `${o.game_pk}|${o.playerName}|${o.mark
 const brStarted = (o, now) => { const t = Date.parse(o.commence); return Number.isFinite(t) && t < now; };
 const brGrade = (won) => (won === true ? "W" : won === false ? "L" : "P");     // a graded row with no winner is a push (spread / total refunded)
 
-// The stored +EV picks of a period as opportunities with a tier (R9), each carrying `result` ("W" | "L" | "P" | null when not graded).
+// The stored +EV picks of a period as opportunities (R9: every pick with valid numbers; Alpha and its tier rank / label it), each carrying `result` ("W" | "L" | "P" | null when not graded).
 // The latest rebuild of a pick (max created_at) sets its price; a result joins on the pick's key.
 function brStoredOpps({ lines, lineRes, props, propRes }) {
   const latest = (rows, key) => { const m = new Map(); for (const r of rows || []) { if (!r) continue; const k = key(r), prev = m.get(k); if (!prev || String(r.created_at || "") >= String(prev.created_at || "")) m.set(k, r); } return [...m.values()]; };
   const lineKey = (r) => `${r.sport}|${r.game_pk}|${r.market}|${r.side}`, propKey = (r) => `${r.game_pk}|${r.player_id}|${r.market}|${r.line}|${r.model_version}`;
   const lr = new Map((lineRes || []).filter(Boolean).map((r) => [lineKey(r), r])), pr = new Map((propRes || []).filter(Boolean).map((r) => [propKey(r), r]));
   const out = [];
-  for (const r of latest(lines, lineKey)) { const o = toOpportunity(r, "line", null), g = lr.get(lineKey(r)); if (o && o.tier) out.push({ ...o, result: g ? brGrade(g.won) : null }); }
+  for (const r of latest(lines, lineKey)) { const o = toOpportunity(r, "line", null), g = lr.get(lineKey(r)); if (o) out.push({ ...o, result: g ? brGrade(g.won) : null }); }
   for (const r of latest(props, propKey)) {
     const o = toOpportunity(r, "prop", null), g = pr.get(propKey(r));
-    if (o && o.tier) out.push({ ...o, result: g && g.result === "win" ? "W" : g && g.result === "loss" ? "L" : g && g.result === "push" ? "P" : null });
+    if (o) out.push({ ...o, result: g && g.result === "win" ? "W" : g && g.result === "loss" ? "L" : g && g.result === "push" ? "P" : null });
   }
   return out;
 }

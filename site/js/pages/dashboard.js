@@ -138,7 +138,7 @@ async function dashLoad(date) {
   ]);
   const preds = predsBy.flat();
   const onDate = (iso) => !!iso && etDateStr(iso) === date;
-  const tiered = (oppsAll || []).filter((o) => o.tier);
+  const tiered = oppsAll || [];     // every is_pick row with valid numbers is an opportunity; Alpha and its tier are a ranking / label
   const opps = tiered.filter((o) => onDate(o.commence));     // date-scoped: Live +EV count, Best Edge, Signals, Slate
   const upToDate = (r) => r && r.game_date <= date;
   const pnl = (evPnl || []).filter(upToDate);                // the one performance population: graded +EV picks
@@ -197,7 +197,7 @@ function dashStatUnits(D) {
     visual: sparkline(dashCumUnits(p.rows, from, D.date).map((x) => x.units), { w: 72, h: 44 }) });
 }
 function dashStatSignals(D) {
-  const tiers = [["HIGH", "High Conviction", "var(--green)"], ["STRONG", "Strong Value", "var(--blue)"], ["MEDIUM", "Medium Value", "var(--amber)"]];
+  const tiers = [["HIGH", "High Conviction", "var(--green)"], ["STRONG", "Strong Value", "var(--blue)"], ["MEDIUM", "Medium Value", "var(--amber)"], ["VALUE", "Value", "var(--muted)"]];
   return `<div class="ca-card ca-stat ca-dash-stat">${statLabel("Active Signals")}<div class="ca-dash-sig">${tiers.map(([t, l, col]) =>
     `<div class="ca-dash-sig-row"><i style="border-color:${col}"></i><b>${D.opps.filter((o) => o.tier === t).length}</b><span>${l}</span></div>`).join("")}</div></div>`;
 }
@@ -381,7 +381,7 @@ function dashWatchBody(D) {
     });
   } else {
     // Player stars come from prop rows (+EV table, game page Players tab); the row shows the player's current prop
-    // opportunity (R9: a pick with a tier), else just the name.
+    // opportunity (R9: any pick), else just the name.
     rows = w.players.map((id) => {
       const o = D.tiered.filter((x) => x.kind === "prop" && x.playerName === id).sort((a, b) => b.alpha - a.alpha)[0];
       if (!o) return row(starButton("players", id, id), ctxEsc(id), "No +EV prop on the board", "", "#watchlist");
