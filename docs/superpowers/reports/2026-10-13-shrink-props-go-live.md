@@ -1,6 +1,6 @@
 # Shrink prop probabilities: go-live checklist (2026-10-13)
 
-Branch `feat/shrink-props`. Everything below is for you to run; nothing here has been executed. No migration was run, nothing was pushed, no workflow was dispatched, and no code ever connected to the database during the build.
+Branch `feat/shrink-props`. Most steps below are for you to run (the first fit is the exception: Claude runs it right after the merge); nothing here has been executed. No migration was run, nothing was pushed, no workflow was dispatched, and no code ever connected to the database during the build.
 
 ## What this changes, in plain words
 
@@ -35,9 +35,7 @@ WHERE table_name = 'ev_prop_picks' AND column_name IN ('raw_model_prob', 'shrink
 
 ## 2. Merge, then dispatch the first fit at once
 
-Merge the PR. There is no k file yet, so every prop board build that runs before the first fit is **price-only** (k = 0): the model is ignored and a prop is a pick only when two books' best prices disagree enough to be +EV on their own (rare). Right after the merge, Claude dispatches the fit workflow **once**:
-
-`gh workflow run fit-shrink-k.yml --ref main` (or on GitHub: Actions, `fit-shrink-k`, Run workflow, branch `main`).
+Merge the PR. There is no k file yet, so every prop board build that runs before the first fit is **price-only** (k = 0): the model is ignored and a prop is a pick only when two books' best prices disagree enough to be +EV on their own (rare). Right after merge, Claude runs it once for you (or run this command yourself: `gh workflow run fit-shrink-k.yml --ref main`, or on GitHub: Actions, `fit-shrink-k`, Run workflow, branch `main`).
 
 **Watch this first run.** It is the first time the fit's database query (`GRADES_SQL`) touches the real database; in the build it was only tested against fakes and against the migration files. It takes about a minute. When it is green:
 
@@ -53,7 +51,7 @@ How to read `assets/shrink_k.json`: `pooled.k` and `pooled.n` are the overall nu
 
 `fit-shrink-k` runs **Tuesdays at 15:30 UTC** (after Monday night is graded), refits k on all graded legs, and commits the file and a dated report in `docs/superpowers/reports/`. The report shows the current k per market with n, how many legs have been scored so far, the running accuracy gain over the market and the calibration slope, and the status.
 
-The pass test is judged **once**, at the first weekly report with at least **2,000 scored legs** (each week is scored with a k fitted only on earlier weeks, so there is no peeking). Until then it says COLLECTING and nothing can pass or fail. **That count may not be reached this season:** only the three markets the board serves are scored, and the first 300 legs are used up before any week can be scored. If the season ends first, collection continues next season. After it is judged, the verdict never changes in later reports.
+The pass test is judged **once**, at the first weekly report with at least **2,000 scored legs** (each week is scored with a k fitted only on earlier weeks, so there is no peeking). Until then it says COLLECTING and nothing can pass or fail. **That count may not be reached this season:** only three of the four markets the board serves (pass TDs has no graded history yet) are scored, and the first 300 legs are used up before any week can be scored. If the season ends first, collection continues next season. After it is judged, the verdict never changes in later reports.
 
 - **Pass** (the shrunk model beats the market price by at least 0.001 Brier with the lower confidence bound above 0, and its calibration slope is between 0.8 and 1.2): shrunk model prop picks stay. This does not prove profit; closing-line value in the pick ledger judges that.
 - **Fail:** you and Claude decide together what happens to model prop picks. Nothing is removed automatically; picks keep using the shrunk probabilities until then.
@@ -83,6 +81,7 @@ The sims and props-ML models, `nfl_prop_lines` and `nfl_prop_grades`, the game-l
 
 ## 7. Known limits
 
-- **Pinnacle:** the market probability used in the fit comes from the best prices across all books on the prop-lines table (Pinnacle included); the board's market reference uses the best non-Pinnacle prices. The formula is identical, so k is internally consistent, but the two are not the same number to the last decimal.
+- **Market price source:** the fit's market price uses the best prices across all books on the prop-lines table, while the board's market probability uses the best prices among the major books, excluding Pinnacle.
+- **Mixed prop record:** prop picks graded before the switch used the raw model probability and later ones use the shrunk probability, so the site's prop record mixes both; Claude can move the NFL props track-record start date if you want a clean record from the switch.
 - Legs are matched to their model version by the sim row whose mean equals the line row's projection. Legs whose sim row no longer exists count only in the all-versions pool. Until 300 legs of the current model (props-ML v2) are graded, k is fitted on all versions pooled, which includes the older model's legs.
 - The audit already saw the existing graded weeks, so the test is not fully blind on that data. The walk-forward scoring and fixed thresholds limit the harm.

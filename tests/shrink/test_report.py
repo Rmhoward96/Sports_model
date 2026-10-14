@@ -77,4 +77,4 @@ def test_a_corrupt_newer_report_does_not_unfreeze_an_older_judged_verdict():
 def test_the_report_states_the_pinnacle_limit_of_the_fit_prices_in_one_line():
     text = report.render_report(as_of=AS_OF, doc=doc(), decision=COLLECTING)
     (line,) = [l for l in text.splitlines() if "Pinnacle" in l]
-    assert "all books" in line and "includes Pinnacle" in line and "board" in line and "excludes Pinnacle" in line
+    assert "all books" in line and "major books" in line and "board" in line and "excludes Pinnacle" in line
