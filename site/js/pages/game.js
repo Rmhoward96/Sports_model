@@ -13,7 +13,7 @@
    Depends on app.js (sb, gameParams, predictions-row helpers, the legacy sections matchupSection / historySection /
    trendsSection / splitsSection / propsProjectionSection / gameSimVisual / nflPredictionSection / boxscoreSection / evSection,
    wireGameSim, ctxEsc, ctxOrd, logoImg, teamShort, timeET, evBookName, gameMoneylines, evBestLines, nflServedSimVersion,
-   simVersionFilter, dedupLatest, distParse, distProbs, mlModelTag, gameTeamColors, pct1, pStr, r05), metrics.js, ui.js,
+   simVersionFilter, dedupLatest, distParse, distProbs, distPairs, mlModelTag, gameTeamColors, pct1, pStr, r05), metrics.js, ui.js,
    shell.js and data.js. */
 const GM_TABS = [["overview", "Overview"], ["matchup", "Matchup"], ["market", "Market"], ["trends", "Trends"], ["players", "Players"]];
 const ICON_GRADE = `<svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3l8 3v6c0 4.5-3.2 7.8-8 9-4.8-1.2-8-4.5-8-9V6z"/><path d="M9 12l2 2 4-4"/></svg>`;
@@ -47,7 +47,7 @@ function gmShrunkLines(pred) {
 }
 
 // The side the model favors in each market: moneyline favorite; spread / total only when the SHRUNK model's half-point
-// line is off the market line (same rule as the legacy lean, on the shrunk number); null when unknowable or on the line.
+// line is off the market line by at least a quarter point (same rule as the legacy lean, on the shrunk number); null when unknowable or on the line.
 function gmLean(pred) {
   const p = pred || {}, wp = numOrNull(p.home_win_prob), h = numOrNull(p.pred_home_score), a = numOrNull(p.pred_away_score);
   const ls = numOrNull(p.market_spread), lt = numOrNull(p.market_total), S = gmShrunkLines(p);
@@ -56,7 +56,10 @@ function gmLean(pred) {
     const edge = shrinkHalf(S.sMargin, -ls) + ls;      // the shrunk model margin (half point) minus the market's expected home margin (-ls); exactly 0 at k = 0
     out.spread = Math.abs(edge) < 0.25 ? null : edge > 0 ? "home" : "away";
   }
-  if (lt != null && h != null && a != null) out.total = S.sTotal > lt ? "over" : S.sTotal < lt ? "under" : null;
+  if (lt != null && h != null && a != null) {
+    const edge = shrinkHalf(S.sTotal, lt) - lt;        // the same half-point rule as the spread; exactly 0 at k = 0
+    out.total = Math.abs(edge) < 0.25 ? null : edge > 0 ? "over" : "under";
+  }
   return out;
 }
 
@@ -174,8 +177,7 @@ function gmMedian(dist) {
 // no posted spread / total. Spread and total: the model's own distribution is shifted so that its MEDIAN lands on market + k (median - market)
 // (d = (1 - k) (market - median), the market's expected home margin being -market_spread), and the side probability is read from the shifted
 // distribution: P(M + d > t) = P(M > t - d). At k = 0 the median sits on the market line, so neither side of it is above 50% (skew and key-number
-// lumps in the distribution cannot make a phantom edge); at k = 1, d = 0 and it is the raw distribution probability. The moneyline sides also
-// carry rawModelProb, the unshrunk win probability.
+// lumps in the distribution cannot make a phantom edge); at k = 1, d = 0 and it is the raw distribution probability.
 function gmOdds(pred, evRows, mlRow, sim, lineBy) {
   const p = pred || {}, by = new Map(gmLatest(evRows).map((r) => [`${r.market}|${r.side}`, r])), d = gmDists(p, sim);
   const wp = numOrNull(p.home_win_prob), S = gmShrunkLines(p);
@@ -185,7 +187,7 @@ function gmOdds(pred, evRows, mlRow, sim, lineBy) {
     const price = cons != null ? cons : bestPrice;
     const prob = (x) => (x != null && Number.isFinite(americanToProb(x)) ? americanToProb(x) : null);
     return { price, implied: prob(price), bestPrice, bestImplied: r && gmImplied(r) != null ? gmImplied(r) : prob(bestPrice),
-      rawModelProb: wp == null ? null : side === "home" ? wp : 1 - wp, modelProb: null };
+      modelProb: null };
   };
   const ml = { away: mlSide("away"), home: mlSide("home") };
   const mHome = ml.home.implied != null && ml.away.implied != null ? ml.home.implied / (ml.home.implied + ml.away.implied) : null;
@@ -209,10 +211,12 @@ function gmOdds(pred, evRows, mlRow, sim, lineBy) {
 }
 
 // Every side of the game with both a model probability and a market probability, as read candidates
-// [{market, side, label, line, price, modelProb, impliedProb}] (no pick gate: the model's view against the price available).
+// [{market, side, label, line, price, modelProb, impliedProb}] (no pick gate: the model's view against the price available). A market whose
+// shrink k is 0 is skipped: its shrunk model IS the market, so any positive comparison against the best line would be line shopping mislabelled as a model edge.
 function gmCandidates(pred, odds) {
   const out = [];
   for (const [market, side] of [["moneyline", "away"], ["moneyline", "home"], ["spread", "away"], ["spread", "home"], ["total", "over"], ["total", "under"]]) {
+    if (shrinkK((pred || {}).sport, market) === 0) continue;     // k = 0: the model carries no information here, so a "gain" against the best line is line shopping, not a model edge
     const s = odds && odds[market] && odds[market][side];
     if (!s || s.modelProb == null || s.bestImplied == null) continue;
     const line = market === "moneyline" ? null : s.line;
@@ -251,7 +255,11 @@ function modelProjectionRows(pred, odds) {
   rows.push(ml);
   const sp = blank("Spread");
   if (S.margin != null) {
-    const side = S.margin >= 0 ? "home" : "away", e = o.spread && o.spread[side], mktHome = numOrNull(p.market_spread);
+    const mktHome = numOrNull(p.market_spread);
+    // With a posted line the side is the one the SHRUNK margin favours against the market's expected home margin (-mktHome); on a tie (always at k = 0)
+    // it is the market favourite. Without a line it is the raw projection's side.
+    const side = S.hasSpread ? (S.sMargin > -mktHome + 1e-9 ? "home" : S.sMargin < -mktHome - 1e-9 ? "away" : mktHome > 0 ? "away" : "home") : S.margin >= 0 ? "home" : "away";
+    const e = o.spread && o.spread[side];
     // The half-point line the cell shows, in the chosen side's line space (the home line is minus the margin); the market's own line when k = 0
     const modelLine = (S.hasSpread ? shrinkHalf(side === "home" ? -S.sMargin : S.sMargin, side === "home" ? mktHome : -mktHome) : r05(side === "home" ? -S.margin : S.margin)) || 0;
     sp.model = `${ab(side)} ${modelLineStr(modelLine)}${S.hasSpread ? gmPctP(e ? e.modelProb : null) : " (projection)"}`;
@@ -266,7 +274,7 @@ function modelProjectionRows(pred, odds) {
   rows.push(sp);
   const tt = blank("Total");
   if (S.total != null) {
-    const T0 = o.total ? o.total.line : null, lean = T0 == null ? null : S.total >= T0 ? "over" : "under", shown = S.hasTotal ? S.sTotal : S.total;
+    const T0 = o.total ? o.total.line : null, shown = S.hasTotal ? S.sTotal : S.total, lean = T0 == null ? null : shown >= T0 ? "over" : "under";    // the shrunk total decides; Over on a tie
     const e = lean && o.total[lean], T = e && e.line != null ? e.line : T0;
     tt.model = `${shown.toFixed(1)}${S.hasTotal ? gmPctP(e ? e.modelProb : null) : " (projection)"}`;
     if (T != null) {

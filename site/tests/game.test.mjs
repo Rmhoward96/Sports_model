@@ -510,7 +510,9 @@ test("one model-spread formatter on the board and the game page: half-point roun
   assert.equal(g.modelLineStr(-7.1), "-7"); assert.equal(g.modelLineStr(-7.3), "-7.5"); assert.equal(g.modelLineStr(3.26), "+3.5");
   const pred = { sport: "nfl", home_team_name: "Atlanta Falcons", away_team_name: "Tampa Bay Buccaneers", pred_home_score: 24.1, pred_away_score: 23.9, market_spread: -1.5 };
   assert.match(g.gmSpreadCard({ sport: "nfl", r: pred }), /ca-gm-mid">ATL PK</);
-  assert.match(g.modelProjectionRows(pred, g.gmOdds(pred, [], null, null, null))[1].model, /^ATL PK$/);
+  const pk = { ...pred, market_spread: 0 };      // the side follows the shrunk margin against the market: at a pick'em line the model's home +0.2 is the home side
+  assert.match(g.modelProjectionRows(pk, g.gmOdds(pk, [], null, null, null))[1].model, /^ATL PK$/);
+  assert.match(g.modelProjectionRows(pred, g.gmOdds(pred, [], null, null, null))[1].model, /^TB PK$/, "against the home -1.5 line the model (home by 0.2) prefers the away +1.5 side, whose own model line is also PK");
   assert.ok(!src("js/pages/game.js").includes("gmLine1") && src("js/pages/board.js").includes("modelLineStr("), "both pages use the shared formatter");
 });
 
@@ -557,7 +559,7 @@ const EVN = [evRow({ market: "spread", side: "home", best_line_implied: 0.52 }),
 
 test("gmOdds (CFB k = 0.5): the win, cover and total probabilities are the model halfway to the market", () => {
   const o = mixed.gmOdds(PM, [], MLROW, null, null), s = 0.5 * 0.8 + 0.5 * M_HOME;
-  near(o.moneyline.home.modelProb, s); near(o.moneyline.away.modelProb, 1 - s); assert.equal(o.moneyline.home.rawModelProb, 0.8);
+  near(o.moneyline.home.modelProb, s); near(o.moneyline.away.modelProb, 1 - s);
   // margin 11 -> 9 (market 7): the shifted margin beats 7 when the raw margin beats 9; away covers +7 when the shifted margin is below 7
   near(o.spread.home.modelProb, split(MARGIN_N, 9).over); near(o.spread.away.modelProb, split(MARGIN_N, 9).under);
   // total 55 -> 52.5 (market 50): over 50 when the raw total beats 52.5
@@ -580,7 +582,7 @@ test("gmOdds: without a posted spread or total the model has no spread / total p
   assert.equal(o.spread.home.modelProb, null); assert.equal(o.spread.away.modelProb, null); assert.equal(o.total.over.modelProb, null); assert.equal(o.total.under.modelProb, null);
   assert.ok(o.moneyline.home.modelProb != null);
   const one = mixed.gmOdds(PM, [], { home_price: -233, away_price: null }, null, null);
-  assert.equal(one.moneyline.home.modelProb, null); assert.equal(one.moneyline.home.rawModelProb, 0.8);
+  assert.equal(one.moneyline.home.modelProb, null);
   const rows = mixed.modelProjectionRows(bare, o);
   assert.match(rows[1].model, /\(projection\)$/); assert.match(rows[2].model, /\(projection\)$/); assert.equal(rows[1].pts, null); assert.equal(rows[2].diff, null);
   const noMkt = mixed.modelProjectionRows(bare, mixed.gmOdds(bare, [], null, null, null));
@@ -673,4 +675,74 @@ test("away favourite (model: away by 10, book home +3, CFB k = 0.5): the shrunk 
   assert.match(sp.model, /^\S+ -6\.5 \(\d+\.\d%\)$/, sp.model); assert.match(sp.market, /^\S+ -3 \(/, sp.market); near(sp.pts, 3.5);
   assert.match(g.modelProjectionRows(AF, raw)[1].model, /^\S+ -10 \(/);
   assert.match(mixed.gmRawLine(AF), /Raw model projection: \S+ -10 · total 50\.0 · \S+ 75\.0% win/, "the raw line keeps the favourite minus");
+});
+
+// ---- final whole-branch review fixes (F1-F4) ----
+const NFLK = { ...PM, sport: "nfl" };
+const stripTags = (h) => h.replace(/<[^>]*>/g, "");
+const leanCards = (html) => ({ spread: stripTags((/SPREAD LEAN<\/span><strong[^>]*>(.*?)<\/strong>/s.exec(html) || [])[1] || ""), total: stripTags((/TOTAL LEAN<\/span><strong[^>]*>(.*?)<\/strong>/s.exec(html) || [])[1] || "") });
+
+test("F1: the Matchup tab's SPREAD LEAN / TOTAL LEAN follow the shrunk numbers on an ungraded row (NFL k = 0: no lean; CFB k = 0.5: still leans)", () => {
+  const nfl = leanCards(mixed.nflPredictionSection(NFLK, null, ""));
+  assert.equal(nfl.spread, "PK"); assert.equal(nfl.total, "No lean");
+  assert.ok(!/Over|Under/.test(mixed.nflPredictionSection(NFLK, null, "")));
+  const cfb = leanCards(mixed.nflPredictionSection(PM, null, ""));
+  assert.equal(cfb.spread, "-7"); assert.equal(cfb.total, "Over 50.0");        // shrunk margin 9 beats the market 7 -> home -7; shrunk total 52.5 beats 50
+  // the raw model's side flips with the shrunk side only when the shrunk number crosses the line: raw home by 11 vs market 12 favours the away dog, shrunk (11.5) too
+  const dog = leanCards(mixed.nflPredictionSection({ ...PM, market_spread: -12, market_total: 60 }, null, ""));
+  assert.equal(dog.spread, "+12"); assert.equal(dog.total, "Under 60.0");
+});
+
+test("F1: a GRADED row keeps its raw lean and its chips, whatever k is", () => {
+  const actual = { actual_total: 44, actual_margin: 4, spread_pick_correct: true, total_pick_correct: false, winner_correct: true };
+  const html = mixed.nflPredictionSection(NFLK, actual, "");
+  const l = leanCards(html);
+  assert.equal(l.spread, "-7"); assert.equal(l.total, "Over 50.0");          // raw: home by 11 beats -7, total 55 beats 50
+  assert.ok(html.includes("call-ok") && html.includes("call-miss"));
+  assert.ok(!/NaN|undefined/.test(html));
+});
+
+test("F2: a k = 0 market is not a Read candidate (line shopping is not a model edge); CFB (k = 0.5) still produces candidates", () => {
+  const nfl = { ...PM, sport: "nfl", market_spread: -3 };
+  const ev = [evRow({ sport: "nfl", game_pk: 9, market: "spread", side: "home", best_line_implied: 105 / 205, best_price: -105 }), evRow({ sport: "nfl", game_pk: 9, market: "spread", side: "away", best_line_implied: 0.5, best_price: -110 })];
+  const lineBy = new Map([["9|spread|home", -2.5], ["9|spread|away", 3]]);
+  const o = mixed.gmOdds(nfl, ev, MLROW, null, lineBy);
+  assert.equal(o.spread.home.line, -2.5);
+  assert.deepEqual(mixed.gmCandidates(nfl, o), []);
+  assert.equal(mixed.gameRead(mixed.gmCandidates(nfl, o)), null);
+  const html = mixed.gmReadCard({ r: nfl, sport: "nfl", evRows: ev, mlRow: MLROW, simRows: [], lineBy });
+  assert.ok(html.includes("No model edge on this game"));
+  assert.ok(mixed.gmCandidates(PM, mixed.gmOdds(PM, EVN, MLROW, null, null)).length > 0);
+});
+
+test("F3: the projection table's side follows the shrunk numbers; at k = 0 it is the market favourite and Over, with no NaN / undefined", () => {
+  // raw model: away by 10, total 40 (Under) against a home favourite -7 and total 55
+  const raw = { ...NFLK, home_win_prob: 0.3, pred_home_score: 15, pred_away_score: 25, market_spread: -7, market_total: 55 };
+  const rows = mixed.modelProjectionRows(raw, mixed.gmOdds(raw, [], MLROW, null, null));
+  assert.ok(rows[1].model.startsWith(`${mixed.teamShort("Home U", "nfl")} -7 `), rows[1].model);      // the market favourite at the market's own line
+  assert.equal(rows[1].model.includes("+"), false, "the favourite keeps a minus line");
+  assert.match(rows[2].market, /^O 55/);
+  assert.ok(!/NaN|undefined/.test(JSON.stringify(rows)));
+  // away market favourite (book home +4): the tie goes to the away team at a minus line
+  const af = { ...raw, market_spread: 4 }, ar = mixed.modelProjectionRows(af, mixed.gmOdds(af, [], MLROW, null, null));
+  assert.match(ar[1].model, / -4 /); assert.ok(ar[1].model.startsWith(mixed.teamShort("Away U", "nfl")));
+  // pick'em: the home team
+  const pk = { ...raw, market_spread: 0 }, pr = mixed.modelProjectionRows(pk, mixed.gmOdds(pk, [], MLROW, null, null));
+  assert.ok(pr[1].model.startsWith(mixed.teamShort("Home U", "nfl")));
+  // CFB k = 0.5 with the raw model on the away side but the shrunk margin on the home side of the market: shrunk side wins over the raw side
+  const cf = { ...PM, pred_home_score: 20, pred_away_score: 22, home_win_prob: 0.45, market_spread: -7 };    // raw: away by 2; shrunk 0.5 x (-2) + 0.5 x 7 = 2.5 < 7 -> away
+  assert.ok(mixed.modelProjectionRows(cf, mixed.gmOdds(cf, [], MLROW, null, null))[1].model.startsWith(mixed.teamShort("Away U", "cfb")));
+  const cf2 = { ...PM, pred_home_score: 24, pred_away_score: 20, home_win_prob: 0.55, market_spread: 2 };    // raw: home by 4; market: away favoured by 2 (expected margin -2): shrunk 1 > -2 -> home
+  assert.ok(mixed.modelProjectionRows(cf2, mixed.gmOdds(cf2, [], MLROW, null, null))[1].model.startsWith(mixed.teamShort("Home U", "cfb")));
+  // no posted line: the raw projection decides, labelled
+  const none = mixed.modelProjectionRows({ ...raw, market_spread: null, market_total: null }, mixed.gmOdds({ ...raw, market_spread: null, market_total: null }, [], null, null, null));
+  assert.ok(none[1].model.startsWith(mixed.teamShort("Away U", "nfl")) && /\(projection\)$/.test(none[1].model));
+});
+
+test("F4: the total lean uses the half-point rule: a shrunk total within a quarter point of the line is no lean; a clear gap still leans", () => {
+  const near1 = { ...PM, pred_home_score: 30.2, pred_away_score: 20.2 };          // raw 50.4, shrunk 50.2 -> 50.0 at the half point: on the line
+  assert.equal(mixed.gmLean(near1).total, null);
+  assert.equal(mixed.gmLean({ ...near1, pred_home_score: 30.0, pred_away_score: 19.6 }).total, null, "shrunk 49.8 -> 50.0");
+  assert.equal(mixed.gmLean(PM).total, "over");
+  assert.equal(mixed.gmLean({ ...PM, pred_home_score: 25, pred_away_score: 20 }).total, "under", "raw 45, shrunk 47.5");
 });
