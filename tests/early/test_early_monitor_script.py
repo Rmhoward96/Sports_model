@@ -338,3 +338,57 @@ def test_production_wiring_uses_the_db_helpers_with_timeouts(monkeypatch):
     assert seen["keys"] == ("cfb", NOW, {"connect_timeout": 10, "statement_timeout_ms": 15_000})
     assert seen["insert"] == {"connect_timeout": 10, "statement_timeout_ms": 15_000}
     assert deps.store_snapshots is db.upsert_odds_snapshot
+
+
+# ---- a dead monitor is visible -------------------------------------------------------------------------------
+
+def _main_with(monkeypatch, fake, argv=()):
+    monkeypatch.delenv("SM_LEDGER_OFF", raising=False)
+    monkeypatch.setenv("DATABASE_URL", "postgres://unused")
+    monkeypatch.setenv("ODDS_API_KEY", "unused")
+    monkeypatch.setattr(em, "_db_deps", fake.deps)
+    return em.main(list(argv))
+
+
+def test_main_exits_1_when_every_attempted_sport_failed(monkeypatch):
+    fake = Fake(fail={"cfb": RuntimeError("401"), "nfl": RuntimeError("401")})
+    assert _main_with(monkeypatch, fake) == 1
+
+
+def test_main_exits_0_when_one_sport_fails_and_one_succeeds(monkeypatch):
+    fake = Fake(fail={"nfl": RuntimeError("500")})
+    assert _main_with(monkeypatch, fake) == 0
+
+
+def test_main_exits_0_when_the_credit_floor_skips_everything(monkeypatch):
+    fake = Fake(prime_remaining="1200")
+    assert _main_with(monkeypatch, fake) == 0 and fake.calls("odds") == []
+
+
+def test_main_exits_0_when_the_first_sport_fails_and_the_floor_skips_the_second(monkeypatch):
+    fake = Fake(fail={"cfb": RuntimeError("500")}, remaining="1200")
+    assert _main_with(monkeypatch, fake) == 0                          # one attempted sport failed, but the floor ended the run
+
+
+def test_main_exits_0_when_the_tables_are_missing(monkeypatch):
+    assert _main_with(monkeypatch, Fake(missing=["early_tickets"])) == 0
+
+
+def test_the_books_seen_and_missing_line_is_printed_after_each_successful_poll(capsys):
+    fake = Fake()                                                     # the stub events carry pinnacle + draftkings + bovada (cfb)
+    out = run(fake)
+    printed = capsys.readouterr().out
+    assert "[early-monitor] cfb books seen: ['draftkings', 'pinnacle']; missing: " in printed
+    assert "'espnbet'" in printed.split("cfb books seen")[1].split("\n")[0]
+    assert "[early-monitor] nfl books seen: ['betmgm', 'pinnacle']; missing: " in printed
+    assert out["sports"]["cfb"]["books_missing"] == [b for b in em.BOOKMAKERS if b not in ("draftkings", "pinnacle")]
+
+
+def test_the_dry_run_prints_the_same_books_line(capsys):
+    run(Fake(), dry_run=True)
+    assert "cfb books seen: ['draftkings', 'pinnacle']; missing:" in capsys.readouterr().out
+
+
+def test_a_failed_poll_prints_no_books_line(capsys):
+    run(Fake(fail={"cfb": RuntimeError("500")}))
+    assert "cfb books seen" not in capsys.readouterr().out

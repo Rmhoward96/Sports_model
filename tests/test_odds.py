@@ -88,3 +88,59 @@ def test_parse_prop_odds_default_cfg_none_keeps_mlb_behavior_unchanged():
     nfl_payload = _event_props_payload("player_pass_yds", "Over", "Patrick Mahomes")
     rows2 = odds.parse_prop_odds(nfl_payload, 1001, "2026-06-01T12:00:00Z")
     assert rows2 == []
+
+
+def test_the_bookmaker_odds_call_is_a_single_attempt_never_retried(monkeypatch):
+    """The early monitor's paid call: a retry after a billed timeout would bill again, so a failing transport is hit once."""
+    import httpx
+    from sportsmodel.ingest import odds
+    from sportsmodel.sports import get
+    attempts = []
+
+    class FailingClient:
+        def __init__(self, *a, **k):
+            pass
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+        def get(self, url, params=None):
+            attempts.append(url)
+            raise httpx.ReadTimeout("timed out")
+
+    monkeypatch.setenv("ODDS_API_KEY", "unused")
+    monkeypatch.setattr(odds.httpx, "Client", FailingClient)
+    with pytest.raises(httpx.ReadTimeout):
+        odds.fetch_bookmaker_odds(get("cfb"), ["pinnacle"], ["spreads"])
+    assert len(attempts) == 1
+
+
+def test_other_odds_calls_keep_their_retries(monkeypatch):
+    import httpx
+    from sportsmodel.ingest import odds
+    from sportsmodel.sports import get
+    attempts = []
+
+    class FailingClient:
+        def __init__(self, *a, **k):
+            pass
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+        def get(self, url, params=None):
+            attempts.append(url)
+            raise httpx.ReadTimeout("timed out")
+
+    monkeypatch.setenv("ODDS_API_KEY", "unused")
+    monkeypatch.setattr(odds.httpx, "Client", FailingClient)
+    monkeypatch.setattr(odds._get.retry, "sleep", lambda s: None)
+    with pytest.raises(Exception):
+        odds.fetch_events(get("cfb"))
+    assert len(attempts) == 3

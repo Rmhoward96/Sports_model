@@ -45,6 +45,29 @@ def test_both_sources_are_asked_with_the_same_one_hour_horizon():
     assert seen == [("base", NOW, NOW + timedelta(minutes=60)), ("early", NOW, NOW + timedelta(minutes=60))]
 
 
+def test_a_failing_early_source_never_aborts_the_run_and_the_base_candidates_still_capture(capsys):
+    fake = cfb_fake(candidates=[ccs.cand("cfb", 9, 12)])
+    deps = fake.deps()
+
+    def boom(now, end):
+        raise RuntimeError("early_tickets query exploded")
+
+    deps.load_early_candidates = boom
+    out = cc.run_capture(NOW, deps)
+    assert out["rows"] == [("cfb", 9, "lines", "ok")] and ("lines", "cfb", "us,eu") in fake.calls
+    printed = capsys.readouterr().out
+    assert printed.count("::warning::capture-close: early candidates unavailable") == 1
+    assert "RuntimeError" in printed
+
+
+def test_a_failing_early_source_with_no_base_candidates_is_idle_not_a_crash(capsys):
+    fake = cfb_fake()
+    deps = fake.deps()
+    deps.load_early_candidates = lambda now, end: (_ for _ in ()).throw(RuntimeError("down"))
+    assert cc.run_capture(NOW, deps) == {"status": "idle"} and fake.calls == []
+    assert "early candidates unavailable" in capsys.readouterr().out
+
+
 class Cur:
     def __init__(self, seen, rows):
         self.seen, self.rows = seen, rows

@@ -197,7 +197,11 @@ def run_capture(now: datetime, deps: Deps, *, prop_regions: str = close.DEFAULT_
         _warn(f"table {gone[0]} missing — run db/migration_pick_ledger.sql")
         return {"status": "no_table"}
     horizon = now + timedelta(minutes=close.PREFILTER_MIN)
-    candidates = deps.load_candidates(now, horizon) + deps.load_early_candidates(now, horizon)
+    candidates = deps.load_candidates(now, horizon)
+    try:
+        candidates = candidates + deps.load_early_candidates(now, horizon)
+    except Exception as exc:  # noqa: BLE001 -- the early-week source is an add-on: it must never stop the live close capture
+        _warn(f"early candidates unavailable, capturing the base candidates only: {type(exc).__name__}: {exc}")
     live = close.prefilter_sports(candidates, now)
     if not live:
         return {"status": "idle"}

@@ -150,6 +150,15 @@ def test_same_line_same_or_better_price_one_poll_later_is_available():
     assert avail(later(60, price=120)) is True                          # across the +/-100 boundary: better
 
 
+def test_junk_later_prices_are_skipped_not_a_crash():
+    junk = later(60)
+    for bad in (0, -99, 99, "n/a", None):
+        junk.append(row(1, "total", "over", "draftkings", 54.5, bad, KICK, captured_at=NOW + timedelta(minutes=60)))
+    assert avail(junk) is True                                          # the valid -110 row still answers
+    only_junk = [r for r in junk if r["book"] != "draftkings"] + junk[-5:]
+    assert avail(only_junk) is False                                    # nothing valid from the book: not available, no crash
+
+
 def test_a_worse_price_a_moved_line_or_a_pulled_book_is_not_available():
     assert avail(later(60, price=-115)) is False
     assert avail(later(60, line=55.5)) is False

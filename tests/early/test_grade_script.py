@@ -132,3 +132,30 @@ def test_default_queries(monkeypatch):
     assert not any(w in s.upper().split() for s in sql for w in ("INSERT", "UPDATE", "DELETE"))
     for col in ("t.id", "t.book_line", "t.price", "t.observed_at", "t.commence_time"):
         assert col in sql[0]
+
+
+def test_one_ticket_that_cannot_be_graded_is_warned_and_the_others_still_are(monkeypatch, capsys):
+    real = ge.grade_tickets
+
+    def flaky(tickets, *a, **k):
+        if any(t["id"] == 12 for t in tickets):
+            raise ZeroDivisionError("junk price")
+        return real(tickets, *a, **k)
+
+    monkeypatch.setattr(ge, "grade_tickets", flaky)
+    ld, calls = loaders(pending_tickets=lambda days: [ticket(11), ticket(12), ticket(13)])
+    out = ge.grade_all(ld, 14)
+    assert out["pending"] == 3 and out["graded"] == 2 and out["failed"] == 1
+    assert sorted(r["ticket_id"] for r in calls["stored"]) == [11, 13]
+    printed = capsys.readouterr().out
+    assert "::warning::grade-early-tickets: ticket 12 could not be graded: ZeroDivisionError" in printed
+
+
+def test_a_junk_priced_later_row_does_not_stop_grading():
+    at = (NOW + timedelta(minutes=60))
+    junk = {1: [row(1, "total", "over", "draftkings", 54.5, 0, KICK, captured_at=at),
+                row(1, "total", "over", "pinnacle", 55.5, -110, KICK, captured_at=at),
+                row(1, "total", "under", "pinnacle", 55.5, -110, KICK, captured_at=at)]}
+    ld, calls = loaders(later_rows=lambda pks: junk)
+    out = ge.grade_all(ld, 14)
+    assert out["graded"] == 1 and calls["stored"][0]["available_next_poll"] is False

@@ -14,7 +14,7 @@ from ..ledger.core import as_utc
 from ..serving.board import decimal_odds
 from . import adjust
 from .constants import LINE_EPS, NEXT_POLL_MAX_MINUTES, NEXT_POLL_MIN_MINUTES, PINNACLE
-from .flags import pinnacle_reference
+from .flags import _valid_price, pinnacle_reference
 
 MISSING = {"close_kind": "missing", "close_fair": None, "close_line": None, "close_minutes_to_kick": None,
            "close_ev": None}
@@ -57,9 +57,13 @@ def available_next_poll(ticket: dict, later_rows: list[dict]) -> bool | None:
     if not polls or polls[0] - obs > timedelta(minutes=NEXT_POLL_MAX_MINUTES):
         return None
     need = decimal_odds(ticket["price"])
-    return any(r.get("book") == ticket["book"] and r.get("side") == ticket["side"] and r.get("line") is not None
-               and r.get("price") is not None and abs(float(r["line"]) - float(ticket["book_line"])) <= LINE_EPS
-               and decimal_odds(int(r["price"])) >= need - 1e-9 for r in by_time[polls[0]])
+    for r in by_time[polls[0]]:
+        price = _valid_price(r.get("price"))                    # junk feed prices (0, -99, strings) are skipped, never maths
+        if (r.get("book") == ticket["book"] and r.get("side") == ticket["side"] and r.get("line") is not None
+                and price is not None and abs(float(r["line"]) - float(ticket["book_line"])) <= LINE_EPS
+                and decimal_odds(price) >= need - 1e-9):
+            return True
+    return False
 
 
 def grade_ticket(ticket: dict, final: dict | None, close_rows: list[dict], later_rows: list[dict], tables: dict) -> dict | None:

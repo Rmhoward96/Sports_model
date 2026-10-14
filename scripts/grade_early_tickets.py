@@ -51,12 +51,23 @@ def grade_all(ld: Loaders, days: int) -> dict:
     if not tickets:
         return {"status": "ok", "pending": 0, "graded": 0}
     pks = sorted({t["game_pk"] for t in tickets})
-    results = grade_tickets(tickets, ld.finals(pks), ld.close_rows(pks), ld.later_rows(pks), ld.load_tables())
+    finals, close_rows, later_rows, tables = ld.finals(pks), ld.close_rows(pks), ld.later_rows(pks), ld.load_tables()
+    results, failed = [], 0
+    for t in tickets:                                  # one bad ticket must not stop the others being graded
+        try:
+            results += grade_tickets([t], finals, close_rows, later_rows, tables)
+        except Exception as exc:  # noqa: BLE001
+            failed += 1
+            print(f"::warning::grade-early-tickets: ticket {t.get('id')} could not be graded: {type(exc).__name__}: {exc}",
+                  flush=True)
     n = ld.store(results) if results else 0
     kinds: dict[str, int] = {}
     for r in results:
         kinds[r["close_kind"]] = kinds.get(r["close_kind"], 0) + 1
-    return {"status": "ok", "pending": len(tickets), "graded": n, "close_kinds": kinds}
+    out = {"status": "ok", "pending": len(tickets), "graded": n, "close_kinds": kinds}
+    if failed:
+        out["failed"] = failed
+    return out
 
 
 def _db_loaders() -> Loaders:

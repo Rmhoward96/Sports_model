@@ -13,7 +13,9 @@ Each run, for CFB (spreads + totals, 2 credits) and then NFL (spreads, 1 credit)
      (sport, game_pk, market, side), best US book, EV >= +1.5% against Pinnacle's same-poll fair, kickoff >= 24 h away.
      Tickets are appended right after each sport, so a failure part-way keeps what was already found.
 
-A failed poll is not retried (the next hourly run proceeds normally). Missing tables: warn and exit 0. Under the test
+A failed poll is not retried (the next hourly run proceeds normally; the paid call is a single attempt). The run exits 1
+only when every sport it attempted failed (sports skipped by the credit floor do not count). After each successful poll it
+logs which of the 10 requested bookmaker keys appeared in the response and which did not. Missing tables: warn and exit 0. Under the test
 guard SM_LEDGER_OFF: warn and exit 0, --dry-run included. Writes only odds_snapshot and early_tickets.
 
     uv run python scripts/early_monitor.py [--dry-run]
@@ -77,7 +79,12 @@ def _poll_sport(sport: str, now: datetime, deps: Deps, tables: dict, run_id: str
     rows = [r for r in odds.parse_game_odds(events, lookup, captured_at)
             if r["book"] in BOOKMAKERS and r["market"] in MARKETS[sport]]
     tickets = flags.flag_poll(rows, sport=sport, observed_at=now, tables=tables, existing=existing, poll_run_id=run_id)
-    out["sports"][sport] = {"events": len(events), "matched": len(lookup), "rows": len(rows), "tickets": len(tickets)}
+    present = {b.get("key") for e in events for b in (e.get("bookmakers") or [])}
+    seen = [b for b in BOOKMAKERS if b in present]
+    missing = [b for b in BOOKMAKERS if b not in present]
+    print(f"[early-monitor] {sport} books seen: {seen}; missing: {missing}", flush=True)   # dry run too: the go-live check
+    out["sports"][sport] = {"events": len(events), "matched": len(lookup), "rows": len(rows), "tickets": len(tickets),
+                            "books_missing": missing}
     if dry_run:
         out["would_write"] += tickets
         return
@@ -152,6 +159,10 @@ def main(argv: list[str] | None = None) -> int:
         print(f"[early-monitor] DRY RUN would log: {t['sport']} {t['game_pk']} {t['market']} {t['side']} "
               f"{t['book']} {t['book_line']:+g} {t['price']:+d} ev={t['ev']:+.2%} kick in {t['hours_to_kick']:.1f}h", flush=True)
     print(f"[early-monitor] { {k: v for k, v in result.items() if k != 'would_write'} }", flush=True)
+    attempted = result.get("sports", {})
+    if attempted and all("failed" in v for v in attempted.values()):
+        print("::error::early-monitor: every attempted sport's poll failed (check ODDS_API_KEY and the books line)", flush=True)
+        return 1                                       # a dead monitor must turn the run red
     return 0
 
 

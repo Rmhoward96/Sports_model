@@ -37,7 +37,7 @@ def test_an_unknown_remaining_value_runs_the_first_call(unknown):
 
 def test_fetch_bookmaker_odds_sends_bookmakers_and_never_regions(monkeypatch):
     seen = {}
-    monkeypatch.setattr(odds, "_get", lambda path, params: seen.update(path=path, params=params) or [])
+    monkeypatch.setattr(odds, "_get_once", lambda path, params: seen.update(path=path, params=params) or [])
     assert odds.fetch_bookmaker_odds(sports.get("cfb"), list(BOOKMAKERS), ["spreads", "totals"]) == []
     assert seen["path"] == "/sports/americanfootball_ncaaf/odds"
     assert seen["params"] == {"bookmakers": polling.bookmakers_param(), "markets": "spreads,totals",
