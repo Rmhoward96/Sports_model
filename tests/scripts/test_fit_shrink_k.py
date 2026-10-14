@@ -2,6 +2,7 @@
 import importlib.util
 import json
 import os
+import re
 import sys
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -262,3 +263,100 @@ def test_running_the_job_twice_in_a_day_judges_once(monkeypatch, tmp_path):
     code, out, reports = run_main(monkeypatch, tmp_path, more_rows, as_of=AS_OF)
     second = report.parse_report((reports / "2026-10-20-shrink-gate.md").read_text())["decision"]
     assert code == 0 and second == first and second["scored"] == first["scored"]
+
+
+# ---- hardening: deterministic version join, UTC as_of, read-only connection, columns that exist -----------------------
+
+def test_the_version_join_is_deterministic_and_never_assigns_a_version_to_a_leg_with_no_projection():
+    sql = " ".join(fs.GRADES_SQL.split())
+    assert sql.index("ORDER BY") < sql.index("LIMIT 1")
+    order_by = sql.split("ORDER BY")[1].split("LIMIT 1")[0]
+    assert order_by.split(",")[-1].strip() == "s.model_version"                       # the final tie-break key
+    assert "g.projection IS NOT NULL" in sql.split("LEFT JOIN LATERAL")[1].split(") v ON true")[0]
+
+
+def test_a_non_utc_as_of_is_normalised_to_utc_for_the_file_names_the_cutoff_and_the_stamp(monkeypatch, tmp_path):
+    # 2026-10-20 22:30 at UTC-5 is 2026-10-21 03:30 UTC: the report is the 21st's, and fitted_at says so
+    local = datetime(2026, 10, 20, 22, 30, tzinfo=timezone(timedelta(hours=-5)))
+    code, out, reports = run_main(monkeypatch, tmp_path, slate(), as_of=local)
+    assert code == 0
+    assert [p.name for p in reports.glob("*-shrink-gate.md")] == ["2026-10-21-shrink-gate.md"]
+    assert json.loads(out.read_text())["fitted_at"] == "2026-10-21T03:30:00+00:00"
+
+
+def test_a_non_utc_as_of_cannot_re_judge_the_utc_day_it_falls_in(monkeypatch, tmp_path):
+    reports = tmp_path / "reports"
+    reports.mkdir()
+    write_same_day_judged_report(reports)                                              # judged on 2026-10-20 UTC
+    local = datetime(2026, 10, 20, 20, 0, tzinfo=timezone(timedelta(hours=-7)))        # 2026-10-21 03:00 UTC: a new UTC day
+    code, out, reports = run_main(monkeypatch, tmp_path, slate(), as_of=local)
+    new = report.parse_report((reports / "2026-10-21-shrink-gate.md").read_text())["decision"]
+    assert code == 0 and new["status"] == "judged" and new["judged_on"] == "2026-10-20"       # carried, not re-judged
+
+
+class _FakeCursor:
+    def __init__(self, conn):
+        self.conn, self.description = conn, [("model_version",)]
+
+    def execute(self, sql, params=()):
+        self.conn.read_only_at_execute.append(self.conn.read_only)
+
+    def fetchall(self):
+        return []
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *a):
+        return False
+
+
+class _FakeConn:
+    read_only = None
+
+    def __init__(self):
+        self.read_only_at_execute = []
+
+    def cursor(self):
+        return _FakeCursor(self)
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *a):
+        return False
+
+
+def test_the_fetch_connection_is_set_read_only_before_any_query_runs(monkeypatch):
+    conn = _FakeConn()
+    monkeypatch.setattr(db, "get_postgres", lambda *a, **k: conn)
+    fs.collect(fs._db_query())
+    assert conn.read_only_at_execute == [True, True]
+
+
+ROOT_DB = ROOT / "db"
+
+
+def _create_table_columns(sql, table):
+    body = re.search(rf"CREATE TABLE IF NOT EXISTS {table} \((.*?)\n\);", sql, re.S).group(1)
+    return {m.group(1) for m in (re.match(r"\s*(\w+)\s+\w", ln) for ln in body.splitlines()) if m and m.group(1) != "PRIMARY"}
+
+
+def _view_columns(sql, view):
+    sel = re.search(rf"CREATE OR REPLACE VIEW {view} AS\s+SELECT(.*?)\bFROM\b", sql, re.S).group(1)
+    return {re.search(r"(\w+)\s*$", item.strip()).group(1) for item in sel.split(",") if item.strip()}
+
+
+def test_every_column_the_queries_read_exists_in_the_migrations():
+    lines = (ROOT_DB / "migration_nfl_prop_lines.sql").read_text()
+    sim = (ROOT_DB / "migration_nfl_sim.sql").read_text()
+    serving = (ROOT_DB / "migration_nfl_sim_serving.sql").read_text()
+    have = {"g": _view_columns(lines, "nfl_prop_grades"), "s": _create_table_columns(sim, "nfl_player_sim")}
+    assert {"game_pk", "result", "projection"} <= have["g"] and {"mean", "created_at", "model_version"} <= have["s"]    # the parsers work
+    used = set(re.findall(r"\b([gs])\.(\w+)", fs.GRADES_SQL))
+    assert used and not [(a, c) for a, c in used if c not in have[a]]
+    grades_select = fs.GRADES_SQL.split("FROM nfl_prop_grades")[0]
+    assert {"v.model_version"} <= {f"{a}.{c}" for a, c in re.findall(r"\b(v)\.(\w+)", grades_select)}            # v is the lateral subquery over s
+    serving_cols = _create_table_columns(serving, "nfl_sim_serving")
+    assert "model_version" in serving_cols and "id" in serving_cols
+    assert "FROM nfl_sim_serving WHERE id = 1" in fs.SERVING_SQL and "model_version" in fs.SERVING_SQL

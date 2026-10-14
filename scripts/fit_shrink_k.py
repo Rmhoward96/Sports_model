@@ -37,7 +37,8 @@ LEFT JOIN LATERAL (
     SELECT s.model_version
     FROM nfl_player_sim s
     WHERE s.game_pk = g.game_pk AND s.player_id = g.player_id AND s.market = g.market
-    ORDER BY abs(s.mean - g.projection) ASC, s.created_at DESC
+      AND g.projection IS NOT NULL
+    ORDER BY abs(s.mean - g.projection) ASC, s.created_at DESC, s.model_version
     LIMIT 1
 ) v ON true
 WHERE g.result IN ('hit', 'miss')
@@ -49,10 +50,12 @@ def _db_query():
     from sportsmodel import db
 
     def q(sql, params=()):
-        with db.get_postgres() as conn, conn.cursor() as cur:
-            cur.execute(sql, params)
-            cols = [d[0] for d in cur.description]
-            return [dict(zip(cols, r)) for r in cur.fetchall()]
+        with db.get_postgres() as conn:
+            conn.read_only = True            # the server refuses any write on this connection, whatever the SQL says
+            with conn.cursor() as cur:
+                cur.execute(sql, params)
+                cols = [d[0] for d in cur.description]
+                return [dict(zip(cols, r)) for r in cur.fetchall()]
     return q
 
 
@@ -112,6 +115,7 @@ def main(argv: list[str] | None = None) -> int:
     as_of = datetime.fromisoformat(args.as_of.replace("Z", "+00:00")) if args.as_of else datetime.now(timezone.utc)
     if as_of.tzinfo is None:
         as_of = as_of.replace(tzinfo=timezone.utc)
+    as_of = as_of.astimezone(timezone.utc)       # file names, judged_on, fitted_at and the cutoff are all UTC days
     out, reports_dir = Path(args.out), Path(args.reports_dir)
     try:
         rows, current_version = collect(_db_query())

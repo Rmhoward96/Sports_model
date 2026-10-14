@@ -39,6 +39,10 @@ from ..model.distributions import prob_over_dist
 from ..shrink.formula import shrink_prob
 from .board import EV_CEILING, best_price, decimal_odds, ev, novig
 
+# Float hygiene, not a threshold: a zero-vig cross-book pair at k = 0 has a true EV of 0 but can compute to ~2e-16, which must
+# not count as a pick.
+EV_EPS = 1e-9
+
 # Sim aggregate market -> Odds API / SportConfig["nfl"].prop_market_map key.
 # The sim's markets are pass_yds/rush_yds/rec_yds/receptions; the odds side
 # uses rush_yds/reception_yds/receptions/pass_yds. rec_yds <-> reception_yds
@@ -233,7 +237,7 @@ def assemble_prop_rows(
     the higher-EV side. Pinnacle is the sharp reference (kept only as
     `pinnacle_price`/`open_pinnacle_price` for CLV grading), never shopped as
     a soft book -- a side offered only by Pinnacle is excluded, same as a
-    missing side. `is_pick` requires `0 < ev_best <= board.EV_CEILING`, same
+    missing side. `is_pick` requires `EV_EPS < ev_best <= board.EV_CEILING`, same
     convention as the game pilot, since an EV above that ceiling is almost
     always a stale-line artifact rather than real value (props are more
     stale-line-prone than game markets, not less). Rows failing any step (no
@@ -376,7 +380,7 @@ def assemble_prop_rows(
             # real value, so it's excluded from the graded record. Props are
             # MORE stale-line-prone than game markets, so this matters more
             # here, not less.
-            "is_pick": 0 < ev_best <= EV_CEILING,
+            "is_pick": EV_EPS < ev_best <= EV_CEILING,
         })
     return rows
 

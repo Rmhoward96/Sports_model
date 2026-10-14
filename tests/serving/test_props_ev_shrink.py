@@ -185,6 +185,16 @@ def test_at_k_zero_only_cross_book_pricing_gaps_are_picks_and_both_sides_tie():
     assert n["is_pick"] is False and n["ev_best"] < 0
 
 
+@pytest.mark.parametrize("price", [110, 295])            # 295: ev_best comes out as +2.2e-16 from float noise alone
+def test_a_zero_vig_cross_book_pair_at_k_zero_is_not_a_pick_despite_float_noise(price):
+    zero_vig = [_o("over", "draftkings", -price), _o("under", "fanduel", price)]       # best prices imply exactly 100%: true EV is 0
+    [z] = nfl(odds=zero_vig, shrink=ShrinkTable())
+    assert abs(z["ev_best"]) < 1e-9 and z["is_pick"] is False
+    real = [_o("over", "draftkings", 105), _o("under", "fanduel", 105)]                # a real 2.4% gap is still a pick
+    [r] = nfl(odds=real, shrink=ShrinkTable())
+    assert r["is_pick"] is True
+
+
 def test_rows_always_carry_the_audit_keys():
     [r] = nfl(shrink=ShrinkTable({("nfl", "reception_yds"): 0.2}))
     assert {"raw_model_prob", "shrink_k"} <= set(r)
