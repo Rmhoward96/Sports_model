@@ -260,3 +260,32 @@ def test_evaluate_returns_both_briers_the_gain_the_bound_and_the_slope():
     assert ev["n"] == 2000 and ev["games"] == 1000
     assert ev["gain"] == pytest.approx(ev["brier_market"] - ev["brier_shrunk"])
     assert ev["lower"] < ev["gain"] and ev["slope"] is not None
+
+
+# ---- a missing game_pk must never yield a number ---------------------------------------------------------------------
+
+def test_a_missing_game_pk_raises_instead_of_collapsing_the_bootstrap_into_one_cluster():
+    sc = _mixed(20, 3)
+    sc[5] = dict(sc[5], game_pk=None)
+    with pytest.raises(ValueError, match="game_pk"):
+        passtest.cluster_bootstrap_lower(sc)
+    with pytest.raises(ValueError, match="game_pk"):
+        passtest.evaluate(sc, resamples=50)
+    with pytest.raises(ValueError, match="game_pk"):
+        passtest.decide(sc, None, "2026-12-01", resamples=50)
+    legs = informative(1, 300) + informative(2, 10, game0=900)
+    legs[0] = dict(legs[0], game_pk=None)
+    with pytest.raises(ValueError, match="game_pk"):
+        passtest.score_walk_forward(legs, "v2")
+    assert passtest.cluster_bootstrap_lower(_mixed(20, 3), resamples=50) is not None        # the normal path is unchanged
+
+
+def test_decide_at_k_zero_judges_and_fails_without_crashing():
+    rng = random.Random(33)
+    sc = []
+    for i in range(2100):
+        m = rng.uniform(0.35, 0.65)
+        sc.append(scored_leg(i // 2, m=m, y=1 if rng.random() < m else 0, shrunk=m) | {"k": 0.0})
+    d = passtest.decide(sc, None, "2026-12-08", resamples=200)
+    assert d["status"] == "judged" and d["verdict"] == "FAIL"
+    assert d["running"]["gain"] == 0.0 and [c["passed"] for c in d["criteria"]][:2] == [False, False]

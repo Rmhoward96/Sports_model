@@ -12,7 +12,6 @@ A pass means the model adds information beyond the board's market price; it does
 """
 from __future__ import annotations
 
-import math
 from collections import defaultdict
 
 import numpy as np
@@ -31,6 +30,14 @@ EPS = 1e-12                                   # float noise only: a gain of exac
 CRITERIA = ("Brier gain over the market >= 0.001", "paired game-clustered 95% lower bound > 0", "calibration slope in [0.8, 1.2]")
 
 
+def require_game_pks(legs: list[dict]) -> None:
+    """The bootstrap resamples GAMES, so every leg must name its game: a missing game_pk would put all such legs in one
+    cluster, collapse the interval to a point and let the pre-registered CI pass spuriously. Never return a number then."""
+    missing = sum(1 for l in legs if l.get("game_pk") is None)
+    if missing:
+        raise ValueError(f"{missing} of {len(legs)} legs have no game_pk: the game-clustered bootstrap cannot be computed")
+
+
 def week_key(leg: dict) -> tuple[int, int]:
     return (leg["season"], leg["week"])
 
@@ -39,6 +46,7 @@ def score_walk_forward(legs: list[dict], current_version: str | None) -> list[di
     """Every leg of every week that has at least 300 legs in EARLIER weeks, with the shrunk probability from the k fitted
     on those earlier legs alone (the section 1 rules, including the model-version fallback). A market with no earlier legs
     has k = 0, so its shrunk probability is the market's."""
+    require_game_pks(legs)
     by_week: dict[tuple[int, int], list[dict]] = defaultdict(list)
     for leg in legs:
         by_week[week_key(leg)].append(leg)
@@ -69,6 +77,7 @@ def cluster_bootstrap_lower(scored: list[dict], *, resamples: int = BOOTSTRAP_RE
                             percentile: float = LOWER_PERCENTILE) -> float | None:
     """Lower bound of the paired Brier gain: resample GAMES with replacement (all legs of a drawn game come along), take
     each resample's leg-weighted mean gain, return the `percentile`-th percentile. Deterministic for a given seed."""
+    require_game_pks(scored)
     per_game: dict = defaultdict(list)
     for s, g in zip(scored, _gains(scored)):
         per_game[s["game_pk"]].append(g)
