@@ -448,7 +448,14 @@ def upsert_ev_prop_picks(records: list[dict]) -> int:
     key = ("game_pk", "player_id", "market", "line", "model_version")
     wanted = [c for c in _EV_PROP_PICKS_OPTIONAL_COLS if any(c in r for r in records)]
     with get_postgres() as conn, conn.cursor() as cur:
-        present = _existing_columns(cur, "ev_prop_picks", wanted) if wanted else set()
+        try:
+            present = _existing_columns(cur, "ev_prop_picks", wanted) if wanted else set()
+        except Exception as exc:
+            # A failed probe aborts the Postgres transaction; clear it so the write below can run, without the audit columns.
+            conn.rollback()
+            present = set()
+            print(f"WARN ev_prop_picks column probe failed ({type(exc).__name__}); board written without {', '.join(wanted)}")
+            wanted = []
         missing = [c for c in wanted if c not in present]
         if missing:
             print(f"WARN ev_prop_picks has no {', '.join(missing)} column(s) -- run db/migration_shrink_props.sql; "

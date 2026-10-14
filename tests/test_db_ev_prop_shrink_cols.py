@@ -112,3 +112,33 @@ def test_the_migration_is_the_specs_idempotent_additive_alter():
     assert stmts == ["ALTER TABLE ev_prop_picks ADD COLUMN IF NOT EXISTS raw_model_prob double precision, "
                      "ADD COLUMN IF NOT EXISTS shrink_k double precision;"]
     assert not re.search(r"\b(DROP|DELETE|TRUNCATE|UPDATE|INSERT)\b", "\n".join(stmts), re.IGNORECASE)
+
+
+class ProbeFailsCursor(FakeCursor):
+    def execute(self, sql, params=None):
+        if "information_schema" in sql:
+            raise RuntimeError("canceling statement due to statement timeout")
+        super().execute(sql, params)
+
+    def executemany(self, sql, rows):
+        self.sink.setdefault("events", []).append("upsert")
+        super().executemany(sql, rows)
+
+
+class ProbeFailsConn(FakeConn):
+    def cursor(self):
+        return ProbeFailsCursor(self.sink)
+
+    def rollback(self):
+        self.sink.setdefault("events", []).append("rollback")
+
+
+def test_a_failed_column_probe_rolls_back_warns_and_writes_the_legacy_columns(monkeypatch, capsys):
+    sink = {}
+    monkeypatch.setattr(db_module, "get_postgres", lambda: ProbeFailsConn(sink))
+    assert db.upsert_ev_prop_picks([row(), row(player_id="q")]) == 2
+    assert sink["events"] == ["rollback", "upsert"]                  # the aborted transaction is cleared before the write
+    assert all(len(t) == len(db._EV_PROP_PICKS_COLS) for t in sink["rows"])
+    assert "raw_model_prob" not in sink["sql"] and "shrink_k" not in sink["sql"] and sink["committed"]
+    out = capsys.readouterr().out
+    assert "WARN" in out and "RuntimeError" in out
