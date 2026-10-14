@@ -44,3 +44,11 @@ def test_invalid_price_behaves_like_novig():
         novig(0, -110)
     with pytest.raises(ZeroDivisionError):
         novig_power(0, -110)
+
+
+def test_both_sides_heavily_juiced_falls_back_to_proportional():
+    # a = 5000/5100 = 0.98039, b = 4900/5000 = 0.98: a^10 + b^10 > 1, so k = 10 cannot bracket the root.
+    # Return the proportional values (which sum to 1) instead of a^10 (sum would be ~1.64).
+    a, b = novig_power(-5000, -4900), novig_power(-4900, -5000)
+    assert a == novig(-5000, -4900) and b == novig(-4900, -5000)
+    assert a + b == pytest.approx(1.0, abs=1e-9)

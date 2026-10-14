@@ -284,21 +284,21 @@ def assemble_games(desk_rows: list[dict], odds_rows: list[dict], stats: dict | N
         gpk = d.get("game_pk")
         game_odds = by_game.get(gpk, [])
 
-        stamped = {id(o): _parse_captured_at(o.get("captured_at")) for o in game_odds}
-        timed = any(t is not None for t in stamped.values())
+        stamps = [_parse_captured_at(o.get("captured_at")) for o in game_odds]   # parallel to game_odds
+        timed = any(t is not None for t in stamps)
 
         pinnacle: dict = {"moneyline": {}, "spread": {}, "total": {}}
         pin_ts: dict = {"moneyline": {}, "spread": {}, "total": {}}
-        for o in game_odds:
+        for o, o_ts in zip(game_odds, stamps):
             if o.get("book") != "pinnacle":
                 continue
             market, side, price, line = o.get("market"), o.get("side"), o.get("price"), o.get("line")
             if market not in pinnacle or price is None:
                 continue
             if timed:
-                if stamped[id(o)] is None:
+                if o_ts is None:
                     continue
-                pin_ts[market][side] = stamped[id(o)]
+                pin_ts[market][side] = o_ts
             pinnacle[market][side] = int(price)
             if market == "spread" and side == "home" and line is not None:
                 pinnacle[market]["home_line"] = float(line)
@@ -308,6 +308,7 @@ def assemble_games(desk_rows: list[dict], odds_rows: list[dict], stats: dict | N
         # T per market: the later of the two Pinnacle sides' capture times; sides further apart than the
         # tolerance are not one pull, so that market has no usable Pinnacle price.
         pull_t: dict = {}
+        emptied: set = set()
         if timed:
             for market, by_side in pin_ts.items():
                 if not by_side:
@@ -315,6 +316,7 @@ def assemble_games(desk_rows: list[dict], odds_rows: list[dict], stats: dict | N
                 times = list(by_side.values())
                 if max(times) - min(times) > SAME_PULL_TOLERANCE:
                     pinnacle[market] = {}
+                    emptied.add(market)
                     continue
                 pull_t[market] = max(times)
 
@@ -323,7 +325,7 @@ def assemble_games(desk_rows: list[dict], odds_rows: list[dict], stats: dict | N
                  "total": {"over": [], "under": []}}
         pin_home_line = pinnacle["spread"].get("home_line")
         pin_total_line = pinnacle["total"].get("line")
-        for o in game_odds:
+        for o, o_ts in zip(game_odds, stamps):
             book = o.get("book")
             if book == "pinnacle" or book not in USER_BOOKS:
                 continue
@@ -337,9 +339,9 @@ def assemble_games(desk_rows: list[dict], odds_rows: list[dict], stats: dict | N
             if market == "total" and pin_total_line is not None and line is not None:
                 if abs(float(line) - pin_total_line) > 1e-6:
                     continue
-            if timed and market in pull_t:
-                t = stamped[id(o)]
-                if t is None or abs(t - pull_t[market]) > SAME_PULL_TOLERANCE:
+            if timed and (market in emptied or market in pull_t):
+                if (market in emptied or o_ts is None
+                        or abs(o_ts - pull_t[market]) > SAME_PULL_TOLERANCE):
                     if stats is not None:
                         stats["stale_dropped"] = stats.get("stale_dropped", 0) + 1
                     continue

@@ -524,3 +524,19 @@ def test_stats_out_parameter_is_optional_and_accumulates_across_games():
     assemble_games(desk, odds, stats)
     assert stats["stale_dropped"] == 4
     assert len(assemble_games(desk, odds)) == 2   # stats omitted still works
+
+
+def test_soft_rows_in_an_emptied_market_are_skipped_and_counted():
+    # Pinnacle ML sides 10 min apart -> ML emptied; its soft rows must not leak through (and are counted).
+    odds = _pinnacle_rows(away_at=_T0 + timedelta(minutes=10)) + [
+        _tsodds("moneyline", "home", "betrivers", -120),
+        _tsodds("moneyline", "away", "fanduel", 115),
+        _tsodds("total", "over", "pinnacle", -110, 44.5), _tsodds("total", "under", "pinnacle", -110, 44.5),
+        _tsodds("total", "over", "betmgm", -105, 44.5),
+    ]
+    stats: dict = {}
+    game = assemble_games(_DESK, odds, stats)[0]
+    assert game["books"]["moneyline"] == {"home": [], "away": []}
+    assert game["books"]["spread"] == {"home": [], "away": []}
+    assert game["books"]["total"]["over"] == [("betmgm", -105)]
+    assert stats["stale_dropped"] == 2

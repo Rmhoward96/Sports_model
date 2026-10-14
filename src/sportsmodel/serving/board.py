@@ -33,10 +33,11 @@ def novig_power(price_side: int, price_other: int) -> float:
 
     With a = implied_prob(price_side), b = implied_prob(price_other), find k >= 1 with a^k + b^k = 1
     (bisection on [1, 10], |a^k + b^k - 1| < 1e-12 or 200 iterations) and return a^k. If a + b <= 1
-    (no overround, or a negative-overround/arb pair) k would be <= 1, so fall back to proportional
-    `novig`. Invalid prices raise exactly as `novig` does (they fail inside `implied_prob`)."""
+    (no overround, or a negative-overround/arb pair) k would be <= 1, and if a^10 + b^10 >= 1 the root lies
+    outside the [1, 10] bracket, so in both cases fall back to proportional `novig`. Invalid prices raise exactly as `novig` does (they fail inside `implied_prob`)."""
     a, b = implied_prob(price_side), implied_prob(price_other)
-    if a + b <= 1.0:
+    # k <= 1 (no overround) or the root lies beyond k = 10 (both sides above ~0.933, f(10) >= 0): proportional.
+    if a + b <= 1.0 or a ** 10 + b ** 10 - 1.0 >= 0.0:
         return a / (a + b)
     if a == b:                     # identical sides: a^k = 1/2 for every overround
         return 0.5
