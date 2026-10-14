@@ -613,3 +613,64 @@ test("the Read card shows the raw model projection, labelled, and escapes team n
   const empty = mixed.gmReadCard({ r: { sport: "cfb", home_team_name: "A", away_team_name: "B", commence_time: "2099-01-01T00:00:00Z" }, sport: "cfb", evRows: [], mlRow: null, simRows: [], lineBy: null });
   assert.ok(!empty.includes("Raw model projection"), "no projection numbers, no line");
 });
+
+// ---- median-centred shift: k = 0 puts the distribution's MEDIAN on the market line (no phantom edge from skew or key numbers) ----
+const lumpAt = (pmf, idx, mass) => { const w = pmf.map((x) => x * (1 - mass)); w[idx] += mass; return w; };
+
+test("gmMedian: the smallest support value whose cumulative probability reaches 0.5; null for a missing or empty distribution", () => {
+  assert.equal(g.gmMedian({ kind: "pmf", pmf: [0, 0.1, 0.2, 0.4, 0.2, 0.1] }), 3, "symmetric about 3");
+  assert.equal(g.gmMedian({ kind: "pmf", pmf: [0.5, 0.3, 0.1, 0.05, 0.05] }), 0, "skewed: the mass at 0 already reaches 0.5");
+  assert.equal(g.gmMedian({ kind: "pmf", pmf: [0.1, 0.1, 0.2, 0.3, 0.3] }), 3, "skewed: the CDF runs 0.1, 0.2, 0.4, 0.7");
+  assert.equal(g.gmMedian({ kind: "pmf", pmf: [0.1, 0.1, 0.1, 0.1, 0.1, 0.5] }), 4, "five 0.1s sum to 0.5 up to rounding: the even split still lands on x = 4");
+  assert.equal(g.gmMedian({ kind: "pmf", pmf: [0.25, 0.25, 0.25, 0.25] }), 1, "CDF hits exactly 0.5 at x = 1: that x");
+  assert.equal(g.gmMedian({ kind: "pmf", pmf: [0.1, 0.1, 0.1, 0.1, 0.1] }), 2, "an unnormalised pmf is normalised first");
+  assert.equal(g.gmMedian({ kind: "margin", offset: 10, pmf: uniform(0, 20, 21) }), 0, "a margin distribution reads in points, not indexes");
+  assert.equal(g.gmMedian(null), null); assert.equal(g.gmMedian({ kind: "pmf", pmf: [] }), null); assert.equal(g.gmMedian({ kind: "pmf" }), null); assert.equal(g.gmMedian({ kind: "pmf", pmf: [0, 0] }), null);
+});
+
+test("gmOdds (NFL k = 0): a skewed total and a margin with a lump on 3 priced at -110 give no spread / total edge in the Read", () => {
+  const skew = Array.from({ length: 101 }, (_, i) => (i < 20 ? 0 : Math.exp(-(i - 20) / 14))), sw = skew.reduce((a, b) => a + b, 0);
+  const SKEW = { kind: "pmf", pmf: skew.map((x) => x / sw) }, LUMP = { kind: "margin", offset: 60, pmf: lumpAt(normPmf(3.5, 13, -60, 60), 63, 0.12) };
+  const nfl = { ...PM, sport: "nfl", market_spread: -3, market_total: 45, margin_dist: LUMP, total_dist: SKEW };
+  assert.equal(g.gmMedian(LUMP), 3); assert.ok(Math.abs(split(SKEW, 45).over - 0.5) > 0.2, "the raw total is far from 50% at the line");
+  const imp = 110 / 210, side = (market, s) => evRow({ sport: "nfl", game_pk: 9, market, side: s, best_line_implied: imp, best_price: -110 });
+  const ev = [side("spread", "home"), side("spread", "away"), side("total", "over"), side("total", "under")];
+  const o = mixed.gmOdds(nfl, ev, { home_price: -110, away_price: -110 }, null, null);
+  // The two sides of a market sum to 1 (pushes are excluded), so they cannot both sit at or under 50%; with the median on the line they sit within a point or two of it
+  // (a lump on the median's own value pushes one side a little over), and never above the 52.4% implied by -110.
+  for (const x of [o.spread.home, o.spread.away, o.total.over, o.total.under]) { assert.ok(x.modelProb != null && x.modelProb <= imp, `${x.modelProb} <= ${imp}`); assert.ok(Math.abs(x.modelProb - 0.5) < 0.03); }
+  const read = mixed.gameRead(mixed.gmCandidates(nfl, o));
+  assert.ok(read === null || read.market === "moneyline", `no spread / total edge: ${read && read.market}`);
+  // the identity table, same inputs: the raw distribution is far off the market (that is the phantom edge k = 0 removes)
+  const raw = g.gmOdds(nfl, ev, { home_price: -110, away_price: -110 }, null, null);
+  assert.ok(raw.total.under.modelProb > 0.6 || raw.total.over.modelProb > 0.6);
+});
+
+test("gmOdds (k = 1, the identity table): the spread / total probabilities are the raw, unshifted distribution probabilities", () => {
+  const o = g.gmOdds(PM, EVN, MLROW, null, null);
+  near(o.spread.home.modelProb, split(MARGIN_N, 7).over); near(o.spread.away.modelProb, split(MARGIN_N, 7).under);
+  near(o.total.over.modelProb, split(TOTAL_N, 50).over); near(o.total.under.modelProb, split(TOTAL_N, 50).under);
+  const lines = g.gmOdds(PM, [], null, null, new Map([["9|spread|home", -6], ["9|spread|away", 6], ["9|total|over", 48.5], ["9|total|under", 48.5]]));
+  near(lines.spread.home.modelProb, split(MARGIN_N, 6).over); near(lines.total.under.modelProb, split(TOTAL_N, 48.5).under);
+});
+
+test("gmOdds (CFB k = 0.5): the median moves halfway to the market, and the probabilities move toward 50%", () => {
+  const o = mixed.gmOdds(PM, [], null, null, null), raw = g.gmOdds(PM, [], null, null, null);
+  // margin median 11 (market 7): shifted by 0.5 x (7 - 11) = -2; total median 55 (market 50): shifted by -2.5
+  near(o.spread.home.modelProb, split(MARGIN_N, 9).over); near(o.spread.away.modelProb, split(MARGIN_N, 9).under);
+  near(o.total.over.modelProb, split(TOTAL_N, 52.5).over); near(o.total.under.modelProb, split(TOTAL_N, 52.5).under);
+  assert.ok(o.spread.home.modelProb < raw.spread.home.modelProb && o.spread.home.modelProb > 0.5 && o.total.over.modelProb < raw.total.over.modelProb && o.total.over.modelProb > 0.5);
+});
+
+test("away favourite (model: away by 10, book home +3, CFB k = 0.5): the shrunk spread is the away team at a minus line between -3 and -10, probabilities move toward the market", () => {
+  const AF = { ...PM, home_win_prob: 0.25, pred_home_score: 20, pred_away_score: 30, market_spread: 3, margin_dist: { kind: "margin", offset: 60, pmf: normPmf(-10, 13, -60, 60) } };
+  const ml = { home_price: 140, away_price: -160 };
+  const o = mixed.gmOdds(AF, EVN, ml, null, null), raw = g.gmOdds(AF, EVN, ml, null, null);
+  assert.equal(o.spread.away.line, -3);
+  assert.ok(raw.spread.away.modelProb > o.spread.away.modelProb && o.spread.away.modelProb > 0.5, "toward the market, still on the model's side");
+  near(o.spread.away.modelProb, split(AF.margin_dist, -6.5).under);                     // margin median -10 -> -6.5 after the shift of +3.5
+  const sp = mixed.modelProjectionRows(AF, o)[1];
+  assert.match(sp.model, /^\S+ -6\.5 \(\d+\.\d%\)$/, sp.model); assert.match(sp.market, /^\S+ -3 \(/, sp.market); near(sp.pts, 3.5);
+  assert.match(g.modelProjectionRows(AF, raw)[1].model, /^\S+ -10 \(/);
+  assert.match(mixed.gmRawLine(AF), /Raw model projection: \S+ -10 · total 50\.0 · \S+ 75\.0% win/, "the raw line keeps the favourite minus");
+});

@@ -157,12 +157,25 @@ function gmSplit(dist, threshold) {
   return s > 0 ? { over: over / s, under: under / s } : null;
 }
 
+// The median of a margin / total distribution (the same {kind, offset, pmf} format as gmSplit): the smallest support value whose cumulative
+// probability reaches 0.5. null for a missing or empty distribution.
+function gmMedian(dist) {
+  const pairs = dist && Array.isArray(dist.pmf) ? distPairs(dist) : [], tot = pairs.reduce((a, [, q]) => a + (Number.isFinite(q) && q > 0 ? q : 0), 0);
+  if (!(tot > 0)) return null;
+  let c = 0;
+  for (const [v, q] of pairs) { if (Number.isFinite(q) && q > 0) c += q / tot; if (c >= 0.5 - 1e-12) return v; }
+  return null;
+}
+
 // Per-market view of the game's odds: consensus moneyline prices, and per side the line it is priced at, the implied
 // probability of the price you would take (latest ev_picks row; moneyline falls back to the moneylines view's best price)
 // and the model probability at that same line AFTER SHRINKING toward the market (js/shrink.js). modelProb is null whenever there is nothing to
 // shrink toward: no distribution, no two-sided moneyline price (the win probability is shrunk toward the NO-VIG probability of both sides' prices),
-// no posted spread / total. Spread and total are shrunk in points (gmShrunkLines) and the model's own distribution is shifted by the same amount:
-// P(M + d > t) = P(M > t - d). The moneyline sides also carry rawModelProb, the unshrunk win probability.
+// no posted spread / total. Spread and total: the model's own distribution is shifted so that its MEDIAN lands on market + k (median - market)
+// (d = (1 - k) (market - median), the market's expected home margin being -market_spread), and the side probability is read from the shifted
+// distribution: P(M + d > t) = P(M > t - d). At k = 0 the median sits on the market line, so neither side of it is above 50% (skew and key-number
+// lumps in the distribution cannot make a phantom edge); at k = 1, d = 0 and it is the raw distribution probability. The moneyline sides also
+// carry rawModelProb, the unshrunk win probability.
 function gmOdds(pred, evRows, mlRow, sim, lineBy) {
   const p = pred || {}, by = new Map(gmLatest(evRows).map((r) => [`${r.market}|${r.side}`, r])), d = gmDists(p, sim);
   const wp = numOrNull(p.home_win_prob), S = gmShrunkLines(p);
@@ -182,15 +195,16 @@ function gmOdds(pred, evRows, mlRow, sim, lineBy) {
     const r = by.get(`${market}|${side}`), line = gmSideLine(p, market, side, lineBy), imp = r ? gmImplied(r) : null, price = r ? numOrNull(r.best_price) : null;
     return { line, price, implied: imp, bestPrice: price, bestImplied: imp, modelProb: line == null || !shrinkable ? null : modelAt(line) };
   };
-  const m = d.margin, t = d.total, dM = S.hasSpread ? S.sMargin - S.margin : 0, dT = S.hasTotal ? S.sTotal - S.total : 0;
+  const m = d.margin, t = d.total, medM = gmMedian(m), medT = gmMedian(t), ls = numOrNull(p.market_spread), lt = numOrNull(p.market_total);
+  const dM = S.hasSpread && medM != null ? (1 - shrinkK(p.sport, "spread")) * (-ls - medM) : null, dT = S.hasTotal && medT != null ? (1 - shrinkK(p.sport, "total")) * (lt - medT) : null;
   return {
     moneyline: ml,
     spread: { line: numOrNull(p.market_spread),
-      away: one("spread", "away", S.hasSpread, (L) => { const s = gmSplit(m, L - dM); return s && s.under; }),     // away covers when the (shifted) home margin < its line
-      home: one("spread", "home", S.hasSpread, (L) => { const s = gmSplit(m, -L - dM); return s && s.over; }) },   // home covers when the (shifted) home margin > -its line
+      away: one("spread", "away", dM != null, (L) => { const s = gmSplit(m, L - dM); return s && s.under; }),     // away covers when the (shifted) home margin < its line
+      home: one("spread", "home", dM != null, (L) => { const s = gmSplit(m, -L - dM); return s && s.over; }) },   // home covers when the (shifted) home margin > -its line
     total: { line: numOrNull(p.market_total),
-      over: one("total", "over", S.hasTotal, (L) => { const s = gmSplit(t, L - dT); return s && s.over; }),
-      under: one("total", "under", S.hasTotal, (L) => { const s = gmSplit(t, L - dT); return s && s.under; }) },
+      over: one("total", "over", dT != null, (L) => { const s = gmSplit(t, L - dT); return s && s.over; }),
+      under: one("total", "under", dT != null, (L) => { const s = gmSplit(t, L - dT); return s && s.under; }) },
   };
 }
 
