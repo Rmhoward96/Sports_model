@@ -476,30 +476,47 @@ const homeSpread = (r) => {                                       // model sprea
   const m = r05(r.pred_home_score - r.pred_away_score);
   return m > 0 ? `-${m}` : m < 0 ? `+${-m}` : "PK";
 };
+// The model's own line on ITS favourite (a minus number on the favourite, never a plus on the dog): "SEA -5", or "PK" at a rounded margin of 0.
+const modelFavLine = (r) => {
+  const m = r05(r.pred_home_score - r.pred_away_score);
+  if (m === 0) return "PK";
+  return `${ctxEsc(teamShort(m > 0 ? r.home_team_name : r.away_team_name, r.sport))} -${Math.abs(m)}`;
+};
 const modelTotal = (r) => r05(r.pred_home_score + r.pred_away_score).toFixed(1);
 // The model's LEAN vs the Vegas line (ESPN pre-game). market_spread is the HOME
 // line (home favored -> negative). The model leans whichever side its projected
 // margin beats: pred_margin + market_spread > 0 -> take home, else the away dog.
 // Shown from the picked side (team logo + that side's line). Falls back to the
 // model's own line when no market line is posted for the game.
-const spreadLean = (r) => {
+// An UNGRADED row leans on the model AFTER SHRINKING toward the market (profit step 2 Part B: gmLean in js/pages/game.js, which calls
+// js/shrink.js at call time -- those scripts load after app.js), so a sport / market with k = 0 shows "No lean" (spread and total alike). A GRADED row is history and keeps the raw lean its ✓/✗ chips were graded against.
+const spreadLean = (r, graded = false) => {
   if (r.market_spread == null || r.pred_home_score == null) return homeSpread(r);
-  // Compare the model's spread ROUNDED to the half-point it's displayed at
-  // (see homeSpread) against the line, so the shown lean can never contradict
-  // the "model N" number beneath it. When they match, the model is sitting on
-  // the line -> pick'em, not a confident dog pick on a fractional-point edge.
-  const edge = r05(r.pred_home_score - r.pred_away_score) + r.market_spread;
-  if (Math.abs(edge) < 0.25) return "PK";
-  const likesHome = edge > 0;
+  let likesHome;
+  if (graded) {
+    // Compare the model's spread ROUNDED to the half-point it's displayed at
+    // (see homeSpread) against the line, so the shown lean can never contradict
+    // the "model N" number beneath it. When they match, the model is sitting on
+    // the line -> pick'em, not a confident dog pick on a fractional-point edge.
+    const edge = r05(r.pred_home_score - r.pred_away_score) + r.market_spread;
+    if (Math.abs(edge) < 0.25) return "PK";
+    likesHome = edge > 0;
+  } else {
+    const side = gmLean(r).spread;
+    if (!side) return "No lean";
+    likesHome = side === "home";
+  }
   const team = likesHome ? r.home_team_name : r.away_team_name;
   const line = likesHome ? r.market_spread : -r.market_spread;
   return `${logoImg(team, r.sport)}${fmtLine(line)}`;
 };
-// Over if the model's projected total exceeds the Vegas total, else Under.
-const totalLean = (r) => {
+// Over if the model's projected total exceeds the Vegas total, else Under (graded rows: raw; ungraded rows: the shrunk total, no lean within a quarter point).
+const totalLean = (r, graded = false) => {
   if (r.market_total == null || r.pred_home_score == null) return modelTotal(r);
-  const mt = r.pred_home_score + r.pred_away_score;
-  return `${mt > r.market_total ? "Over" : "Under"} ${(+r.market_total).toFixed(1)}`;
+  let side;
+  if (graded) side = r.pred_home_score + r.pred_away_score > r.market_total ? "over" : "under";
+  else { side = gmLean(r).total; if (!side) return "No lean"; }
+  return `${side === "over" ? "Over" : "Under"} ${(+r.market_total).toFixed(1)}`;
 };
 
 async function predictions(sport) {
@@ -1564,8 +1581,8 @@ function nflPredictionSection(r, actual, modelTag = "") {
   return `<section class="section pred-block">${head}<section class="compact-stats">
     ${card("PROJECTED WINNER", ctxEsc(predWinner(r)), `${confPct(r.home_win_prob)} win probability`, aWin)}
     ${card("PROJECTED SCORE", projScore(r), ctxEsc(matchupOf(r)), aScore)}
-    ${card("SPREAD LEAN", spreadLean(r), `model ${homeSpread(r)}`, aMargin, "blue")}
-    ${card("TOTAL LEAN", totalLean(r), `model ${modelTotal(r)}`, aTotal, "cyan")}
+    ${card("SPREAD LEAN", spreadLean(r, graded), `model ${modelFavLine(r)}`, aMargin, "blue")}
+    ${card("TOTAL LEAN", totalLean(r, graded), `model ${modelTotal(r)}`, aTotal, "cyan")}
   </section></section>`;
 }
 

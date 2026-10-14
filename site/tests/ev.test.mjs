@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { loadScripts } from "./load.mjs";
-const FILES = ["app.js", "js/metrics.js", "js/ui.js", "js/shell.js", "js/data.js", "js/pages/ev.js", "js/boot.js"];
+const FILES = ["app.js", "js/metrics.js", "tests/fixtures/shrink-k-identity.js", "js/shrink.js", "js/ui.js", "js/shell.js", "js/data.js", "js/pages/ev.js", "js/boot.js"];
 const g = loadScripts(FILES);
 const O = (o) => ({ kind: "line", sport: "nfl", market: "moneyline", book: "draftkings", edgePp: 5, evPct: 5, alpha: 75, tier: "STRONG", commence: "2026-10-05T17:00:00Z", matchup: "BUF @ ATL", playerName: null, ...o });
 test("filters by sport, kind, min edge, tier, book and search; sorts", () => {

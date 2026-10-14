@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { loadScripts } from "./load.mjs";
-const g = loadScripts(["app.js", "js/metrics.js", "js/boot.js"]);
+const g = loadScripts(["app.js", "js/metrics.js", "tests/fixtures/shrink-k-identity.js", "js/shrink.js", "js/boot.js"]);
 
 test("alpha score formula and tiers", () => {
   assert.equal(g.alphaScore({ evPct: 8, edgePp: 8, segRoiPct: 0, segN: 0 }), 95);

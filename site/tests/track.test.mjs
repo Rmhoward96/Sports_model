@@ -2,7 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { loadScripts } from "./load.mjs";
 import fs from "node:fs";
-const g = loadScripts(["app.js", "js/metrics.js", "js/ui.js", "js/shell.js", "js/data.js", "js/pages/track.js", "js/boot.js"]);
+const g = loadScripts(["app.js", "js/metrics.js", "tests/fixtures/shrink-k-identity.js", "js/shrink.js", "js/ui.js", "js/shell.js", "js/data.js", "js/pages/track.js", "js/boot.js"]);
 test("track rows: one per graded market, favorite-side probability, push handling", () => {
   const acc = [{ sport: "cfb", game_pk: 9, game_date: "2026-09-27", home_team_name: "Texas", away_team_name: "Oklahoma",
     win_prob: 0.581, predicted_winner: "Texas", actual_winner: "Texas", winner_correct: true, pred_margin: 6.2, actual_margin: 10,
@@ -273,7 +273,7 @@ function populated({ search = "", acc, closing, starts, fail = [], quiet = null,
     else if (path === "prediction_pnl_daily") rows = [{ game_date: dayOff(-1), sport: "cfb", market: "spread", n: 2, wins: 1, losses: 1, pushes: 0, pnl: 1.5 }];
     return { ok: true, json: async () => rows };
   };
-  const T = loadScripts(["app.js", "js/metrics.js", "js/ui.js", "js/shell.js", "js/data.js", "js/pages/track.js", "js/boot.js"],
+  const T = loadScripts(["app.js", "js/metrics.js", "tests/fixtures/shrink-k-identity.js", "js/shrink.js", "js/ui.js", "js/shell.js", "js/data.js", "js/pages/track.js", "js/boot.js"],
     { page: "track", globals: { fetch, ...(quiet ? { console: quiet } : {}), ...(document ? { document } : {}), location: { search, href: `http://localhost/track-record.html${search}` } } });
   return { T, requested };
 }
@@ -350,7 +350,7 @@ function closingHarness(answer, { acc = [], extra = {}, gate = null } = {}) {
     const res = answer(ids, attempt);
     return res === "fail" ? { ok: false, status: 500, text: async () => "timeout", json: async () => ({}) } : { ok: true, json: async () => res };
   };
-  const T = loadScripts(["app.js", "js/metrics.js", "js/ui.js", "js/shell.js", "js/data.js", "js/pages/track.js", "js/boot.js"], { page: "track", globals: {
+  const T = loadScripts(["app.js", "js/metrics.js", "tests/fixtures/shrink-k-identity.js", "js/shrink.js", "js/ui.js", "js/shell.js", "js/data.js", "js/pages/track.js", "js/boot.js"], { page: "track", globals: {
     console: { ...console, error() {}, warn: (m) => st.warns.push(String(m)) }, location: { search: "?n=1000", href: "http://localhost/track-record.html?n=1000" }, fetch, ...extra } });
   return { T, st };
 }
@@ -579,7 +579,7 @@ function selectHarness(handler, { acc = [A({ sport: "cfb", game_pk: 71, game_dat
     if (path === "track_record_start") return { ok: true, json: async () => [] };
     return { ok: true, json: async () => [] };
   };
-  const T = loadScripts(["app.js", "js/metrics.js", "js/ui.js", "js/shell.js", "js/data.js", "js/pages/track.js", "js/boot.js"], { page: "track", globals: {
+  const T = loadScripts(["app.js", "js/metrics.js", "tests/fixtures/shrink-k-identity.js", "js/shrink.js", "js/ui.js", "js/shell.js", "js/data.js", "js/pages/track.js", "js/boot.js"], { page: "track", globals: {
     console: { ...console, error() {}, warn: (m) => st.warns.push(String(m)) }, location: { search: "", href: "http://localhost/track-record.html" }, fetch } });
   return { T, st };
 }
@@ -655,7 +655,7 @@ test("empty and failing sources: every card still renders, page never throws, no
   assert.ok(html.includes("Track Record") && html.includes("Cumulative Prediction Performance") && html.includes("Best Performing Segments"));
   assert.ok(!/NaN|undefined/.test(clean(html)));
   const quiet = { ...console, error() {}, warn() {} };
-  const E = loadScripts(["app.js", "js/metrics.js", "js/ui.js", "js/shell.js", "js/data.js", "js/pages/track.js", "js/boot.js"],
+  const E = loadScripts(["app.js", "js/metrics.js", "tests/fixtures/shrink-k-identity.js", "js/shrink.js", "js/ui.js", "js/shell.js", "js/data.js", "js/pages/track.js", "js/boot.js"],
     { page: "track", globals: { console: quiet, fetch: async () => { throw new Error("down"); } } });
   const down = await E.buildTrackPage();
   assert.ok(down.includes("Track Record") && !/NaN|undefined/.test(clean(down)));
@@ -663,7 +663,7 @@ test("empty and failing sources: every card still renders, page never throws, no
 
 test("every card is isolated: a card handed unusable data renders the placeholder and logs, never throws", () => {
   const errors = [];
-  const E = loadScripts(["app.js", "js/metrics.js", "js/ui.js", "js/shell.js", "js/data.js", "js/pages/track.js", "js/boot.js"],
+  const E = loadScripts(["app.js", "js/metrics.js", "tests/fixtures/shrink-k-identity.js", "js/shrink.js", "js/ui.js", "js/shell.js", "js/data.js", "js/pages/track.js", "js/boot.js"],
     { page: "track", globals: { console: { ...console, error: (...a) => errors.push(a.join(" ")) } } });
   const ids = Object.keys(E.TRACK_CARDS);
   assert.ok(ids.length >= 12, "stat cards, charts, filters, table and right column are all registered cards");
@@ -761,7 +761,7 @@ const hit = (map) => ({ target: { closest: (sel) => map[sel] || null, matches: (
 test("interaction: range, archive, filters, Show more and the URL (non-default values only)", async () => {
   const D = fakeTrackDoc(), urls = [];
   const many = Array.from({ length: 20 }, (_, i) => A({ sport: "cfb", game_pk: 700 + i, game_date: dayOff(-1 - (i % 5)) }));
-  const T2 = loadScripts(["app.js", "js/metrics.js", "js/ui.js", "js/shell.js", "js/data.js", "js/pages/track.js", "js/boot.js"], { page: "track", globals: {
+  const T2 = loadScripts(["app.js", "js/metrics.js", "tests/fixtures/shrink-k-identity.js", "js/shrink.js", "js/ui.js", "js/shell.js", "js/data.js", "js/pages/track.js", "js/boot.js"], { page: "track", globals: {
     document: D.doc, location: { search: "", href: "http://localhost/track-record.html" }, history: { replaceState: (a, b, u) => urls.push(u) },
     fetch: async (url) => { const { path } = urlParts(url); return { ok: true, json: async () => (path === "prediction_accuracy" ? many : path === "track_record_start" ? [] : []) }; } } });
   const html = await T2.buildTrackPage();
@@ -822,7 +822,7 @@ test("CSS contract: every ca-* class the +EV and Track Record filter bars emit e
   const bar = trk.slice(trk.indexOf('class="ca-card ca-trk-filters"'), trk.indexOf('id="trk-table"'));
   assert.ok(classesIn(bar).length >= 6, "found the filter bar classes");
   assert.deepEqual(missing(bar), [], "track filter bar classes are all styled");
-  const E = loadScripts(["app.js", "js/metrics.js", "js/ui.js", "js/shell.js", "js/data.js", "js/pages/ev.js", "js/boot.js"], { page: "ev", globals: { fetch: async () => ({ ok: true, json: async () => [] }) } });
+  const E = loadScripts(["app.js", "js/metrics.js", "tests/fixtures/shrink-k-identity.js", "js/shrink.js", "js/ui.js", "js/shell.js", "js/data.js", "js/pages/ev.js", "js/boot.js"], { page: "ev", globals: { fetch: async () => ({ ok: true, json: async () => [] }) } });
   const ev = await E.buildEvPage();
   const evBar = ev.slice(ev.indexOf('class="ca-card ca-ev-filters"'), ev.indexOf('class="ca-ev-main"'));
   assert.ok(classesIn(evBar).includes("ca-ev-filters") && classesIn(evBar).includes("ca-ev-fgrid"), "the +EV bar emits its own grid classes");
@@ -841,7 +841,7 @@ test("Overall Record: the (i) tooltip says what the record combines AND carries 
   assert.ok(!card.includes("Moneyline winners + spread / total picks vs the line"), "the caption line moved into the tooltip");
   assert.ok(!html.includes("ca-trk-note") && !/ca-trk-sub/.test(html), "the restart-note line and the toggle row are gone from the page");
   assert.ok(!/ca-trk-arch|data-trk-archive|data-pill="trk-view"/.test(html), "no Archive pill and no Model / +EV toggle");
-  const none = loadScripts(["app.js", "js/metrics.js", "js/ui.js", "js/shell.js", "js/data.js", "js/pages/track.js", "js/boot.js"], { page: "track", globals: { fetch: async (u) => ({ ok: true, json: async () => (String(u).includes("prediction_accuracy") ? [A({ sport: "cfb", game_pk: 1, game_date: dayOff(-1) })] : []) } ) } });
+  const none = loadScripts(["app.js", "js/metrics.js", "tests/fixtures/shrink-k-identity.js", "js/shrink.js", "js/ui.js", "js/shell.js", "js/data.js", "js/pages/track.js", "js/boot.js"], { page: "track", globals: { fetch: async (u) => ({ ok: true, json: async () => (String(u).includes("prediction_accuracy") ? [A({ sport: "cfb", game_pk: 1, game_date: dayOff(-1) })] : []) } ) } });
   assert.match(await none.buildTrackPage(), /title="Combines moneyline winner picks[^"]*NFL predictions switched to the ML model on Sep 28, 2026/, "no restart row: the fallback wording");
   assert.ok(!fs.readFileSync(new URL("../js/pages/track.js", import.meta.url), "utf8").includes("__cappingAlphaChartSeries"), "dead legacy chart global removed");
 });
@@ -935,7 +935,7 @@ test("T7 results table: exact column list, Result chip, row height content; one 
 
 test("T7 filter row: the search card is its own card, redrawn on reset (clears the box); the Record select does not use the League/Market data attribute", async () => {
   const D = fakeTrackDoc(), urls = [];
-  const T2 = loadScripts(["app.js", "js/metrics.js", "js/ui.js", "js/shell.js", "js/data.js", "js/pages/track.js", "js/boot.js"], { page: "track", globals: {
+  const T2 = loadScripts(["app.js", "js/metrics.js", "tests/fixtures/shrink-k-identity.js", "js/shrink.js", "js/ui.js", "js/shell.js", "js/data.js", "js/pages/track.js", "js/boot.js"], { page: "track", globals: {
     document: D.doc, location: { search: "?q=lions", href: "http://localhost/track-record.html?q=lions" }, history: { replaceState: (a, b, u) => urls.push(u) },
     fetch: async (url) => ({ ok: true, json: async () => (urlParts(url).path === "prediction_accuracy" ? [A({ sport: "cfb", game_pk: 1, game_date: dayOff(-1) })] : []) }) } });
   const html = await T2.buildTrackPage();
@@ -959,7 +959,7 @@ function renderDoc() {
 }
 test("T2 Record select: +EV picks re-renders the page with the +EV sections (and back); archive redraws without a refetch", async () => {
   const R = renderDoc(), urls = [], reqs = [];
-  const T2 = loadScripts(["app.js", "js/metrics.js", "js/ui.js", "js/shell.js", "js/data.js", "js/pages/track.js", "js/boot.js"], { page: "track", globals: {
+  const T2 = loadScripts(["app.js", "js/metrics.js", "tests/fixtures/shrink-k-identity.js", "js/shrink.js", "js/ui.js", "js/shell.js", "js/data.js", "js/pages/track.js", "js/boot.js"], { page: "track", globals: {
     document: R.doc, location: { search: "", href: "http://localhost/track-record.html" }, history: { replaceState: (a, b, u) => urls.push(u) }, scrollTo() {},
     fetch: async (url) => { const { path } = urlParts(url); reqs.push(path); return { ok: true, json: async () => (path === "prediction_accuracy" ? [A({ sport: "cfb", game_pk: 1, game_date: dayOff(-1) })] : path === "track_record_start" ? [{ sport: "nfl", starts_at: dayOff(-5) + "T12:00:00+00:00", model_version: "nfl-sim-ml-v2" }] : []) }; } } });
   await T2.render();

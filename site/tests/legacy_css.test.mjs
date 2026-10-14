@@ -34,7 +34,7 @@ test("final-review CSS contracts: Movers tabs stay inside the card, controls inh
 
 test("the CFB league logo is an inline football (ESPN's ncaa_football image is a person silhouette); other leagues keep their images", async () => {
   const { loadScripts } = await import("./load.mjs");
-  const g = loadScripts(["app.js", "js/metrics.js", "js/ui.js", "js/shell.js", "js/data.js"]);
+  const g = loadScripts(["app.js", "js/metrics.js", "tests/fixtures/shrink-k-identity.js", "js/shrink.js", "js/ui.js", "js/shell.js", "js/data.js"]);
   const cfb = g.leagueLogo("cfb");
   assert.match(cfb, /^<svg class="ca-league"/);
   assert.doesNotMatch(cfb, /ncaa_football|<img/);

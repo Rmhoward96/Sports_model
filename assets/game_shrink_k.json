@@ -1,0 +1,308 @@
+{
+  "fitted_at": "2026-10-14T14:48:51.972724+00:00",
+  "last_season": 2025,
+  "markets": {
+    "cfb": {
+      "moneyline": {
+        "k": 0.03260462043404473,
+        "k_raw": 0.03260462043404473,
+        "n": 3561,
+        "per_season": [
+          {
+            "k": 0.0,
+            "market": 0.18252397880200028,
+            "metric": "brier",
+            "n_test": 684,
+            "n_train": 0,
+            "raw": 0.19163870659983243,
+            "season": 2021,
+            "shrunk": 0.18252397880200028
+          },
+          {
+            "k": 0.060040235322222926,
+            "market": 0.19523902183426506,
+            "metric": "brier",
+            "n_test": 669,
+            "n_train": 684,
+            "raw": 0.20977880254355197,
+            "season": 2022,
+            "shrunk": 0.19554375299192467
+          },
+          {
+            "k": 0.0,
+            "market": 0.17129538043763076,
+            "metric": "brier",
+            "n_test": 729,
+            "n_train": 1353,
+            "raw": 0.18227840188322414,
+            "season": 2023,
+            "shrunk": 0.17129538043763076
+          },
+          {
+            "k": 0.0,
+            "market": 0.18270546927809028,
+            "metric": "brier",
+            "n_test": 742,
+            "n_train": 2082,
+            "raw": 0.1929615322239016,
+            "season": 2024,
+            "shrunk": 0.18270546927809028
+          },
+          {
+            "k": 0.0,
+            "market": 0.17904032345438828,
+            "metric": "brier",
+            "n_test": 737,
+            "n_train": 2824,
+            "raw": 0.1850135569186902,
+            "season": 2025,
+            "shrunk": 0.17904032345438828
+          }
+        ],
+        "seasons": [
+          2021,
+          2025
+        ]
+      },
+      "spread": {
+        "k": 0.0,
+        "k_raw": -0.015787286745801012,
+        "n": 7163,
+        "per_season": [
+          {
+            "k": 0.0,
+            "market": 12.387414965986395,
+            "metric": "mae",
+            "n_test": 735,
+            "n_train": 1444,
+            "raw": 13.263174300809416,
+            "season": 2018,
+            "shrunk": 12.387414965986395
+          },
+          {
+            "k": 0.0,
+            "market": 12.135006784260515,
+            "metric": "mae",
+            "n_test": 737,
+            "n_train": 2179,
+            "raw": 12.832990447134785,
+            "season": 2019,
+            "shrunk": 12.135006784260515
+          },
+          {
+            "k": 0.0,
+            "market": 12.843996062992126,
+            "metric": "mae",
+            "n_test": 508,
+            "n_train": 2916,
+            "raw": 13.63983235443782,
+            "season": 2020,
+            "shrunk": 12.843996062992126
+          },
+          {
+            "k": 0.0,
+            "market": 12.611073369565217,
+            "metric": "mae",
+            "n_test": 736,
+            "n_train": 3424,
+            "raw": 13.277457816173145,
+            "season": 2021,
+            "shrunk": 12.611073369565217
+          },
+          {
+            "k": 0.0,
+            "market": 12.067842605156038,
+            "metric": "mae",
+            "n_test": 737,
+            "n_train": 4160,
+            "raw": 13.055181626179762,
+            "season": 2022,
+            "shrunk": 12.067842605156038
+          },
+          {
+            "k": 0.0,
+            "market": 11.960053262316912,
+            "metric": "mae",
+            "n_test": 751,
+            "n_train": 4897,
+            "raw": 12.755898069084326,
+            "season": 2023,
+            "shrunk": 11.960053262316912
+          },
+          {
+            "k": 0.0,
+            "market": 12.20617529880478,
+            "metric": "mae",
+            "n_test": 753,
+            "n_train": 5648,
+            "raw": 13.200139173405393,
+            "season": 2024,
+            "shrunk": 12.20617529880478
+          },
+          {
+            "k": 0.0,
+            "market": 11.846128608923884,
+            "metric": "mae",
+            "n_test": 762,
+            "n_train": 6401,
+            "raw": 12.710390250628949,
+            "season": 2025,
+            "shrunk": 11.846128608923884
+          }
+        ],
+        "seasons": [
+          2016,
+          2025
+        ]
+      },
+      "total": {
+        "k": 0.042934796442878745,
+        "k_raw": 0.042934796442878745,
+        "n": 7154,
+        "per_season": [
+          {
+            "k": 0.09724832923617598,
+            "market": 12.91904761904762,
+            "metric": "mae",
+            "n_test": 735,
+            "n_train": 1435,
+            "raw": 13.97837681391893,
+            "season": 2018,
+            "shrunk": 12.953913660327043
+          },
+          {
+            "k": 0.0019213180141374932,
+            "market": 12.907394843962008,
+            "metric": "mae",
+            "n_test": 737,
+            "n_train": 2170,
+            "raw": 13.712102595464795,
+            "season": 2019,
+            "shrunk": 12.90785170482433
+          },
+          {
+            "k": 0.0199387202526852,
+            "market": 13.786909448818898,
+            "metric": "mae",
+            "n_test": 508,
+            "n_train": 2907,
+            "raw": 14.752182636626891,
+            "season": 2020,
+            "shrunk": 13.789289457724111
+          },
+          {
+            "k": 0.015591840306087705,
+            "market": 12.503396739130435,
+            "metric": "mae",
+            "n_test": 736,
+            "n_train": 3415,
+            "raw": 13.231084759504787,
+            "season": 2021,
+            "shrunk": 12.504829854639937
+          },
+          {
+            "k": 0.012776513338530509,
+            "market": 11.977951153324288,
+            "metric": "mae",
+            "n_test": 737,
+            "n_train": 4151,
+            "raw": 13.135431106491348,
+            "season": 2022,
+            "shrunk": 11.979391801593549
+          },
+          {
+            "k": 0.004211100831495559,
+            "market": 12.794274300932091,
+            "metric": "mae",
+            "n_test": 751,
+            "n_train": 4888,
+            "raw": 13.208108240745174,
+            "season": 2023,
+            "shrunk": 12.793273810569454
+          },
+          {
+            "k": 0.03607610406201443,
+            "market": 12.758300132802125,
+            "metric": "mae",
+            "n_test": 753,
+            "n_train": 5639,
+            "raw": 13.112253206481357,
+            "season": 2024,
+            "shrunk": 12.751338257477801
+          },
+          {
+            "k": 0.046463026473623256,
+            "market": 12.366469816272966,
+            "metric": "mae",
+            "n_test": 762,
+            "n_train": 6392,
+            "raw": 12.957387882259084,
+            "season": 2025,
+            "shrunk": 12.370939371270353
+          }
+        ],
+        "seasons": [
+          2016,
+          2025
+        ]
+      }
+    },
+    "mlb": {
+      "moneyline": {
+        "k": 0.0,
+        "k_raw": null,
+        "n": 0,
+        "per_season": [],
+        "reason": "k = 0: the MLB game model has fewer than 300 graded games",
+        "seasons": []
+      },
+      "spread": {
+        "k": 0.0,
+        "k_raw": null,
+        "n": 0,
+        "per_season": [],
+        "reason": "k = 0: the MLB game model has fewer than 300 graded games",
+        "seasons": []
+      },
+      "total": {
+        "k": 0.0,
+        "k_raw": null,
+        "n": 0,
+        "per_season": [],
+        "reason": "k = 0: the MLB game model has fewer than 300 graded games",
+        "seasons": []
+      }
+    },
+    "nfl": {
+      "moneyline": {
+        "k": 0.0,
+        "k_raw": null,
+        "n": 0,
+        "per_season": [],
+        "reason": "k = 0: the current NFL game model (the ML sim, ML_GAME_LINES=on since 2026-09-28) has fewer than 300 graded games",
+        "seasons": []
+      },
+      "spread": {
+        "k": 0.0,
+        "k_raw": null,
+        "n": 0,
+        "per_season": [],
+        "reason": "k = 0: the current NFL game model (the ML sim, ML_GAME_LINES=on since 2026-09-28) has fewer than 300 graded games",
+        "seasons": []
+      },
+      "total": {
+        "k": 0.0,
+        "k_raw": null,
+        "n": 0,
+        "per_season": [],
+        "reason": "k = 0: the current NFL game model (the ML sim, ML_GAME_LINES=on since 2026-09-28) has fewer than 300 graded games",
+        "seasons": []
+      }
+    }
+  },
+  "min_games": 300,
+  "model_version": {
+    "cfb": "cfb-ratings-v2"
+  },
+  "schema": 1
+}

@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import fs from "node:fs";
 import { loadScripts } from "./load.mjs";
 // The sport pages' right column (js/pages/board-right.js): Top Alpha Edges, Betting Splits, Model Projections.
-const FILES = ["app.js", "js/metrics.js", "js/ui.js", "js/shell.js", "js/data.js", "js/pages/dashboard.js", "js/pages/ev.js", "js/pages/board.js", "js/pages/board-left.js", "js/pages/board-right.js", "js/boot.js"];
+const FILES = ["app.js", "js/metrics.js", "tests/fixtures/shrink-k-identity.js", "js/shrink.js", "js/ui.js", "js/shell.js", "js/data.js", "js/pages/dashboard.js", "js/pages/ev.js", "js/pages/board.js", "js/pages/board-left.js", "js/pages/board-right.js", "js/boot.js"];
 const NOW = Date.parse("2026-10-05T16:00:00Z");     // Monday 12:00 ET: NFL week 4 (Sep 29 - Oct 5)
 class FakeDate extends Date { constructor(...a) { if (a.length) super(...a); else super(NOW); } static now() { return NOW; } }
 const quiet = () => { const logs = { warn: [], error: [] }; return { logs, console: { ...console, warn: (...a) => logs.warn.push(a.join(" ")), error: (...a) => logs.error.push(a.join(" ")) } }; };

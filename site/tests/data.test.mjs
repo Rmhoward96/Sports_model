@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { loadScripts } from "./load.mjs";
-const g = loadScripts(["app.js", "js/metrics.js", "js/shell.js", "js/data.js", "js/boot.js"]);
+const g = loadScripts(["app.js", "js/metrics.js", "tests/fixtures/shrink-k-identity.js", "js/shrink.js", "js/shell.js", "js/data.js", "js/boot.js"]);
 
 test("line opportunity: edge vs best-price implied, EV %, alpha + tier", () => {
   const o = g.toOpportunity({ sport: "nfl", game_pk: 1, matchup: "DET @ KC", market: "moneyline", side: "away",
@@ -40,7 +40,7 @@ test("toOpportunity accepts string numerics; missing best_price or ev_best -> nu
 
 // ---- loader tests: stub fetch by URL path -------------------------------------------------
 const loaderWith = (rowsFor, { failPaths = [], throwAll = false } = {}) => loadScripts(
-  ["app.js", "js/metrics.js", "js/shell.js", "js/data.js", "js/boot.js"],
+  ["app.js", "js/metrics.js", "tests/fixtures/shrink-k-identity.js", "js/shrink.js", "js/shell.js", "js/data.js", "js/boot.js"],
   { globals: { fetch: async (url) => {
     if (throwAll) throw new Error("network down");
     const path = new URL(url).pathname.split("/").pop();
@@ -94,7 +94,7 @@ test("loadEvHistory: window-edge rebuilds not counted, first date kept, ET dates
   }
   const urls = [];
   const mk = (game_pk, created_at) => ({ sport: "nfl", game_pk, market: "moneyline", side: "home", created_at });
-  const L = loadScripts(["app.js", "js/metrics.js", "js/shell.js", "js/data.js", "js/boot.js"], { globals: { Date: FakeDate,
+  const L = loadScripts(["app.js", "js/metrics.js", "tests/fixtures/shrink-k-identity.js", "js/shrink.js", "js/shell.js", "js/data.js", "js/boot.js"], { globals: { Date: FakeDate,
     fetch: async (url) => { urls.push(url); const path = new URL(url).pathname.split("/").pop();
       return { ok: true, json: async () => path === "ev_picks" ? [
         mk(1, "2026-09-20T16:00:00Z"), mk(1, "2026-09-28T16:00:00Z"),   // first flagged before the 8-day window -> excluded
@@ -140,7 +140,7 @@ test("shortDate / fullDate / dateAxisPoints: calendar labels never shift, sparse
 test("sbAll pages past PostgREST's 1,000-row clamp: 2,350 rows arrive in three requests, in order", async () => {
   const all = Array.from({ length: 2350 }, (_, i) => ({ id: i }));
   const urls = [], warns = [];
-  const L = loadScripts(["app.js", "js/metrics.js", "js/shell.js", "js/data.js", "js/boot.js"], { globals: {
+  const L = loadScripts(["app.js", "js/metrics.js", "tests/fixtures/shrink-k-identity.js", "js/shrink.js", "js/shell.js", "js/data.js", "js/boot.js"], { globals: {
     console: { ...console, warn: (...a) => warns.push(a.join(" ")) },
     fetch: async (url) => {
       urls.push(url);
@@ -155,7 +155,7 @@ test("sbAll pages past PostgREST's 1,000-row clamp: 2,350 rows arrive in three r
   assert.equal(warns.length, 0);
   // exactly 1,000 rows: one more (empty) page confirms the end
   urls.length = 0;
-  const L2 = loadScripts(["app.js", "js/metrics.js", "js/shell.js", "js/data.js", "js/boot.js"], { globals: {
+  const L2 = loadScripts(["app.js", "js/metrics.js", "tests/fixtures/shrink-k-identity.js", "js/shrink.js", "js/shell.js", "js/data.js", "js/boot.js"], { globals: {
     fetch: async (url) => { urls.push(url); const off = +new URL(url).searchParams.get("offset"); return { ok: true, json: async () => all.slice(0, 1000).slice(off, off + 1000) }; } } });
   assert.equal((await L2.sbAll("x?order=id.asc")).length, 1000);
   assert.equal(urls.length, 2);
@@ -163,7 +163,7 @@ test("sbAll pages past PostgREST's 1,000-row clamp: 2,350 rows arrive in three r
 
 test("sbAll warns only when its page cap is hit", async () => {
   const warns = [];
-  const L = loadScripts(["app.js", "js/metrics.js", "js/shell.js", "js/data.js", "js/boot.js"], { globals: {
+  const L = loadScripts(["app.js", "js/metrics.js", "tests/fixtures/shrink-k-identity.js", "js/shrink.js", "js/shell.js", "js/data.js", "js/boot.js"], { globals: {
     console: { ...console, warn: (...a) => warns.push(a.join(" ")) },
     fetch: async () => ({ ok: true, json: async () => Array.from({ length: 1000 }, (_, i) => ({ i })) }) } });
   const rows = await L.sbAll("ev_prop_picks?order=created_at.asc", { maxPages: 3 });
