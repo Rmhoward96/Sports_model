@@ -14,7 +14,7 @@ test("app.js loads without running the page (boot moved to js/boot.js)", () => {
 import fs from "node:fs";
 import { fileURLToPath } from "node:url";
 test("every page loads the scripts in order with the current cache key", () => {
-  const order = ["app.js", "js/metrics.js", "js/ui.js", "js/shell.js", "js/data.js", "js/pages/dashboard.js", "js/pages/ev.js", "js/pages/game.js", "js/pages/track.js", "js/pages/board.js", "js/boot.js"];
+  const order = ["app.js", "js/metrics.js", "js/shrink-k.js", "js/shrink.js", "js/ui.js", "js/shell.js", "js/data.js", "js/pages/dashboard.js", "js/pages/ev.js", "js/pages/game.js", "js/pages/track.js", "js/pages/board.js", "js/boot.js"];
   for (const f of fs.readdirSync(new URL("..", import.meta.url)).filter((f) => f.endsWith(".html"))) {
     const html = fs.readFileSync(new URL(`../${f}`, import.meta.url), "utf8");
     const srcs = [...html.matchAll(/<script src="([^"?]+)\?v=([^"]+)"/g)];

@@ -2,7 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import fs from "node:fs";
 import { loadScripts } from "./load.mjs";
-const g = loadScripts(["app.js", "js/metrics.js", "js/ui.js", "js/shell.js", "js/data.js", "js/pages/dashboard.js", "js/boot.js"]);
+const g = loadScripts(["app.js", "js/metrics.js", "tests/fixtures/shrink-k-identity.js", "js/shrink.js", "js/ui.js", "js/shell.js", "js/data.js", "js/pages/dashboard.js", "js/boot.js"]);
 
 test("slate keeps one row per game: the highest-alpha opportunity", () => {
   const preds = [{ sport: "nfl", game_pk: 1, home_team_name: "Kansas City Chiefs", away_team_name: "Detroit Lions", commence_time: "2026-10-05T20:25:00Z" },
@@ -129,7 +129,7 @@ test("multi-segment donut: arcs only for positive shares, empty input -> empty s
 });
 
 test("buildDashboard renders every card from stubbed data and never throws on empty sources", async () => {
-  const D = loadScripts(["app.js", "js/metrics.js", "js/ui.js", "js/shell.js", "js/data.js", "js/pages/dashboard.js", "js/boot.js"],
+  const D = loadScripts(["app.js", "js/metrics.js", "tests/fixtures/shrink-k-identity.js", "js/shrink.js", "js/ui.js", "js/shell.js", "js/data.js", "js/pages/dashboard.js", "js/boot.js"],
     { globals: { fetch: async () => ({ ok: true, json: async () => [] }) } });
   const html = await D.buildDashboard();
   for (const t of ["Today at a Glance", "Games Tracked", "Live +EV Opportunities", "Best Current Edge", "Model Hit Rate", "Units",
@@ -142,7 +142,7 @@ test("buildDashboard renders every card from stubbed data and never throws on em
 });
 
 // ---- fix round 1 ----------------------------------------------------------------------------
-const FILES = ["app.js", "js/metrics.js", "js/ui.js", "js/shell.js", "js/data.js", "js/pages/dashboard.js", "js/boot.js"];
+const FILES = ["app.js", "js/metrics.js", "tests/fixtures/shrink-k-identity.js", "js/shrink.js", "js/ui.js", "js/shell.js", "js/data.js", "js/pages/dashboard.js", "js/boot.js"];
 const quiet = () => { const logs = { warn: [], error: [] }; return { logs, console: { ...console, warn: (...a) => logs.warn.push(a.join(" ")), error: (...a) => logs.error.push(a.join(" ")) } }; };
 
 test("board opps: today = every tiered pick kicking off in [now, now+7d] by EV desc; other dates stay date-scoped", () => {

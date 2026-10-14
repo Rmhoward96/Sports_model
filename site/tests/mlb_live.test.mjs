@@ -4,7 +4,7 @@ import assert from "node:assert/strict";
 import fs from "node:fs";
 
 const read = (p) => fs.readFileSync(new URL(`../${p}`, import.meta.url), "utf8");
-const SRC = ["app.js", "js/data.js", "js/shell.js", "js/ui.js", "js/metrics.js", "js/boot.js", ...fs.readdirSync(new URL("../js/pages", import.meta.url)).map((f) => `js/pages/${f}`)];
+const SRC = ["app.js", "js/data.js", "js/shell.js", "js/ui.js", "js/metrics.js", "tests/fixtures/shrink-k-identity.js", "js/shrink.js", "js/boot.js", ...fs.readdirSync(new URL("../js/pages", import.meta.url)).map((f) => `js/pages/${f}`)];
 
 test("no MLB-paused flag or date is hard-coded anywhere in the site source", () => {
   for (const f of SRC) {
