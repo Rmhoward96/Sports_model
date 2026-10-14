@@ -135,3 +135,34 @@ def test_board_true_prob_is_pinnacle_novig_everywhere(monkeypatch):
         assert r["edge"] == 0
         assert r["true_prob"] == r["base_prob"]
         assert r["conviction_tier"] is None
+
+
+def test_main_clears_other_side_only_for_pick_rows(monkeypatch):
+    """The engine now writes BOTH sides of every market; clear_other_side_picks demotes the
+    opposite side of each PICK, so it must be handed only the is_pick rows -- passing every
+    row would demote each side by the other."""
+    import sys
+
+    game = {"sport": "nfl", "game_pk": 101, "matchup": "A @ B", "commence_time": "2099-01-01T00:00:00Z"}
+    odds = []
+    for market, side, line, price in [
+            ("moneyline", "home", None, -170), ("moneyline", "away", None, 150),
+            ("spread", "home", -3.5, -110), ("spread", "away", 3.5, -110),
+            ("total", "over", 47.5, -110), ("total", "under", 47.5, -110)]:
+        odds.append({"game_pk": 101, "market": market, "side": side, "book": "pinnacle", "line": line, "price": price})
+    odds.append({"game_pk": 101, "market": "moneyline", "side": "away", "book": "betrivers", "line": None, "price": 175})
+    seen = {}
+    monkeypatch.setattr(build_ev_board, "load_upcoming_games", lambda sport: [game])
+    monkeypatch.setattr(build_ev_board, "load_latest_odds", lambda pks: odds)
+    monkeypatch.setattr(build_ev_board, "upsert_ev_picks", lambda rows: seen.setdefault("upsert", list(rows)) and len(rows))
+    monkeypatch.setattr(build_ev_board, "clear_other_side_picks", lambda rows: seen.setdefault("clear", list(rows)) and 0)
+    monkeypatch.setattr(build_ev_board, "build_parlay", lambda cands: None)
+    monkeypatch.setattr(build_ev_board, "demote_stale_parlays", lambda *a: 0)
+    monkeypatch.setattr(build_ev_board, "upsert_ev_parlays", lambda rows: 0)
+    monkeypatch.setattr(build_ev_board, "safe_record", lambda *a, **k: None)
+    monkeypatch.setattr(sys, "argv", ["build_ev_board.py", "--sport", "nfl"])
+    build_ev_board.main()
+    assert len(seen["upsert"]) == 6                        # both sides of all three markets written
+    assert len(seen["clear"]) == 1                         # ...but only the pick is handed to the demoter
+    assert all(r["is_pick"] for r in seen["clear"])
+    assert (seen["clear"][0]["market"], seen["clear"][0]["side"], seen["clear"][0]["best_book"]) == ("moneyline", "away", "betrivers")

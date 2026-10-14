@@ -55,7 +55,7 @@ def test_market_margin():
 def test_no_desk_pick_passes_on_every_market():
     game = _pickem_game(desk=None)
     rows = ev_rows_for_game(game)
-    assert len(rows) == 3  # moneyline, spread, total
+    assert len(rows) == 6  # both sides of moneyline, spread, total
     markets = {r["market"] for r in rows}
     assert markets == {"moneyline", "spread", "total"}
     for row in rows:
@@ -226,3 +226,118 @@ def test_assemble_games_joins_desk_and_odds_by_game_pk():
 
     rows = ev_rows_for_game(game)
     assert any(r["market"] == "moneyline" for r in rows)
+
+
+# ---- user's 9 books are the only shoppable pool; both sides of every market are priced ----
+
+import pytest
+
+from sportsmodel.serving.board import USER_BOOKS, best_price
+
+
+def test_user_books_exact_order():
+    assert USER_BOOKS == ("draftkings", "fanduel", "betmgm", "williamhill_us", "espnbet",
+                          "fanatics", "hardrockbet", "ballybet", "betrivers")
+
+
+def test_best_price_only_shops_user_books():
+    # bet365 / thescore / caesars (alias) / bovada are not books the user can bet.
+    junk = [("bet365", 500), ("thescore", 400), ("caesars", 300), ("bovada", 600)]
+    assert best_price(junk) is None
+    assert best_price(junk + [("betrivers", 120)]) == ("betrivers", 120)
+    assert best_price(junk + [("fanduel", 105), ("betrivers", 110), ("draftkings", -105)]) == ("betrivers", 110)
+    assert best_price([("pinnacle", 200)]) is None
+    for bk in USER_BOOKS:
+        assert best_price([(bk, 100)]) == (bk, 100)
+
+
+def _odds(gpk, market, side, book, price, line=None):
+    return {"game_pk": gpk, "market": market, "side": side, "book": book, "price": price, "line": line}
+
+
+def test_assemble_games_soft_pool_is_user_books_only():
+    desk_rows = [{"sport": "nfl", "game_pk": 7, "matchup": "A @ B", "commence_time": "2026-10-18T17:00:00Z"}]
+    odds_rows = [
+        _odds(7, "moneyline", "home", "pinnacle", -130), _odds(7, "moneyline", "away", "pinnacle", 110),
+        _odds(7, "moneyline", "home", "betrivers", -120),
+        _odds(7, "moneyline", "home", "bet365", -105),
+        _odds(7, "moneyline", "home", "thescore", -105),
+    ]
+    game = assemble_games(desk_rows, odds_rows)[0]
+    assert game["books"]["moneyline"]["home"] == [("betrivers", -120)]
+
+
+def _full_game(**overrides):
+    g = _pickem_game()
+    g["pinnacle"] = {
+        "moneyline": {"home": -170, "away": 150},
+        "spread": {"home_line": -3.5, "home": -110, "away": -110},
+        "total": {"line": 44.5, "over": -105, "under": -115},
+    }
+    g.update(overrides)
+    return g
+
+
+def test_ev_rows_price_both_sides_of_every_market():
+    rows = ev_rows_for_game(_full_game())
+    assert len(rows) == 6
+    assert sorted((r["market"], r["side"]) for r in rows) == [
+        ("moneyline", "away"), ("moneyline", "home"), ("spread", "away"), ("spread", "home"),
+        ("total", "over"), ("total", "under")]
+    by = {(r["market"], r["side"]): r for r in rows}
+    assert by["moneyline", "home"]["true_prob"] == pytest.approx(novig(-170, 150))
+    assert by["moneyline", "away"]["true_prob"] == pytest.approx(novig(150, -170))
+    assert by["moneyline", "away"]["pinnacle_price"] == 150
+    assert by["spread", "away"]["true_prob"] == pytest.approx(0.5)
+    assert by["total", "over"]["true_prob"] == pytest.approx(novig(-105, -115))
+    assert by["total", "under"]["true_prob"] == pytest.approx(novig(-115, -105))
+    assert by["total", "under"]["pinnacle_price"] == -115
+    for m in ("moneyline", "spread", "total"):
+        sides = [r for r in rows if r["market"] == m]
+        assert sum(r["true_prob"] for r in sides) == pytest.approx(1.0)
+
+
+def test_underdog_side_is_a_pick_when_a_user_book_beats_fair():
+    # Pinnacle fair for the away dog (+150/-170) is ~0.3784; BetRivers +175 is +EV.
+    # The old engine only ever priced the market favourite, so this was never evaluated.
+    game = _full_game()
+    game["books"]["moneyline"]["away"] = [("betrivers", 175), ("bet365", 400)]
+    rows = ev_rows_for_game(game)
+    away = next(r for r in rows if r["market"] == "moneyline" and r["side"] == "away")
+    assert away["best_book"] == "betrivers" and away["best_price"] == 175
+    assert away["ev_best"] == pytest.approx(ev(novig(150, -170), 175))
+    assert away["is_pick"] is True
+    home = next(r for r in rows if r["market"] == "moneyline" and r["side"] == "home")
+    assert home["is_pick"] is False
+
+
+def test_at_most_one_side_per_market_is_pick_higher_ev_wins():
+    game = _full_game()
+    game["pinnacle"]["total"] = {"line": 44.5, "over": -110, "under": -110}
+    game["books"]["total"] = {"over": [("fanduel", 105)], "under": [("draftkings", 110)]}
+    rows = [r for r in ev_rows_for_game(game) if r["market"] == "total"]
+    by = {r["side"]: r for r in rows}
+    assert by["over"]["ev_best"] > MIN_EV and by["under"]["ev_best"] > MIN_EV  # both clear the rule
+    assert by["under"]["ev_best"] > by["over"]["ev_best"]
+    assert by["under"]["is_pick"] is True and by["over"]["is_pick"] is False
+
+
+def test_both_sides_pick_tie_goes_to_home_or_over():
+    game = _full_game()
+    game["pinnacle"]["total"] = {"line": 44.5, "over": -110, "under": -110}
+    game["books"]["total"] = {"over": [("fanduel", 105)], "under": [("draftkings", 105)]}
+    by = {r["side"]: r for r in ev_rows_for_game(game) if r["market"] == "total"}
+    assert by["over"]["is_pick"] is True and by["under"]["is_pick"] is False
+    game["pinnacle"]["spread"] = {"home_line": -3.5, "home": -110, "away": -110}
+    game["books"]["spread"] = {"home": [("fanduel", 105)], "away": [("draftkings", 105)]}
+    sp = {r["side"]: r for r in ev_rows_for_game(game) if r["market"] == "spread"}
+    assert sp["home"]["is_pick"] is True and sp["away"]["is_pick"] is False
+
+
+def test_desk_delta_sign_is_per_side():
+    game = _pickem_game(desk={"ml_pick": "home", "conviction_tier": "high"})
+    by = {r["side"]: r for r in ev_rows_for_game(game) if r["market"] == "moneyline"}
+    assert by["home"]["desk_delta"] > 0 and by["away"]["desk_delta"] == pytest.approx(-by["home"]["desk_delta"])
+    game = _pickem_game(desk={"total_side": "under", "conviction_tier": "high"})
+    by = {r["side"]: r for r in ev_rows_for_game(game) if r["market"] == "total"}
+    assert by["under"]["desk_delta"] > 0 and by["over"]["desk_delta"] == pytest.approx(-by["under"]["desk_delta"])

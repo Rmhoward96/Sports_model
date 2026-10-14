@@ -175,3 +175,9 @@ def test_shrunk_prop_legs_below_the_055_floor_no_longer_build_a_ticket_but_stron
     strong = assemble_prop_legs([_shrunk_pick(g, 0.62) for g in games], odds)
     [t] = build_best_parlays(strong)
     assert t["n_legs"] == 3 and abs(t["true_prob"] - 0.62 ** 3) < 1e-12
+
+
+def test_parlay_books_are_exactly_the_users_books():
+    from sportsmodel.serving.board import USER_BOOKS
+    assert PARLAY_BOOKS == frozenset(USER_BOOKS)
+    assert "betrivers" in PARLAY_BOOKS and not {"bet365", "thescore", "caesars", "pinnacle"} & PARLAY_BOOKS

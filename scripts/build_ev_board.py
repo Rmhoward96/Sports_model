@@ -64,7 +64,7 @@ def load_upcoming_games(sport: str) -> list[dict]:
 
 def load_latest_odds(game_pks: list[int]) -> list[dict]:
     """Latest odds_snapshot row per (game_pk, market, side, book) -- Pinnacle +
-    MAJOR_BOOKS -- for the given games, captured before kickoff and within the last 48h (a
+    the user's USER_BOOKS -- for the given games, captured before kickoff and within the last 48h (a
     book that stopped updating drops out instead of keeping a stale price --
     same window as the site's price views). Empty list of
     game_pks -> empty result (no games to query)."""
@@ -129,10 +129,12 @@ def main() -> None:
     passes = [r for r in all_rows if not r["is_pick"]]
 
     upsert_ev_picks(all_rows)
-    # A market's picked side can flip between builds (the market-favored side
-    # moves with the line); demote the stale opposite side so a two-way market
-    # never shows both sides as picks.
-    cleared = clear_other_side_picks(all_rows)
+    # The engine writes BOTH sides of every market (at most one is_pick). A pick can move
+    # sides between builds (a different book's price now beats fair on the other side);
+    # demote the stale opposite side of each PICK -- so pass only the picks, never every
+    # row (that would demote each side by the other) -- so a two-way market never shows
+    # both sides as picks.
+    cleared = clear_other_side_picks(picks)
 
     # Auto-parlay the juiced-favorite legs into a single +EV ticket. Non-fatal:
     # if the ev_parlays table isn't migrated yet, the straight board above is

@@ -385,3 +385,10 @@ test("E7: cleanup CSS contract: EV Distribution keeps all six labels (staggered,
   assert.match(css, /@container \(max-width:1200px\)\{[\s\S]*?\.ca-ev-table \.ca-ev-mkt\{max-width:132px\}\.ca-ev-who,\.ca-ev-table \.ca-team \.ca-ell\{max-width:170px\}/, "1200px tier: market 132px, matchup/player 170px");
   assert.match(css, /@container \(max-width:900px\)\{[^\n]*\.ca-ev-table \.ca-ev-mkt\{max-width:116px\}\.ca-ev-who,\.ca-ev-table \.ca-team \.ca-ell\{max-width:128px\}/, "900px tier widened too");
 });
+
+test("evBookName knows BetRivers (one of the user's 9 books), raw keys and display names alike", () => {
+  assert.equal(g.evBookName("betrivers"), "BetRivers");
+  assert.equal(g.evBookName("BetRivers"), "BetRivers");
+  assert.equal(g.evBookName("williamhill_us"), "Caesars");
+  assert.equal(g.evBookName(null), "—");
+});

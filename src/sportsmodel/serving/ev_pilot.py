@@ -24,7 +24,7 @@ probability-conversion functions used to translate the desk's points-shift into 
 probability delta -- it is never the base.
 
 PURE -- no IO. Reuses `sportsmodel.serving.board` (implied_prob/novig/ev/best_price/
-MAJOR_BOOKS/EV_CEILING) and `sportsmodel.model.trueprob_prob` (win_prob/cover_prob/
+USER_BOOKS/EV_CEILING) and `sportsmodel.model.trueprob_prob` (win_prob/cover_prob/
 over_prob/desk_margin_shift/DESK_MAX_PROB_DELTA) for all probability + EV math --
 nothing here re-derives no-vig, EV, or normal-distribution math.
 """
@@ -37,7 +37,7 @@ from ..model.trueprob_prob import (
     over_prob,
     win_prob,
 )
-from .board import EV_CEILING, MAJOR_BOOKS, best_price, ev, implied_prob, novig
+from .board import EV_CEILING, USER_BOOKS, best_price, ev, implied_prob, novig
 
 # Football margin/total sigmas carried over from the sub-project-3 true-prob model
 # (see trueprob_prob.py); the model supplies these + the prob-conversion functions
@@ -101,14 +101,6 @@ def desk_prob_delta(kind: str, base_number: float, line: float, sigma: float,
 
 def _clamp01(x: float) -> float:
     return max(0.0, min(1.0, x))
-
-
-def _pick_side(desk_side, prob_a: float, label_a: str, label_b: str) -> str:
-    """The side to build a row for: the desk's side if it has one on this market,
-    else the market-favored side (higher no-vig probability; ties -> label_a)."""
-    if desk_side in (label_a, label_b):
-        return desk_side
-    return label_a if prob_a >= 0.5 else label_b
 
 
 def _side_shift(desk: dict | None, desk_side) -> float:
@@ -189,83 +181,56 @@ def _finish_row(game: dict, market: str, side: str, base_prob: float, desk_delta
     }
 
 
-def _ml_row(game: dict) -> dict | None:
+# market -> (side_a, side_b, desk key, desk-shift fn, desk_prob_delta kind, sigma). side_a is the
+# home/over side: the side every desk shift and probability delta is referenced to.
+_MARKET_SPECS = {
+    "moneyline": ("home", "away", "ml_pick", _side_shift, "ml", SIGMA_MARGIN),
+    "spread": ("home", "away", "spread_side", _side_shift, "spread", SIGMA_MARGIN),
+    "total": ("over", "under", "total_side", _total_side_shift, "total", SIGMA_TOTAL),
+}
+
+
+def _market_row(game: dict, market: str, side: str) -> dict | None:
+    """The row for ONE side of one market, priced at the best USER_BOOKS price for that side
+    against Pinnacle's no-vig probability for that side. None when Pinnacle has no two-way price."""
+    side_a, side_b, desk_key, shift_fn, kind, sigma = _MARKET_SPECS[market]
     pin = game.get("pinnacle") or {}
-    ml, spread = pin.get("moneyline") or {}, pin.get("spread") or {}
-    home_price, away_price, home_line = ml.get("home"), ml.get("away"), spread.get("home_line")
-    if home_price is None or away_price is None or home_line is None:
+    mk = pin.get(market) or {}
+    price_a, price_b = mk.get(side_a), mk.get(side_b)
+    # Every market needs the spread's home_line (the moneyline's margin anchor); the total its own line.
+    line = mk.get("line") if market == "total" else (pin.get("spread") or {}).get("home_line")
+    if price_a is None or price_b is None or line is None:
         return None
 
     desk = game.get("desk") or {}
-    desk_side = desk.get("ml_pick")
-    prob_home = novig(home_price, away_price)
-    side = _pick_side(desk_side, prob_home, "home", "away")
-    base_prob = prob_home if side == "home" else 1 - prob_home
-    pinnacle_price = home_price if side == "home" else away_price
+    prob_a = novig(price_a, price_b)
+    base_prob = prob_a if side == side_a else 1 - prob_a
+    pinnacle_price = price_a if side == side_a else price_b
 
-    shift_home = _side_shift(desk, desk_side)
-    base_number = market_margin(home_line)
-    delta_home = desk_prob_delta("ml", base_number, None, SIGMA_MARGIN, shift_home)
-    desk_delta = delta_home if side == "home" else -delta_home
+    shift_a = shift_fn(desk, desk.get(desk_key))
+    base_number = line if market == "total" else market_margin(line)
+    delta_a = desk_prob_delta(kind, base_number, None if market == "moneyline" else line, sigma, shift_a)
+    desk_delta = delta_a if side == side_a else -delta_a
 
-    soft = (game.get("books") or {}).get("moneyline") or {}
-    return _finish_row(game, "moneyline", side, base_prob, desk_delta, pinnacle_price,
-                        soft, desk.get("conviction_tier"))
-
-
-def _spread_row(game: dict) -> dict | None:
-    pin = game.get("pinnacle") or {}
-    spread = pin.get("spread") or {}
-    home_price, away_price, home_line = spread.get("home"), spread.get("away"), spread.get("home_line")
-    if home_price is None or away_price is None or home_line is None:
-        return None
-
-    desk = game.get("desk") or {}
-    desk_side = desk.get("spread_side")
-    prob_home = novig(home_price, away_price)
-    side = _pick_side(desk_side, prob_home, "home", "away")
-    base_prob = prob_home if side == "home" else 1 - prob_home
-    pinnacle_price = home_price if side == "home" else away_price
-
-    shift_home = _side_shift(desk, desk_side)
-    base_number = market_margin(home_line)
-    delta_home = desk_prob_delta("spread", base_number, home_line, SIGMA_MARGIN, shift_home)
-    desk_delta = delta_home if side == "home" else -delta_home
-
-    soft = (game.get("books") or {}).get("spread") or {}
-    return _finish_row(game, "spread", side, base_prob, desk_delta, pinnacle_price,
-                        soft, desk.get("conviction_tier"))
-
-
-def _total_row(game: dict) -> dict | None:
-    pin = game.get("pinnacle") or {}
-    total = pin.get("total") or {}
-    over_price, under_price, line = total.get("over"), total.get("under"), total.get("line")
-    if over_price is None or under_price is None or line is None:
-        return None
-
-    desk = game.get("desk") or {}
-    desk_side = desk.get("total_side")
-    prob_over = novig(over_price, under_price)
-    side = _pick_side(desk_side, prob_over, "over", "under")
-    base_prob = prob_over if side == "over" else 1 - prob_over
-    pinnacle_price = over_price if side == "over" else under_price
-
-    shift_over = _total_side_shift(desk, desk_side)
-    delta_over = desk_prob_delta("total", line, line, SIGMA_TOTAL, shift_over)
-    desk_delta = delta_over if side == "over" else -delta_over
-
-    soft = (game.get("books") or {}).get("total") or {}
-    return _finish_row(game, "total", side, base_prob, desk_delta, pinnacle_price,
+    soft = (game.get("books") or {}).get(market) or {}
+    return _finish_row(game, market, side, base_prob, desk_delta, pinnacle_price,
                         soft, desk.get("conviction_tier"))
 
 
 def ev_rows_for_game(game: dict) -> list[dict]:
-    """One row per market (moneyline/spread/total) that has a two-way Pinnacle
-    price, for the side the desk picked (or the market-favored side if the desk
-    has no pick there). See module docstring for the true_prob design."""
-    rows = [_ml_row(game), _spread_row(game), _total_row(game)]
-    return [r for r in rows if r is not None]
+    """A row for EACH side (home+away / over+under) of every market (moneyline/spread/total)
+    that has a two-way Pinnacle price -- up to 6 rows -- so underdog and under sides are priced
+    too. At most one side per market stays `is_pick`: if both clear the pick rule, the higher
+    `ev_best` keeps it (tie -> home/over). See module docstring for the true_prob design."""
+    rows = []
+    for market, (side_a, side_b, *_rest) in _MARKET_SPECS.items():
+        pair = [_market_row(game, market, s) for s in (side_a, side_b)]
+        pair = [r for r in pair if r is not None]
+        if len(pair) == 2 and pair[0]["is_pick"] and pair[1]["is_pick"]:
+            loser = pair[1] if pair[0]["ev_best"] >= pair[1]["ev_best"] else pair[0]
+            loser["is_pick"] = False
+        rows.extend(pair)
+    return rows
 
 
 def assemble_games(desk_rows: list[dict], odds_rows: list[dict]) -> list[dict]:
@@ -276,7 +241,7 @@ def assemble_games(desk_rows: list[dict], odds_rows: list[dict]) -> list[dict]:
     in desk_current and is out of scope for this pilot.
 
     Pinnacle prices come from book=="pinnacle" rows; soft-book price entries come
-    from the remaining MAJOR_BOOKS rows, filtered to the line Pinnacle is posting
+    from the remaining USER_BOOKS rows, filtered to the line Pinnacle is posting
     for spread/total (so an alternate-line price doesn't get compared against the
     main-line Pinnacle price / used as a fake best-book edge).
     """
@@ -309,7 +274,7 @@ def assemble_games(desk_rows: list[dict], odds_rows: list[dict]) -> list[dict]:
         pin_total_line = pinnacle["total"].get("line")
         for o in game_odds:
             book = o.get("book")
-            if book == "pinnacle" or book not in MAJOR_BOOKS:
+            if book == "pinnacle" or book not in USER_BOOKS:
                 continue
             market, side, price, line = o.get("market"), o.get("side"), o.get("price"), o.get("line")
             if market not in books or side not in books[market] or price is None:

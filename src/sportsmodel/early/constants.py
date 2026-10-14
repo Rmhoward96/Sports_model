@@ -5,6 +5,8 @@ Copied from docs/superpowers/specs/2026-10-13-early-week-monitor-design.md. The 
 """
 from __future__ import annotations
 
+from ..serving.board import USER_BOOKS as US_BOOKS  # the user's 9 books; williamhill_us is Caesars' Odds API key
+
 # -- flag rule (spec section 1)
 FLAG_EV_MIN = 0.015                  # +1.5% EV
 FLAG_EV_EPS = 1e-12                  # float noise only: an EV of 0.015 - 1e-13 still flags
@@ -22,8 +24,6 @@ GRID_EPS = 1e-6
 
 # -- books and markets (spec sections 1 and 2)
 PINNACLE = "pinnacle"
-US_BOOKS = ("draftkings", "fanduel", "betmgm", "williamhill_us", "espnbet", "fanatics", "hardrockbet",
-            "ballybet", "betrivers")        # williamhill_us is Caesars' Odds API key
 BOOKMAKERS = US_BOOKS + (PINNACLE,)         # the 10 bookmaker keys: one billed region
 SPORT_ORDER = ("cfb", "nfl")
 MARKETS = {"cfb": ("spread", "total"), "nfl": ("spread",)}          # NFL totals and all moneylines are excluded
