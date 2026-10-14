@@ -334,7 +334,9 @@ test("Overview: the chart's y axis spans the cumulative totals (0 at the bottom,
 
 test("Overview: Cover Probability sits inside the flow card under an h3, and there is no standalone Cover card", async () => {
   const at = new Date().toISOString();
-  const rows = { ...flowRows(), cfb_betting_splits_current: [{ game_pk: 9, market: "spread", side: "away", cash_pct: 61, ticket_pct: 40, captured_at: at }, { game_pk: 9, market: "spread", side: "home", cash_pct: 39, ticket_pct: 60, captured_at: at }] };
+  // both sides of the spread are priced: the cover probability shrinks toward their no-vig pair (identity table: it stays the model's)
+  const ev = ["away", "home"].map((side) => ({ sport: "cfb", game_pk: 9, market: "spread", side, best_line_implied: 0.5, best_price: -110, true_prob: 0.5, is_pick: false, created_at: at }));
+  const rows = { ...flowRows(), ev_picks: ev, cfb_betting_splits_current: [{ game_pk: 9, market: "spread", side: "away", cash_pct: 61, ticket_pct: 40, captured_at: at }, { game_pk: 9, market: "spread", side: "home", cash_pct: 39, ticket_pct: 60, captured_at: at }] };
   const html = await page({ rows, pred: { commence_time: PAST(), margin_dist: MARGIN21 } }).D.buildGamePage();
   assert.ok(!html.includes('id="gm-cover"') && !html.includes("ca-gm-cover"), "no standalone cover card");
   assert.equal((html.match(/Cover Probability/g) || []).length, 1);
@@ -345,7 +347,7 @@ test("Overview: Cover Probability sits inside the flow card under an h3, and the
   assert.ok(/% of Money/.test(card) && card.includes("61%") && card.includes("39%"), "money caption when splits exist");
   assert.ok(html.indexOf('id="gm-insights"') > 0 && html.indexOf('id="gm-insights"') < html.indexOf('id="gm-flow"'), "insights left, flow right");
   assert.ok(!html.includes("ca-gm-col"), "flow no longer stacks under insights");
-  const noSplits = flowOf(await page({ rows: flowRows(), pred: { commence_time: PAST(), margin_dist: MARGIN21 } }).D.buildGamePage());
+  const noSplits = flowOf(await page({ rows: { ...flowRows(), ev_picks: ev }, pred: { commence_time: PAST(), margin_dist: MARGIN21 } }).D.buildGamePage());
   assert.ok(noSplits.includes("ca-gm-bar") && !noSplits.includes("% of Money"), "caption only with splits");
   const noCover = flowOf(await page({ rows: flowRows(), pred: { commence_time: PAST() } }).D.buildGamePage());
   assert.ok(noCover.includes("Cover Probability") && noCover.includes("Model cover probability isn't available for this game yet."), "no distribution: the message sits under the heading");
