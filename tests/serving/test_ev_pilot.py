@@ -5,8 +5,10 @@ Sub-project 4 (+EV desk-driven pilot), task 1 -- see
 """
 from __future__ import annotations
 
+import pytest
+
 from sportsmodel.model.trueprob_prob import DESK_MAX_PROB_DELTA, win_prob
-from sportsmodel.serving.board import EV_CEILING, ev, implied_prob, novig
+from sportsmodel.serving.board import EV_CEILING, USER_BOOKS, best_price, ev, implied_prob, novig
 from sportsmodel.serving.ev_pilot import (
     MIN_EDGE,
     MIN_EV,
@@ -229,10 +231,6 @@ def test_assemble_games_joins_desk_and_odds_by_game_pk():
 
 
 # ---- user's 9 books are the only shoppable pool; both sides of every market are priced ----
-
-import pytest
-
-from sportsmodel.serving.board import USER_BOOKS, best_price
 
 
 def test_user_books_exact_order():

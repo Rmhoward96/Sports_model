@@ -54,5 +54,5 @@ def test_every_polled_sport_has_a_market_list_and_a_sport_config():
 
 def test_early_book_constants_come_from_the_single_user_books_source():
     from sportsmodel.serving.board import USER_BOOKS
-    assert US_BOOKS is USER_BOOKS or US_BOOKS == USER_BOOKS
+    assert US_BOOKS == USER_BOOKS
     assert len(BOOKMAKERS) == 10 and BOOKMAKERS[-1] == "pinnacle" and BOOKMAKERS[:-1] == USER_BOOKS

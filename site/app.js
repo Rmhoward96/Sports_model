@@ -45,11 +45,11 @@ const uStr = (u) => `${u >= 0 ? "+" : ""}${(+u).toFixed(1)}u`;
 const pStr = (p) => `${+p >= 0 ? "+" : ""}${(+p).toFixed(1)}%`;
 
 /* ── Settings store (localStorage "ca-settings"; see settings.html) ──────── */
-// US books the site prices at, in display order. Caesars' odds feed key is
+// The user's 9 US books (serving.board.USER_BOOKS) -- the only books the site prices at, in display order. Caesars' odds feed key is
 // williamhill_us; "caesars" is accepted as an alias everywhere.
 const US_BOOKS = [["draftkings", "DraftKings"], ["fanduel", "FanDuel"], ["betmgm", "BetMGM"], ["williamhill_us", "Caesars"],
-  ["fanatics", "Fanatics"], ["espnbet", "ESPN BET"], ["hardrockbet", "Hard Rock Bet"], ["thescore", "theScore Bet"],
-  ["bet365", "Bet365"], ["ballybet", "Bally Bet"], ["betrivers", "BetRivers"]];
+  ["fanatics", "Fanatics"], ["espnbet", "ESPN BET"], ["hardrockbet", "Hard Rock Bet"], ["ballybet", "Bally Bet"],
+  ["betrivers", "BetRivers"]];
 const KELLY_FRACTIONS = [[1, "Full"], [0.5, "Half"], [0.25, "Quarter"], [0.125, "Eighth"]];
 const SETTINGS_DEFAULTS = Object.freeze({ books: Object.freeze(US_BOOKS.map((b) => b[0])), unit: 10, bankroll: 1000, kelly: 0.25, minEv: 0 });
 const SETTINGS_MAX = Object.freeze({ unit: 100000, bankroll: 100000000 });  // spec upper bounds
