@@ -684,7 +684,7 @@ const leanCards = (html) => ({ spread: stripTags((/SPREAD LEAN<\/span><strong[^>
 
 test("F1: the Matchup tab's SPREAD LEAN / TOTAL LEAN follow the shrunk numbers on an ungraded row (NFL k = 0: no lean; CFB k = 0.5: still leans)", () => {
   const nfl = leanCards(mixed.nflPredictionSection(NFLK, null, ""));
-  assert.equal(nfl.spread, "PK"); assert.equal(nfl.total, "No lean");
+  assert.equal(nfl.spread, "No lean"); assert.equal(nfl.total, "No lean");
   assert.ok(!/Over|Under/.test(mixed.nflPredictionSection(NFLK, null, "")));
   const cfb = leanCards(mixed.nflPredictionSection(PM, null, ""));
   assert.equal(cfb.spread, "-7"); assert.equal(cfb.total, "Over 50.0");        // shrunk margin 9 beats the market 7 -> home -7; shrunk total 52.5 beats 50
@@ -700,6 +700,29 @@ test("F1: a GRADED row keeps its raw lean and its chips, whatever k is", () => {
   assert.equal(l.spread, "-7"); assert.equal(l.total, "Over 50.0");          // raw: home by 11 beats -7, total 55 beats 50
   assert.ok(html.includes("call-ok") && html.includes("call-miss"));
   assert.ok(!/NaN|undefined/.test(html));
+});
+
+const subLabel = (html, label) => stripTags((new RegExp(`${label}</span><strong[^>]*>.*?</strong><small>(.*?)</small>`, "s").exec(html) || [])[1] || "");
+
+test("lean card: an ungraded k = 0 spread says 'No lean' (not 'PK'); a graded row on the line keeps 'PK'", () => {
+  assert.equal(leanCards(mixed.nflPredictionSection(NFLK, null, "")).spread, "No lean");
+  // graded: the model's rounded margin sits on the line (home by 7 vs book home -7) -> history keeps its 'PK'
+  const onLine = { ...NFLK, pred_home_score: 27, pred_away_score: 20, market_spread: -7 };
+  const actual = { actual_total: 44, actual_margin: 4, spread_pick_correct: null, total_pick_correct: true, winner_correct: true };
+  assert.equal(leanCards(mixed.nflPredictionSection(onLine, actual, "")).spread, "PK");
+});
+
+test("lean card: the spread sub-label names the model's favourite at a minus line (away by 5, home by 3, pick'em, escaped)", () => {
+  const sub = (o) => subLabel(mixed.nflPredictionSection({ ...NFLK, ...o }, null, ""), "SPREAD LEAN");
+  const away = sub({ away_team_name: "Seattle Seahawks", home_team_name: "Denver Broncos", pred_home_score: 20, pred_away_score: 25 });
+  assert.equal(away, `model ${mixed.teamShort("Seattle Seahawks", "nfl")} -5`);
+  assert.ok(!away.includes("+"));
+  const home = sub({ away_team_name: "Seattle Seahawks", home_team_name: "Denver Broncos", pred_home_score: 24, pred_away_score: 21 });
+  assert.equal(home, `model ${mixed.teamShort("Denver Broncos", "nfl")} -3`);
+  assert.equal(sub({ pred_home_score: 24, pred_away_score: 24.2 }), "model PK");
+  const html = mixed.nflPredictionSection({ ...NFLK, away_team_name: "<b>Evil</b>", pred_home_score: 20, pred_away_score: 25 }, null, "");
+  assert.ok(!html.includes("<b>Evil</b>") && html.includes("&lt;b&gt;Evil&lt;/b&gt; -5"));
+  assert.equal(mixed.homeSpread({ ...NFLK, pred_home_score: 20, pred_away_score: 25 }), "+5", "homeSpread itself is unchanged");
 });
 
 test("F2: a k = 0 market is not a Read candidate (line shopping is not a model edge); CFB (k = 0.5) still produces candidates", () => {
