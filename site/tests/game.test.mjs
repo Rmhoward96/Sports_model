@@ -68,7 +68,7 @@ const TOTAL = { kind: "pmf", pmf: uniform(40, 59, 101) };                  // to
 const P = { ...cfbPred, home_win_prob: 0.75, pred_home_score: 30, pred_away_score: 20, market_spread: -3, market_total: 50, margin_dist: JSON.stringify(MARGIN), total_dist: TOTAL };
 const EV = [evRow({ market: "moneyline", side: "home", best_line_implied: 0.7, best_price: -233 }), evRow({ market: "moneyline", side: "away", best_line_implied: 0.31, best_price: 225 }),
   evRow({ market: "spread", side: "home", best_line_implied: 0.5 }), evRow({ market: "spread", side: "away", best_line_implied: 0.5 }),
-  evRow({ market: "total", side: "over", best_line_implied: 0.45, best_price: 120 }), evRow({ market: "total", side: "under", best_line_implied: 0.55, best_price: -122 })];
+  evRow({ market: "total", side: "over", best_line_implied: 0.45, best_price: 120 })];
 
 test("gmOdds: the model's probability comes from the distributions at the market line (never true_prob); pushes excluded", () => {
   const o = g.gmOdds(P, EV, null, null, null);
@@ -78,7 +78,7 @@ test("gmOdds: the model's probability comes from the distributions at the market
   // over 50: 51..59 = 9 of 19; under: 40..49 = 10 of 19
   assert.ok(Math.abs(o.total.over.modelProb - 9 / 19) < 1e-9); assert.ok(Math.abs(o.total.under.modelProb - 10 / 19) < 1e-9);
   assert.equal(o.moneyline.home.modelProb, 0.75); assert.ok(Math.abs(o.moneyline.away.modelProb - 0.25) < 1e-9);
-  assert.equal(o.spread.home.implied, 0.5); assert.equal(o.total.over.implied, 0.45); assert.equal(o.total.under.implied, 0.55);
+  assert.equal(o.spread.home.implied, 0.5); assert.equal(o.total.over.implied, 0.45); assert.equal(o.total.under.implied, null, "no price known for that side");
   const json = JSON.stringify(o);
   assert.ok(!json.includes("0.99"), "true_prob (Pinnacle) appears in no model number");
 });
@@ -119,7 +119,7 @@ test("gmOdds: consensus moneyline price, best price kept for the read; moneyline
 
 test("gameCandidates / read: the model disagrees with the market and NO row is a pick -> the Read still shows the model's edge", () => {
   const cands = g.gmCandidates(P, g.gmOdds(P, EV, null, null, null));
-  assert.deepEqual(cands.map((c) => `${c.market}|${c.side}`), ["moneyline|away", "moneyline|home", "spread|away", "spread|home", "total|over", "total|under"]);
+  assert.deepEqual(cands.map((c) => `${c.market}|${c.side}`), ["moneyline|away", "moneyline|home", "spread|away", "spread|home", "total|over"]);
   const r = g.gameRead(cands);
   assert.equal(r.label, "South Carolina +3");                      // away +3 covers 65% vs 50% implied: +15.0
   assert.equal(r.market, "spread"); assert.ok(Math.abs(r.edgePp - 15) < 1e-9);
@@ -214,10 +214,7 @@ function populated({ search = "?sport=nfl&game=5", moves = "rows", noEdge = fals
   // ev_picks rows are NOT picks and carry a poisoned true_prob (Pinnacle's line, 0.99): the page must read the model, never this.
   const ev = (o) => ({ sport, game_pk: 5, matchup: `${EVIL_AWAY} @ ${HOME}`, market: "spread", side: "home", true_prob: 0.99, best_line_implied: noEdge ? 0.95 : 0.55, best_price: -122, best_book: "fanduel",
     ev_best: 0.3, is_pick: false, model_version: "ev-pilot-v1", created_at: iso(-3), commence_time: iso(30), ...o });
-  // both sides of the spread and the total are priced (the model probability shrinks toward the no-vig pair; one-sided rows give none)
-  const evRows = [ev({}), ev({ side: "away", best_line_implied: noEdge ? 0.95 : 0.45, best_price: 102 }),
-    ev({ market: "total", side: "over", best_line_implied: noEdge ? 0.95 : 0.45, best_price: 120, best_book: "draftkings" }),
-    ev({ market: "total", side: "under", best_line_implied: noEdge ? 0.95 : 0.55, best_price: -122, best_book: "draftkings" }),
+  const evRows = [ev({}), ev({ market: "total", side: "over", best_line_implied: noEdge ? 0.95 : 0.45, best_price: 120, best_book: "draftkings" }),
     ev({ market: "moneyline", side: "home", best_line_implied: noEdge ? 0.95 : 0.78, best_price: -355 })];
   const sim = { game_pk: 5, model_version: "nfl-sim-ml-v2", created_at: iso(-2), margin_dist: JSON.stringify({ kind: "margin", offset: 40, pmf: gauss(81, 47, 12) }),
     total_dist: JSON.stringify({ kind: "pmf", pmf: gauss(101, 47, 9) }), away_score_dist: JSON.stringify({ kind: "pmf", pmf: gauss(80, 20, 7) }), home_score_dist: JSON.stringify({ kind: "pmf", pmf: gauss(80, 27, 7) }) };
@@ -353,8 +350,7 @@ test("without splits the Cover Probability card has no '% of Money' caption; wit
     fetch: async (url) => {
       const { path } = urlParts(url);
       const pred = { game_pk: 5, sport: "nfl", home_team_name: HOME, away_team_name: EVIL_AWAY, commence_time: "2026-10-12T17:00:00Z", home_win_prob: 0.6, pred_home_score: 27, pred_away_score: 20, market_spread: -3.5, market_total: 44.5, ...extra };
-      const evs = ["home", "away"].map((side) => evRow({ game_pk: 5, sport: "nfl", market: "spread", side, best_line_implied: 0.5 }));
-      return { ok: true, json: async () => (path === "predictions_any" ? [pred] : path === "ev_picks" ? evs : []) };
+      return { ok: true, json: async () => (path === "predictions_any" ? [pred] : []) };
     } } });
   const html = await mk({ margin_dist: JSON.stringify(MARGIN) }).buildGamePage();     // uniform margin -10..10, home covers -3.5 when margin >= 4: 7 of 21
   const cover = html.slice(html.indexOf('id="gm-cover"'));
@@ -559,60 +555,15 @@ const split = (dist, t) => { const { under, over } = g.distProbs(dist, t); retur
 const EVN = [evRow({ market: "spread", side: "home", best_line_implied: 0.52 }), evRow({ market: "spread", side: "away", best_line_implied: 0.52 }),
   evRow({ market: "total", side: "over", best_line_implied: 0.52 }), evRow({ market: "total", side: "under", best_line_implied: 0.52 })];
 
-test("gmOdds (CFB k = 0.5): the win, cover and total probabilities are 0.5 x the model + 0.5 x the no-vig market", () => {
-  const o = mixed.gmOdds(PM, EVN, MLROW, null, null), s = 0.5 * 0.8 + 0.5 * M_HOME;
+test("gmOdds (CFB k = 0.5): the win, cover and total probabilities are the model halfway to the market", () => {
+  const o = mixed.gmOdds(PM, [], MLROW, null, null), s = 0.5 * 0.8 + 0.5 * M_HOME;
   near(o.moneyline.home.modelProb, s); near(o.moneyline.away.modelProb, 1 - s); assert.equal(o.moneyline.home.rawModelProb, 0.8);
-  // EVN prices both sides of the spread and the total at 0.52 each: the no-vig probability of every side is 0.5. pRaw is the unshifted distribution at the market line.
-  near(o.spread.home.modelProb, 0.5 * split(MARGIN_N, 7).over + 0.25); near(o.spread.away.modelProb, 0.5 * split(MARGIN_N, 7).under + 0.25);
-  near(o.total.over.modelProb, 0.5 * split(TOTAL_N, 50).over + 0.25); near(o.total.under.modelProb, 0.5 * split(TOTAL_N, 50).under + 0.25);
-});
-
-test("gmOdds (k = 1, the identity table): the spread / total probabilities are the raw distribution probabilities", () => {
-  const o = g.gmOdds(PM, EVN, MLROW, null, null);
-  near(o.spread.home.modelProb, split(MARGIN_N, 7).over); near(o.spread.away.modelProb, split(MARGIN_N, 7).under);
-  near(o.total.over.modelProb, split(TOTAL_N, 50).over); near(o.total.under.modelProb, split(TOTAL_N, 50).under);
-  near(o.moneyline.home.modelProb, 0.8);
-});
-
-test("gmOdds (NFL k = 0): a skewed total distribution and both sides at -110 give exactly the no-vig 50%, so the Read finds no phantom edge", () => {
-  const w = Array.from({ length: 101 }, (_, i) => (i < 20 ? 0 : Math.exp(-(i - 20) / 14))), sw = w.reduce((a, b) => a + b, 0);
-  const SKEW = { kind: "pmf", pmf: w.map((x) => x / sw) };        // right-skewed total, nowhere near symmetric about the line
-  const nfl = { ...PM, sport: "nfl", market_total: 45, total_dist: SKEW };
-  assert.ok(Math.abs(split(SKEW, 45).over - 0.5) > 0.05, "the raw model is far from 50% at this line");
-  const imp = 110 / 210, side = (market, s) => evRow({ sport: "nfl", game_pk: 9, market, side: s, best_line_implied: imp, best_price: -110 });
-  const ev = [side("spread", "home"), side("spread", "away"), side("total", "over"), side("total", "under")], ml = { home_price: -110, away_price: -110 };
-  const o = mixed.gmOdds(nfl, ev, ml, null, null);
-  for (const x of [o.total.over, o.total.under, o.spread.home, o.spread.away, o.moneyline.home, o.moneyline.away]) near(x.modelProb, 0.5, 1e-12);
-  assert.equal(mixed.gameRead(mixed.gmCandidates(nfl, o)), null);
-});
-
-test("gmOdds: the spread / total probability needs both sides priced at complementary lines, else null for both sides", () => {
-  const lines = (h, a, ov, un) => new Map([["9|spread|home", h], ["9|spread|away", a], ["9|total|over", ov], ["9|total|under", un]]);
-  const bad = mixed.gmOdds(PM, EVN, MLROW, null, lines(-3, 3.5, 50, 50.5));
-  assert.equal(bad.spread.home.modelProb, null); assert.equal(bad.spread.away.modelProb, null);
-  assert.equal(bad.total.over.modelProb, null); assert.equal(bad.total.under.modelProb, null);
-  assert.equal(bad.spread.home.line, -3); assert.equal(bad.spread.away.line, 3.5, "the lines themselves are still reported");
-  const good = mixed.gmOdds(PM, EVN, MLROW, null, lines(-3, 3, 50.5, 50.5));
-  assert.ok(good.spread.home.modelProb != null && good.spread.away.modelProb != null && good.total.over.modelProb != null);
-  const oneSided = mixed.gmOdds(PM, EVN.filter((r) => r.side !== "away" && r.side !== "under"), MLROW, null, null);
-  assert.equal(oneSided.spread.home.modelProb, null); assert.equal(oneSided.total.over.modelProb, null);
-  assert.ok(oneSided.moneyline.home.modelProb != null, "the moneyline is unaffected");
-});
-
-test("away favourite (model: away by 10, book home +3, CFB k = 0.5): the shrunk spread is the away team at a minus line between -3 and -10, probabilities move toward the market", () => {
-  const AF = { ...PM, home_win_prob: 0.25, pred_home_score: 20, pred_away_score: 30, market_spread: 3, margin_dist: { kind: "margin", offset: 60, pmf: normPmf(-10, 13, -60, 60) } };
-  const ml = { home_price: 140, away_price: -160 };
-  const o = mixed.gmOdds(AF, EVN, ml, null, null), raw = g.gmOdds(AF, EVN, ml, null, null);
-  const away = o.spread.away, rawAway = raw.spread.away;
-  assert.equal(away.line, -3);
-  assert.ok(Math.abs(rawAway.modelProb - 0.5) > Math.abs(away.modelProb - 0.5) && away.modelProb > 0.5 && away.modelProb < rawAway.modelProb, "toward the market, still on the model's side");
-  near(away.modelProb, 0.5 * rawAway.modelProb + 0.25);
-  const rows = mixed.modelProjectionRows(AF, o), sp = rows[1];
-  assert.match(sp.model, /^\S+ -6\.5 \(\d+\.\d%\)$/, sp.model); assert.match(sp.market, /^\S+ -3 \(/, sp.market);
-  near(sp.pts, 3.5);
-  const rawRow = g.modelProjectionRows(AF, raw)[1];
-  assert.match(rawRow.model, /^\S+ -10 \(/, rawRow.model);
-  assert.match(mixed.gmRawLine(AF), /Raw model projection: \S+ -10 · total 50\.0 · \S+ 75\.0% win/, "the raw line keeps the favourite minus");
+  // margin 11 -> 9 (market 7): the shifted margin beats 7 when the raw margin beats 9; away covers +7 when the shifted margin is below 7
+  near(o.spread.home.modelProb, split(MARGIN_N, 9).over); near(o.spread.away.modelProb, split(MARGIN_N, 9).under);
+  // total 55 -> 52.5 (market 50): over 50 when the raw total beats 52.5
+  near(o.total.over.modelProb, split(TOTAL_N, 52.5).over); near(o.total.under.modelProb, split(TOTAL_N, 52.5).under);
+  const raw = g.gmOdds(PM, [], MLROW, null, null);                     // the identity table is the old behaviour
+  near(raw.spread.home.modelProb, split(MARGIN_N, 7).over); near(raw.total.over.modelProb, split(TOTAL_N, 50).over);
 });
 
 test("the Read at k = 0 (NFL): a model far from the market still says no edge; at CFB k = 0.5 the same game has a smaller divergence than the raw model", () => {
@@ -639,11 +590,11 @@ test("gmOdds: without a posted spread or total the model has no spread / total p
 });
 
 test("modelProjectionRows (CFB k = 0.5): the CappingAlpha column is the shrunk model at the market's own line", () => {
-  const rows = mixed.modelProjectionRows(PM, mixed.gmOdds(PM, EVN, MLROW, null, null)), s = 0.5 * 0.8 + 0.5 * M_HOME;
+  const rows = mixed.modelProjectionRows(PM, mixed.gmOdds(PM, [], MLROW, null, null)), s = 0.5 * 0.8 + 0.5 * M_HOME;
   assert.equal(rows[0].model, g.pct1(s));
   assert.match(rows[1].model, / -9 \(\d+\.\d%\)$/); near(rows[1].pts, 2);          // raw: -11 and 4
   assert.match(rows[2].model, /^52\.5 \(\d+\.\d%\)$/); near(rows[2].pts, 2.5);      // raw: 55.0 and 5
-  const nfl = { ...PM, sport: "nfl" }, n = mixed.modelProjectionRows(nfl, mixed.gmOdds(nfl, EVN, MLROW, null, null));
+  const nfl = { ...PM, sport: "nfl" }, n = mixed.modelProjectionRows(nfl, mixed.gmOdds(nfl, [], MLROW, null, null));
   assert.match(n[1].model, / -7 \(/); near(n[1].pts, 0); assert.match(n[2].model, /^50\.0 \(/); near(n[2].pts, 0);     // k = 0: the market's own numbers
 });
 

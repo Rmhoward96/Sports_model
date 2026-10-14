@@ -159,13 +159,10 @@ function gmSplit(dist, threshold) {
 
 // Per-market view of the game's odds: consensus moneyline prices, and per side the line it is priced at, the implied
 // probability of the price you would take (latest ev_picks row; moneyline falls back to the moneylines view's best price)
-// and the model probability AFTER SHRINKING toward the market (js/shrink.js): shrinkProb(pRaw, mNoVig, k), where pRaw is the model's own
-// probability at the side's line and mNoVig the market's no-vig probability. Moneyline: the win probability is shrunk toward the no-vig
-// probability of both sides' prices. Spread / total: pRaw is the UNSHIFTED distribution probability at the side's line (gmSplit), mNoVig is the
-// side's implied probability over the sum of both sides' implied probabilities, defined only when both sides are priced AND their lines are
-// complementary (away line = -home line; over line = under line). So k = 0 gives exactly the no-vig market probability (no phantom edge), k = 1
-// the raw model. modelProb is null whenever there is nothing to shrink toward: no distribution, no posted spread / total, no two-sided price
-// or non-complementary lines. The moneyline sides also carry rawModelProb, the unshrunk win probability.
+// and the model probability at that same line AFTER SHRINKING toward the market (js/shrink.js). modelProb is null whenever there is nothing to
+// shrink toward: no distribution, no two-sided moneyline price (the win probability is shrunk toward the NO-VIG probability of both sides' prices),
+// no posted spread / total. Spread and total are shrunk in points (gmShrunkLines) and the model's own distribution is shifted by the same amount:
+// P(M + d > t) = P(M > t - d). The moneyline sides also carry rawModelProb, the unshrunk win probability.
 function gmOdds(pred, evRows, mlRow, sim, lineBy) {
   const p = pred || {}, by = new Map(gmLatest(evRows).map((r) => [`${r.market}|${r.side}`, r])), d = gmDists(p, sim);
   const wp = numOrNull(p.home_win_prob), S = gmShrunkLines(p);
@@ -181,25 +178,20 @@ function gmOdds(pred, evRows, mlRow, sim, lineBy) {
   const mHome = ml.home.implied != null && ml.away.implied != null ? ml.home.implied / (ml.home.implied + ml.away.implied) : null;
   const wpS = wp == null || mHome == null ? null : shrinkProb(wp, mHome, shrinkK(p.sport, "moneyline"));
   if (wpS != null) { ml.home.modelProb = wpS; ml.away.modelProb = 1 - wpS; }
-  const one = (market, side, shrinkable, rawAt) => {
+  const one = (market, side, shrinkable, modelAt) => {
     const r = by.get(`${market}|${side}`), line = gmSideLine(p, market, side, lineBy), imp = r ? gmImplied(r) : null, price = r ? numOrNull(r.best_price) : null;
-    return { line, price, implied: imp, bestPrice: price, bestImplied: imp, modelProb: null, pRaw: line == null || !shrinkable ? null : rawAt(line) };
+    return { line, price, implied: imp, bestPrice: price, bestImplied: imp, modelProb: line == null || !shrinkable ? null : modelAt(line) };
   };
-  // Shrink both sides of a market toward their no-vig probabilities; null for both when the pair is not priced two-sided at complementary lines.
-  const pair = (market, a, b, complementary) => {
-    const ok = a.implied != null && b.implied != null && a.implied + b.implied > 0 && a.line != null && b.line != null && complementary(a.line, b.line), k = shrinkK(p.sport, market);
-    for (const x of [a, b]) { if (ok && x.pRaw != null) x.modelProb = shrinkProb(x.pRaw, x.implied / (a.implied + b.implied), k); delete x.pRaw; }
+  const m = d.margin, t = d.total, dM = S.hasSpread ? S.sMargin - S.margin : 0, dT = S.hasTotal ? S.sTotal - S.total : 0;
+  return {
+    moneyline: ml,
+    spread: { line: numOrNull(p.market_spread),
+      away: one("spread", "away", S.hasSpread, (L) => { const s = gmSplit(m, L - dM); return s && s.under; }),     // away covers when the (shifted) home margin < its line
+      home: one("spread", "home", S.hasSpread, (L) => { const s = gmSplit(m, -L - dM); return s && s.over; }) },   // home covers when the (shifted) home margin > -its line
+    total: { line: numOrNull(p.market_total),
+      over: one("total", "over", S.hasTotal, (L) => { const s = gmSplit(t, L - dT); return s && s.over; }),
+      under: one("total", "under", S.hasTotal, (L) => { const s = gmSplit(t, L - dT); return s && s.under; }) },
   };
-  const m = d.margin, t = d.total;
-  const spread = { line: numOrNull(p.market_spread),
-    away: one("spread", "away", S.hasSpread, (L) => { const s = gmSplit(m, L); return s && s.under; }),     // away covers when the home margin < its line
-    home: one("spread", "home", S.hasSpread, (L) => { const s = gmSplit(m, -L); return s && s.over; }) },   // home covers when the home margin > -its line
-    total = { line: numOrNull(p.market_total),
-      over: one("total", "over", S.hasTotal, (L) => { const s = gmSplit(t, L); return s && s.over; }),
-      under: one("total", "under", S.hasTotal, (L) => { const s = gmSplit(t, L); return s && s.under; }) };
-  pair("spread", spread.away, spread.home, (la, lh) => la === -lh);
-  pair("total", total.over, total.under, (lo, lu) => lo === lu);
-  return { moneyline: ml, spread, total };
 }
 
 // Every side of the game with both a model probability and a market probability, as read candidates
