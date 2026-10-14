@@ -159,7 +159,7 @@ def test_build_ev_board_survives_a_ledger_failure(monkeypatch, capsys):
     monkeypatch.setattr(sources, "ev_game_candidates", lambda *a: (_ for _ in ()).throw(KeyError("boom")))
     mod.main()                                                    # real safe_record: must not raise
     assert "::warning::pick-ledger: build_ev_board: building observations failed" in capsys.readouterr().out
-    assert ("upsert", 3) in events and ("clear", 0) in events   # the board itself was written
+    assert ("upsert", 6) in events and ("clear", 0) in events   # the board itself (both sides of 3 markets) was written
 
 
 # ---- build_ev_props_board ---------------------------------------------------------------------------

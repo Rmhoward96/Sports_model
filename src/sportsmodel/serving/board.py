@@ -22,17 +22,24 @@ def novig(price_side: int, price_other: int) -> float:
     return io / (io + iu)
 
 
-# The soft books the +EV pilot shops for the best price, plus Pinnacle kept for
-# display as the sharp reference (ev_pilot.assemble_games excludes book=="pinnacle"
-# from the soft pool). Offshore/sharp books (bovada, lowvig, mybookieag, betus,
-# betonlineag, …) post stale/soft lines that manufacture fake "edges" and skew the
-# record, so they are excluded from best-book selection. Values are display names.
+# The ONLY books the user can bet, and therefore the only SHOPPABLE books: the +EV game
+# and prop boards, the best-parlay builder and the early monitor all shop exactly this
+# pool. Odds API keys, in the user's display order (williamhill_us is Caesars).
+USER_BOOKS = ("draftkings", "fanduel", "betmgm", "williamhill_us", "espnbet", "fanatics",
+              "hardrockbet", "ballybet", "betrivers")
+
+# Display names (and the pick ledger's broader consensus pool -- ledger/reference.py), plus
+# Pinnacle kept for display as the sharp reference (ev_pilot.assemble_games excludes
+# book=="pinnacle" from the soft pool). This is NOT the shoppable pool (see USER_BOOKS).
+# Offshore/sharp books (bovada, lowvig, mybookieag, betus, betonlineag, …) post
+# stale/soft lines that manufacture fake "edges" and skew the record, so they are
+# not in here. Values are display names.
 MAJOR_BOOKS = {
     "draftkings": "DraftKings", "fanduel": "FanDuel", "fanatics": "Fanatics",
     "hardrockbet": "Hard Rock Bet", "thescore": "theScore Bet",
     "espnbet": "ESPN BET", "williamhill_us": "Caesars", "caesars": "Caesars",
     "bet365": "Bet365", "betmgm": "BetMGM", "ballybet": "Bally Bet",
-    "pinnacle": "Pinnacle",
+    "betrivers": "BetRivers", "pinnacle": "Pinnacle",
 }
 # Plays above this EV are almost always stale-line artifacts, not real value -- excluded
 # so they never make the board or skew the CLV track record.
@@ -40,9 +47,9 @@ EV_CEILING = 0.25
 
 
 def best_price(entries):
-    """(book_slug, american) at the highest decimal odds among MAJOR_BOOKS; None if none
-    of the offered books are mainstream."""
-    entries = [(bk, p) for bk, p in (entries or []) if p and bk in MAJOR_BOOKS]
+    """(book_slug, american) at the highest decimal odds among USER_BOOKS (the books the
+    user can bet); None if none of the offered books is one of them."""
+    entries = [(bk, p) for bk, p in (entries or []) if p and bk in USER_BOOKS]
     if not entries:
         return None
     return max(entries, key=lambda e: decimal_odds(e[1]))

@@ -131,3 +131,21 @@ test("fidelity M1: the game hero does not clip, and the odds boxes straddle its 
   assert.match(css, /\.ca-gm-hero\.has-odds \.ca-gm-odds\{margin-bottom:calc\(var\(--ob-h\) \/ -2\)\}/);
   assert.match(css, /\.ca-gm-hero\.has-odds\{padding-bottom:0;/);
 });
+
+test("settings: the book list is exactly the user's 9 books; saved selections with retired books are tolerated", () => {
+  const NINE = ["draftkings", "fanduel", "betmgm", "williamhill_us", "espnbet", "fanatics", "hardrockbet", "ballybet", "betrivers"];
+  const g = loadScripts(["app.js"]);
+  assert.deepEqual([...g.US_BOOKS.map((b) => b[0])].sort(), [...NINE].sort());
+  assert.deepEqual([...g.SETTINGS_DEFAULTS.books].sort(), [...NINE].sort());
+  assert.equal(g.US_BOOKS.find((b) => b[0] === "betrivers")[1], "BetRivers");
+  // A previously saved selection that still names theScore / Bet365: those keys are ignored, nothing breaks.
+  const stored = new Map([["ca-settings", JSON.stringify({ books: ["fanduel", "thescore", "bet365", "caesars"], unit: 25 })]]);
+  const g2 = loadScripts(["app.js"], { storage: stored });
+  const s = g2.getSettings();
+  assert.deepEqual([...s.books], ["fanduel", "williamhill_us"]);
+  assert.equal(s.unit, 25);
+  assert.equal(g2.bookSelected("thescore"), false);
+  // A selection made only of retired books falls back to all nine rather than an empty (broken) selection.
+  const only = loadScripts(["app.js"], { storage: new Map([["ca-settings", JSON.stringify({ books: ["thescore", "bet365"] })]]) });
+  assert.deepEqual([...only.getSettings().books].sort(), [...NINE].sort());
+});

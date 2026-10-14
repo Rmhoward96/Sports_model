@@ -45,11 +45,11 @@ const uStr = (u) => `${u >= 0 ? "+" : ""}${(+u).toFixed(1)}u`;
 const pStr = (p) => `${+p >= 0 ? "+" : ""}${(+p).toFixed(1)}%`;
 
 /* ── Settings store (localStorage "ca-settings"; see settings.html) ──────── */
-// US books the site prices at, in display order. Caesars' odds feed key is
+// The user's 9 US books (serving.board.USER_BOOKS) -- the only books the site prices at, in display order. Caesars' odds feed key is
 // williamhill_us; "caesars" is accepted as an alias everywhere.
 const US_BOOKS = [["draftkings", "DraftKings"], ["fanduel", "FanDuel"], ["betmgm", "BetMGM"], ["williamhill_us", "Caesars"],
-  ["fanatics", "Fanatics"], ["espnbet", "ESPN BET"], ["hardrockbet", "Hard Rock Bet"], ["thescore", "theScore Bet"],
-  ["bet365", "Bet365"], ["ballybet", "Bally Bet"]];
+  ["fanatics", "Fanatics"], ["espnbet", "ESPN BET"], ["hardrockbet", "Hard Rock Bet"], ["ballybet", "Bally Bet"],
+  ["betrivers", "BetRivers"]];
 const KELLY_FRACTIONS = [[1, "Full"], [0.5, "Half"], [0.25, "Quarter"], [0.125, "Eighth"]];
 const SETTINGS_DEFAULTS = Object.freeze({ books: Object.freeze(US_BOOKS.map((b) => b[0])), unit: 10, bankroll: 1000, kelly: 0.25, minEv: 0 });
 const SETTINGS_MAX = Object.freeze({ unit: 100000, bankroll: 100000000 });  // spec upper bounds
@@ -547,7 +547,7 @@ const evSideLabel = (r) => {
 };
 // green when positive (edge/value), red when negative (worse than sharp), else neutral.
 const evCls = (x) => (x == null ? "" : x > 1e-9 ? "ev-good" : x < -1e-9 ? "ev-bad" : "");
-const EV_BOOKS = { draftkings: "DraftKings", fanduel: "FanDuel", fanatics: "Fanatics", "hard rock bet": "Hard Rock Bet", hardrockbet: "Hard Rock Bet", thescore: "theScore Bet", espnbet: "ESPN BET", "espn bet": "ESPN BET", williamhill_us: "Caesars", caesars: "Caesars", bet365: "Bet365", betmgm: "BetMGM", ballybet: "Bally Bet", "bally bet": "Bally Bet" };
+const EV_BOOKS = { draftkings: "DraftKings", fanduel: "FanDuel", fanatics: "Fanatics", "hard rock bet": "Hard Rock Bet", hardrockbet: "Hard Rock Bet", thescore: "theScore Bet", espnbet: "ESPN BET", "espn bet": "ESPN BET", williamhill_us: "Caesars", caesars: "Caesars", bet365: "Bet365", betmgm: "BetMGM", ballybet: "Bally Bet", "bally bet": "Bally Bet", betrivers: "BetRivers" };
 const evBookName = (b) => (b ? (EV_BOOKS[String(b).toLowerCase()] || b) : "—");
 
 function evRow(r) {
@@ -1600,7 +1600,7 @@ async function gameMoneylines() {
 const BOOK_SITE = { draftkings: ["draftkings.com", "DK"], fanduel: ["fanduel.com", "FD"], betmgm: ["betmgm.com", "MGM"],
   williamhill_us: ["caesars.com", "CZR"], caesars: ["caesars.com", "CZR"], fanatics: ["fanatics.com", "FAN"],
   espnbet: ["espnbet.com", "ESPN"], hardrockbet: ["hardrock.bet", "HR"], thescore: ["thescore.bet", "SCR"],
-  bet365: ["bet365.com", "365"], ballybet: ["ballybet.com", "BAL"] };
+  bet365: ["bet365.com", "365"], ballybet: ["ballybet.com", "BAL"], betrivers: ["betrivers.com", "BR"] };
 const bookLogo = (book) => {
   const [site, short] = BOOK_SITE[book] || [null, String(book || "").slice(0, 3).toUpperCase()];
   const name = evBookName(book);

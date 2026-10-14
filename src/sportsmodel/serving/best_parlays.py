@@ -14,7 +14,7 @@ from __future__ import annotations
 
 import math
 
-from .board import MAJOR_BOOKS, decimal_odds
+from .board import USER_BOOKS, decimal_odds
 from .parlay import american_from_decimal
 from .props_ev import SIM_TO_ODDS_MARKET, normalize_player_name
 
@@ -23,7 +23,7 @@ N_LEGS = 3
 MAX_TICKETS = 3
 MIN_EV = 0.01
 EV_CEILING = 1.0
-PARLAY_BOOKS = frozenset(b for b in MAJOR_BOOKS if b != "pinnacle")
+PARLAY_BOOKS = frozenset(USER_BOOKS)
 
 _PROP_LABEL = {"rush_yds": "Rush Yds", "rec_yds": "Rec Yds", "receptions": "Receptions",
                "pass_yds": "Pass Yds", "pass_tds": "Pass TDs", "rush_att": "Rush Att"}

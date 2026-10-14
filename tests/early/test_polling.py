@@ -50,3 +50,9 @@ def test_fetch_bookmaker_odds_sends_bookmakers_and_never_regions(monkeypatch):
 def test_every_polled_sport_has_a_market_list_and_a_sport_config():
     for sport in API_MARKETS:
         assert sports.get(sport).odds_sport
+
+
+def test_early_book_constants_come_from_the_single_user_books_source():
+    from sportsmodel.serving.board import USER_BOOKS
+    assert US_BOOKS == USER_BOOKS
+    assert len(BOOKMAKERS) == 10 and BOOKMAKERS[-1] == "pinnacle" and BOOKMAKERS[:-1] == USER_BOOKS
