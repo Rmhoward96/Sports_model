@@ -1,0 +1,54 @@
+name: early-monitor
+
+# Early-week stale-number monitor (profit step 3; scripts/early_monitor.py, db/migration_early_tickets.sql). Hourly at
+# minute 0 from Sunday 16:00 UTC to Wednesday 04:00 UTC (60 polls a week) in football season: ONE Odds API odds call per
+# sport using the `bookmakers` parameter (the 9 US books + pinnacle = 10 keys = one billed region): CFB spreads + totals
+# (2 credits), NFL spreads (1 credit), about 180 credits a week. The prices go to odds_snapshot; a US book whose number beats
+# Pinnacle's same-poll fair by +1.5% EV, with kickoff at least 24 h away, becomes ONE paper ticket per
+# (sport, game_pk, market, side) in the append-only early_tickets table. No alerts, no bets, no change to boards, picks or
+# the site. The job skips its remaining calls below 1,500 credits (the regular prop pulls stop at 2,500, regular game lines
+# at 800, close-capture props at 600 and all close capture at 200). A failed poll is not retried: the next hour runs normally.
+# Crons are UTC; months 1,2,8-12 are Aug-Feb, so March to July never fires.
+on:
+  schedule:
+    - cron: "0 16-23 * 1,2,8-12 0"
+    - cron: "0 * * 1,2,8-12 1,2"
+    - cron: "0 0-3 * 1,2,8-12 3"
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: "Poll once (about 3 credits) and print the tickets it would log; write nothing"
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+# Overlapping polls would double-spend credits and race on the same tickets; queue instead.
+concurrency:
+  group: early-monitor
+  cancel-in-progress: false
+
+jobs:
+  poll:
+    runs-on: ubuntu-latest
+    timeout-minutes: 6
+    steps:
+      - uses: actions/checkout@v5
+      - name: Install uv
+        uses: astral-sh/setup-uv@v10.0.1
+        with:
+          enable-cache: true
+      - name: Sync deps
+        run: uv sync
+      - name: Poll the books and log paper tickets
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+          ODDS_API_KEY: ${{ secrets.ODDS_API_KEY }}
+          DRY_RUN: ${{ inputs.dry_run }}      # empty on schedule events, "true"/"false" on workflow_dispatch
+        run: |
+          if [ "$DRY_RUN" = "true" ]; then
+            uv run python scripts/early_monitor.py --dry-run
+          else
+            uv run python scripts/early_monitor.py
+          fi

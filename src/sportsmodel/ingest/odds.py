@@ -91,6 +91,11 @@ def _get(path: str, params: dict[str, Any]) -> Any:
         return resp.json()
 
 
+# One attempt only, for billed calls that must never be retried: a retry after a billed timeout would bill again, and the
+# early monitor's rule is that a failed poll is not retried (the next hourly run proceeds normally).
+_get_once = _get.retry_with(stop=stop_after_attempt(1), reraise=True)
+
+
 def fetch_events(cfg: "SportConfig | None" = None) -> list[dict]:
     """Upcoming events for the sport (id, home_team, away_team, commence_time)."""
     cfg = cfg or _mlb()
@@ -106,6 +111,16 @@ def fetch_game_odds(cfg: "SportConfig | None" = None, regions: str = "us,eu") ->
     cfg = cfg or _mlb()
     return _get(f"/sports/{cfg.odds_sport}/odds", {
         "regions": regions, "markets": ",".join(cfg.game_markets),
+        "oddsFormat": "american", "dateFormat": "iso",
+    })
+
+
+def fetch_bookmaker_odds(cfg: "SportConfig | None", bookmakers: list[str], markets: list[str]) -> list[dict]:
+    """Game-line odds for exactly the named bookmakers (the early-week monitor), using the `bookmakers` parameter in
+    place of `regions`. Ten or fewer bookmakers bill as ONE region, so the cost is one credit per market."""
+    cfg = cfg or _mlb()
+    return _get_once(f"/sports/{cfg.odds_sport}/odds", {
+        "bookmakers": ",".join(bookmakers), "markets": ",".join(markets),
         "oddsFormat": "american", "dateFormat": "iso",
     })
 

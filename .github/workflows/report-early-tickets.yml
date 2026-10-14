@@ -1,0 +1,54 @@
+name: report-early-tickets
+
+# Weekly early-week monitor report: every Tuesday after the Monday-night games have finished and been graded, write
+# docs/superpowers/reports/YYYY-MM-DD-early-monitor.md (scripts/report_early_tickets.py): tickets by market, close coverage,
+# running mean close EV, beat-close rate and availability share, W/L/P and units, and the decision status of the
+# pre-registered pass test. The test is judged ONCE, at the first report with >= 150 graded tickets (a Pinnacle close) and
+# >= 60 CFB totals; until then the status is "collecting". Read-only against the database; writes only the markdown report. A
+# week with no new tickets and no new grades writes nothing. Tuesday 15:52 UTC, after grade-early-tickets (14:20).
+on:
+  workflow_dispatch: {}
+  schedule:
+    - cron: "52 15 * * 2"
+
+permissions:
+  contents: write
+
+concurrency:
+  group: report-early-tickets
+  cancel-in-progress: false
+
+jobs:
+  report:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v5
+      - name: Install uv
+        uses: astral-sh/setup-uv@v10.0.1
+      - name: Sync deps
+        run: uv sync
+      - name: Write the weekly report
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+        run: uv run python scripts/report_early_tickets.py
+      - name: Commit the report
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add docs/superpowers/reports/
+          if git diff --staged --quiet; then
+            echo "no new report"
+            exit 0
+          fi
+          git commit -m "docs(report): early-week monitor [skip ci]"
+          # other data workflows push to the same branch: rebase onto theirs and retry
+          for attempt in 1 2 3; do
+            if git push; then
+              exit 0
+            fi
+            echo "push rejected (attempt $attempt)"
+            [ "$attempt" -lt 3 ] && git pull --rebase
+          done
+          echo "push failed after 3 attempts" >&2
+          exit 1

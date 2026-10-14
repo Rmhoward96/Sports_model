@@ -1,0 +1,40 @@
+name: grade-early-tickets
+
+# Daily: grade the early-week paper tickets against the result and Pinnacle's pre-kick close -> early_ticket_results
+# (scripts/grade_early_tickets.py; db/migration_early_tickets.sql). Every ticket whose game started more than 4 hours ago and
+# has no result yet gets: W/L/P and units at the ticket's price, close_ev (the ticket's line and price valued at Pinnacle's
+# closing fair), beat_close, clv_pts and available_next_poll. Reads rows we already store (prediction_accuracy, odds_snapshot,
+# close_capture): no Odds API credits, no network. Daily 14:20 UTC, after grade-predictions (every 6h) and grade-ledger
+# (14:10) so the prior night's finals are in. Idempotent.
+on:
+  workflow_dispatch:
+    inputs:
+      days:
+        description: "Grade games that started within this many days"
+        type: string
+        default: "14"
+  schedule:
+    - cron: "20 14 * * *"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: grade-early-tickets
+  cancel-in-progress: false
+
+jobs:
+  grade:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v5
+      - name: Install uv
+        uses: astral-sh/setup-uv@v10.0.1
+      - name: Sync deps
+        run: uv sync
+      - name: Grade early tickets (result, units, close EV, availability)
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+          DAYS: ${{ github.event.inputs.days || '14' }}
+        run: uv run python scripts/grade_early_tickets.py --days "$DAYS"
