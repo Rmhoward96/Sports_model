@@ -1,0 +1,69 @@
+{
+  "current_version": "nfl-sim-ml-v2",
+  "data_window": {
+    "first": [
+      2026,
+      3
+    ],
+    "last": [
+      2026,
+      5
+    ],
+    "n_legs": 1323
+  },
+  "fitted_at": "2026-10-14T03:02:09.829607+00:00",
+  "markets": {
+    "mlb": {
+      "hits_allowed": {
+        "k": 0.0,
+        "k_raw": null,
+        "n": 0
+      },
+      "outs_recorded": {
+        "k": 0.0,
+        "k_raw": null,
+        "n": 0
+      },
+      "pitcher_ks": {
+        "k": 0.0,
+        "k_raw": null,
+        "n": 0
+      },
+      "total_bases": {
+        "k": 0.0,
+        "k_raw": null,
+        "n": 0
+      }
+    },
+    "nfl": {
+      "pass_tds": {
+        "k": 0.0,
+        "k_raw": null,
+        "n": 0
+      },
+      "reception_yds": {
+        "k": 0.1396316668920441,
+        "k_raw": 0.10786318290056658,
+        "n": 338
+      },
+      "receptions": {
+        "k": 0.12812920496929414,
+        "k_raw": 0.08627526347683281,
+        "n": 339
+      },
+      "rush_yds": {
+        "k": 0.2633994949140485,
+        "k_raw": 0.40762135730466004,
+        "n": 183
+      }
+    }
+  },
+  "model_version_used": "nfl-sim-ml-v2",
+  "pooled": {
+    "k": 0.17542415885577545,
+    "k_raw": 0.17542415885577545,
+    "n": 860,
+    "sport": "nfl"
+  },
+  "schema": 1
+}
