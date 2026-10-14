@@ -26,7 +26,7 @@ function uiBarPath(x, base, hgt, w) {
 }
 
 const oddsStr = (o) => (!uiFin(o) ? "" : +o > 0 ? `+${+o}` : `${+o}`);
-const confPill = (tier) => (tier ? `<span class="ca-conf ${ctxEsc(tier)}">${ctxEsc(tier)}</span>` : "");
+const confPill = (tier) => (tier ? `<span class="ca-conf ${ctxEsc(tier)}">${ctxEsc(tier === "VALUE" ? "Value" : tier)}</span>` : "");
 const alphaCell = (s) => (uiFin(s) ? `<span class="ca-alpha-cell${+s >= 85 ? " hi" : ""}">${s}</span>` : "");
 // Result chip for a graded pick: "W" / "L" / "P" (push), coloured by .ca-res.W / .L / .P in theme.css. `title` = hover text (plain). "" when there is no grade.
 const resultChip = (result, title = "") => (result === "W" || result === "L" || result === "P" ? `<span class="ca-res ${result}"${title ? ` title="${ctxEsc(title)}"` : ""}>${result}</span>` : "");

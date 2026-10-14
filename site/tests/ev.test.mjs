@@ -112,11 +112,12 @@ test("URL params <-> filter state: valid values only, defaults stay out of the U
 // ---- populated render --------------------------------------------------------------------------
 const EVIL_AWAY = 'Evil "Q" <b>Crew</b>', HOME = 'Kansas City "Chiefs"', PLAYER = 'O"Brien <i>Zed</i>';
 const urlParts = (url) => { const u = new URL(url); return { path: u.pathname.split("/").pop(), q: u.search }; };
-function populated({ search = "", moves = [], lastBuild = true } = {}) {
+function populated({ search = "", moves = [], lastBuild = true, value = false } = {}) {
   const NOW = Date.now(), iso = (h) => new Date(NOW + h * 36e5).toISOString(), day = (d) => new Date(NOW - d * 864e5).toISOString().slice(0, 10);
   const line = (o) => ({ sport: "nfl", game_pk: 1, matchup: `${EVIL_AWAY} @ ${HOME}`, market: "moneyline", side: "home", true_prob: 0.7, best_line_implied: 0.5,
     best_price: 100, best_book: "draftkings", ev_best: 0.3, is_pick: true, commence_time: iso(48), ...o });
-  const evNfl = [line({}), line({ game_pk: 2, commence_time: iso(96), ev_best: 0.12, true_prob: 0.6, side: "away", best_book: "fanduel" }), line({ game_pk: 3, ev_best: 0.1, true_prob: 0.58, is_pick: false })];
+  const evNfl = [line({}), line({ game_pk: 2, commence_time: iso(96), ev_best: 0.12, true_prob: 0.6, side: "away", best_book: "fanduel" }), line({ game_pk: 3, ev_best: 0.1, true_prob: 0.58, is_pick: false }),
+    ...(value ? [line({ game_pk: 9, matchup: "Value Bears @ Value Lions", true_prob: 0.52, ev_best: 0.02, side: "away" })] : [])];   // a 2% EV pick: Alpha < 65, tier VALUE
   const props = [{ sport: "nfl", game_pk: 5, matchup: `${EVIL_AWAY} @ ${HOME}`, market: "rec_yds", side: "over", line: 64.5, player_name: PLAYER, model_prob: 0.62, best_price: -110, best_book: "fanduel", ev_best: 0.15, is_pick: true, commence_time: iso(72) }];
   const pred = { game_pk: 1, sport: "nfl", home_team_name: HOME, away_team_name: EVIL_AWAY, commence_time: iso(48), home_win_prob: 0.6, pred_home_score: 30, pred_away_score: 20, market_spread: -3, market_total: 41.5 };
   const evPnl = [{ game_date: day(5), sport: "nfl", market: "moneyline", n: 10, wins: 6, losses: 3, pushes: 1, pnl: 50 }, { game_date: day(2), sport: "nfl", market: "prop", n: 2, wins: 1, losses: 1, pushes: 0, pnl: 0 }];
@@ -160,6 +161,20 @@ test("buildEvPage renders every mockup section from stubbed data; names escaped;
   assert.ok(!/migration/i.test(html));
   assert.ok(!/NaN|undefined|null/.test(html.replace(/\bnull\b(?=[^<]*>)/g, "")), "no NaN / undefined leaks");
   assert.ok(requested.every((r) => !r.startsWith("prediction_pnl_daily")), "performance never reads prediction_pnl");
+});
+
+test("a 2% EV pick (VALUE tier) is listed on the +EV page; the Confidence filter offers VALUE and round-trips it (VALUE keeps the pick, HIGH drops it)", async () => {
+  const all = await populated({ value: true }).D.buildEvPage(), table = (h) => h.slice(h.indexOf('id="ev-table"'), h.indexOf('id="ev-rail"'));
+  assert.equal((table(all).match(/<tr data-href/g) || []).length, 4, "the three picks and the 2% EV pick");
+  assert.ok(table(all).includes("game=9") && /<span class="ca-conf VALUE">Value<\/span>/.test(table(all)), "listed with a Value pill");
+  assert.match(all, /<option value="VALUE">Value<\/option>|<option value="VALUE">VALUE<\/option>/, "the Confidence filter offers VALUE");
+  const v = await populated({ value: true, search: "?conf=VALUE" }).D.buildEvPage();
+  assert.equal((table(v).match(/<tr data-href/g) || []).length, 1); assert.ok(table(v).includes("game=9"));
+  assert.match(v, /<option value="VALUE" selected>/, "conf=VALUE round-trips into the select");
+  const h = await populated({ value: true, search: "?conf=HIGH" }).D.buildEvPage();
+  assert.ok(!table(h).includes("game=9"), "HIGH drops the VALUE pick");
+  assert.deepEqual(JSON.parse(JSON.stringify(g.evxParse("?conf=VALUE"))).tier, "VALUE");
+  assert.equal(g.evxQuery(g.evxParse("?conf=VALUE")), "conf=VALUE");
 });
 
 test("buildEvPage: one performance population for hit rate, ROI and the edge-bucket table", async () => {

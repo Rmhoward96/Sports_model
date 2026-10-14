@@ -195,7 +195,7 @@ async function blPulseLoad(sport, nowMs, today, startsP) {
     predictions(sport).catch(() => []), loadLineMoves().catch(() => []), loadSplits().catch(() => new Map()), loadOpportunities().catch(() => []), evBestLines().catch(() => new Map()),
     evResultsRows().catch(() => []), evGradedPicks().catch(() => []), startsP,
   ]);
-  return { preds: preds || [], moves: moves || [], splits, opps: (oppsAll || []).filter((o) => o.tier && o.sport === sport), lineBy, nowMs, today,
+  return { preds: preds || [], moves: moves || [], splits, opps: (oppsAll || []).filter((o) => o.sport === sport), lineBy, nowMs, today,
     graded: scope.failed ? [] : gradedLinePicks(results, picks, scope.starts).filter((r) => r.sport === sport) };      // no record scope: no graded picks (never the archived ones)
 }
 // NFL rest days: for each game, the days since each team's previous game of the season (team_game_log), null for a team's first game.

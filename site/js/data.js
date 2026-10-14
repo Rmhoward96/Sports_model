@@ -29,7 +29,7 @@ function toOpportunity(r, kind, seg) {
     marketLabel: isProp ? (PROP_LABEL[r.market] || r.market) : ({ moneyline: "ML", spread: "Spread", total: "Total" }[r.market] || r.market),
     side: r.side, playerName: isProp ? r.player_name : null, line: finite(r.line) ? +r.line : null,
     commence: r.commence_time, book: r.best_book, odds: +r.best_price,
-    modelProb: +modelProb, impliedProb: implied, edgePp, evPct, alpha, tier: alphaTier(alpha),
+    modelProb: +modelProb, impliedProb: implied, edgePp, evPct, alpha, tier: alphaTier(alpha) || "VALUE",   // every valid pick row is an opportunity; Alpha ranks it and its tier only labels it (below 65 = VALUE)
   };
 }
 

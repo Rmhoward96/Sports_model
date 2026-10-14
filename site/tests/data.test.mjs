@@ -12,6 +12,18 @@ test("line opportunity: edge vs best-price implied, EV %, alpha + tier", () => {
   assert.equal(o.alpha, 95); assert.equal(o.tier, "HIGH");
 });
 
+test("every valid pick row gets a tier: a 2% EV pick (Alpha < 65) is VALUE, higher alphas keep HIGH / STRONG / MEDIUM", () => {
+  const row = (trueProb, implied, ev) => ({ sport: "nfl", game_pk: 1, matchup: "DET @ KC", market: "moneyline", side: "away", true_prob: trueProb, best_line_implied: implied, best_price: 100, best_book: "draftkings", ev_best: ev });
+  const low = g.toOpportunity(row(0.52, 0.5, 0.02), "line", { roiPct: 0, n: 0 });
+  assert.ok(low.alpha < 65, `alpha ${low.alpha}`); assert.equal(low.tier, "VALUE");
+  assert.equal(g.toOpportunity(row(0.604, 0.439, 0.165), "line", null).tier, "HIGH");
+  const strong = g.toOpportunity(row(0.55, 0.5, 0.05), "line", { roiPct: 0, n: 0 }), medium = g.toOpportunity(row(0.54, 0.5, 0.04), "line", { roiPct: 0, n: 0 });
+  assert.deepEqual([strong.alpha, strong.tier, medium.alpha, medium.tier], [76, "STRONG", 70, "MEDIUM"]);
+  const prop = g.toOpportunity({ sport: "nfl", game_pk: 2, market: "rec_yds", side: "over", line: 64.5, player_name: "A", model_prob: 0.52, best_price: 100, ev_best: 0.02 }, "prop", null);
+  assert.equal(prop.tier, "VALUE", "props too");
+  assert.equal(g.toOpportunity({ sport: "nfl", true_prob: null, best_price: 100, ev_best: 0.02 }, "line", null), null, "missing numbers are still not an opportunity");
+});
+
 test("prop opportunity uses model_prob and the best price", () => {
   const o = g.toOpportunity({ sport: "nfl", game_pk: 2, matchup: "BUF @ ATL", market: "rec_yds", side: "over", line: 64.5,
     player_name: "A. Receiver", commence_time: "2026-10-05T17:00:00Z", model_prob: 0.58, best_price: -110,

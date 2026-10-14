@@ -60,6 +60,7 @@ a{color:inherit}
 .ca-conf.HIGH{background:var(--green-tint);color:var(--green)}
 .ca-conf.STRONG{background:var(--blue-tint);color:var(--blue)}
 .ca-conf.MEDIUM{background:var(--amber-tint);color:var(--amber)}
+.ca-conf.VALUE{background:#EEE9DD;color:var(--muted)}
 .ca-alpha-cell{display:inline-block;min-width:56px;text-align:center;border-radius:6px;padding:5px 8px;background:var(--amber-tint);font-weight:600}
 .ca-alpha-cell.hi{background:var(--green-tint)}
 .ca-alpha-cell.lo{background:#EEE9DD;color:var(--muted)}

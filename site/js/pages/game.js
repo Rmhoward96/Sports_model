@@ -4,7 +4,7 @@
    (window.__caGameData) without a refetch. The venue / weather hero line (game_info, NFL + CFB), the havoc / turnover / weather Key Insights
    (cfb_team_insights, game_info) and the CFB Projected Game Flow (cfb_quarter_shares, game_info.line_score) render only from rows that
    exist: a missing table or row hides its panel. The TV network is still omitted.
-   "Opportunities" are is_pick rows with a non-null Alpha tier (loadOpportunities). Every "CappingAlpha" number is the MODEL's
+   "Opportunities" are is_pick rows with valid numbers (loadOpportunities); Alpha and its tier rank / label them. Every "CappingAlpha" number is the MODEL's
    (home_win_prob; margin / total distributions at the market line), never ev_picks.true_prob, which is Pinnacle's no-vig line.
    Those model numbers are first shrunk toward the market (js/shrink.js: market + k x (model - market), k per sport and market from js/shrink-k.js; NFL and MLB
    k = 0), so the Read, the Model Projection table, the cover probability and the leans compare the shrunk model; the raw projection stays on the Projected cards
@@ -541,7 +541,7 @@ async function gmLoad(sport, rawGame) {
   });
   const { away: awayCol, home: homeCol } = gameTeamColors(r.away_team_name, r.home_team_name, sport);
   window.__caGameSim = { players, awayCol, homeCol, awayTeam: r.away_team_name, homeTeam: r.home_team_name };
-  const myOpps = (opps || []).filter((o) => String(o.game_pk) === String(game) && o.tier);
+  const myOpps = (opps || []).filter((o) => String(o.game_pk) === String(game));
   const myMoves = (moves || []).filter((m) => String(m.game_pk) === String(game));
   const shownSimVersion = (sims[0] && sims[0].model_version) || null;
   return { sport, game: String(rawGame), r, actual: accRows[0] || null, evRows: evRows || [], mlRow: mls.get(String(game)) || null, opps: myOpps, moves: myMoves, lineBy: lineBy || new Map(),

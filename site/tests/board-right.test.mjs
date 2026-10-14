@@ -92,17 +92,25 @@ test("Top Alpha Edges, a past week: that week's stored picks (latest rebuild), r
   const P = populated({ search: "?week=3" }), html = await P.G.buildBoardPage("nfl"), ta = card(html, IDS[0]), rows = rowsOf(ta);
   assert.ok(text(ta).includes("Week 3's top edges with their graded results"), text(ta));
   assert.ok(!ta.includes("game=3") && !ta.includes("game=4"), "only week 3's games (1, 2)");
-  assert.equal(rows.length, 4, "prop, moneyline, spread, total");
+  assert.equal(rows.length, 5, "prop, moneyline, spread, total, and game 2's 0.2% EV moneyline (a VALUE pick: Alpha is a label, not a filter)");
   // alpha order: the prop (0.5 EV, 0.8 prob), the moneyline (0.4 EV), the spread rebuild with 0.35 EV (the later created_at, NOT the 0.1 one), the total
   assert.ok(rows[0].includes("Rec Yds") && rows[0].includes('class="ca-res L"') && rows[0].includes("Zed &lt;b&gt;&quot;Q&quot;&lt;/b&gt;"), "the escaped prop pick, lost");
   assert.ok(rows[1].includes("Falcons ML") && rows[1].includes('class="ca-res W"'));
   assert.ok(rows[2].includes("Falcons spread") && rows[2].includes('class="ca-res L"') && rows[2].includes(">+22.0%<"), "the latest rebuild of the spread pick: edge (0.72 - 0.5) = +22.0%");
   assert.ok(rows[3].includes("Over total") && rows[3].includes('class="ca-res P"') && rows[3].includes("Push"), "won = null is a push");
-  assert.ok(rows.every((r) => r.includes("ca-res")) && !ta.includes("ca-ev-ta-noaux"), "the result cell is on every row");
-  assert.ok(!ta.includes("Lions ML") && !ta.includes("Bears ML"), "R9: the 0.2% EV pick of game 2 has no tier and is not an opportunity");
+  assert.ok(rows.every((r) => r.includes("ca-res") || r.includes("Not graded yet")) && !ta.includes("ca-ev-ta-noaux"), "the result cell is on every row (a dash for the ungraded VALUE pick)");
+  assert.ok(rows[4].includes("game=2") && rows[4].includes("Not graded yet"), "R9: the 0.2% EV pick of game 2 is a pick, so it is listed (last by Alpha), not yet graded");
   assert.ok(P.requested.some((u) => u.startsWith("ev_picks") && u.includes("commence_time=gte.2026-09-21T") && u.includes("sport=eq.nfl")), "windowed by the period");
   assert.ok(P.requested.some((u) => u.startsWith("ev_results") && u.includes("game_pk=in.(1,2)")) && P.requested.some((u) => u.startsWith("ev_prop_results")), "results of those games");
   assert.ok(text(ta).includes("Week 3"), "the period is named");
+});
+
+test("Top Alpha Edges, a past week: a graded VALUE pick (0.2% EV, Alpha < 65) is listed with its result", async () => {
+  const res = [...RES, { sport: "nfl", game_pk: 2, market: "moneyline", side: "away", won: false }];
+  const html = await populated({ search: "?week=3", results: res }).G.buildBoardPage("nfl"), rows = rowsOf(card(html, IDS[0]));
+  const v = rows.find((r) => r.includes("game=2") && !r.includes("Over total"));
+  assert.ok(v && v.includes('class="ca-res L"') && !v.includes("Not graded yet"), "the sub-65 pick carries its graded result");
+  assert.equal(rows.length, 5);
 });
 
 test("Top Alpha Edges: a stored pick of a finished game lends its result in the current week; empty and failed states are honest", async () => {
@@ -127,7 +135,7 @@ test("Top Alpha pills: only the markets present, a pill keeps its market, a mark
   const only = rowsOf(G.BOARD_CARDS["board-top-alpha"](D));
   assert.equal(only.length, 1); assert.ok(only[0].includes("Rec Yds"));
   G.brSetTop("moneyline");
-  assert.equal(rowsOf(G.BOARD_CARDS["board-top-alpha"](D)).length, 1, "game 2's moneyline pick has no tier");
+  assert.equal(rowsOf(G.BOARD_CARDS["board-top-alpha"](D)).length, 2, "game 2's 0.2% EV moneyline pick is listed beside game 1's");
   const P4 = populated(), d4 = await withD(P4); P4.G.brSetTop("props");
   assert.ok(rowsOf(P4.G.BOARD_CARDS["board-top-alpha"](d4.D)).length >= 1 && !/data-key="props"/.test(P4.G.BOARD_CARDS["board-top-alpha"](d4.D)), "week 4 has no prop: the stale 'props' choice falls back to All");
 });

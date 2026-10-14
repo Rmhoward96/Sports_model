@@ -171,7 +171,7 @@ function boardLines(g, D) {
   return { fav, favName, favAbbr: fav ? teamShort(favName, g.sport) : "", mkt: { ml: mktMl, spread: mktLine, total: mktTotal }, model: { ml: modMl, spread: modLine, total }, edge, mlVig: mktProb != null && !devig, proj };
 }
 
-// Alpha Score of an upcoming game, or null when it cannot be computed. A game with a tiered +EV opportunity (R9) uses that
+// Alpha Score of an upcoming game, or null when it cannot be computed. A game with a +EV opportunity (R9) uses that
 // opportunity's score. Otherwise it is the better side of the game's moneyline: the MODEL's win probability (shrunk toward the market's no-vig probability, js/shrink.js) vs the best
 // available price (game_moneylines_current), through the same alphaScore() the opportunities use (EV and edge from those two
 // numbers, no segment record). Spread / total carry no model probability or price, so they cannot be scored here.
@@ -280,7 +280,7 @@ async function boardLoad(sport, view) {
   ]);
   const pks = new Set(preds.map((r) => String(r.game_pk)));
   const D = { sport, view, nowMs, today, period, lastProj, preds, acc, mlBy: mlMap, lineBy, closing: trackClosingMap(closingRows),
-    opps: (oppsAll || []).filter((o) => o.tier && o.sport === sport && pks.has(String(o.game_pk))) };   // R9: an opportunity is a pick with a tier
+    opps: (oppsAll || []).filter((o) => o.sport === sport && pks.has(String(o.game_pk))) };   // R9: every is_pick row with valid numbers is an opportunity; Alpha and its tier rank / label it
   await Promise.all(BOARD_LOADERS.map((f) => Promise.resolve().then(() => f(D)).catch((e) => console.error("board loader failed", e))));
   return D;
 }
@@ -376,7 +376,7 @@ function boardFinalTable(rows, D, s) {
   return `<table class="ca-table ca-board-table ca-bd-fin${s.market === "all" ? "" : ` ca-bd-em-${ctxEsc(s.market)}`}">${head}<tbody>${body}</tbody></table>`;
 }
 
-// The Player Props pill: the prop opportunities (a tiered pick, R9) of the shown games.
+// The Player Props pill: the prop opportunities (R9: every pick) of the shown games.
 function boardPropsTable(rows, D) {
   const pks = new Set(rows.map((g) => String(g.game_pk))), by = new Map(rows.map((g) => [String(g.game_pk), g]));
   const props = (D.opps || []).filter((o) => o.kind === "prop" && pks.has(String(o.game_pk)));

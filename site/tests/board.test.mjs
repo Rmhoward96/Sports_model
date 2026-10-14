@@ -698,13 +698,23 @@ test("boardAlpha: the game's opportunity score, else the better moneyline side (
 
 test("Alpha Score column: every upcoming row with a price and a model probability shows one (grey below 65); a dash only when it cannot be computed", async () => {
   const html = await populated({ search: "?week=5" }).G.buildBoardPage("nfl"), r = rowOf(tableOf(html, "ca-bd-up"), 20);
-  assert.match(r, /class="ca-bd-alpha" title="[^"]*ML[^"]*"><span class="ca-alpha-cell lo">45<\/span>/, "game 20 has no tiered opportunity: the model's moneyline score, neutral");
+  assert.match(r, /class="ca-bd-alpha" title="[^"]*ML[^"]*"><span class="ca-alpha-cell lo">60<\/span>/, "game 20's 2% EV pick is a VALUE opportunity (not hidden): its own Alpha (60), neutral grey below 65");
   const cur = await populated().G.buildBoardPage("nfl");
   assert.match(rowOf(tableOf(cur, "ca-bd-up"), 3), /class="ca-alpha-cell/, "game 3 keeps its opportunity score");
-  const noPrice = await populated({ search: "?week=5", fail: ["game_moneylines_current"] }).G.buildBoardPage("nfl");
-  assert.ok(rowOf(tableOf(noPrice, "ca-bd-up"), 20).includes('class="ca-bd-alpha"><span class="muted">—</span>'), "no price: a dash");
+  const noPrice = await populated({ search: "?week=5", fail: ["game_moneylines_current", "ev_current"] }).G.buildBoardPage("nfl");
+  assert.ok(rowOf(tableOf(noPrice, "ca-bd-up"), 20).includes('class="ca-bd-alpha"><span class="muted">—</span>'), "no price and no opportunity (game 20's VALUE pick is not available either): a dash");
   const P = populated({ search: "?week=4" }); P.G.boardSetFilter("nfl", "sort", "alpha");
   assert.ok((await P.G.buildBoardPage("nfl")).includes('value="alpha" selected'), "Alpha sort uses the computed score");
+});
+
+test("the sport page's opportunities include the VALUE pick (game 20, 2% EV) with its tier, and only this sport's picks", async () => {
+  const P = populated({ search: "?week=5" }); let D = null;
+  P.G.BOARD_CARDS["board-top-alpha"] = (d) => { D = d; return ""; };
+  await P.G.buildBoardPage("nfl");
+  const v = D.opps.find((o) => String(o.game_pk) === "20");
+  assert.ok(v && v.tier === "VALUE" && v.alpha < 65 && v.sport === "nfl", JSON.stringify(v));
+  const html = await populated({ search: "?week=5" }).G.buildBoardPage("nfl");
+  assert.ok(!/NaN|undefined/.test(html));
 });
 
 test("4-digit moneylines carry the exact price on hover; the narrow-card ML columns are wide enough for -1439", () => {
