@@ -76,6 +76,8 @@ Fitted on {pooled['n']} legs of model version `{doc['model_version_used']}` (cur
 
 A market with k = 0 is priced at the market's probability only. A pooled sample under 300 legs gives k = 0 everywhere. MLB is k = 0 in this part.
 
+Known limit: the fit's prices are the best over and under across all books and so includes Pinnacle, while the board's market probability excludes Pinnacle.
+
 <!-- {MARKER}: {json.dumps(block, sort_keys=True)} -->
 """
 

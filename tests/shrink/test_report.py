@@ -72,3 +72,9 @@ def test_latest_decision_ignores_reports_on_or_after_the_date_and_falls_back_to_
 def test_a_corrupt_newer_report_does_not_unfreeze_an_older_judged_verdict():
     reports = [_rep(35, JUDGED), "<!-- shrink-gate: {broken -->"]
     assert report.latest_decision(reports, AS_OF + timedelta(days=90)) == JUDGED
+
+
+def test_the_report_states_the_pinnacle_limit_of_the_fit_prices_in_one_line():
+    text = report.render_report(as_of=AS_OF, doc=doc(), decision=COLLECTING)
+    (line,) = [l for l in text.splitlines() if "Pinnacle" in l]
+    assert "all books" in line and "includes Pinnacle" in line and "board" in line and "excludes Pinnacle" in line

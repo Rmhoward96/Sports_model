@@ -1,0 +1,57 @@
+name: fit-shrink-k
+
+# Weekly refit of the prop shrink (profit step 2 Part A, docs/superpowers/specs/2026-10-13-shrink-props-design.md).
+# Every Tuesday, after capture-player-actuals (15:00) has graded Monday night: read the graded NFL prop leans
+# (read-only), fit k per market (scripts/fit_shrink_k.py), write assets/shrink_k.json and the dated gate report
+# docs/superpowers/reports/YYYY-MM-DD-shrink-gate.md, and commit both. The prop board (build-ev-props) reads
+# assets/shrink_k.json from the repo; until the first fit lands it is price-only (k = 0).
+# On ANY fetch or fit failure the script exits non-zero and leaves the existing file untouched, and nothing is committed.
+# FIRST RUN: dispatch this workflow by hand right after merge (gh workflow run fit-shrink-k.yml --ref main).
+on:
+  workflow_dispatch: {}
+  schedule:
+    - cron: "30 15 * * 2"
+
+permissions:
+  contents: write
+
+concurrency:
+  group: fit-shrink-k
+  cancel-in-progress: false
+
+jobs:
+  fit:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v5
+      - name: Install uv
+        uses: astral-sh/setup-uv@v10.0.1
+      - name: Sync deps
+        run: uv sync
+      - name: Fit k and write the gate report
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+        run: uv run python scripts/fit_shrink_k.py
+      - name: Commit k and the report
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          for f in assets/shrink_k.json docs/superpowers/reports/*-shrink-gate.md; do
+            [ -f "$f" ] && git add "$f"
+          done
+          if git diff --staged --quiet; then
+            echo "no change to commit"
+            exit 0
+          fi
+          git commit -m "chore: weekly shrink-k refit [skip ci]"
+          # other data workflows push to the same branch: rebase onto theirs and retry
+          for attempt in 1 2 3; do
+            if git push; then
+              exit 0
+            fi
+            echo "push rejected (attempt $attempt)"
+            [ "$attempt" -lt 3 ] && git pull --rebase
+          done
+          echo "push failed after 3 attempts" >&2
+          exit 1
