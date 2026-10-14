@@ -19,6 +19,9 @@
    Edge = model minus market: ML in probability points vs the favourite's NO-VIG probability (its price normalised with the other side's price; the vigged implied probability when only one side has a price), spread in points on the
    favourite (model margin - market margin), total in points (model - market; + leans Over). The model's spread and total are
    rounded to the half point (modelLineStr / r05, the same as the game page), so the edge is exactly what the two columns show.
+   UPCOMING games show the model after shrinking toward the market (js/shrink.js: market + k x (model - market), k per sport and market from js/shrink-k.js; NFL and
+   MLB k = 0, so they show the market and an edge of 0). A number with no market line is the raw projection, labelled "proj", with no edge; the fair ML needs a two-sided
+   no-vig price ("—" without one). Graded games keep their recorded model numbers.
    NFL / CFB: "Power Rankings →" opens ?view=rankings, which renders the legacy sortable rankingsTable (app.js: rankingsCard,
    wireRankings) under the same title row.
    Depends on app.js (predictions, rankingsLoad, rankingsCard, wireRankings, etDateStr, ctxEsc, logoImg, teamShort, sb, sbAll,
@@ -92,6 +95,36 @@ function boardGames(D) {
   return out.sort((a, b) => boardSortKey(a) - boardSortKey(b) || String(a.game_pk).localeCompare(String(b.game_pk)));
 }
 
+// The model numbers of an UPCOMING game after shrinking toward the market (profit step 2 Part B), all from the favourite's side. Every number goes through
+// js/shrink.js: market + k (model - market), k = SHRINK_K[sport][market] (0 for NFL and MLB, so they show the market).
+//   i = { pFav (the model's favourite probability, raw), mktProb (the favourite's market probability), devig (mktProb is the no-vig one: both ML prices exist),
+//         anyMarket (the game has any market number), margin (the model's HOME margin, raw), mktSpread (the market's HOME book line: negative = home favoured),
+//         sign (+1 home favourite, -1 away), total (raw), mktTotal }
+// Returns { ml (fair American), spread (the favourite's line), total, edge: { ml (prob pts), spread (pts), total (pts) }, proj: { ml, spread, total } }.
+//   * a number with a market to shrink toward is shrunk and has an edge (k = 0: the market itself, edge exactly 0);
+//   * a number with NO market line is the raw projection (proj = true) and has no edge;
+//   * the fair ML needs a two-sided no-vig price: without one it is null ("—"), except for a game with no market number at all (the raw projection, proj = true).
+function boardShrink(sport, i) {
+  const out = { ml: null, spread: null, total: null, edge: { ml: null, spread: null, total: null }, proj: { ml: false, spread: false, total: false } };
+  if (i.pFav != null) {
+    if (i.devig && i.mktProb != null) {
+      const s = shrinkProb(i.pFav, i.mktProb, shrinkK(sport, "moneyline"));
+      if (s != null) { out.ml = fairAmerican(s); out.edge.ml = (s - i.mktProb) * 100; }
+    } else if (!i.anyMarket) { out.ml = fairAmerican(i.pFav); out.proj.ml = true; }
+  }
+  if (i.margin != null) {
+    if (i.mktSpread != null) {
+      const sMargin = shrinkLine(i.margin, -i.mktSpread, shrinkK(sport, "spread"));         // the market's expected home margin is minus its home book line
+      out.spread = shrinkHalf(-i.sign * sMargin, i.sign * i.mktSpread) || 0;               // the favourite's line, to the half point (the market's own at k = 0)
+      out.edge.spread = i.sign * i.mktSpread - out.spread;
+    } else { out.spread = r05(-i.sign * i.margin) || 0; out.proj.spread = true; }
+  }
+  if (i.total != null) {
+    if (i.mktTotal != null) { out.total = shrinkHalf(shrinkLine(i.total, i.mktTotal, shrinkK(sport, "total")), i.mktTotal); out.edge.total = out.total - i.mktTotal; }
+    else { out.total = r05(i.total); out.proj.total = true; }
+  }
+  return out;
+}
 // The market, the model and the edge of one game, all from the favourite's side. Missing numbers are null (shown as a dash).
 //   mkt = { ml (American price), spread (the favourite's line), total }, model = { ml (fair American), spread, total }, edge = { ml (prob pts), spread (pts), total (pts) }, mlVig (the ML edge used the vigged price: no price for the other side).
 // A final game uses the graded row's model numbers and the closing prices (D.closing: "game_pk|side" -> American); an upcoming game
@@ -118,20 +151,28 @@ function boardLines(g, D) {
   const pFav = pHome == null ? null : fav === "away" ? 1 - pHome : pHome;
   const mktMl = fav ? (fav === "home" ? prices.home : prices.away) ?? null : null;
   const mktLine = fav && mktSpread != null ? sign * mktSpread : null;          // the favourite's line (negative when it is the favourite)
-  const modLine = fav && margin != null ? r05(-sign * margin) || 0 : null;     // the model's numbers are quoted to the half point everywhere (modelLineStr, game page), so the edge is exactly model - market as shown
-  if (total != null) total = r05(total);
-  const modMl = pFav != null && pFav > 0 && pFav < 1 ? probToAmerican(pFav) : null;
-  // The ML edge is against the NO-VIG probability of the favourite's price: normalised with the other side's price (proportional) when both exist, else the
-  // vigged implied probability (mlVig = true; the Model Projections ML tooltip says so).
+  // The market's probability for the favourite: NO-VIG (the price normalised with the other side's price) when both prices exist, else the vigged implied probability (mlVig = true).
   const pf = mktMl == null ? NaN : americanToProb(mktMl), po = fav ? americanToProb(fav === "home" ? prices.away : prices.home) : NaN, devig = Number.isFinite(pf) && Number.isFinite(po) && pf + po > 0;
   const mktProb = Number.isFinite(pf) ? (devig ? pf / (pf + po) : pf) : null;
-  const edge = { ml: pFav != null && mktProb != null ? (pFav - mktProb) * 100 : null,
-    spread: mktLine != null && modLine != null ? mktLine - modLine : null, total: mktTotal != null && total != null ? total - mktTotal : null };
-  return { fav, favName, favAbbr: fav ? teamShort(favName, g.sport) : "", mkt: { ml: mktMl, spread: mktLine, total: mktTotal }, model: { ml: modMl, spread: modLine, total }, edge, mlVig: mktProb != null && !devig };
+  let modLine, modMl, edge, proj = { ml: false, spread: false, total: false };
+  if (a) {
+    // A graded game: the model's RECORDED numbers against the closing prices, exactly as stored. History (the Final table, the Model Projections bands) is never shrunk.
+    modLine = fav && margin != null ? r05(-sign * margin) || 0 : null;     // the model's numbers are quoted to the half point everywhere (modelLineStr, game page), so the edge is exactly model - market as shown
+    if (total != null) total = r05(total);
+    modMl = pFav != null && pFav > 0 && pFav < 1 ? probToAmerican(pFav) : null;
+    edge = { ml: pFav != null && mktProb != null ? (pFav - mktProb) * 100 : null,
+      spread: mktLine != null && modLine != null ? mktLine - modLine : null, total: mktTotal != null && total != null ? total - mktTotal : null };
+  } else {
+    // An upcoming game: every model number is pulled toward the market by the fitted k (boardShrink).
+    const S = boardShrink(g.sport || p.sport, { pFav, mktProb, devig, anyMarket: mktSpread != null || mktTotal != null || prices.home != null || prices.away != null,
+      margin: fav ? margin : null, mktSpread, sign, total, mktTotal });
+    modLine = S.spread; modMl = S.ml; total = S.total; edge = S.edge; proj = S.proj;
+  }
+  return { fav, favName, favAbbr: fav ? teamShort(favName, g.sport) : "", mkt: { ml: mktMl, spread: mktLine, total: mktTotal }, model: { ml: modMl, spread: modLine, total }, edge, mlVig: mktProb != null && !devig, proj };
 }
 
 // Alpha Score of an upcoming game, or null when it cannot be computed. A game with a tiered +EV opportunity (R9) uses that
-// opportunity's score. Otherwise it is the better side of the game's moneyline: the MODEL's win probability vs the best
+// opportunity's score. Otherwise it is the better side of the game's moneyline: the MODEL's win probability (shrunk toward the market's no-vig probability, js/shrink.js) vs the best
 // available price (game_moneylines_current), through the same alphaScore() the opportunities use (EV and edge from those two
 // numbers, no segment record). Spread / total carry no model probability or price, so they cannot be scored here.
 function boardAlpha(g, D) {
@@ -139,10 +180,14 @@ function boardAlpha(g, D) {
   if (g.opp) return { score: g.opp.alpha, tier: g.opp.tier, basis: oppSlateLabel(g.opp, D.lineBy) };
   const pHome = boardNum(g.pred && g.pred.home_win_prob), m = D.mlBy && D.mlBy.get(String(g.game_pk));
   if (pHome == null || !m) return null;
+  // The model's win probability is shrunk toward the market's NO-VIG probability (js/shrink.js), which needs both prices: with one side missing there is no Alpha Score.
+  const hp = boardNum(m.home_price), ap = boardNum(m.away_price), ih = hp == null ? NaN : americanToProb(hp), ia = ap == null ? NaN : americanToProb(ap);
+  if (!Number.isFinite(ih) || !Number.isFinite(ia) || ih + ia <= 0) return null;
+  const sHome = shrinkProb(pHome, ih / (ih + ia), shrinkK(g.sport, "moneyline"));
+  if (sHome == null) return null;
   let best = null;
-  for (const [p, price, team] of [[pHome, boardNum(m.home_price), g.home], [1 - pHome, boardNum(m.away_price), g.away]]) {
-    const imp = price == null ? NaN : americanToProb(price);
-    if (!Number.isFinite(imp)) continue;
+  for (const [p, price, team] of [[sHome, hp, g.home], [1 - sHome, ap, g.away]]) {
+    const imp = americanToProb(price);
     const dec = price > 0 ? 1 + price / 100 : 1 + 100 / -price;
     const score = alphaScore({ evPct: (p * dec - 1) * 100, edgePp: (p - imp) * 100 });
     if (!best || score > best.score) best = { score, tier: alphaTier(score), basis: `${shortTeam(team, g.sport)} ML ${oddsStr(price)}: model ${pct1(p)} vs price ${pct1(imp)}` };
@@ -282,7 +327,9 @@ function boardMatchup(g) {
   return `<td class="ca-bd-match"><span class="ca-team ca-bd-pair" title="${ctxEsc(label)}">${starButton("games", g.game_pk, shortMatchup(g.away, g.home, g.sport))}<span class="ca-bd-side">${logoImg(g.away, g.sport)}<b>${boardAbbr(g.away, g.sport)}</b></span><span class="ca-bd-side"><i>@</i>${logoImg(g.home, g.sport)}<b>${boardAbbr(g.home, g.sport)}</b></span></span></td>`;
 }
 const boardGoCell = (g) => `<td class="ca-bd-go">${goLink(g.sport, g.game_pk)}</td>`;
-const boardModelCells = (L) => `<td data-m="moneyline" class="ca-bd-gs">${boardOdds(L.model.ml)}</td><td data-m="spread">${boardModSpread(L)}</td><td data-m="total">${boardTotal(L.model.total)}</td>`;
+// A model number that is only a projection (no market line to shrink toward) carries a muted "proj" label.
+const boardProj = (html, on) => (on ? `${html}<small class="muted ca-bd-proj" title="Projection only: no market line"> proj</small>` : html);
+const boardModelCells = (L) => `<td data-m="moneyline" class="ca-bd-gs">${boardProj(boardOdds(L.model.ml), L.proj.ml)}</td><td data-m="spread">${boardProj(boardModSpread(L), L.proj.spread)}</td><td data-m="total">${boardProj(boardTotal(L.model.total), L.proj.total)}</td>`;
 // Sub-header cells (ML · Spread · Total) for the three market groups.
 const boardSubHead = () => [0, 1, 2].map(() => [["moneyline", "ML"], ["spread", "Spread"], ["total", "Total"]]
   .map(([m, l], i) => `<th data-m="${m}" class="ca-bd-sub${i === 0 ? " ca-bd-gs" : ""}" title="${m === "moneyline" ? "Moneyline" : l} of the market favourite">${l}</th>`).join("")).join("");

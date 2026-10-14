@@ -734,6 +734,7 @@ a.ca-ev-pr:hover{background:#FBFAF6}
 .ca-bd-pair b{font-weight:600}
 .ca-bd-time{color:var(--muted);line-height:1.25}.ca-bd-time span{display:block;white-space:nowrap}
 .ca-bd-sp i{font-style:normal;color:var(--muted)}
+.ca-bd-proj{font-size:.78em;font-weight:400;white-space:nowrap}
 .ca-bd-th-match,.ca-bd-th-time{text-align:left}
 .ca-board-table .ca-alpha-cell{min-width:0;padding:.35em .6em;font-size:1em}
 .ca-bd-fin .ca-bd-final{line-height:1.3}.ca-bd-up .ca-bd-alpha{white-space:nowrap}.ca-bd-final span{display:block;white-space:nowrap}.ca-bd-final .ca-bd-win{font-weight:700}

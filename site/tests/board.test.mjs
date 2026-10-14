@@ -4,6 +4,8 @@ import fs from "node:fs";
 import { loadScripts } from "./load.mjs";
 const FILES = ["app.js", "js/metrics.js", "tests/fixtures/shrink-k-identity.js", "js/shrink.js", "js/ui.js", "js/shell.js", "js/data.js", "js/pages/dashboard.js", "js/pages/board.js", "js/boot.js"];
 const g = loadScripts(["app.js", "js/metrics.js", "tests/fixtures/shrink-k-identity.js", "js/shrink.js", "js/ui.js", "js/shell.js", "js/data.js", "js/pages/board.js", "js/boot.js"]);
+// NFL k = 0, CFB k = 0.5, anything else (MLB, NBA) unknown = 0: the profit step 2 Part B tests below use this instance (h); g keeps k = 1 (the raw model).
+const h = loadScripts(["app.js", "js/metrics.js", "tests/fixtures/shrink-k-mixed.js", "js/shrink.js", "js/ui.js", "js/shell.js", "js/data.js", "js/pages/board.js", "js/boot.js"]);
 
 test("search finds teams, matchups and prop players", () => {
   const idx = g.searchIndex([{ sport: "nfl", game_pk: 1, home_team_name: "Kansas City Chiefs", away_team_name: "Detroit Lions" }],
@@ -141,7 +143,7 @@ test("boardLines: every line from the market favourite's side; edge = model minu
   assert.ok(Math.abs(A.edge.spread - -4) < 1e-9 && A.edge.ml < 0 && Math.abs(A.edge.total - -4) < 1e-9);
   // only one side priced: the vigged implied probability (flagged), never a made-up opposite price
   const V = g.boardLines(G({ pred: { home_win_prob: 0.7, market_spread: -4.5 } }), { mlBy: new Map([["7", { home_price: -210, away_price: null }]]) });
-  assert.ok(Math.abs(V.edge.ml - (0.7 - 210 / 310) * 100) < 1e-9 && V.mlVig === true, "no price for the other side: vigged fallback, flagged");
+  assert.equal(V.edge.ml, null); assert.equal(V.model.ml, null); assert.equal(V.mlVig, true, "no price for the other side: a shrunk fair price needs the no-vig probability, so no ML edge and no fair ML (the flag stays for graded rows)");
   assert.equal(g.boardLines(G({ pred: { home_win_prob: 0.7 } }), {}).mlVig, false, "no price at all: no edge, nothing to flag");
   // no market at all: the model's favourite, dashes for the market and the edge
   const N = g.boardLines(G({ pred: { home_win_prob: 0.4, pred_home_score: 20, pred_away_score: 24 } }), {});
@@ -753,4 +755,98 @@ test("CFB rankings: Rating is the 60/40 FPI blend with FPI and MODEL columns rig
   assert.ok(nfl.includes("Rating = points better than an average team on a neutral field, earned from this season's results"));
   assert.ok(A.rkPowerLine({ sport: "cfb", rank: 1, rating: 25 }).includes('title="Power rating: 60% ESPN FPI + 40% CappingAlpha model"'));
   assert.ok(A.rkPowerLine({ sport: "nfl", rank: 1, rating: 5 }).includes('title="Power rating weighted to this season"'));
+});
+
+// ---- shrink: upcoming games show the model after shrinking toward the market (profit step 2 Part B) ----
+const near = (a, b, eps = 1e-9) => assert.ok(Math.abs(a - b) < eps, `${a} vs ${b}`);
+const SG = (o) => ({ sport: "cfb", game_pk: 7, away: "Away U", home: "Home U", ...o });
+const UP = { home_win_prob: 0.8, pred_home_score: 33, pred_away_score: 22, market_spread: -7, market_total: 50 };    // model: home by 11, total 55, 80%; market: home -7 (book line), total 50
+const PRICES = { mlBy: new Map([["7", { home_price: -233, away_price: 190 }]]) };
+const NOVIG = (233 / 333) / ((233 / 333) + (100 / 290));                                                           // the home no-vig probability of -233 / +190
+
+test("boardLines (upcoming, CFB k = 0.5): the fair ML, spread and total sit halfway to the market and the edges are half the raw gaps", () => {
+  const L = h.boardLines(SG({ pred: UP }), PRICES), s = 0.5 * 0.8 + 0.5 * NOVIG;
+  assert.equal(L.fav, "home");
+  assert.equal(L.model.ml, g.probToAmerican(s)); near(L.edge.ml, (s - NOVIG) * 100);
+  assert.equal(L.model.spread, -9); near(L.edge.spread, 2);            // raw: -11 and 4
+  assert.equal(L.model.total, 52.5); near(L.edge.total, 2.5);          // raw: 55 and 5
+  assert.deepEqual(L.proj, { ml: false, spread: false, total: false });
+  const raw = g.boardLines(SG({ pred: UP }), PRICES);                  // the identity table is the old behaviour
+  assert.equal(raw.model.spread, -11); near(raw.edge.spread, 4); assert.equal(raw.model.total, 55); near(raw.edge.total, 5);
+});
+
+test("boardLines (upcoming, NFL k = 0): the model IS the market, so every edge is exactly 0 however far the raw model sits from it", () => {
+  const L = h.boardLines(SG({ sport: "nfl", pred: UP }), PRICES);
+  assert.equal(L.model.spread, -7); assert.equal(L.edge.spread, 0);
+  assert.equal(L.model.total, 50); assert.equal(L.edge.total, 0);
+  near(L.edge.ml, 0); assert.equal(L.model.ml, g.probToAmerican(NOVIG));
+});
+
+test("boardLines: a quarter-point total at k = 0 gives edge exactly 0 and shows the market's own number", () => {
+  const L = h.boardLines(SG({ sport: "nfl", pred: { ...UP, market_total: 51.75 } }), PRICES);
+  assert.equal(L.model.total, 51.75); assert.equal(L.edge.total, 0);
+});
+
+test("boardLines: an away favourite is shrunk in the favourite's own direction (home line +3, model has the away side by 10)", () => {
+  // the market has away -3 (home book line +3); the model's home margin is -10; at k = 0.5 the shrunk away margin is 6.5: the favourite's line -6.5, edge +3.5
+  const L = h.boardLines(SG({ pred: { home_win_prob: 0.2, pred_home_score: 20, pred_away_score: 30, market_spread: 3, market_total: 50 } }),
+    { mlBy: new Map([["7", { home_price: 140, away_price: -160 }]]) });
+  assert.equal(L.fav, "away"); assert.equal(L.mkt.spread, -3); assert.equal(L.model.spread, -6.5); near(L.edge.spread, 3.5);
+});
+
+test("boardLines: no market line means the raw projection, labelled, with no edge", () => {
+  const L = h.boardLines(SG({ pred: { home_win_prob: 0.8, pred_home_score: 33, pred_away_score: 22 } }), PRICES);     // two prices, no spread or total
+  assert.equal(L.model.spread, -11); assert.equal(L.edge.spread, null); assert.equal(L.proj.spread, true);
+  assert.equal(L.model.total, 55); assert.equal(L.edge.total, null); assert.equal(L.proj.total, true);
+  assert.equal(typeof L.model.ml, "number"); assert.equal(L.proj.ml, false);                                         // the moneyline has both prices: shrunk as usual
+  const none = h.boardLines(SG({ pred: { home_win_prob: 0.8, pred_home_score: 33, pred_away_score: 22 } }), {});    // no market at all
+  assert.equal(none.model.ml, g.probToAmerican(0.8)); assert.equal(none.proj.ml, true); assert.equal(none.edge.ml, null);
+});
+
+test("boardLines: a spread but no moneyline shows no fair ML and no ML edge; one price only is the same (nothing to shrink toward)", () => {
+  const a = h.boardLines(SG({ pred: UP }), {});
+  assert.equal(a.model.ml, null); assert.equal(a.edge.ml, null); assert.equal(a.proj.ml, false); near(a.edge.spread, 2);
+  const b = h.boardLines(SG({ pred: UP }), { mlBy: new Map([["7", { home_price: -210, away_price: null }]]) });
+  assert.equal(b.model.ml, null); assert.equal(b.edge.ml, null); assert.equal(b.mlVig, true);
+});
+
+test("boardLines: a graded game keeps its recorded model numbers whatever k is (history is never shrunk)", () => {
+  const F = SG({ pred: null, acc: { win_prob: 0.64, predicted_winner: "Home U", home_team_name: "Home U", away_team_name: "Away U", pred_margin: 11, pred_total: 55, market_spread: -7, market_total: 50 } });
+  const closing = { closing: new Map([["7|home", -233], ["7|away", 190]]) };
+  const kept = h.boardLines(F, closing);
+  assert.deepEqual(kept, g.boardLines(F, closing), "k = 0.5 and k = 1 agree on a graded game");
+  assert.equal(kept.model.spread, -11); near(kept.edge.spread, 4); assert.equal(kept.model.total, 55); near(kept.edge.total, 5);
+  assert.deepEqual(kept.proj, { ml: false, spread: false, total: false });
+});
+
+test("boardAlpha: the moneyline Alpha uses the shrunk probability and needs both prices; a tiered opportunity keeps its score", () => {
+  const D = (m) => ({ mlBy: new Map([["7", m]]) }), p = { home_win_prob: 0.53 }, prices = { home_price: 100, away_price: -120 };
+  assert.equal(g.boardAlpha(SG({ pred: p }), D(prices)).score, 75, "unshrunk: a 3-point edge at +100");
+  assert.equal(h.boardAlpha(SG({ sport: "nfl", pred: p }), D(prices)).score, 45, "NFL k = 0: the shrunk probability is the no-vig price, no edge, the floor score");
+  assert.equal(h.boardAlpha(SG({ pred: p }), D(prices)).score, 49, "CFB k = 0.5 sits between");
+  assert.equal(h.boardAlpha(SG({ pred: p }), D({ home_price: 100, away_price: null })), null, "one price: no Alpha Score");
+  assert.equal(h.boardAlpha(SG({ pred: p }), {}), null);
+  assert.equal(h.boardAlpha(SG({ opp: { alpha: 81, tier: "STRONG", kind: "line", market: "total", side: "over", sport: "cfb" } }), {}).score, 81);
+});
+
+test("boardView: sorting by Edge or Alpha uses the shrunk numbers (a big raw NFL gap no longer outranks a smaller CFB one)", () => {
+  const nfl = { sport: "nfl", game_pk: 1, away: "A", home: "B", commence: null, date: "2026-10-04", final: false, acc: null, opp: null,
+    pred: { sport: "nfl", home_win_prob: 0.8, pred_home_score: 33, pred_away_score: 22, market_spread: -7, market_total: 50 } };
+  const cfb = { ...nfl, sport: "cfb", game_pk: 2, pred: { ...nfl.pred, sport: "cfb", home_win_prob: 0.7, pred_home_score: 28, pred_away_score: 22 } };
+  const prices = { home_price: 120, away_price: -140 }, D = { mlBy: new Map([["1", prices], ["2", prices]]) };
+  const order = (inst, sort) => inst.boardView([nfl, cfb], D, { team: "", time: "", market: "all", sort }).map((x) => x.game_pk);
+  assert.deepEqual(order(h, "edge"), [2, 1]); assert.deepEqual(order(h, "alpha"), [2, 1]);
+  assert.deepEqual(order(g, "edge"), [1, 2], "unshrunk, the bigger raw gap wins");
+});
+
+test("boardUpcomingTable: a game with no market line labels its projections and shows no edge or Alpha; a game with one shows the shrunk edge", () => {
+  const D = { mlBy: new Map([["7", { home_price: -233, away_price: 190 }], ["8", { home_price: -233, away_price: 190 }]]) };
+  const full = SG({ game_pk: 7, pred: UP, commence: "2026-10-11T17:00:00Z" });
+  const bare = SG({ game_pk: 8, pred: { home_win_prob: 0.8, pred_home_score: 33, pred_away_score: 22 }, commence: "2026-10-11T17:00:00Z" });
+  const html = h.boardUpcomingTable([full, bare], D, { market: "all" });
+  const rows = html.split("<tr data-href").slice(1);
+  assert.match(rows[0], /\+2\.0/, "the spread edge is half of the raw +4");
+  assert.ok(!rows[0].includes("ca-bd-proj"));
+  assert.equal((rows[1].match(/ca-bd-proj/g) || []).length, 2, "the spread and total projections are labelled");
+  assert.ok(!/NaN|undefined|Infinity/.test(html));
 });
