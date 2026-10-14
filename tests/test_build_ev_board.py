@@ -166,3 +166,50 @@ def test_main_clears_other_side_only_for_pick_rows(monkeypatch):
     assert len(seen["clear"]) == 1                         # ...but only the pick is handed to the demoter
     assert all(r["is_pick"] for r in seen["clear"])
     assert (seen["clear"][0]["market"], seen["clear"][0]["side"], seen["clear"][0]["best_book"]) == ("moneyline", "away", "betrivers")
+
+
+# ---- same-pull freshness -----------------------------------------------------------------
+
+def test_load_latest_odds_selects_and_returns_captured_at(monkeypatch):
+    from datetime import datetime, timezone
+    sink = []
+    ts = datetime(2026, 10, 14, 15, 0, tzinfo=timezone.utc)
+    rows = [(1, "moneyline", "home", "pinnacle", None, -130, ts)]
+    monkeypatch.setattr(build_ev_board, "get_postgres", lambda: _RowsConn(sink, rows))
+    out = build_ev_board.load_latest_odds([1])
+    assert out == [{"game_pk": 1, "market": "moneyline", "side": "home", "book": "pinnacle",
+                    "line": None, "price": -130, "captured_at": ts}]
+    sql, _ = sink[0]
+    outer, inner = sql.split("FROM (", 1)
+    assert "captured_at" in outer                                  # selected by the outer query...
+    assert "SELECT DISTINCT ON (game_pk, market, side, book)" in inner
+    assert "game_pk, market, side, book, line, price, captured_at" in inner   # ...and by the DISTINCT ON subquery
+    assert WINDOW_48H.search(sql) and "captured_at <= commence_time" in sql   # query otherwise unchanged
+
+
+def test_main_logs_stale_dropped_in_summary_line(monkeypatch, capsys):
+    import sys
+    from datetime import datetime, timedelta, timezone
+    t0 = datetime(2026, 10, 14, 15, 0, tzinfo=timezone.utc)
+    game = {"sport": "nfl", "game_pk": 101, "matchup": "A @ B", "commence_time": "2099-01-01T00:00:00Z"}
+    odds = []
+    for market, side, line, price in [
+            ("moneyline", "home", None, -170), ("moneyline", "away", None, 150),
+            ("spread", "home", -3.5, -110), ("spread", "away", 3.5, -110)]:
+        odds.append({"game_pk": 101, "market": market, "side": side, "book": "pinnacle", "line": line,
+                     "price": price, "captured_at": t0})
+    odds.append({"game_pk": 101, "market": "moneyline", "side": "away", "book": "betrivers", "line": None,
+                 "price": 175, "captured_at": t0 - timedelta(hours=3)})
+    monkeypatch.setattr(build_ev_board, "load_upcoming_games", lambda sport: [game])
+    monkeypatch.setattr(build_ev_board, "load_latest_odds", lambda pks: odds)
+    monkeypatch.setattr(build_ev_board, "upsert_ev_picks", lambda rows: len(rows))
+    monkeypatch.setattr(build_ev_board, "clear_other_side_picks", lambda rows: 0)
+    monkeypatch.setattr(build_ev_board, "build_parlay", lambda cands: None)
+    monkeypatch.setattr(build_ev_board, "demote_stale_parlays", lambda *a: 0)
+    monkeypatch.setattr(build_ev_board, "upsert_ev_parlays", lambda rows: 0)
+    monkeypatch.setattr(build_ev_board, "safe_record", lambda *a, **k: None)
+    monkeypatch.setattr(sys, "argv", ["build_ev_board.py", "--sport", "nfl"])
+    build_ev_board.main()
+    line = next(l for l in capsys.readouterr().out.splitlines() if l.startswith("[build_ev_board] sport=nfl"))
+    assert "stale_dropped=1" in line
+    assert "picks=0" in line                                       # the stale +175 was not shopped
