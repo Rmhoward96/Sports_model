@@ -64,14 +64,15 @@ function dashBoardOpps(tiered, date, nowMs, isToday) {
   return rows.sort((a, b) => b.evPct - a.evPct);
 }
 
-// Model line vs market line per game (spread on the home side, total), biggest gap first.
+// Model line vs market line per game (spread on the home side, total), biggest gap first. The model number is shrunk toward the market first
+// (js/shrink.js, k per sport and market): the gap shown is the evidence-weighted one, and 0 (so absent) for a sport with no fitted k.
 function dashModelVsMarket(preds) {
   const out = [];
   for (const r of preds || []) {
     if (!r || !finite(r.pred_home_score) || !finite(r.pred_away_score)) continue;
     const margin = +r.pred_home_score - +r.pred_away_score, total = +r.pred_home_score + +r.pred_away_score;
-    if (finite(r.market_spread)) { const to = r05(-margin) || 0; out.push({ pred: r, market: "spread", from: +r.market_spread, to, diff: to - +r.market_spread }); }
-    if (finite(r.market_total)) { const to = r05(total); out.push({ pred: r, market: "total", from: +r.market_total, to, diff: to - +r.market_total }); }
+    if (finite(r.market_spread)) { const ms = +r.market_spread, to = shrinkHalf(shrinkLine(-margin, ms, shrinkK(r.sport, "spread")), ms) || 0; out.push({ pred: r, market: "spread", from: ms, to, diff: to - ms }); }
+    if (finite(r.market_total)) { const mt = +r.market_total, to = shrinkHalf(shrinkLine(total, mt, shrinkK(r.sport, "total")), mt); out.push({ pred: r, market: "total", from: mt, to, diff: to - mt }); }
   }
   return out.filter((x) => x.diff !== 0).sort((a, b) => Math.abs(b.diff) - Math.abs(a.diff));
 }

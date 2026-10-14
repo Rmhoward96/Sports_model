@@ -6,6 +6,9 @@
    exist: a missing table or row hides its panel. The TV network is still omitted.
    "Opportunities" are is_pick rows with a non-null Alpha tier (loadOpportunities). Every "CappingAlpha" number is the MODEL's
    (home_win_prob; margin / total distributions at the market line), never ev_picks.true_prob, which is Pinnacle's no-vig line.
+   Those model numbers are first shrunk toward the market (js/shrink.js: market + k x (model - market), k per sport and market from js/shrink-k.js; NFL and MLB
+   k = 0), so the Read, the Model Projection table, the cover probability and the leans compare the shrunk model; the raw projection stays on the Projected cards
+   and in the "Raw model projection" line of the Read card. With no posted line the model value is a labelled projection with no probability or edge.
    The Read card compares the model with the price available on every side (no pick gate) and is not shown for started games.
    Depends on app.js (sb, gameParams, predictions-row helpers, the legacy sections matchupSection / historySection /
    trendsSection / splitsSection / propsProjectionSection / gameSimVisual / nflPredictionSection / boxscoreSection / evSection,
@@ -32,17 +35,28 @@ function gameRead(markets) {
   return best;
 }
 
-// The side the model favors in each market: moneyline favorite; spread / total only when the model's half-point
-// line is off the market line (same rule as the legacy lean); null when unknowable or on the line.
+// The model's expected home margin and total (raw, from the projected score) and the same numbers after shrinking toward the posted market line
+// (js/shrink.js). The posted spread is the HOME BOOK line (negative = home favoured), so the market's expected home margin is its negative.
+// hasSpread / hasTotal: a posted line exists to shrink toward; without one the shrunk value is just the raw projection and nothing is compared.
+function gmShrunkLines(pred) {
+  const p = pred || {}, sport = p.sport, h = numOrNull(p.pred_home_score), a = numOrNull(p.pred_away_score), ls = numOrNull(p.market_spread), lt = numOrNull(p.market_total);
+  const margin = h != null && a != null ? h - a : null, total = h != null && a != null ? h + a : null;
+  const hasSpread = margin != null && ls != null, hasTotal = total != null && lt != null;
+  return { margin, total, hasSpread, hasTotal,
+    sMargin: hasSpread ? shrinkLine(margin, -ls, shrinkK(sport, "spread")) : margin, sTotal: hasTotal ? shrinkLine(total, lt, shrinkK(sport, "total")) : total };
+}
+
+// The side the model favors in each market: moneyline favorite; spread / total only when the SHRUNK model's half-point
+// line is off the market line (same rule as the legacy lean, on the shrunk number); null when unknowable or on the line.
 function gmLean(pred) {
   const p = pred || {}, wp = numOrNull(p.home_win_prob), h = numOrNull(p.pred_home_score), a = numOrNull(p.pred_away_score);
-  const ls = numOrNull(p.market_spread), lt = numOrNull(p.market_total);
+  const ls = numOrNull(p.market_spread), lt = numOrNull(p.market_total), S = gmShrunkLines(p);
   const out = { ml: wp == null ? null : wp >= 0.5 ? "home" : "away", spread: null, total: null };
   if (ls != null && h != null && a != null) {
-    const edge = r05(h - a) + ls;
+    const edge = shrinkHalf(S.sMargin, -ls) + ls;      // the shrunk model margin (half point) minus the market's expected home margin (-ls); exactly 0 at k = 0
     out.spread = Math.abs(edge) < 0.25 ? null : edge > 0 ? "home" : "away";
   }
-  if (lt != null && h != null && a != null) out.total = h + a > lt ? "over" : h + a < lt ? "under" : null;
+  if (lt != null && h != null && a != null) out.total = S.sTotal > lt ? "over" : S.sTotal < lt ? "under" : null;
   return out;
 }
 
@@ -145,31 +159,38 @@ function gmSplit(dist, threshold) {
 
 // Per-market view of the game's odds: consensus moneyline prices, and per side the line it is priced at, the implied
 // probability of the price you would take (latest ev_picks row; moneyline falls back to the moneylines view's best price)
-// and the model probability at that same line. modelProb is null whenever the model has no number for the market.
+// and the model probability at that same line AFTER SHRINKING toward the market (js/shrink.js). modelProb is null whenever there is nothing to
+// shrink toward: no distribution, no two-sided moneyline price (the win probability is shrunk toward the NO-VIG probability of both sides' prices),
+// no posted spread / total. Spread and total are shrunk in points (gmShrunkLines) and the model's own distribution is shifted by the same amount:
+// P(M + d > t) = P(M > t - d). The moneyline sides also carry rawModelProb, the unshrunk win probability.
 function gmOdds(pred, evRows, mlRow, sim, lineBy) {
   const p = pred || {}, by = new Map(gmLatest(evRows).map((r) => [`${r.market}|${r.side}`, r])), d = gmDists(p, sim);
-  const wp = numOrNull(p.home_win_prob);
+  const wp = numOrNull(p.home_win_prob), S = gmShrunkLines(p);
   const mlSide = (side) => {
     const r = by.get(`moneyline|${side}`), cons = mlRow ? consensusAmerican(mlRow[`${side}_prices`]) : null;
     const bestPrice = r && numOrNull(r.best_price) != null ? +r.best_price : mlRow ? numOrNull(mlRow[`${side}_price`]) : null;
     const price = cons != null ? cons : bestPrice;
     const prob = (x) => (x != null && Number.isFinite(americanToProb(x)) ? americanToProb(x) : null);
     return { price, implied: prob(price), bestPrice, bestImplied: r && gmImplied(r) != null ? gmImplied(r) : prob(bestPrice),
-      modelProb: wp == null ? null : side === "home" ? wp : 1 - wp };
+      rawModelProb: wp == null ? null : side === "home" ? wp : 1 - wp, modelProb: null };
   };
-  const one = (market, side, modelAt) => {
+  const ml = { away: mlSide("away"), home: mlSide("home") };
+  const mHome = ml.home.implied != null && ml.away.implied != null ? ml.home.implied / (ml.home.implied + ml.away.implied) : null;
+  const wpS = wp == null || mHome == null ? null : shrinkProb(wp, mHome, shrinkK(p.sport, "moneyline"));
+  if (wpS != null) { ml.home.modelProb = wpS; ml.away.modelProb = 1 - wpS; }
+  const one = (market, side, shrinkable, modelAt) => {
     const r = by.get(`${market}|${side}`), line = gmSideLine(p, market, side, lineBy), imp = r ? gmImplied(r) : null, price = r ? numOrNull(r.best_price) : null;
-    return { line, price, implied: imp, bestPrice: price, bestImplied: imp, modelProb: line == null ? null : modelAt(line) };
+    return { line, price, implied: imp, bestPrice: price, bestImplied: imp, modelProb: line == null || !shrinkable ? null : modelAt(line) };
   };
-  const m = d.margin, t = d.total;
+  const m = d.margin, t = d.total, dM = S.hasSpread ? S.sMargin - S.margin : 0, dT = S.hasTotal ? S.sTotal - S.total : 0;
   return {
-    moneyline: { away: mlSide("away"), home: mlSide("home") },
+    moneyline: ml,
     spread: { line: numOrNull(p.market_spread),
-      away: one("spread", "away", (L) => { const s = gmSplit(m, L); return s && s.under; }),     // away covers when the home margin < its line
-      home: one("spread", "home", (L) => { const s = gmSplit(m, -L); return s && s.over; }) },   // home covers when the home margin > -its line
+      away: one("spread", "away", S.hasSpread, (L) => { const s = gmSplit(m, L - dM); return s && s.under; }),     // away covers when the (shifted) home margin < its line
+      home: one("spread", "home", S.hasSpread, (L) => { const s = gmSplit(m, -L - dM); return s && s.over; }) },   // home covers when the (shifted) home margin > -its line
     total: { line: numOrNull(p.market_total),
-      over: one("total", "over", (L) => { const s = gmSplit(t, L); return s && s.over; }),
-      under: one("total", "under", (L) => { const s = gmSplit(t, L); return s && s.under; }) },
+      over: one("total", "over", S.hasTotal, (L) => { const s = gmSplit(t, L - dT); return s && s.over; }),
+      under: one("total", "under", S.hasTotal, (L) => { const s = gmSplit(t, L - dT); return s && s.under; }) },
   };
 }
 
@@ -195,43 +216,51 @@ function gmCover(odds) {
 const gmPctP = (p) => (p != null ? ` (${pct1(p)})` : "");
 
 // Model Projection table: Market / CappingAlpha / Difference for moneyline (the model's favorite), spread (the model's
-// side) and total (the model's lean). The CappingAlpha cell is the model, at the same line the Market cell shows. diff =
-// model minus market implied probability, in points (null when either is unknown); pts = how many more points the model
-// asks for than the market, from the same side (null when unknown).
+// side) and total (the model's lean). The CappingAlpha cell is the model AFTER SHRINKING toward the market (gmOdds), at the same line the Market
+// cell shows. diff = shrunk model minus market implied probability, in points (null when either is unknown); pts = how many more points the
+// shrunk model asks for than the market, from the same side (null when unknown). With no posted line the cell is the raw projection, labelled
+// "(projection)", with no probability, diff or pts. The moneyline needs a two-sided no-vig price: with a market but no moneyline it is "—"; with
+// no market number at all it is the raw win probability, labelled.
 function modelProjectionRows(pred, odds) {
   const p = pred || {}, o = odds || {}, sport = p.sport;
-  const wp = numOrNull(p.home_win_prob), h = numOrNull(p.pred_home_score), a = numOrNull(p.pred_away_score);
+  const wp = numOrNull(p.home_win_prob), S = gmShrunkLines(p);
   const blank = (label) => ({ label, market: "—", model: "—", diff: null, pts: null });
   const ab = (side) => teamShort(side === "home" ? p.home_team_name : p.away_team_name, sport);
+  const anyMkt = [o.moneyline && o.moneyline.home.price, o.moneyline && o.moneyline.away.price, o.spread && o.spread.line, o.total && o.total.line].some((x) => x != null);
   const rows = [];
   const ml = blank("Moneyline");
   if (wp != null) {
     const side = wp >= 0.5 ? "home" : "away", e = o.moneyline && o.moneyline[side];
-    ml.model = pct1(Math.max(wp, 1 - wp));
-    if (e && e.price != null) { ml.market = `${ab(side)} ${oddsStr(e.price)}${gmPctP(e.implied)}`; if (e.implied != null) ml.diff = (Math.max(wp, 1 - wp) - e.implied) * 100; }
+    ml.model = e && e.modelProb != null ? pct1(e.modelProb) : anyMkt ? "—" : `${pct1(Math.max(wp, 1 - wp))} (projection)`;
+    if (e && e.price != null) { ml.market = `${ab(side)} ${oddsStr(e.price)}${gmPctP(e.implied)}`; if (e.implied != null && e.modelProb != null) ml.diff = (e.modelProb - e.implied) * 100; }
   }
   rows.push(ml);
   const sp = blank("Spread");
-  if (h != null && a != null) {
-    const margin = h - a, side = margin >= 0 ? "home" : "away", modelLine = r05(side === "home" ? -margin : margin) || 0;   // the half-point line the cell shows
-    const e = o.spread && o.spread[side];
-    sp.model = `${ab(side)} ${modelLineStr(modelLine)}${gmPctP(e ? e.modelProb : null)}`;
+  if (S.margin != null) {
+    const side = S.margin >= 0 ? "home" : "away", e = o.spread && o.spread[side], mktHome = numOrNull(p.market_spread);
+    // The half-point line the cell shows, in the chosen side's line space (the home line is minus the margin); the market's own line when k = 0
+    const modelLine = (S.hasSpread ? shrinkHalf(side === "home" ? -S.sMargin : S.sMargin, side === "home" ? mktHome : -mktHome) : r05(side === "home" ? -S.margin : S.margin)) || 0;
+    sp.model = `${ab(side)} ${modelLineStr(modelLine)}${S.hasSpread ? gmPctP(e ? e.modelProb : null) : " (projection)"}`;
     if (e && e.line != null) {
       sp.market = `${ab(side)} ${lineStr(e.line)}${gmPctP(e.implied)}`;
-      sp.pts = e.line - modelLine;
-      if (e.modelProb != null && e.implied != null) sp.diff = (e.modelProb - e.implied) * 100;
+      if (S.hasSpread) {
+        sp.pts = e.line - modelLine;
+        if (e.modelProb != null && e.implied != null) sp.diff = (e.modelProb - e.implied) * 100;
+      }
     }
   }
   rows.push(sp);
   const tt = blank("Total");
-  if (h != null && a != null) {
-    const model = h + a, T0 = o.total ? o.total.line : null, lean = T0 == null ? null : model >= T0 ? "over" : "under";
+  if (S.total != null) {
+    const T0 = o.total ? o.total.line : null, lean = T0 == null ? null : S.total >= T0 ? "over" : "under", shown = S.hasTotal ? S.sTotal : S.total;
     const e = lean && o.total[lean], T = e && e.line != null ? e.line : T0;
-    tt.model = `${model.toFixed(1)}${gmPctP(e ? e.modelProb : null)}`;
+    tt.model = `${shown.toFixed(1)}${S.hasTotal ? gmPctP(e ? e.modelProb : null) : " (projection)"}`;
     if (T != null) {
       tt.market = `${lean === "under" ? "U" : "O"} ${T}${gmPctP(e ? e.implied : null)}`;
-      tt.pts = lean === "over" ? model - T : T - model;
-      if (e && e.modelProb != null && e.implied != null) tt.diff = (e.modelProb - e.implied) * 100;
+      if (S.hasTotal) {
+        tt.pts = lean === "over" ? shown - T : T - shown;
+        if (e && e.modelProb != null && e.implied != null) tt.diff = (e.modelProb - e.implied) * 100;
+      }
     }
   }
   rows.push(tt);
@@ -539,18 +568,27 @@ function gmHero(D) {
 
 const gmOddsOf = (D) => gmOdds(D.r, D.evRows, D.mlRow, D.simRows[0], D.lineBy);
 const gmStarted = (r) => timeMs(r.commence_time) <= Date.now();
+// "Raw model projection: ATL -9 · total 49.0 · ATL 70.0% win": the model's own numbers before any shrinking, always shown with the Read so the
+// shrunk read can be checked against them (the Projected cards and the Win Probability card are the same raw numbers). Escaped; "" when the row has none.
+function gmRawLine(pred) {
+  const p = pred || {}, sport = p.sport, wp = numOrNull(p.home_win_prob), h = numOrNull(p.pred_home_score), a = numOrNull(p.pred_away_score), bits = [];
+  const ab = (side) => teamShort(side === "home" ? p.home_team_name : p.away_team_name, sport);
+  if (h != null && a != null) { const m = h - a, side = m >= 0 ? "home" : "away"; bits.push(`${ab(side)} ${modelLineStr(side === "home" ? -m : m)}`, `total ${(h + a).toFixed(1)}`); }
+  if (wp != null) { const side = wp >= 0.5 ? "home" : "away"; bits.push(`${ab(side)} ${pct1(Math.max(wp, 1 - wp))} win`); }
+  return bits.length ? `<p class="ca-gm-raw muted">Raw model projection: ${gmEsc(bits.join(" · "))}</p>` : "";
+}
 function gmReadCard(D) {
-  const started = gmStarted(D.r), m = started ? null : gameRead(gmCandidates(D.r, gmOddsOf(D)));
+  const started = gmStarted(D.r), m = started ? null : gameRead(gmCandidates(D.r, gmOddsOf(D))), raw = gmRawLine(D.r);
   const noun = m && { moneyline: "win", spread: "cover", total: "hit" }[m.market];
   const body = started
     ? `<div class="ca-gm-read-text"><p class="ca-gm-kicker">CAPPINGALPHA READ</p><h2>Pre-game read — this game has started</h2>
-        <p>The model read is shown before kickoff.</p></div>`
+        <p>The model read is shown before kickoff.</p>${raw}</div>`
     : m
     ? `<div class="ca-gm-read-text"><p class="ca-gm-kicker">CAPPINGALPHA READ</p><h2>${gmEsc(m.label)} shows the strongest model divergence</h2>
-        <p>The market implies a ${pct1(m.impliedProb)} ${noun} probability. CappingAlpha estimates <b>${pct1(m.modelProb)}</b>.</p></div>
+        <p>The market implies a ${pct1(m.impliedProb)} ${noun} probability. CappingAlpha estimates <b>${pct1(m.modelProb)}</b>.</p>${raw}</div>
        <div class="ca-gm-edge"><b>${pStr(m.edgePp)}</b><span>MODEL EDGE</span></div>`
     : `<div class="ca-gm-read-text"><p class="ca-gm-kicker">CAPPINGALPHA READ</p><h2>No model edge on this game</h2>
-        <p>No game-line market prices above the model's estimate right now.</p></div>`;
+        <p>No game-line market prices above the model's estimate right now.</p>${raw}</div>`;
   return `<section class="ca-card ca-gm-read" id="gm-read"><div class="ca-gm-mark" aria-hidden="true">C<i>α</i></div>${body}</section>`;
 }
 

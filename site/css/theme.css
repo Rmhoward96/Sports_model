@@ -460,6 +460,7 @@ a.ca-ev-pr:hover{background:#FBFAF6}
 .ca-gm-read h2{font:700 27px/1.2 var(--sans);margin:0 0 6px;letter-spacing:-.2px}
 .ca-gm-read p{margin:0;color:#3B4756;font-size:16px}
 .ca-gm-read p b{color:var(--ink)}
+.ca-gm-read p.ca-gm-raw{margin-top:8px;font-size:13px;color:var(--muted)}
 .ca-gm-edge{display:flex;flex-direction:column;align-items:center;justify-content:center;gap:4px;min-width:176px;height:96px;border-radius:12px;background:var(--green-tint);color:var(--green);border:1px solid #CBE9D5}
 .ca-gm-edge b{font:700 34px var(--sans)}
 .ca-gm-edge span{font-weight:700;font-size:13px;letter-spacing:.08em}

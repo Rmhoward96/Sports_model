@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import fs from "node:fs";
 import { loadScripts } from "./load.mjs";
 const g = loadScripts(["app.js", "js/metrics.js", "tests/fixtures/shrink-k-identity.js", "js/shrink.js", "js/ui.js", "js/shell.js", "js/data.js", "js/pages/dashboard.js", "js/boot.js"]);
+const mixed = loadScripts(["app.js", "js/metrics.js", "tests/fixtures/shrink-k-mixed.js", "js/shrink.js", "js/ui.js", "js/shell.js", "js/data.js", "js/pages/dashboard.js", "js/boot.js"]);    // NFL k = 0, CFB k = 0.5
 
 test("slate keeps one row per game: the highest-alpha opportunity", () => {
   const preds = [{ sport: "nfl", game_pk: 1, home_team_name: "Kansas City Chiefs", away_team_name: "Detroit Lions", commence_time: "2026-10-05T20:25:00Z" },
@@ -513,4 +514,12 @@ test("D9: cleanup CSS contract: slate cap holds 8 rows, Hit Rate sub fits at ~12
   assert.match(theme, /@container \(max-width:470px\)\{#dash-perf \.ca-lk-opt\{display:none\}\}/, "View drops before the Performance head overflows");
   assert.match(theme, /@container \(max-width:392px\)\{#dash-perf \.ca-card-head\{flex-wrap:wrap\}/, "Performance head wraps instead of overflowing");
   assert.match(theme, /@container \(max-width:600px\)\{#dash-slate \.ca-card-head \.ca-pills\{gap:5px\}#dash-slate \.ca-card-head \.ca-pill\{padding:5px 9px\}\}/, "Slate head pills tighten before the link leaves the card");
+});
+
+test("model vs market (shrunk): NFL (k = 0) shows no gap, CFB (k = 0.5) shows half of the raw gap, a quarter-point total at k = 0 shows none", () => {
+  const base = { game_pk: 1, home_team_name: "H", away_team_name: "A", pred_home_score: 33, pred_away_score: 22, market_spread: -7, market_total: 50 };
+  assert.deepEqual(mixed.dashModelVsMarket([{ ...base, sport: "nfl" }]), []);
+  assert.deepEqual(mixed.dashModelVsMarket([{ ...base, sport: "nfl", market_total: 51.75 }]), []);
+  const m = mixed.dashModelVsMarket([{ ...base, sport: "cfb" }]);
+  assert.deepEqual(m.map((x) => [x.market, x.from, x.to, x.diff]), [["total", 50, 52.5, 2.5], ["spread", -7, -9, -2]]);
 });
