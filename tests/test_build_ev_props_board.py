@@ -269,6 +269,103 @@ def test_mlb_main_builds_mlb_rows_without_touching_nfl_prop_lines(monkeypatch):
     assert seen["sport"] == "mlb"
     [row] = written["rows"]
     assert row["sport"] == "mlb" and row["model_version"] == "props-mlb-v1"
-    assert row["market"] == "total_bases" and row["side"] == "over" and row["is_pick"] is True
+    # MLB is price-only in Part A (k = 0): the model's 0.55 no longer makes this a pick; the audit columns say why.
+    assert row["market"] == "total_bases" and row["is_pick"] is False
+    assert row["raw_model_prob"] in (pytest.approx(0.55), pytest.approx(0.45)) and row["shrink_k"] == 0.0
+    assert row["model_prob"] == pytest.approx(row["market_prob"])
     assert row["player_id"] == "660271"
-    assert cleared["picks"] == [row]
+    assert cleared["picks"] == []
+
+
+# ---- profit step 2 Part A: the shrink on the board ------------------------------------------------------------------
+
+from sportsmodel.shrink.store import ShrinkTable, load_table  # noqa: E402
+
+
+def _nfl_slate():
+    sim = [{"game_pk": 1, "player_id": "00-1", "name": "A. Brown", "market": "rec_yds", "mean": 66.0,
+            "dist": {"kind": "normal", "mean": 66.0, "sd": 20.0}, "commence_time": "2026-10-04T17:00:00Z", "matchup": "A @ B"}]
+    odds = [{"game_pk": 1, "market": "reception_yds", "side": side, "player_name": "A. Brown", "book": book,
+             "line": 64.5, "price": price, "captured_at": "2026-10-04T12:00:00+00:00"}
+            for side, book, price in [("over", "draftkings", -105), ("under", "fanduel", -115),
+                                      ("over", "fanduel", -115), ("under", "draftkings", -105)]]
+    return sim, odds
+
+
+def _run_nfl(monkeypatch, table):
+    sim, odds = _nfl_slate()
+    monkeypatch.setattr(build_ev_props_board, "load_sim_rows", lambda sport: sim)
+    monkeypatch.setattr(build_ev_props_board, "load_latest_prop_odds", lambda sport, pks: odds)
+    monkeypatch.setattr(build_ev_props_board, "upsert_nfl_prop_lines", lambda rows: 0)
+    monkeypatch.setattr(build_ev_props_board, "load_table", lambda: table)
+    written = {}
+    monkeypatch.setattr(build_ev_props_board, "upsert_ev_prop_picks", lambda rows: written.setdefault("rows", rows))
+    monkeypatch.setattr(build_ev_props_board, "clear_stale_prop_line_picks", lambda picks: 0)
+    monkeypatch.setattr(build_ev_props_board, "safe_record", lambda *a, **k: None)
+    build_ev_props_board.main(["--sport", "nfl"])
+    return written["rows"]
+
+
+def test_main_reads_the_committed_shrink_file_by_default():
+    import inspect
+    assert "load_table()" in inspect.getsource(build_ev_props_board.main)
+    assert build_ev_props_board.load_table is load_table
+
+
+def test_main_hands_the_table_to_assemble_for_both_sports(monkeypatch):
+    table, seen = ShrinkTable({("nfl", "reception_yds"): 0.2}), []
+    monkeypatch.setattr(build_ev_props_board, "load_table", lambda: table)
+    monkeypatch.setattr(build_ev_props_board, "load_sim_rows", lambda sport: [])
+    monkeypatch.setattr(build_ev_props_board, "load_latest_prop_odds", lambda sport, pks: [])
+    monkeypatch.setattr(build_ev_props_board, "upsert_nfl_prop_lines", lambda rows: 0)
+    monkeypatch.setattr(build_ev_props_board, "upsert_ev_prop_picks", lambda rows: 0)
+    monkeypatch.setattr(build_ev_props_board, "clear_stale_prop_line_picks", lambda picks: 0)
+    monkeypatch.setattr(build_ev_props_board, "safe_record", lambda *a, **k: None)
+    monkeypatch.setattr(build_ev_props_board, "assemble_prop_rows", lambda *a, **k: seen.append(k.get("shrink")) or [])
+    build_ev_props_board.main(["--sport", "nfl"])
+    build_ev_props_board.main(["--sport", "mlb"])
+    assert seen == [table, table]
+
+
+def test_with_no_shrink_file_the_board_runs_price_only_and_warns_once(monkeypatch, tmp_path, capsys):
+    rows = _run_nfl(monkeypatch, load_table(tmp_path / "shrink_k.json"))
+    [row] = rows
+    assert row["shrink_k"] == 0.0 and row["model_prob"] == pytest.approx(row["market_prob"]) and row["raw_model_prob"] != row["model_prob"]
+    out = capsys.readouterr().out
+    assert out.count("::warning::shrink:") == 1 and "does not exist yet" in out
+
+
+def test_with_a_fitted_table_the_board_prices_the_shrunk_probability(monkeypatch, capsys):
+    [row] = _run_nfl(monkeypatch, ShrinkTable({("nfl", "reception_yds"): 0.5}))
+    raw, k = row["raw_model_prob"], row["shrink_k"]
+    assert k == 0.5 and row["model_prob"] == pytest.approx(row["market_prob"] + 0.5 * (raw - row["market_prob"]))
+    assert "::warning::shrink:" not in capsys.readouterr().out
+
+
+def test_the_missed_market_warning_comes_after_assembly_and_prints_once(monkeypatch, capsys):
+    """`missed` fills while assemble_prop_rows runs, so the warning must be read after it (and before the DB write)."""
+    table, order = ShrinkTable({("nfl", "rush_yds"): 0.3}), []             # valid file, but no entry for reception_yds
+    real_warning = table.warning
+    monkeypatch.setattr(table, "warning", lambda: order.append("warning") or real_warning())
+    monkeypatch.setattr(build_ev_props_board, "upsert_ev_prop_picks", lambda rows: order.append("upsert"))
+    sim, odds = _nfl_slate()
+    monkeypatch.setattr(build_ev_props_board, "load_sim_rows", lambda sport: sim)
+    monkeypatch.setattr(build_ev_props_board, "load_latest_prop_odds", lambda sport, pks: odds)
+    monkeypatch.setattr(build_ev_props_board, "upsert_nfl_prop_lines", lambda rows: 0)
+    monkeypatch.setattr(build_ev_props_board, "load_table", lambda: table)
+    monkeypatch.setattr(build_ev_props_board, "clear_stale_prop_line_picks", lambda picks: 0)
+    monkeypatch.setattr(build_ev_props_board, "safe_record", lambda *a, **k: None)
+    build_ev_props_board.main(["--sport", "nfl"])
+    out = capsys.readouterr().out
+    assert order == ["warning", "upsert"] and out.count("::warning::shrink:") == 1 and "no k for nfl/reception_yds" in out
+
+
+def test_the_mlb_run_prints_the_warning_once_and_stays_price_only(monkeypatch, tmp_path, capsys):
+    monkeypatch.setattr(build_ev_props_board, "load_table", lambda: load_table(tmp_path / "shrink_k.json"))
+    monkeypatch.setattr(build_ev_props_board, "load_sim_rows", lambda sport: [])
+    monkeypatch.setattr(build_ev_props_board, "load_latest_prop_odds", lambda sport, pks: [])
+    monkeypatch.setattr(build_ev_props_board, "upsert_ev_prop_picks", lambda rows: 0)
+    monkeypatch.setattr(build_ev_props_board, "clear_stale_prop_line_picks", lambda picks: 0)
+    monkeypatch.setattr(build_ev_props_board, "safe_record", lambda *a, **k: None)
+    build_ev_props_board.main(["--sport", "mlb"])
+    assert capsys.readouterr().out.count("::warning::shrink:") == 1

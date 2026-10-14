@@ -36,7 +36,12 @@ import unicodedata
 from datetime import timedelta
 
 from ..model.distributions import prob_over_dist
+from ..shrink.formula import shrink_prob
 from .board import EV_CEILING, best_price, decimal_odds, ev, novig
+
+# Float hygiene, not a threshold: a zero-vig cross-book pair at k = 0 has a true EV of 0 but can compute to ~2e-16, which must
+# not count as a pick.
+EV_EPS = 1e-9
 
 # Sim aggregate market -> Odds API / SportConfig["nfl"].prop_market_map key.
 # The sim's markets are pass_yds/rush_yds/rec_yds/receptions; the odds side
@@ -211,6 +216,7 @@ def assemble_prop_rows(
     market_map: dict[str, str] | None = None,
     gate=None,
     calibrate_fn=None,
+    shrink=None,
 ) -> list[dict]:
     """Join sim player-prop distributions to book prop odds and emit +EV pick
     rows shaped exactly like `sportsmodel.db._EV_PROP_PICKS_COLS`.
@@ -231,7 +237,7 @@ def assemble_prop_rows(
     the higher-EV side. Pinnacle is the sharp reference (kept only as
     `pinnacle_price`/`open_pinnacle_price` for CLV grading), never shopped as
     a soft book -- a side offered only by Pinnacle is excluded, same as a
-    missing side. `is_pick` requires `0 < ev_best <= board.EV_CEILING`, same
+    missing side. `is_pick` requires `EV_EPS < ev_best <= board.EV_CEILING`, same
     convention as the game pilot, since an EV above that ceiling is almost
     always a stale-line artifact rather than real value (props are more
     stale-line-prone than game markets, not less). Rows failing any step (no
@@ -243,6 +249,13 @@ def assemble_prop_rows(
     unchanged. MLB passes `sport="mlb"`, `market_map=MLB_SIM_TO_ODDS_MARKET`,
     `gate=always_propable` and `calibrate_fn=calibration.calibrate` (the model's P(over)
     at the book's line is Platt-corrected per market, as the pre-pause MLB board did).
+
+    `shrink` (profit step 2 Part A): a `sportsmodel.shrink.store.ShrinkTable`. When given, the over probability (after
+    `calibrate_fn`) is replaced by `shrink_prob(p, m, k)` with m = the no-vig over probability of the best soft over and
+    best soft under, and k = `shrink.k(sport, odds_market)`; EV, the side, the pick decision, `model_prob` and `edge` all
+    use the shrunk value, and the row records `raw_model_prob` (the pick side's probability before shrinking) and
+    `shrink_k`. None (the default) leaves the model untouched and writes `shrink_k = None`; every production caller
+    (scripts/build_ev_props_board.py) passes a table, which answers k = 0 when the committed file is missing.
     """
     market_map = SIM_TO_ODDS_MARKET if market_map is None else market_map
     gate = is_propable_projected if gate is None else gate
@@ -315,6 +328,10 @@ def assemble_prop_rows(
             continue
 
         novig_over = novig(ob[1], ub[1])
+        raw_p_over, k_applied = p_over, None
+        if shrink is not None:
+            k_applied = shrink.k(sport, odds_market)
+            p_over = shrink_prob(p_over, novig_over, k_applied)
         ev_over = ev(p_over, ob[1])
         ev_under = ev(1 - p_over, ub[1])
 
@@ -323,11 +340,13 @@ def assemble_prop_rows(
             model_prob, market_prob, ev_best, picked, side_entries = (
                 p_over, novig_over, ev_over, ob, over_entries,
             )
+            raw_model_prob = raw_p_over
         else:
             side = "under"
             model_prob, market_prob, ev_best, picked, side_entries = (
                 1 - p_over, 1 - novig_over, ev_under, ub, under_entries,
             )
+            raw_model_prob = 1 - raw_p_over
 
         pinnacle_price = None
         for bk, price in side_entries:
@@ -347,6 +366,8 @@ def assemble_prop_rows(
             "matchup": sim_row.get("matchup"),
             "commence_time": sim_row.get("commence_time"),
             "model_prob": model_prob,
+            "raw_model_prob": raw_model_prob,
+            "shrink_k": k_applied,
             "market_prob": market_prob,
             "edge": model_prob - market_prob,
             "ev_best": ev_best,
@@ -359,7 +380,7 @@ def assemble_prop_rows(
             # real value, so it's excluded from the graded record. Props are
             # MORE stale-line-prone than game markets, so this matters more
             # here, not less.
-            "is_pick": 0 < ev_best <= EV_CEILING,
+            "is_pick": EV_EPS < ev_best <= EV_CEILING,
         })
     return rows
 

@@ -42,6 +42,7 @@ from sportsmodel.db import (
     upsert_nfl_prop_lines,
 )
 from sportsmodel.ledger.record import safe_record
+from sportsmodel.shrink.store import load_table
 from sportsmodel.serving.props_ev import (
     MLB_SIM_TO_ODDS_MARKET,
     always_propable,
@@ -197,13 +198,20 @@ def main(argv: list[str] | None = None) -> None:
     if args.lines_only:
         return
 
+    # Profit step 2 Part A: every model probability that decides a pick is shrunk toward the market with the committed
+    # k (assets/shrink_k.json). A missing or unreadable file, or a missing market entry, means k = 0 (price-only); it never
+    # falls back to the raw model. MLB is always k = 0 in Part A.
+    shrink = load_table()
     if is_mlb:
         rows = assemble_prop_rows(
             sim_rows, odds_rows, model_version, sport="mlb",
             market_map=MLB_SIM_TO_ODDS_MARKET, gate=always_propable,
-            calibrate_fn=calibration.calibrate)
+            calibrate_fn=calibration.calibrate, shrink=shrink)
     else:
-        rows = assemble_prop_rows(sim_rows, odds_rows, model_version)
+        rows = assemble_prop_rows(sim_rows, odds_rows, model_version, shrink=shrink)
+    warning = shrink.warning()
+    if warning:
+        print(warning, flush=True)
     upsert_ev_prop_picks(rows)
 
     picks = [r for r in rows if r["is_pick"]]

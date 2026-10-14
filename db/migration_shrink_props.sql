@@ -1,0 +1,12 @@
+-- =============================================================================
+-- Shrink prop probabilities toward the market (profit step 2 Part A): two audit columns on ev_prop_picks.
+-- =============================================================================
+-- Idempotent and additive -- safe to re-run. Run this in the Supabase SQL Editor.
+--
+--   raw_model_prob : the pick side's model probability BEFORE shrinking (after MLB's calibration)
+--   shrink_k       : the k applied (0 = price-only; the board uses k = 0 until the first fit has run)
+--
+-- model_prob keeps meaning "the number that made the pick" (the shrunk probability). The board writes the two new
+-- columns only once they exist, so running this before or after the merge is safe. Views that select explicit columns
+-- (ev_prop_picks_current and the rest) are unaffected.
+ALTER TABLE ev_prop_picks ADD COLUMN IF NOT EXISTS raw_model_prob double precision, ADD COLUMN IF NOT EXISTS shrink_k double precision;

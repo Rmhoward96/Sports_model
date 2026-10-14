@@ -423,6 +423,11 @@ _EV_PROP_PICKS_IMMUTABLE = frozenset({"open_pinnacle_price"})
 
 _EV_PROP_DEFAULT_MODEL_VERSION = "props-sim-v1"
 
+# Columns added later by db/migration_shrink_props.sql (raw model probability before the shrink, and the k applied).
+# Written only when the records carry them AND the table has them (probed once per upsert call via information_schema),
+# so the board keeps working in the window before the migration is run.
+_EV_PROP_PICKS_OPTIONAL_COLS = ["raw_model_prob", "shrink_k"]
+
 
 def upsert_ev_prop_picks(records: list[dict]) -> int:
     """Upsert +EV player-prop board rows into Supabase `ev_prop_picks`.
@@ -441,25 +446,39 @@ def upsert_ev_prop_picks(records: list[dict]) -> int:
     if not records:
         return 0
     key = ("game_pk", "player_id", "market", "line", "model_version")
-    updates = ", ".join(
-        f"{c} = EXCLUDED.{c}"
-        for c in _EV_PROP_PICKS_COLS
-        if c not in key and c not in _EV_PROP_PICKS_IMMUTABLE
-    )
-    placeholders = ", ".join(["%s"] * len(_EV_PROP_PICKS_COLS))
-    sql = (
-        f"INSERT INTO ev_prop_picks ({', '.join(_EV_PROP_PICKS_COLS)}) "
-        f"VALUES ({placeholders}) "
-        f"ON CONFLICT (game_pk, player_id, market, line, model_version) DO UPDATE SET {updates}"
-    )
-    rows = [
-        tuple(
-            r.get(c, _EV_PROP_DEFAULT_MODEL_VERSION) if c == "model_version" else r.get(c)
-            for c in _EV_PROP_PICKS_COLS
-        )
-        for r in records
-    ]
+    wanted = [c for c in _EV_PROP_PICKS_OPTIONAL_COLS if any(c in r for r in records)]
     with get_postgres() as conn, conn.cursor() as cur:
+        try:
+            present = _existing_columns(cur, "ev_prop_picks", wanted) if wanted else set()
+        except Exception as exc:
+            # A failed probe aborts the Postgres transaction; clear it so the write below can run, without the audit columns.
+            conn.rollback()
+            present = set()
+            print(f"WARN ev_prop_picks column probe failed ({type(exc).__name__}); board written without {', '.join(wanted)}")
+            wanted = []
+        missing = [c for c in wanted if c not in present]
+        if missing:
+            print(f"WARN ev_prop_picks has no {', '.join(missing)} column(s) -- run db/migration_shrink_props.sql; "
+                  "board written without them")
+        cols = _EV_PROP_PICKS_COLS + [c for c in wanted if c in present]
+        updates = ", ".join(
+            f"{c} = EXCLUDED.{c}"
+            for c in cols
+            if c not in key and c not in _EV_PROP_PICKS_IMMUTABLE
+        )
+        placeholders = ", ".join(["%s"] * len(cols))
+        sql = (
+            f"INSERT INTO ev_prop_picks ({', '.join(cols)}) "
+            f"VALUES ({placeholders}) "
+            f"ON CONFLICT (game_pk, player_id, market, line, model_version) DO UPDATE SET {updates}"
+        )
+        rows = [
+            tuple(
+                r.get(c, _EV_PROP_DEFAULT_MODEL_VERSION) if c == "model_version" else r.get(c)
+                for c in cols
+            )
+            for r in records
+        ]
         cur.executemany(sql, rows)
         conn.commit()
     return len(rows)

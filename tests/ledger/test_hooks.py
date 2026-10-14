@@ -10,6 +10,7 @@ import pytest
 
 from sportsmodel import db
 from sportsmodel.ledger import record, sources
+from sportsmodel.shrink.store import ShrinkTable
 
 ROOT = Path(__file__).resolve().parents[2]
 KICK = datetime.now(timezone.utc) + timedelta(hours=30)
@@ -194,6 +195,8 @@ def test_build_ev_props_board_records_the_main_line_not_the_alternates(monkeypat
     monkeypatch.setattr(mod, "upsert_nfl_prop_lines", lambda r: 0)
     monkeypatch.setattr(mod, "upsert_ev_prop_picks", lambda r: events.append(("upsert", len(r))))
     monkeypatch.setattr(mod, "clear_stale_prop_line_picks", lambda picks: 0)
+    # k = 1: the raw model decides, as before the shrink; the test is about WHICH LINE is recorded, not the probability
+    monkeypatch.setattr(mod, "load_table", lambda: ShrinkTable({("nfl", "reception_yds"): 1.0}))
     rec = Recorder(events)
     monkeypatch.setattr(mod, "safe_record", rec)
     mod.main(["--sport", "nfl"])
