@@ -148,3 +148,30 @@ def test_settle_parlay():
     one_push = settle_parlay(legs, ["win", "push", "win"])
     assert abs(one_push["payout_dec"] - (1 + 100 / 110) * (1 + 100 / 120)) < 1e-9
     assert settle_parlay(legs, ["push", "push", "push"]) == {"result": "push", "pnl": 0.0, "payout_dec": 1.0}
+
+
+# ---- profit step 2 Part A: prop legs carry the SHRUNK probability ---------------------------------------------------
+
+def _shrunk_pick(game_pk, model_prob):
+    return {"game_pk": game_pk, "player_id": f"00-{game_pk}", "player_name": "A.J. Brown", "market": "rec_yds",
+            "side": "over", "line": 66.5, "model_prob": model_prob, "matchup": "M", "commence_time": "2026-10-04T17:00:00Z"}
+
+
+def _shrunk_odds(game_pk):
+    return {"game_pk": game_pk, "market": "reception_yds", "side": "over", "player_name": "AJ Brown", "book": "draftkings",
+            "line": 66.5, "price": -110}
+
+
+def test_prop_legs_take_the_shrunk_model_prob_from_the_board_row_unchanged():
+    legs = assemble_prop_legs([_shrunk_pick(1, 0.5234)], [_shrunk_odds(1)])
+    assert [l["prob"] for l in legs] == [0.5234]
+
+
+def test_shrunk_prop_legs_below_the_055_floor_no_longer_build_a_ticket_but_strong_ones_still_do():
+    games = (1, 2, 3)
+    odds = [_shrunk_odds(g) for g in games]
+    weak = assemble_prop_legs([_shrunk_pick(g, 0.52) for g in games], odds)
+    assert build_best_parlays(weak) == []                                    # MIN_LEG_PROB stays 0.55: shrunk legs rarely qualify
+    strong = assemble_prop_legs([_shrunk_pick(g, 0.62) for g in games], odds)
+    [t] = build_best_parlays(strong)
+    assert t["n_legs"] == 3 and abs(t["true_prob"] - 0.62 ** 3) < 1e-12

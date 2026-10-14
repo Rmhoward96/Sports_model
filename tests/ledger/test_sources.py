@@ -60,6 +60,15 @@ def test_ev_prop_observation_fields_and_skips():
     assert o["pick_key"] == "ev_prop|nfl|7|rec_yds|over|00-1||"
 
 
+def test_ev_prop_observation_records_the_shrunk_probability_that_made_the_pick():
+    row = {"sport": "nfl", "game_pk": 7, "player_id": "00-1", "player_name": "A. Brown", "market": "rec_yds",
+           "side": "over", "line": 64.5, "model_version": "props-sim-v1", "commence_time": KICK,
+           "model_prob": 0.52, "raw_model_prob": 0.66, "shrink_k": 0.25, "market_prob": 0.50, "ev_best": 0.04,
+           "best_book": "dk", "best_price": 100}
+    (o,) = sources.ev_prop_observations([row])
+    assert o["model_prob"] == 0.52 and "raw_model_prob" not in o and "shrink_k" not in o       # no ledger change in Part A
+
+
 # ---- parlay legs -----------------------------------------------------------------------------------
 
 def test_parlay_legs_become_one_observation_each():
