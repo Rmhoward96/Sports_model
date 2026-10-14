@@ -22,6 +22,38 @@ def novig(price_side: int, price_other: int) -> float:
     return io / (io + iu)
 
 
+def novig_power(price_side: int, price_other: int) -> float:
+    """Power-method no-vig probability of `price_side` given the two-way market.
+
+    Used ONLY by the +EV game-line board (ev_pilot): the power method puts more of the margin on the
+    long shot (favourite-longshot bias) than proportional `novig` does. Every other `novig` caller
+    (early flags' frozen pass test, props shrink fit/serve, ledger CLV reference, NFL market features,
+    the legacy board rows) stays proportional so their pre-registered / fitted / in-measurement numbers
+    do not shift.
+
+    With a = implied_prob(price_side), b = implied_prob(price_other), find k >= 1 with a^k + b^k = 1
+    (bisection on [1, 10], |a^k + b^k - 1| < 1e-12 or 200 iterations) and return a^k. If a + b <= 1
+    (no overround, or a negative-overround/arb pair) k would be <= 1, so fall back to proportional
+    `novig`. Invalid prices raise exactly as `novig` does (they fail inside `implied_prob`)."""
+    a, b = implied_prob(price_side), implied_prob(price_other)
+    if a + b <= 1.0:
+        return a / (a + b)
+    if a == b:                     # identical sides: a^k = 1/2 for every overround
+        return 0.5
+    lo, hi = 1.0, 10.0
+    k = lo
+    for _ in range(200):
+        k = (lo + hi) / 2
+        f = a ** k + b ** k - 1.0
+        if abs(f) < 1e-12:
+            break
+        if f > 0:      # still over-round: need a larger k
+            lo = k
+        else:
+            hi = k
+    return a ** k
+
+
 # The ONLY books the user can bet, and therefore the only SHOPPABLE books: the +EV game
 # and prop boards, the best-parlay builder and the early monitor all shop exactly this
 # pool. Odds API keys, in the user's display order (williamhill_us is Caesars).

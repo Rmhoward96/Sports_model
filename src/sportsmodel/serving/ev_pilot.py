@@ -23,12 +23,14 @@ sources without needing to special-case which one produced the edge. The model
 probability-conversion functions used to translate the desk's points-shift into a
 probability delta -- it is never the base.
 
-PURE -- no IO. Reuses `sportsmodel.serving.board` (implied_prob/novig/ev/best_price/
+PURE -- no IO. Reuses `sportsmodel.serving.board` (implied_prob/novig_power/ev/best_price/
 USER_BOOKS/EV_CEILING) and `sportsmodel.model.trueprob_prob` (win_prob/cover_prob/
 over_prob/desk_margin_shift/DESK_MAX_PROB_DELTA) for all probability + EV math --
 nothing here re-derives no-vig, EV, or normal-distribution math.
 """
 from __future__ import annotations
+
+from datetime import datetime, timedelta, timezone
 
 from ..model.trueprob_prob import (
     DESK_MAX_PROB_DELTA,
@@ -37,7 +39,7 @@ from ..model.trueprob_prob import (
     over_prob,
     win_prob,
 )
-from .board import EV_CEILING, USER_BOOKS, best_price, ev, implied_prob, novig
+from .board import EV_CEILING, USER_BOOKS, best_price, ev, implied_prob, novig_power
 
 # Football margin/total sigmas carried over from the sub-project-3 true-prob model
 # (see trueprob_prob.py); the model supplies these + the prob-conversion functions
@@ -62,6 +64,11 @@ MIN_EV = 0.01
 # parlay builder instead (see sportsmodel.serving.parlay). Keep a straight only
 # when best_price is BETTER than this (i.e. > -250).
 MAX_STRAIGHT_JUICE = -250
+
+# A soft-book price is only compared with Pinnacle's when both came from the same odds pull: the ingest and
+# early-monitor runs stamp ONE captured_at on every row they write, so "same pull" is equal captured_at.
+# 5 minutes of slack absorbs clock/ordering jitter between a run's rows without admitting a different pull.
+SAME_PULL_TOLERANCE = timedelta(minutes=5)
 
 
 def market_margin(pinnacle_home_spread: float) -> float:
@@ -203,7 +210,7 @@ def _market_row(game: dict, market: str, side: str) -> dict | None:
         return None
 
     desk = game.get("desk") or {}
-    prob_a = novig(price_a, price_b)
+    prob_a = novig_power(price_a, price_b)   # power de-vig: favourite-longshot bias; see board.novig_power
     base_prob = prob_a if side == side_a else 1 - prob_a
     pinnacle_price = price_a if side == side_a else price_b
 
@@ -233,7 +240,22 @@ def ev_rows_for_game(game: dict) -> list[dict]:
     return rows
 
 
-def assemble_games(desk_rows: list[dict], odds_rows: list[dict]) -> list[dict]:
+def _parse_captured_at(value) -> datetime | None:
+    """`captured_at` as an aware UTC datetime: accepts a datetime (psycopg) or an ISO string (naive = UTC);
+    None / unparseable -> None."""
+    if value is None:
+        return None
+    if isinstance(value, str):
+        try:
+            value = datetime.fromisoformat(value.strip().replace("Z", "+00:00"))
+        except ValueError:
+            return None
+    if not isinstance(value, datetime):
+        return None
+    return value.replace(tzinfo=timezone.utc) if value.tzinfo is None else value.astimezone(timezone.utc)
+
+
+def assemble_games(desk_rows: list[dict], odds_rows: list[dict], stats: dict | None = None) -> list[dict]:
     """Join desk_current rows + latest-snapshot odds_snapshot rows (the caller
     pre-filters to the latest snapshot per game/market/side/book) into the `game`
     dict shape `ev_rows_for_game` expects, by game_pk. Only games present in
@@ -244,6 +266,14 @@ def assemble_games(desk_rows: list[dict], odds_rows: list[dict]) -> list[dict]:
     from the remaining USER_BOOKS rows, filtered to the line Pinnacle is posting
     for spread/total (so an alternate-line price doesn't get compared against the
     main-line Pinnacle price / used as a fake best-book edge).
+
+    Same-pull freshness: when the game's odds rows carry `captured_at` (datetime or ISO string; naive =
+    UTC), T = the later `captured_at` of a market's two Pinnacle sides. If those two sides are more than
+    SAME_PULL_TOLERANCE apart the market has NO Pinnacle price (empty dict -> no rows). A soft-book row is
+    used only if |captured_at - T| <= SAME_PULL_TOLERANCE; dropped ones are added to
+    `stats["stale_dropped"]` (the optional out-parameter; includes soft rows lacking captured_at). A game
+    in which NO odds row has `captured_at` (pure fixtures) keeps the old, timestamp-blind behaviour; in a
+    game where some do, rows lacking it are excluded (Pinnacle ones leave that side unpriced).
     """
     by_game: dict = {}
     for o in odds_rows:
@@ -254,18 +284,39 @@ def assemble_games(desk_rows: list[dict], odds_rows: list[dict]) -> list[dict]:
         gpk = d.get("game_pk")
         game_odds = by_game.get(gpk, [])
 
+        stamped = {id(o): _parse_captured_at(o.get("captured_at")) for o in game_odds}
+        timed = any(t is not None for t in stamped.values())
+
         pinnacle: dict = {"moneyline": {}, "spread": {}, "total": {}}
+        pin_ts: dict = {"moneyline": {}, "spread": {}, "total": {}}
         for o in game_odds:
             if o.get("book") != "pinnacle":
                 continue
             market, side, price, line = o.get("market"), o.get("side"), o.get("price"), o.get("line")
             if market not in pinnacle or price is None:
                 continue
+            if timed:
+                if stamped[id(o)] is None:
+                    continue
+                pin_ts[market][side] = stamped[id(o)]
             pinnacle[market][side] = int(price)
             if market == "spread" and side == "home" and line is not None:
                 pinnacle[market]["home_line"] = float(line)
             if market == "total" and line is not None:
                 pinnacle[market]["line"] = float(line)
+
+        # T per market: the later of the two Pinnacle sides' capture times; sides further apart than the
+        # tolerance are not one pull, so that market has no usable Pinnacle price.
+        pull_t: dict = {}
+        if timed:
+            for market, by_side in pin_ts.items():
+                if not by_side:
+                    continue
+                times = list(by_side.values())
+                if max(times) - min(times) > SAME_PULL_TOLERANCE:
+                    pinnacle[market] = {}
+                    continue
+                pull_t[market] = max(times)
 
         books = {"moneyline": {"home": [], "away": []},
                  "spread": {"home": [], "away": []},
@@ -285,6 +336,12 @@ def assemble_games(desk_rows: list[dict], odds_rows: list[dict]) -> list[dict]:
                     continue
             if market == "total" and pin_total_line is not None and line is not None:
                 if abs(float(line) - pin_total_line) > 1e-6:
+                    continue
+            if timed and market in pull_t:
+                t = stamped[id(o)]
+                if t is None or abs(t - pull_t[market]) > SAME_PULL_TOLERANCE:
+                    if stats is not None:
+                        stats["stale_dropped"] = stats.get("stale_dropped", 0) + 1
                     continue
             books[market][side].append((book, int(price)))
 

@@ -66,17 +66,18 @@ def load_latest_odds(game_pks: list[int]) -> list[dict]:
     """Latest odds_snapshot row per (game_pk, market, side, book) -- Pinnacle +
     the user's USER_BOOKS -- for the given games, captured before kickoff and within the last 48h (a
     book that stopped updating drops out instead of keeping a stale price --
-    same window as the site's price views). Empty list of
+    same window as the site's price views). `captured_at` is returned so ev_pilot can keep only soft prices from
+    the same pull as Pinnacle's. Empty list of
     game_pks -> empty result (no games to query)."""
     if not game_pks:
         return []
     with get_postgres() as pg, pg.cursor() as cur:
         cur.execute(
             """
-            SELECT game_pk, market, side, book, line, price
+            SELECT game_pk, market, side, book, line, price, captured_at
             FROM (
                 SELECT DISTINCT ON (game_pk, market, side, book)
-                       game_pk, market, side, book, line, price
+                       game_pk, market, side, book, line, price, captured_at
                 FROM odds_snapshot
                 WHERE game_pk = ANY(%s) AND captured_at <= commence_time
                   AND captured_at > now() - interval '48 hours'
@@ -86,7 +87,7 @@ def load_latest_odds(game_pks: list[int]) -> list[dict]:
             [list(game_pks)],
         )
         rows = cur.fetchall()
-    cols = ["game_pk", "market", "side", "book", "line", "price"]
+    cols = ["game_pk", "market", "side", "book", "line", "price", "captured_at"]
     return [dict(zip(cols, r)) for r in rows]
 
 
@@ -97,7 +98,8 @@ def main() -> None:
 
     game_rows = load_upcoming_games(args.sport)
     odds_rows = load_latest_odds([g["game_pk"] for g in game_rows])
-    games = assemble_games(game_rows, odds_rows)
+    stats: dict = {}
+    games = assemble_games(game_rows, odds_rows, stats)
 
     all_rows = []
     parlay_candidates = []
@@ -154,7 +156,7 @@ def main() -> None:
 
     print(f"[build_ev_board] sport={args.sport} games={len(games)} rows={len(all_rows)} "
           f"picks={len(picks)} passes={len(passes)} cleared_stale={cleared} "
-          f"parlay={parlay_desc} demoted_parlays={demoted}")
+          f"parlay={parlay_desc} demoted_parlays={demoted} stale_dropped={stats.get('stale_dropped', 0)}")
 
     # Pick ledger: the surfaced picks exactly as they stand now. LAST, after every write the board makes, and
     # best-effort -- a slow or broken ledger never delays or fails the build.

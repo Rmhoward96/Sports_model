@@ -8,7 +8,7 @@ from __future__ import annotations
 import pytest
 
 from sportsmodel.model.trueprob_prob import DESK_MAX_PROB_DELTA, win_prob
-from sportsmodel.serving.board import EV_CEILING, USER_BOOKS, best_price, ev, implied_prob, novig
+from sportsmodel.serving.board import EV_CEILING, USER_BOOKS, best_price, ev, implied_prob, novig, novig_power
 from sportsmodel.serving.ev_pilot import (
     MIN_EDGE,
     MIN_EV,
@@ -77,7 +77,7 @@ def test_high_conviction_ml_pick_raises_true_prob_within_clamp_and_is_pick():
     ml = next(r for r in rows if r["market"] == "moneyline")
 
     assert ml["side"] == "home"
-    assert ml["base_prob"] == novig(-110, -110)
+    assert ml["base_prob"] == novig(-110, -110) == 0.5   # power fair at an even pair is exactly 0.5
     assert ml["true_prob"] > ml["base_prob"]
     assert ml["true_prob"] - ml["base_prob"] <= DESK_MAX_PROB_DELTA + 1e-9
     assert ml["edge"] > 0
@@ -283,12 +283,12 @@ def test_ev_rows_price_both_sides_of_every_market():
         ("moneyline", "away"), ("moneyline", "home"), ("spread", "away"), ("spread", "home"),
         ("total", "over"), ("total", "under")]
     by = {(r["market"], r["side"]): r for r in rows}
-    assert by["moneyline", "home"]["true_prob"] == pytest.approx(novig(-170, 150))
-    assert by["moneyline", "away"]["true_prob"] == pytest.approx(novig(150, -170))
+    assert by["moneyline", "home"]["true_prob"] == pytest.approx(novig_power(-170, 150))
+    assert by["moneyline", "away"]["true_prob"] == pytest.approx(novig_power(150, -170))
     assert by["moneyline", "away"]["pinnacle_price"] == 150
     assert by["spread", "away"]["true_prob"] == pytest.approx(0.5)
-    assert by["total", "over"]["true_prob"] == pytest.approx(novig(-105, -115))
-    assert by["total", "under"]["true_prob"] == pytest.approx(novig(-115, -105))
+    assert by["total", "over"]["true_prob"] == pytest.approx(novig_power(-105, -115))
+    assert by["total", "under"]["true_prob"] == pytest.approx(novig_power(-115, -105))
     assert by["total", "under"]["pinnacle_price"] == -115
     for m in ("moneyline", "spread", "total"):
         sides = [r for r in rows if r["market"] == m]
@@ -296,14 +296,14 @@ def test_ev_rows_price_both_sides_of_every_market():
 
 
 def test_underdog_side_is_a_pick_when_a_user_book_beats_fair():
-    # Pinnacle fair for the away dog (+150/-170) is ~0.3784; BetRivers +175 is +EV.
+    # Pinnacle fair for the away dog (+150/-170) is ~0.3836 (power; 0.3885 proportional); BetRivers +175 is +EV.
     # The old engine only ever priced the market favourite, so this was never evaluated.
     game = _full_game()
     game["books"]["moneyline"]["away"] = [("betrivers", 175), ("bet365", 400)]
     rows = ev_rows_for_game(game)
     away = next(r for r in rows if r["market"] == "moneyline" and r["side"] == "away")
     assert away["best_book"] == "betrivers" and away["best_price"] == 175
-    assert away["ev_best"] == pytest.approx(ev(novig(150, -170), 175))
+    assert away["ev_best"] == pytest.approx(ev(novig_power(150, -170), 175))   # 5.48% (6.83% proportional)
     assert away["is_pick"] is True
     home = next(r for r in rows if r["market"] == "moneyline" and r["side"] == "home")
     assert home["is_pick"] is False
@@ -339,3 +339,188 @@ def test_desk_delta_sign_is_per_side():
     game = _pickem_game(desk={"total_side": "under", "conviction_tier": "high"})
     by = {r["side"]: r for r in ev_rows_for_game(game) if r["market"] == "total"}
     assert by["under"]["desk_delta"] > 0 and by["over"]["desk_delta"] == pytest.approx(-by["under"]["desk_delta"])
+
+
+# ---- power de-vig on the +EV game-line board --------------------------------------------------
+
+
+def _dog_game(**overrides):
+    """Pinnacle -900/+605 away long shot ML (plus a spread so the ML has its margin anchor)."""
+    g = _full_game()
+    g["pinnacle"]["moneyline"] = {"home": -900, "away": 605}
+    g.update(overrides)
+    return g
+
+
+def test_true_prob_uses_power_devig_not_proportional():
+    rows = {(r["market"], r["side"]): r for r in ev_rows_for_game(_dog_game())}
+    assert rows["moneyline", "away"]["true_prob"] == pytest.approx(novig_power(605, -900))
+    assert rows["moneyline", "away"]["true_prob"] == pytest.approx(0.111578, abs=1e-6)
+    assert rows["moneyline", "away"]["true_prob"] < novig(605, -900)
+    assert rows["moneyline", "home"]["true_prob"] == pytest.approx(0.888422, abs=1e-6)
+    assert rows["moneyline", "home"]["true_prob"] > novig(-900, 605)
+    assert rows["moneyline", "away"]["base_prob"] == rows["moneyline", "away"]["true_prob"]  # no desk
+
+
+def test_longshot_ev_is_smaller_with_power_than_proportional():
+    # BetRivers +800 (decimal 9.0) vs Pinnacle -900/+605: ev = p*9 - 1.
+    # proportional fair .136147 -> +22.5%; power fair .111578 -> +0.42% (the apparent edge was mostly the de-vig).
+    game = _dog_game()
+    game["books"]["moneyline"]["away"] = [("betrivers", 800)]
+    away = next(r for r in ev_rows_for_game(game) if r["market"] == "moneyline" and r["side"] == "away")
+    assert away["ev_best"] == pytest.approx(0.0042, abs=1e-4)
+    assert away["ev_best"] == pytest.approx(ev(0.111578, 800), abs=1e-5)
+    assert away["ev_best"] < ev(novig(605, -900), 800)
+    assert ev(novig(605, -900), 800) == pytest.approx(0.2253, abs=1e-4)
+    assert away["is_pick"] is False   # 0.42% is below MIN_EV: no longer a surfaced pick
+
+
+def test_short_priced_side_changes_only_slightly():
+    # -105 vs Pinnacle -116/-104: fair(over) proportional .51301, power .51393 (+0.09 pts); ev +0.16% -> +0.34%.
+    g = _full_game()
+    g["pinnacle"]["total"] = {"line": 44.5, "over": -116, "under": -104}
+    g["books"]["total"] = {"over": [("fanduel", -105)], "under": []}
+    over = next(r for r in ev_rows_for_game(g) if r["market"] == "total" and r["side"] == "over")
+    assert over["true_prob"] == pytest.approx(novig_power(-116, -104))
+    assert abs(novig_power(-116, -104) - novig(-116, -104)) < 0.002
+    assert over["ev_best"] == pytest.approx(ev(novig_power(-116, -104), -105))
+    assert over["ev_best"] == pytest.approx(0.0034, abs=1e-4)
+    assert ev(novig(-116, -104), -105) == pytest.approx(0.0016, abs=1e-4)
+    assert over["ev_best"] - ev(novig(-116, -104), -105) < 0.005
+
+
+# ---- same-pull freshness ----------------------------------------------------------------------
+
+from datetime import datetime, timedelta, timezone  # noqa: E402
+
+from sportsmodel.serving.ev_pilot import SAME_PULL_TOLERANCE  # noqa: E402
+
+_T0 = datetime(2026, 10, 14, 15, 0, tzinfo=timezone.utc)
+_DESK = [{"sport": "nfl", "game_pk": 7, "matchup": "A @ B", "commence_time": "2026-10-18T17:00:00Z"}]
+
+
+def _tsodds(market, side, book, price, line=None, at=_T0):
+    d = _odds(7, market, side, book, price, line)
+    if at is not None:
+        d["captured_at"] = at
+    return d
+
+
+def _pinnacle_rows(at=_T0, away_at=None):
+    return [
+        _tsodds("moneyline", "home", "pinnacle", -130, at=at), _tsodds("moneyline", "away", "pinnacle", 110, at=away_at or at),
+        _tsodds("spread", "home", "pinnacle", -110, -3.0, at=at), _tsodds("spread", "away", "pinnacle", -110, 3.0, at=away_at or at),
+    ]
+
+
+def test_same_pull_tolerance_is_five_minutes():
+    assert SAME_PULL_TOLERANCE == timedelta(minutes=5)
+
+
+def test_soft_price_three_hours_before_pinnacle_is_dropped_and_counted():
+    odds = _pinnacle_rows() + [_tsodds("moneyline", "home", "betrivers", -120, at=_T0 - timedelta(hours=3))]
+    stats: dict = {}
+    game = assemble_games(_DESK, odds, stats)[0]
+    assert game["books"]["moneyline"]["home"] == []
+    assert stats["stale_dropped"] == 1
+
+
+def test_soft_price_within_four_minutes_before_or_after_is_kept():
+    odds = _pinnacle_rows() + [
+        _tsodds("moneyline", "home", "betrivers", -120, at=_T0 - timedelta(minutes=4)),
+        _tsodds("moneyline", "away", "fanduel", 115, at=_T0 + timedelta(minutes=4)),
+    ]
+    stats: dict = {}
+    game = assemble_games(_DESK, odds, stats)[0]
+    assert game["books"]["moneyline"]["home"] == [("betrivers", -120)]
+    assert game["books"]["moneyline"]["away"] == [("fanduel", 115)]
+    assert stats.get("stale_dropped", 0) == 0
+
+
+def test_tolerance_boundary_is_inclusive():
+    odds = _pinnacle_rows() + [
+        _tsodds("moneyline", "home", "betrivers", -120, at=_T0 - SAME_PULL_TOLERANCE),
+        _tsodds("moneyline", "away", "fanduel", 115, at=_T0 + SAME_PULL_TOLERANCE + timedelta(seconds=1)),
+    ]
+    stats: dict = {}
+    game = assemble_games(_DESK, odds, stats)[0]
+    assert game["books"]["moneyline"]["home"] == [("betrivers", -120)]
+    assert game["books"]["moneyline"]["away"] == []
+    assert stats["stale_dropped"] == 1
+
+
+def test_pinnacle_sides_ten_minutes_apart_means_no_pinnacle_price_for_that_market():
+    odds = _pinnacle_rows(away_at=_T0 + timedelta(minutes=10)) + [
+        _tsodds("total", "over", "pinnacle", -110, 44.5), _tsodds("total", "under", "pinnacle", -110, 44.5),
+        _tsodds("moneyline", "home", "betrivers", -120),
+    ]
+    game = assemble_games(_DESK, odds)[0]
+    assert game["pinnacle"]["moneyline"] == {}
+    assert game["pinnacle"]["spread"] == {}
+    assert game["pinnacle"]["total"] == {"over": -110, "under": -110, "line": 44.5}
+    assert {r["market"] for r in ev_rows_for_game(game)} == {"total"}  # ML needs the spread anchor; total has its own line
+
+
+def test_pinnacle_sides_within_tolerance_use_later_capture_as_T():
+    odds = _pinnacle_rows(away_at=_T0 + timedelta(minutes=3)) + [
+        _tsodds("moneyline", "home", "betrivers", -120, at=_T0 + timedelta(minutes=7)),   # 4 min after later side: kept
+        _tsodds("moneyline", "away", "fanduel", 115, at=_T0 - timedelta(minutes=1)),      # 4 min before later side: kept
+        _tsodds("moneyline", "away", "betmgm", 112, at=_T0 - timedelta(minutes=3)),       # 6 min before later side: dropped
+    ]
+    stats: dict = {}
+    game = assemble_games(_DESK, odds, stats)[0]
+    assert game["pinnacle"]["moneyline"] == {"home": -130, "away": 110}
+    assert game["books"]["moneyline"]["home"] == [("betrivers", -120)]
+    assert game["books"]["moneyline"]["away"] == [("fanduel", 115)]
+    assert stats["stale_dropped"] == 1
+
+
+def test_captured_at_accepts_iso_strings_datetimes_and_naive_utc():
+    odds = _pinnacle_rows(at=_T0.isoformat()) + [
+        _tsodds("moneyline", "home", "betrivers", -120, at=(_T0 + timedelta(minutes=2))),
+        _tsodds("moneyline", "away", "fanduel", 115, at=(_T0 + timedelta(minutes=2)).isoformat().replace("+00:00", "Z")),
+        _tsodds("moneyline", "away", "betmgm", 112, at=(_T0 + timedelta(minutes=1)).replace(tzinfo=None)),
+        _tsodds("moneyline", "away", "draftkings", 111, at=(_T0 - timedelta(hours=3)).isoformat()),
+    ]
+    stats: dict = {}
+    game = assemble_games(_DESK, odds, stats)[0]
+    assert game["pinnacle"]["moneyline"] == {"home": -130, "away": 110}
+    assert game["books"]["moneyline"]["home"] == [("betrivers", -120)]
+    assert sorted(game["books"]["moneyline"]["away"]) == [("betmgm", 112), ("fanduel", 115)]
+    assert stats["stale_dropped"] == 1
+
+
+def test_fixtures_without_any_captured_at_keep_old_behaviour():
+    odds = [{k: v for k, v in o.items() if k != "captured_at"} for o in _pinnacle_rows()
+            + [_tsodds("moneyline", "home", "betrivers", -120)]]
+    assert all("captured_at" not in o for o in odds)
+    stats: dict = {}
+    game = assemble_games(_DESK, odds, stats)[0]
+    assert game["books"]["moneyline"]["home"] == [("betrivers", -120)]
+    assert game["pinnacle"]["moneyline"] == {"home": -130, "away": 110}
+    assert stats.get("stale_dropped", 0) == 0
+
+
+def test_rows_lacking_captured_at_are_excluded_when_the_game_has_timestamps():
+    odds = _pinnacle_rows() + [
+        _tsodds("moneyline", "home", "betrivers", -120, at=None),
+        _tsodds("moneyline", "away", "fanduel", 115, at=_T0),
+    ]
+    game = assemble_games(_DESK, odds)[0]
+    assert game["books"]["moneyline"]["home"] == []
+    assert game["books"]["moneyline"]["away"] == [("fanduel", 115)]
+    # ...and an undated Pinnacle side leaves that market with no Pinnacle price.
+    odds2 = _pinnacle_rows()
+    odds2[1] = {k: v for k, v in odds2[1].items() if k != "captured_at"}
+    assert assemble_games(_DESK, odds2)[0]["pinnacle"]["moneyline"] == {"home": -130}
+
+
+def test_stats_out_parameter_is_optional_and_accumulates_across_games():
+    desk = _DESK + [{"sport": "nfl", "game_pk": 8, "matchup": "C @ D", "commence_time": "2026-10-18T17:00:00Z"}]
+    old = _T0 - timedelta(hours=3)
+    odds = _pinnacle_rows() + [_tsodds("moneyline", "home", "betrivers", -120, at=old)]
+    odds += [dict(o, game_pk=8) for o in odds]
+    stats = {"stale_dropped": 2}
+    assemble_games(desk, odds, stats)
+    assert stats["stale_dropped"] == 4
+    assert len(assemble_games(desk, odds)) == 2   # stats omitted still works
