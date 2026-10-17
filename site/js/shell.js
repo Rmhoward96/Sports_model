@@ -1,6 +1,7 @@
 /* Site shell: header + nav, avatar menu, watchlist (per browser), page titles. */
 const NAV_ITEMS = [["dashboard", "Dashboard", "index.html"], ["mlb", "MLB", "mlb.html"], ["nfl", "NFL", "nfl.html"],
-  ["nba", "NBA", "nba.html"], ["cfb", "CFB", "cfb.html"], ["ev", "+EV", "ev.html"], ["track", "Track Record", "track-record.html"]];
+  ["nba", "NBA", "nba.html"], ["cfb", "CFB", "cfb.html"], ["ev", "+EV", "ev.html"], ["track", "Track Record", "track-record.html"],
+  ["take", "Take These", "take.html"], ["scorecard", "Scorecard", "scorecard.html"]];
 const ICON_SEARCH = `<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/></svg>`;
 
 function siteHeader(activePage) {

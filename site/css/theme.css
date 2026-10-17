@@ -882,3 +882,19 @@ a.ca-ev-pr:hover{background:#FBFAF6}
 .ca-find-item small{color:var(--muted);font-size:12.5px}
 .ca-find-item:hover,.ca-find-item.on{background:var(--blue-tint)}
 .ca-find-empty{margin:0;padding:18px 12px;color:var(--muted);font-size:14px}
+/* Take These (take.html, js/pages/take.js) */
+.ca-take .ca-card{margin-top:16px}
+.ca-take .ca-take-progress p{margin:0}
+.ca-take-bar{height:8px;border-radius:99px;background:#ECE8DF;overflow:hidden;margin:0 0 10px}
+.ca-take-bar i{display:block;height:100%;background:var(--green)}
+.ca-take-table td small{display:block;color:var(--muted);font-size:12px;line-height:1.3}
+.ca-take-table .ca-take-other{white-space:nowrap}
+.ca-take-table .ca-dash-odds{display:inline-flex;align-items:center;gap:6px}
+@media (max-width:639px){
+  .ca-take-table thead{display:none}
+  .ca-take-table,.ca-take-table tbody,.ca-take-table tr,.ca-take-table td{display:block;width:100%}
+  .ca-take-table tr{border:1px solid var(--line);border-radius:var(--radius);padding:8px 12px;margin-bottom:12px;background:var(--card)}
+  .ca-take-table td{display:flex;justify-content:space-between;gap:12px;padding:6px 0;border-bottom:1px solid #F0ECE3;white-space:normal;text-align:right}
+  .ca-take-table td::before{content:attr(data-label);color:var(--muted);font-weight:600;text-align:left;flex:none}
+  .ca-take-table td:last-child{border-bottom:0}
+}

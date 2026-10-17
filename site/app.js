@@ -2113,6 +2113,8 @@ async function render({ auto = false } = {}) {
     else if (page === "track") body = await buildTrackPage();
     else if (page === "game") body = await buildGamePage();
     else if (page === "ev") body = await buildEvPage();
+    else if (page === "take") body = await buildTakePage();
+    else if (page === "scorecard" && typeof buildScorecardPage === "function") body = await buildScorecardPage();   // arrives with the Scorecard page (Task 9)
     else if (page === "settings") body = buildSettings();
     else if (page === "rankings") body = await buildRankings();
     else if (BOARD_PAGES.includes(page)) body = await buildBoardPage(page);
@@ -2123,6 +2125,8 @@ async function render({ auto = false } = {}) {
     if (page === "game") wireGamePage();
     if (page === "track") wireTrackPage();
     if (page === "ev") wireEvPage2();
+    if (page === "take") wireTakePage();
+    if (page === "scorecard" && typeof wireScorecardPage === "function") wireScorecardPage();
     if (page === "settings") wireSettings();
     if (page === "rankings") wireRankings();
     if (BOARD_PAGES.includes(page)) wireBoardPage();

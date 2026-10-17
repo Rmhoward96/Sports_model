@@ -7,7 +7,7 @@ test("header has the mockup nav in order with the active item marked", () => {
   const g = load();
   const html = g.siteHeader("ev");
   const labels = [...html.matchAll(/data-nav="([a-z]+)"/g)].map((m) => m[1]);
-  assert.deepEqual(labels, ["dashboard", "mlb", "nfl", "nba", "cfb", "ev", "track"]);
+  assert.deepEqual(labels, ["dashboard", "mlb", "nfl", "nba", "cfb", "ev", "track", "take", "scorecard"]);
   assert.match(html, /data-nav="ev"[^>]*aria-current="page"/);
   assert.match(html, /href="settings.html"/);
   assert.match(html, /href="rankings.html"/);
