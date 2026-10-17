@@ -35,7 +35,7 @@ test("takeSplit drops started and inactive picks", () => {
     P({ event_id: "d", active: false, dropped_at: "2026-11-02T15:00:00Z" }), P({ event_id: "e", active: false, dropped_at: "2026-11-02T15:30:00Z" })];
   const { live, dropped } = g.takeSplit(rows, NOW);
   assert.deepEqual(live.map((r) => r.event_id), ["b", "a"], "best edge first");
-  assert.deepEqual(dropped.map((r) => r.event_id), ["e", "d", "c"].sort((x, y) => ({ e: 0, d: 1, c: 2 }[x] - { e: 0, d: 1, c: 2 }[y])), "most recent drop first; a started pick sorts by its start");
+  assert.deepEqual(dropped.map((r) => r.event_id), ["e", "d", "c"], "most recent drop first; a started pick sorts by its start");
   assert.equal(rows.length, 5, "input untouched");
 });
 test("takeModelNote agrees/disagrees/blank", () => {
@@ -68,4 +68,40 @@ test("takeRow renders the pick, escapes names and shows the other books", () => 
     first_seen: "2026-11-02T15:30:00Z", last_seen: "2026-11-02T15:44:00Z", book: "draftkings" }), { pred_margin: 7 }, NOW, false);
   assert.match(html, /2h 15m/); assert.match(html, /FanDuel −3\.5 −108/); assert.match(html, /model agrees/); assert.match(html, /−112/);
   assert.ok(!html.includes("A<b>"));
+});
+
+test("takeProgress compares instants, not strings: +00:00 at exactly Nov 1 counts, one second before does not", () => {
+  const rows = [{ first_seen: "2026-11-01T00:00:00+00:00", graded_by: "clv", clv: 0.01, beat: true },
+    { first_seen: "2026-10-31T23:59:59+00:00", graded_by: "clv", clv: 0.01, beat: true },
+    { first_seen: "2026-10-31T20:00:00-04:00", graded_by: "clv", clv: 0.01, beat: true }];   // = Nov 1 00:00 UTC
+  assert.equal(g.takeProgress(rows, null).graded, 2);
+});
+test("takePredFromRow derives margin and total from the expected scores", () => {
+  assert.deepEqual(g.takePredFromRow({ pred_home_score: 27.5, pred_away_score: 20 }), { pred_margin: 7.5, pred_total: 47.5 });
+  assert.equal(g.takePredFromRow({ pred_home_score: 27.5, pred_away_score: null }), null);
+  assert.equal(g.takePredFromRow({ pred_home_score: null, pred_away_score: 20 }), null);
+  assert.equal(g.takePredFromRow(null), null);
+});
+test("takeProgressCard: pre-Nov-1 sentence, progress bar after, verdict panel", () => {
+  const rows = [{ first_seen: "2026-11-02T12:00:00Z", graded_by: "clv", clv: 0.02, beat: true }];
+  const before = g.takeProgressCard(rows, null, new Date("2026-10-17T12:00:00Z"));
+  assert.match(before, /Test starts Nov 1; October picks are a shakedown and are not judged/);
+  assert.doesNotMatch(before, /ca-take-bar/);
+  const after = g.takeProgressCard(rows, null, NOW);
+  assert.match(after, /ca-take-bar/); assert.match(after, /<b>1<\/b> of 300 picks graded/); assert.match(after, /\+2\.00%/);
+  const passed = g.takeProgressCard(rows, { passed: true, n: 300, beat_rate: 0.56, mean_clv: 0.012, lower: 0.004 }, NOW);
+  assert.match(passed, /Passed/); assert.match(passed, /judged on 300 picks/); assert.match(passed, /95% lower bound \+0\.40%/);
+  const failed = g.takeProgressCard(rows, { passed: false, n: 300, beat_rate: 0.5, mean_clv: null, lower: null }, NOW);
+  assert.match(failed, /Did not pass/); assert.match(failed, /mean CLV —/); assert.doesNotMatch(failed, /lower bound/);
+});
+test("buildTakePage: empty state, and a listed pick gets its model note from predictions_any", async () => {
+  const mk = (data) => loadScripts(FILES, { page: "take", globals: { fetch: async (u) => {
+    const t = String(u).split("/rest/v1/")[1].split("?")[0]; assert.notEqual(t, "game_predictions");
+    return { ok: true, json: async () => data[t] || [] }; } } });
+  const empty = await mk({}).buildTakePage();
+  assert.match(empty, /No bets beat Pinnacle&#39;s fair price right now\.|No bets beat Pinnacle's fair price right now\./);
+  const soon = new Date(Date.now() + 3 * 3600e3).toISOString();
+  const pick = P({ event_id: "e", book: "fanduel", fair_prob: 0.5, good_until: -110, first_seen: soon, last_seen: soon, commence_time: soon, others: [] });
+  const html = await mk({ take_list_v: [pick], predictions_any: [{ sport: "nfl", game_pk: 1, pred_home_score: 28, pred_away_score: 21 }] }).buildTakePage();
+  assert.match(html, /model agrees/);
 });

@@ -8,6 +8,7 @@
 const TAKE_TEST_START = "2026-11-01T00:00:00Z";     // = TEST_START in src/sportsmodel/take/constants.py
 const TAKE_NEEDED = 300;                           // = N_REQUIRED
 const TAKE_BEAT_MIN = 0.55;                        // = BEAT_MIN
+const TAKE_EV_MIN = 0.015;                         // = EV_MIN
 const TAKE_MODEL_LEAGUES = ["nfl", "cfb", "mlb"];  // = MODEL_LEAGUES
 
 /* ── pure helpers ─────────────────────────────────────────────────────── */
@@ -56,6 +57,12 @@ function takeSplit(rows, now) {
 // Does the shrunk model lean the same way as the pick? Only for a model league's spread or total with a prediction, and only when the
 // shrunk model leans at all (shrinkLean null -> blank). Spread: shrinkLean wants the HOME book line; ref_line is Pinnacle's line for the
 // pick's own side, so the home line is ref_line for a home pick and -ref_line for an away pick.
+// predictions_any is one row per sport + game_pk with the model's expected scores (no pred_margin / pred_total columns): margin = home - away
+// (the site's pred_margin convention), total = home + away. A missing score -> null (no model note).
+function takePredFromRow(r) {
+  if (!r || !finite(r.pred_home_score) || !finite(r.pred_away_score)) return null;
+  return { pred_margin: +r.pred_home_score - +r.pred_away_score, pred_total: +r.pred_home_score + +r.pred_away_score };
+}
 function takeModelNote(p, pred) {
   if (!pred || !TAKE_MODEL_LEAGUES.includes(p.league) || typeof shrinkLean !== "function") return "";
   let lean = null;
@@ -71,7 +78,7 @@ function takeModelNote(p, pred) {
 // The test's progress. Counts only picks first seen on or after Nov 1 that were graded by closing line (clv) or by direction, the same rows
 // the verdict judges (src/sportsmodel/take/verdict.py). beatRate = share with beat === true; meanClv over the rows that have a CLV.
 function takeProgress(testRows, verdict) {
-  const rows = (testRows || []).filter((r) => r && r.first_seen >= TAKE_TEST_START && (r.graded_by === "clv" || r.graded_by === "direction"));
+  const rows = (testRows || []).filter((r) => r && Date.parse(r.first_seen) >= Date.parse(TAKE_TEST_START) && (r.graded_by === "clv" || r.graded_by === "direction"));
   const clvs = rows.filter((r) => finite(r.clv)).map((r) => +r.clv);
   return { graded: rows.length, needed: TAKE_NEEDED,
     beatRate: rows.length ? rows.filter((r) => r.beat === true).length / rows.length : null,
@@ -120,7 +127,7 @@ function takeRow(p, pred, now, dropped) {
     <td data-label="Book &amp; price"><span class="ca-dash-odds">${bookBadge(p.book)}<b>${takeAmerican(p.price)}</b></span>${others}</td>
     <td data-label="Fair">${takePct(p.fair_prob)}${fairAm != null ? `<small>${takeAmerican(fairAm)}</small>` : ""}</td>
     <td data-label="Edge" class="pos ca-b">${ctxEsc(takeEdge(p))}</td>
-    <td data-label="Good until" title="Worst price at this line that still clears the 1.5% edge">${takeAmerican(p.good_until)}</td>
+    <td data-label="Good until" title="Worst price at this line that still clears the ${(TAKE_EV_MIN * 100).toFixed(1)}% edge">${takeAmerican(p.good_until)}</td>
     <td data-label="Found / Checked">${ctxEsc(takeAgo(p.first_seen, now))}<small>${ctxEsc(takeAgo(p.last_seen, now))}</small></td>
     <td data-label="Model" class="${noteCls}">${ctxEsc(note)}</td></tr>`;
 }
@@ -134,12 +141,13 @@ async function takeLoad() {
     sbAll("take_test_v?select=id,event_id,league,market,side,better_line,first_seen,graded_by,clv,beat,graded_at,outcome,units&order=id.asc").catch(() => []),
     sb("take_verdict?select=*").catch(() => []),
   ]);
-  // The model's latest numbers for the listed games (newest generated_at wins per sport + game_pk); a failed read just blanks the Model column.
+  // The model's numbers for the listed games from predictions_any (already latest-only, one row per sport + game_pk; game_predictions is not
+  // readable by the anon key); a failed read just blanks the Model column.
   const preds = new Map();
   const pks = [...new Set(list.filter((p) => TAKE_MODEL_LEAGUES.includes(p.league) && p.game_pk != null).map((p) => p.game_pk))];
   if (pks.length) {
-    const rows = await sbAll(`game_predictions?game_pk=in.(${pks.join(",")})&sport=in.(${TAKE_MODEL_LEAGUES.join(",")})&select=sport,game_pk,pred_margin,pred_total,generated_at&order=sport.asc,game_pk.asc,generated_at.desc`).catch(() => []);
-    for (const r of rows) { const k = `${r.sport}|${r.game_pk}`; if (!preds.has(k)) preds.set(k, r); }
+    const rows = await sbAll(`predictions_any?game_pk=in.(${pks.join(",")})&sport=in.(${TAKE_MODEL_LEAGUES.join(",")})&select=sport,game_pk,pred_home_score,pred_away_score&order=sport.asc,game_pk.asc`).catch(() => []);
+    for (const r of rows) { const pred = takePredFromRow(r); if (pred) preds.set(`${r.sport}|${r.game_pk}`, pred); }
   }
   return { list, test, verdict: (verdictRows || [])[0] || null, preds };
 }
