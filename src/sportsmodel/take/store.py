@@ -204,6 +204,14 @@ def log_call(job: str, league: str | None, endpoint: str | None, credits_used: i
     _run_many(_insert("take_api_calls", CALL_COLUMNS), [row], connect_timeout, statement_timeout_ms)
 
 
+def recent_calls(since: datetime, *, connect_timeout: int | None = db.LEDGER_CONNECT_TIMEOUT,
+                 statement_timeout_ms: int | None = db.LEDGER_STATEMENT_TIMEOUT_MS) -> list[dict]:
+    """The paid-call log since `since` (credits used and books missing per call), oldest first."""
+    keys = ("job", "league", "credits_used", "books_missing", "called_at")
+    sql = f"SELECT {', '.join(keys)} FROM take_api_calls WHERE called_at >= %s ORDER BY called_at, id"
+    return [dict(zip(keys, r)) for r in _read(sql, (since,), connect_timeout, statement_timeout_ms)]
+
+
 def close_targets(now: datetime, lo_min: float, hi_min: float, *,
                   connect_timeout: int | None = db.LEDGER_CONNECT_TIMEOUT,
                   statement_timeout_ms: int | None = db.LEDGER_STATEMENT_TIMEOUT_MS) -> dict[str, set[str]]:

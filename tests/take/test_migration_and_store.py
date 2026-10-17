@@ -2,7 +2,7 @@
 guarantees and the missing-table guard. No live DB (fake connections)."""
 import json
 import re
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import pytest
@@ -377,3 +377,13 @@ def test_missing_tables_checks_to_regclass_in_order(monkeypatch):
     monkeypatch.setattr(db, "_missing_public_tables", fake)
     assert store.missing_tables() == ["take_verdict"]
     assert calls == [(list(store.TABLES), db.LEDGER_CONNECT_TIMEOUT, db.LEDGER_STATEMENT_TIMEOUT_MS)]
+
+
+def test_recent_calls_reads_the_log_since(monkeypatch):
+    called = NOW - timedelta(days=1)
+    log, _ = _fake(monkeypatch, fetch=[("pull", "nfl", 3, ["fanatics"], called), ("scores", None, 2, None, called)])
+    assert store.recent_calls(NOW - timedelta(days=7)) == [
+        {"job": "pull", "league": "nfl", "credits_used": 3, "books_missing": ["fanatics"], "called_at": called},
+        {"job": "scores", "league": None, "credits_used": 2, "books_missing": None, "called_at": called}]
+    (_, sql, params), = _stmts(log)
+    assert "FROM take_api_calls" in sql and "called_at >= %s" in sql and params == (NOW - timedelta(days=7),)

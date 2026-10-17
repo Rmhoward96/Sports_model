@@ -1,0 +1,55 @@
+name: report-take-these
+
+# Weekly "take these" report: every Monday write docs/superpowers/reports/YYYY-MM-DD-take-these.md
+# (scripts/report_take_these.py): progress toward the pre-registered CLV test (N of 300 graded picks since Nov 1, the three
+# criteria live, the verdict once judged), per-league and per-market beat-close rate and mean CLV, better-line picks, W-L-P
+# and units, the October shakedown (not judged), credits used per job and books missing per league over the last 7 days.
+# The test is judged ONCE, on the first 300 graded picks; the first report to see them inserts the append-only
+# take_verdict row and every later report carries it unchanged. Reads the database, writes only the markdown report (and
+# that one verdict row). No picks yet writes nothing. Monday 13:00 UTC, after take-these-scores (09:30 daily).
+on:
+  workflow_dispatch: {}
+  schedule:
+    - cron: "0 13 * * 1"
+
+permissions:
+  contents: write
+
+concurrency:
+  group: report-take-these
+  cancel-in-progress: false
+
+jobs:
+  report:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v5
+      - name: Install uv
+        uses: astral-sh/setup-uv@v10.0.1
+      - name: Sync deps
+        run: uv sync
+      - name: Write the weekly report
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+        run: uv run python scripts/report_take_these.py
+      - name: Commit the report
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add docs/superpowers/reports/
+          if git diff --staged --quiet; then
+            echo "no new report"
+            exit 0
+          fi
+          git commit -m "docs(report): take these [skip ci]"
+          # other data workflows push to the same branch: rebase onto theirs and retry
+          for attempt in 1 2 3; do
+            if git push; then
+              exit 0
+            fi
+            echo "push rejected (attempt $attempt)"
+            [ "$attempt" -lt 3 ] && git pull --rebase
+          done
+          echo "push failed after 3 attempts" >&2
+          exit 1

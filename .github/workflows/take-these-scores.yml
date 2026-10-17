@@ -1,0 +1,49 @@
+name: take-these-scores
+
+# "Take these" settlement (scripts/take_scores.py, db/migration_take_these.sql). Once a day at 09:30 UTC, after the
+# previous day's games have finished: for each league holding a graded pick that has no outcome yet (and whose game
+# started over 3 hours ago) ONE Odds API /scores call (daysFrom=3, 2 credits) stores the final scores, and every pick whose
+# game is final is settled at its own line and price. Skips below 300 credits remaining. The scheduled job runs only while
+# repo variable TAKE_THESE is 'on'; a manual run (workflow_dispatch) always runs. Crons are UTC.
+on:
+  schedule:
+    - cron: "30 9 * * *"
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: "Make the paid scores calls but write nothing; print what it would settle"
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+# Overlapping runs would double-spend credits and race on the same rows; queue instead.
+concurrency:
+  group: take-these-scores
+  cancel-in-progress: false
+
+jobs:
+  scores:
+    if: vars.TAKE_THESE == 'on' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v5
+      - name: Install uv
+        uses: astral-sh/setup-uv@v10.0.1
+        with:
+          enable-cache: true
+      - name: Sync deps
+        run: uv sync
+      - name: Fetch final scores and settle picks
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+          ODDS_API_KEY: ${{ secrets.ODDS_API_KEY }}
+          DRY_RUN: ${{ inputs.dry_run }}      # empty on schedule events, "true"/"false" on workflow_dispatch
+        run: |
+          if [ "$DRY_RUN" = "true" ]; then
+            uv run python scripts/take_scores.py --dry-run
+          else
+            uv run python scripts/take_scores.py
+          fi
