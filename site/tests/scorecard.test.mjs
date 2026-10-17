@@ -69,3 +69,81 @@ test("storage helpers swallow a throwing localStorage", () => {
   const h = loadScripts(FILES, { globals: { localStorage: { getItem() { throw new Error("blocked"); }, setItem() { throw new Error("blocked"); }, removeItem() { throw new Error("blocked"); } } } });
   assert.equal(h.scGet("scorecard.csv"), null); assert.equal(h.scSet("k", "v"), false); assert.equal(h.scUnit(), 1); h.scDel("k");
 });
+
+test("the list's rate ignores graded picks whose beat is null", () => {
+  const bets = [bet("2026-10-05T12:00:00Z", true), bet("2026-10-10T12:00:00Z", true)];
+  const s = g.scSideBySide(bets, [pick("2026-10-06T00:00:00Z", true), pick("2026-10-07T00:00:00Z", null), pick("2026-10-08T00:00:00Z", null, "direction"), pick("2026-10-09T00:00:00Z", false)]);
+  assert.equal(s.list.n, 2); assert.equal(s.list.rate, 0.5);
+  assert.equal(g.scSideBySide(bets, [pick("2026-10-06T00:00:00Z", null)]).list.rate, null);
+});
+test("the alert banner states the real window size", () => {
+  const rows = [HEAD, ...Array.from({ length: 12 }, (_, i) => csvRow(String(i), { odds: i < 2 ? "2.0" : "1.8", time_placed_iso: new Date(Date.parse("2026-10-02T15:00:00Z") + i * 60000).toISOString() }))].join("\n");
+  const html = g.scResultsHtml(rows, 1);
+  const banner = html.slice(html.indexOf('id="sc-alert"'), html.indexOf("</section>", html.indexOf('id="sc-alert"')));
+  assert.match(banner, /last 12 bets with a close/); assert.ok(!/last 100 bets/.test(banner));
+});
+
+// A tiny fake page: elements keep their handlers so a test can fire change events; FileReader reads the stub file's text synchronously.
+function fakePage(extra = {}) {
+  const els = {};
+  for (const id of ["sc-drop", "sc-file", "sc-unit", "sc-clear", "sc-results", "sc-side"]) {
+    els[id] = { id, innerHTML: "", outerHTML: "", hidden: false, value: "", files: null, handlers: {}, classList: { add() {}, remove() {}, toggle() {} }, addEventListener(t, f) { this.handlers[t] = f; } };
+  }
+  const el = () => ({ innerHTML: "", style: {}, dataset: {}, classList: { add() {}, remove() {}, toggle() {} }, appendChild() {}, setAttribute() {}, addEventListener() {}, querySelector: () => null, querySelectorAll: () => [] });
+  const document = { body: { dataset: { page: "scorecard" }, appendChild() {}, classList: { add() {}, remove() {} } }, head: { appendChild() {} }, documentElement: el(),
+    createElement: el, createElementNS: el, getElementById: (id) => els[id] || null, querySelector: () => null, querySelectorAll: () => [], addEventListener() {} };
+  class FileReader { readAsText(f) { this.result = f.text; this.onload(); } }
+  return { els, globals: { document, FileReader, ...extra } };
+}
+const BLOCKED = { getItem() { throw new Error("blocked"); }, setItem() { throw new Error("full"); }, removeItem() { throw new Error("blocked"); } };
+
+test("a dropped file renders and the unit change sticks when localStorage throws on every call", async () => {
+  const { els, globals } = fakePage({ localStorage: BLOCKED });
+  const h = loadScripts(FILES, { globals });
+  const html = await h.buildScorecardPage();
+  assert.match(html, /Drop your Pikkit export above/);
+  h.wireScorecardPage();
+  els["sc-file"].files = [{ text: CSV }];
+  els["sc-file"].handlers.change();
+  assert.match(els["sc-results"].innerHTML, /id="sc-weekly"/, "the view renders although nothing could be saved");
+  assert.match(els["sc-results"].innerHTML, /<div class="ca-stat-value ">75\.0u<\/div>/, "unit size 1: 75 staked");
+  assert.equal(els["sc-clear"].hidden, false);
+  els["sc-unit"].value = "25"; els["sc-unit"].handlers.change();
+  assert.equal(els["sc-unit"].value, "25", "the input does not snap back");
+  assert.match(els["sc-results"].innerHTML, /<div class="ca-stat-value ">3\.0u<\/div>/, "unit size 25: 3 staked");
+  els["sc-unit"].value = "-4"; els["sc-unit"].handlers.change();
+  assert.equal(els["sc-unit"].value, "1", "an invalid size falls back to 1");
+  els["sc-clear"].handlers.click();
+  assert.match(els["sc-results"].innerHTML, /Drop your Pikkit export above/); assert.equal(els["sc-clear"].hidden, true);
+});
+test("a dropped file is mirrored to localStorage and read back on the next load", async () => {
+  const storage = new Map();
+  const a = fakePage(), h = loadScripts(FILES, { storage, globals: a.globals });
+  await h.buildScorecardPage(); h.wireScorecardPage();
+  a.els["sc-file"].files = [{ text: CSV }]; a.els["sc-file"].handlers.change();
+  a.els["sc-unit"].value = "25"; a.els["sc-unit"].handlers.change();
+  assert.equal(storage.get("scorecard.csv"), CSV); assert.equal(storage.get("scorecard.unit"), "25");
+  const h2 = loadScripts(FILES, { storage });
+  const html = await h2.buildScorecardPage();
+  assert.match(html, /id="sc-weekly"/); assert.match(html, /value="25"/);
+});
+
+test("the saved view paints before take_test_v answers, then the side-by-side fills in", async () => {
+  let release;
+  const gate = new Promise((r) => { release = r; });
+  const fetchStub = async () => { await gate; return { ok: true, json: async () => [{ first_seen: "2026-10-02T15:00:00Z", graded_by: "clv", beat: true }] }; };
+  const { els, globals } = fakePage({ fetch: fetchStub });
+  const h = loadScripts(FILES, { storage: new Map([["scorecard.csv", CSV]]), globals });
+  const html = await h.buildScorecardPage();            // resolves while the read is still pending
+  assert.match(html, /id="sc-weekly"/); assert.match(html, /Loading the list's results/);
+  h.wireScorecardPage();
+  release(); await new Promise((r) => setTimeout(r, 10));
+  assert.match(els["sc-side"].outerHTML, /Take These list/); assert.match(els["sc-side"].outerHTML, /1 graded picks/); assert.match(els["sc-side"].outerHTML, /Pikkit's close is not necessarily/);
+});
+test("a failed take_test_v read leaves a short unavailable note", async () => {
+  const { els, globals } = fakePage();   // the default test fetch rejects
+  const h = loadScripts(FILES, { storage: new Map([["scorecard.csv", CSV]]), globals });
+  await h.buildScorecardPage(); h.wireScorecardPage();
+  await new Promise((r) => setTimeout(r, 10));
+  assert.match(els["sc-side"].outerHTML, /list data unavailable/); assert.match(els["sc-side"].outerHTML, /id="sc-side"/);
+});

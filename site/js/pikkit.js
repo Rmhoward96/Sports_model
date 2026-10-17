@@ -6,7 +6,7 @@ const PK_ALERT_RATE = 0.40, PK_ALERT_WINDOW = 100, PK_ALERT_MIN_SLICE = 15;
 
 /* RFC 4180 with a header row: strips a leading BOM; quoted fields may hold commas, "" escapes and newlines. Blank lines are skipped. */
 function pkParseCsv(text) {
-  const s = String(text ?? "").replace(/^﻿/, "");
+  const s = String(text ?? "").replace(/^\uFEFF/, "");
   const table = [];
   let row = [], field = "", inQ = false, i = 0;
   const endField = () => { row.push(field); field = ""; };
