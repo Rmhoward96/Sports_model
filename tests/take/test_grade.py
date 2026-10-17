@@ -145,3 +145,16 @@ def test_settle():
     assert settle(pick("total", "over", 46.5, 100), 27, 20) == ("win", pytest.approx(1.0))
     assert settle(pick("total", "under", 46.5, 100), 27, 20) == ("loss", -1.0)
     assert settle(pick("total", "under", 47.5, -110), 27, 20) == ("win", pytest.approx(100 / 110))
+
+
+def test_grade_pick_with_a_none_close_line_is_no_close():
+    half = {"home": {"line": None, "price": -110}, "away": {"line": -3.0, "price": -110}}
+    assert grade_pick(pick("spread", "home", -3.0, -105, ref_line=-3.0), close(half), T)["graded_by"] == "no_close"
+    no_pt = {"over": {"line": 47.5, "price": -110}, "under": {"line": None, "price": -110}}
+    assert grade_pick(pick("total", "over", 47.5, 105, ref_line=47.5), close(no_pt), T)["graded_by"] == "no_close"
+    assert close_fair(half, "nfl", "spread", "home") is None and close_fair(no_pt, "nfl", "total", "over") is None
+
+
+def test_grade_pick_with_no_ref_line_is_no_close():
+    row = grade_pick(pick("total", "over", 47.5, 105, ref_line=None), close(total(47.5, -110, -110)), T)
+    assert row["graded_by"] == "no_close" and row["clv"] is None and row["pick_id"] == 7

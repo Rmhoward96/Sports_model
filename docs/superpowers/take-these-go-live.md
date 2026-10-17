@@ -27,7 +27,7 @@ Spec and plan: `docs/superpowers/specs/` and `docs/superpowers/plans/` (2026-10-
    | `take-these-pull.yml` | `0 12-23,0-4 * * *` (every 2 hours by default) | skips below 1,500 remaining | `TAKE_THESE` |
    | `take-these-close.yml` | `3-59/10 * * * *` (every 10 min) | skips paid calls below 300 remaining | `TAKE_THESE` |
    | `take-these-scores.yml` | `30 9 * * *` (daily) | skips below 300 remaining | `TAKE_THESE` |
-   | `report-take-these.yml` | `0 13 * * 1` (Mondays) | none (database only) | none; always runs on schedule |
+   | `report-take-these.yml` | `0 13 * * 1` (Mondays) | none (database only) | `TAKE_THESE` |
 
    The weekly report writes `docs/superpowers/reports/YYYY-MM-DD-take-these.md` and commits it. With no picks yet it writes
    nothing.
@@ -41,6 +41,6 @@ Spec and plan: `docs/superpowers/specs/` and `docs/superpowers/plans/` (2026-10-
    verdict row is append-only.
 
 7. **Rollback.** Set `TAKE_THESE` to `off` (or delete it), then disable all four workflows in the Actions tab:
-   `take-these-pull`, `take-these-close`, `take-these-scores` and `report-take-these`. The report has no `TAKE_THESE` gate,
-   so disabling it is the only way to stop it. To drop the data, use the commented rollback block at the top of
-   `db/migration_take_these.sql`.
+   `take-these-pull`, `take-these-close`, `take-these-scores` and `report-take-these`. All four are gated on `TAKE_THESE`,
+   so setting it to `off` already stops the scheduled runs; disabling them also stops manual runs. To drop the data,
+   use the commented rollback block at the top of `db/migration_take_these.sql`.

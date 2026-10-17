@@ -66,7 +66,13 @@ def _now() -> datetime:
 
 
 def _grade(now: datetime, deps: Deps, dry_run: bool, out: dict) -> None:
-    rows = [grade_pick(p, p["close"], now) for p in deps.ungraded_started(now)]
+    rows = []
+    for p in deps.ungraded_started(now):
+        try:
+            rows.append(grade_pick(p, p["close"], now))
+        except Exception as exc:  # noqa: BLE001 -- one malformed close must not block the batch: record no_close, never retry
+            _warn(f"pick {p.get('pick_id')} grading failed: {type(exc).__name__}: {exc}; recorded as no_close")
+            rows.append(grade_pick(p, None, now))
     out["graded"] = len(rows)
     for r in rows:
         if dry_run:

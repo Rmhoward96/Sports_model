@@ -84,7 +84,7 @@ UNGRADED_SQL = (
     "SELECT p.id, p.event_id, p.league, p.market, p.side, p.line, p.price, p.ref_line, "
     "c.prices, c.captured_at, c.minutes_to_start FROM take_picks p "
     "JOIN take_events e ON e.event_id = p.event_id LEFT JOIN take_results r ON r.pick_id = p.id "
-    "LEFT JOIN take_closes c ON c.event_id = p.event_id AND c.market = p.market "
+    "LEFT JOIN take_closes c ON c.event_id = p.event_id AND c.market = p.market AND c.captured_at >= p.first_seen "
     "WHERE r.pick_id IS NULL AND e.commence_time <= %s ORDER BY p.id")
 _UNSETTLED_FROM = (
     "FROM take_results r JOIN take_picks p ON p.id = r.pick_id JOIN take_events e ON e.event_id = p.event_id "

@@ -23,6 +23,8 @@ def close_fair(close_prices: dict, league: str, market: str, side: str) -> float
         want = ["over", "under"]
     if set(close_prices) != set(want) or side not in want:
         return None
+    if market != "ml" and any(close_prices[s].get("line") is None for s in want):
+        return None                      # a spread / total side with no point: the market cannot be read
     if market == "spread" and not same_line(close_prices["home"]["line"], -close_prices["away"]["line"]):
         return None
     if market == "total" and not same_line(close_prices["over"]["line"], close_prices["under"]["line"]):
@@ -51,6 +53,8 @@ def grade_pick(pick: dict, close: dict | None, graded_at: datetime) -> dict:
     if fair is None:
         return row
     line = close["prices"][side]["line"] if market != "ml" else None
+    if market != "ml" and pick["ref_line"] is None:
+        return row                       # no reference line to compare the close with
     if market == "ml" or same_line(line, pick["ref_line"]):
         clv = fair * american_to_decimal(pick["price"]) - 1
         row.update(graded_by="clv", close_fair=fair, clv=clv, beat=clv > 0, close_line=line)

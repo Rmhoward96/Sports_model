@@ -6,7 +6,8 @@ name: report-take-these
 # and units, the October shakedown (not judged), credits used per job and books missing per league over the last 7 days.
 # The test is judged ONCE, on the first 300 graded picks; the first report to see them inserts the append-only
 # take_verdict row and every later report carries it unchanged. Reads the database, writes only the markdown report (and
-# that one verdict row). No picks yet writes nothing. Monday 13:00 UTC, after take-these-scores (09:30 daily).
+# that one verdict row). No picks yet writes nothing. Monday 13:00 UTC, after take-these-scores (09:30 daily). The scheduled
+# job runs only while repo variable TAKE_THESE is 'on'; a manual run (workflow_dispatch) always runs.
 on:
   workflow_dispatch: {}
   schedule:
@@ -21,6 +22,7 @@ concurrency:
 
 jobs:
   report:
+    if: vars.TAKE_THESE == 'on' || github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:

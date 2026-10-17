@@ -204,3 +204,16 @@ def test_main_exit_codes(monkeypatch):
     assert take_close.main(["--dry-run"]) == 0
     monkeypatch.setattr(take_close, "_db_deps", lambda: Rec(tables=["take_closes"]).deps())
     assert take_close.main([]) == 0
+
+
+def test_close_one_malformed_close_does_not_block_the_batch(capsys):
+    bad_close = {"event_id": "e2", "market": "total", "captured_at": NOW - timedelta(minutes=20), "minutes_to_start": 12.0,
+                 "prices": {"over": {"line": 47.5}, "under": {"line": 47.5}}}          # no price: grade_pick raises
+    bad = started_pick(pick_id=8, event_id="e2", close=bad_close)
+    f = Rec(ungraded=[started_pick(pick_id=6), bad, started_pick(pick_id=9)])
+    out = run_close(NOW, f.deps())
+    by_id = {r["pick_id"]: r for r in f.results}
+    assert sorted(by_id) == [6, 8, 9] and f.n("insert_results") == 1 and out["graded"] == 3
+    assert by_id[6]["graded_by"] == "clv" and by_id[9]["graded_by"] == "clv"
+    assert by_id[8]["graded_by"] == "no_close" and by_id[8]["clv"] is None and by_id[8]["graded_at"] == NOW
+    assert "pick 8 grading failed: KeyError" in capsys.readouterr().out

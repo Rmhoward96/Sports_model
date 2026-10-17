@@ -316,6 +316,10 @@ def test_ungraded_started_attaches_the_close_or_none(monkeypatch):
     assert b["close"] is None and b["pick_id"] == 2
 
 
+def test_ungraded_sql_ignores_a_close_captured_before_the_pick_existed():
+    assert "AND c.captured_at >= p.first_seen" in store.UNGRADED_SQL.split("LEFT JOIN take_closes c")[1].split("WHERE")[0]
+
+
 def test_insert_results_is_do_nothing_on_pick_id(monkeypatch):
     log, _ = _fake(monkeypatch)
     row = {"pick_id": 1, "graded_by": "clv", "close_fair": 0.5, "clv": 0.02, "beat": True, "close_line": None,
