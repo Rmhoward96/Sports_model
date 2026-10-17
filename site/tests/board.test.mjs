@@ -860,3 +860,14 @@ test("boardUpcomingTable: a game with no market line labels its projections and 
   assert.equal((rows[1].match(/ca-bd-proj/g) || []).length, 2, "the spread and total projections are labelled");
   assert.ok(!/NaN|undefined|Infinity/.test(html));
 });
+
+test("result chips: spread / total chips only for the leans the site showed (trackRows' rec); a graded side that was not a lean reads No lean", () => {
+  const acc = { sport: "nfl", game_pk: 9, game_date: "2026-10-04", home_team_name: "Buffalo Bills", away_team_name: "Miami Dolphins", win_prob: 0.6, predicted_winner: "Buffalo Bills",
+    actual_winner: "Buffalo Bills", winner_correct: true, pred_margin: 5, actual_margin: 7, pred_total: 47, actual_total: 50, market_spread: -3, market_total: 44, spread_pick_correct: true, total_pick_correct: true };
+  const gm = { sport: "nfl" }, cells = (G) => { const tr = {}; for (const r of G.trackRows([acc], [], new Map())) tr[r.market] = r; return ["moneyline", "spread", "total"].map((m) => G.boardResultCell(m, tr, gm)); };
+  const nfl0 = cells(h);      // NFL k = 0: the shrunk number is the line, so no lean
+  assert.ok(nfl0[1].includes(">No lean<") && nfl0[2].includes(">No lean<") && !nfl0[1].includes("ca-bd-pk"), nfl0[1]);
+  assert.ok(nfl0[0].includes("ca-bd-pk"), "the moneyline winner chip is unchanged");
+  const id = cells(g);        // identity shrink: 5 vs 3 and 47 vs 44 are leans
+  assert.ok(id[1].includes("ca-bd-pk") && id[2].includes("ca-bd-pk") && !id.join("").includes("No lean"));
+});

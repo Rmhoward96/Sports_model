@@ -28,3 +28,17 @@ const fairAmerican = (p) => (shrinkNum(p) != null && p > 0 && p < 1 ? probToAmer
 // The model number as quoted on the page: the half point (r05), except that a value equal to its market IS the market number, so a model
 // at k = 0 shows (and has an edge of exactly 0 against) a quarter-point line such as a 51.75 total.
 const shrinkHalf = (model, market) => (shrinkNum(model) == null ? null : shrinkNum(market) != null && Math.abs(model - market) < 1e-9 ? market : r05(model));
+// The side the SHRUNK model leans in one spread / total market, or null: the shrunk number to the half point (shrinkHalf) has to sit at
+// least a quarter point off the posted line. spread: `model` = the model's expected home margin, `line` = the HOME BOOK line (negative =
+// home favoured, so the market's expected home margin is -line); total: `model` = the projected total, `line` = the posted total.
+// { side: "home" | "away" | "over" | "under", edge } (edge = shrunk points off the line, signed toward the home / over side), else null --
+// also null for an unknown market or a bad input, and always null at k = 0 (the shrunk number IS the line). game.js gmLean and the graded
+// record (data.js trackRows: which graded picks the site actually showed as leans) share this one rule.
+function shrinkLean(sport, market, model, line) {
+  const mo = shrinkNum(model), ln = shrinkNum(line);
+  if (mo == null || ln == null || (market !== "spread" && market !== "total")) return null;
+  const k = shrinkK(sport, market);
+  const edge = market === "spread" ? shrinkHalf(shrinkLine(mo, -ln, k), -ln) + ln : shrinkHalf(shrinkLine(mo, ln, k), ln) - ln;
+  if (!Number.isFinite(edge) || Math.abs(edge) < 0.25) return null;
+  return { side: market === "spread" ? (edge > 0 ? "home" : "away") : edge > 0 ? "over" : "under", edge };
+}

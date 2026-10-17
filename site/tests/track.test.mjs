@@ -78,7 +78,38 @@ test("finalScore text: winner by margin, total, ties", () => {
 
 test("units join on game_pk|market (pnl / 10); a spread bet's pnl never lands on the moneyline row", () => {
   const rows = g.trackRows([A({ game_pk: 7 })], [{ game_pk: 7, market: "total", pnl: -10 }, { game_pk: 7, market: "moneyline", pnl: 4.7 }, { game_pk: 8, market: "spread", pnl: 99 }]);
-  assert.deepEqual(rows.map((r) => r.units == null ? null : Math.round(r.units * 100) / 100), [0.47, null, -1]);
+  // k = 1 (identity table): the spread is a real lean with no pnl row, so it carries a flat -110 loss; the total's pnl row wins over -110.
+  assert.deepEqual(rows.map((r) => r.units == null ? null : Math.round(r.units * 100) / 100), [0.47, -1, -1]);
+});
+
+test("rec: only spread / total picks the SHRUNK model leans count; moneyline never; k = 0 counts nothing; -110 units", () => {
+  const M = loadScripts(["app.js", "js/metrics.js", "tests/fixtures/shrink-k-mixed.js", "js/shrink.js", "js/ui.js", "js/shell.js", "js/data.js"]);   // NFL k = 0, CFB k = 0.5
+  const by = (rows) => Object.fromEntries(rows.map((r) => [r.market, r]));
+  const nfl = by(M.trackRows([A()], []));
+  assert.deepEqual([nfl.moneyline.rec, nfl.spread.rec, nfl.total.rec], [false, false, false], "NFL k = 0: the site showed No lean, nothing counts");
+  assert.equal(nfl.spread.units, null);
+  // CFB k = 0.5: total 52.4 vs 46.5 -> shrunk 49.45 -> 49.5, 3 points over: a lean. Spread -2.2 vs +1.5 -> shrunk -1.85 -> -2.0, 0.5 off: a lean.
+  const cfb = by(M.trackRows([A({ sport: "cfb" })], []));
+  assert.deepEqual([cfb.moneyline.rec, cfb.spread.rec, cfb.total.rec], [false, true, true]);
+  assert.equal(cfb.total.recEdge, 3);
+  assert.equal(cfb.spread.recEdge, 0.5);
+  assert.equal(Math.round(cfb.total.units * 1000) / 1000, 0.909, "a -110 win");
+  assert.equal(cfb.spread.units, -1, "a -110 loss");
+  // A small edge that the shrink pulls onto the line is not a lean: total 47.4 vs 46.5 -> 46.95 -> 47.0 is 0.5 off (lean); 46.9 -> 46.7 -> 46.5 (no lean).
+  assert.equal(by(M.trackRows([A({ sport: "cfb", pred_total: 47.4 })], [])).total.rec, true);
+  assert.equal(by(M.trackRows([A({ sport: "cfb", pred_total: 46.9 })], [])).total.rec, false);
+  // Without js/shrink.js nothing is rec (fails closed).
+  const bare = loadScripts(["app.js", "js/metrics.js", "js/ui.js", "js/shell.js", "js/data.js"]);
+  assert.ok(bare.trackRows([A({ sport: "cfb" })], []).every((r) => !r.rec));
+});
+
+test("trackPnlDaily: rec rows only, $10 a bet at -110, prediction_pnl_daily's shape, oldest first", () => {
+  const rows = [R("W", "2026-10-15", { market: "total", sport: "cfb", rec: true }), R("L", "2026-10-15", { market: "total", sport: "cfb", rec: true }),
+    R("P", "2026-10-14", { market: "spread", sport: "cfb", rec: true }), R("W", "2026-10-14", { market: "moneyline", rec: false }), null];
+  const d = g.trackPnlDaily(rows);
+  assert.deepEqual(d.map((x) => [x.game_date, x.sport, x.market, x.n, x.wins, x.losses, x.pushes, Math.round(x.pnl * 100) / 100]),
+    [["2026-10-14", "cfb", "spread", 1, 0, 0, 1, 0], ["2026-10-15", "cfb", "total", 2, 1, 1, 0, -0.91]]);
+  assert.deepEqual(g.trackPnlDaily([]), []);
 });
 
 test("moneyline closing price: game_closing_prices decimal -> American, on the picked side", () => {
@@ -255,7 +286,8 @@ test("URL state: parse, defaults, only non-defaults serialize, junk falls back",
 const EVIL_HOME = `Texas <b>Crew</b>`, EVIL_AWAY = `Oklahoma "Sooners" <i>Zed</i>`;
 const dayOff = (n) => new Date(Date.now() + n * 864e5).toISOString().slice(0, 10);
 const urlParts = (u) => { const [p, q = ""] = String(u).replace(/^.*\/rest\/v1\//, "").split("?"); return { path: p, q }; };
-function populated({ search = "", acc, closing, starts, fail = [], quiet = null, document } = {}) {
+// search defaults to the every-game diagnostic (view=all): most tests exercise the table / card mechanics on every graded market.
+function populated({ search = "?view=all", acc, closing, starts, fail = [], quiet = null, document, kFile = "tests/fixtures/shrink-k-identity.js" } = {}) {
   const accRows = acc || [
     A({ sport: "cfb", game_pk: 1, game_date: dayOff(-1), home_team_name: EVIL_HOME, away_team_name: EVIL_AWAY, predicted_winner: EVIL_HOME, actual_winner: EVIL_HOME, win_prob: 0.62, winner_correct: true, pred_margin: 6, actual_margin: 10, market_spread: -3.5, spread_pick_correct: true, pred_total: 55, market_total: 54.5, actual_total: 60, total_pick_correct: true }),
     A({ sport: "cfb", game_pk: 2, game_date: dayOff(-2), home_team_name: "Ohio State", away_team_name: "Oregon", predicted_winner: "Oregon", actual_winner: "Ohio State", win_prob: 0.45, winner_correct: false, pred_margin: -2, actual_margin: 3, market_spread: -1, spread_pick_correct: false, pred_total: 50, market_total: 50.5, actual_total: 45, total_pick_correct: true }),
@@ -273,7 +305,7 @@ function populated({ search = "", acc, closing, starts, fail = [], quiet = null,
     else if (path === "prediction_pnl_daily") rows = [{ game_date: dayOff(-1), sport: "cfb", market: "spread", n: 2, wins: 1, losses: 1, pushes: 0, pnl: 1.5 }];
     return { ok: true, json: async () => rows };
   };
-  const T = loadScripts(["app.js", "js/metrics.js", "tests/fixtures/shrink-k-identity.js", "js/shrink.js", "js/ui.js", "js/shell.js", "js/data.js", "js/pages/track.js", "js/boot.js"],
+  const T = loadScripts(["app.js", "js/metrics.js", kFile, "js/shrink.js", "js/ui.js", "js/shell.js", "js/data.js", "js/pages/track.js", "js/boot.js"],
     { page: "track", globals: { fetch, ...(quiet ? { console: quiet } : {}), ...(document ? { document } : {}), location: { search, href: `http://localhost/track-record.html${search}` } } });
   return { T, requested };
 }
@@ -282,7 +314,7 @@ const clean = (html) => html.replace(/\bnull\b(?=[^<]*>)/g, "");
 test("buildTrackPage: title, range pills, five stat cards, every chart card, filters, table and right column; names escaped; no NaN / undefined", async () => {
   const { T, requested } = populated();
   const html = await T.buildTrackPage();
-  for (const t of ["Track Record", "Prediction performance across leagues and markets.", "7D", "30D", "Season", "All Time", "Model picks", "+EV picks", "NFL archive (pre-",
+  for (const t of ["Track Record", "Prediction performance across leagues and markets.", "7D", "30D", "Season", "All Time", "Recommended leans", "+EV picks", "Every game (diagnostic)", "Archive (before",
     "OVERALL RECORD", "ACCURACY VS CLOSING LINE", "TOTAL PREDICTIONS", "CURRENT STREAK", "AVERAGE CONFIDENCE", "vs market", "Across all leagues and markets",
     "Cumulative Prediction Performance", "Overall", "Performance by Market", "Win %", "Loss %", "Push %", "Performance by League", "Confidence Calibration", "Predicted Confidence", "Actual Hit Rate",
     "Recent Form", "Last 10", "Last 25", "Last 50", "Last 100", "All Predictions", "Moneyline", "Spread", "Totals", "All Leagues", "All Markets", "All Confidence", "All Results", "Most Recent", "Highest Confidence",
@@ -351,7 +383,7 @@ function closingHarness(answer, { acc = [], extra = {}, gate = null } = {}) {
     return res === "fail" ? { ok: false, status: 500, text: async () => "timeout", json: async () => ({}) } : { ok: true, json: async () => res };
   };
   const T = loadScripts(["app.js", "js/metrics.js", "tests/fixtures/shrink-k-identity.js", "js/shrink.js", "js/ui.js", "js/shell.js", "js/data.js", "js/pages/track.js", "js/boot.js"], { page: "track", globals: {
-    console: { ...console, error() {}, warn: (m) => st.warns.push(String(m)) }, location: { search: "?n=1000", href: "http://localhost/track-record.html?n=1000" }, fetch, ...extra } });
+    console: { ...console, error() {}, warn: (m) => st.warns.push(String(m)) }, location: { search: "?view=all&n=1000", href: "http://localhost/track-record.html?view=all&n=1000" }, fetch, ...extra } });
   return { T, st };
 }
 const ids130 = Array.from({ length: 130 }, (_, i) => 1000 + i);
@@ -435,7 +467,7 @@ test("fill-in redraws only the table card; row order, URL state and the cached d
   let open; const gate = new Promise((r) => { open = r; });
   const acc = [A({ sport: "cfb", game_pk: 91, game_date: dayOff(-1) }), A({ sport: "cfb", game_pk: 92, game_date: dayOff(-2) }), A({ sport: "cfb", game_pk: 93, game_date: dayOff(-3) })];
   const { T } = closingHarness((ids) => ids.map((id) => ({ game_pk: id, side: "away", close_dec: 3 })), { acc, gate,
-    extra: { document: D.doc, location: { search: "?market=moneyline&sort=conf", href: "http://localhost/track-record.html?market=moneyline&sort=conf" }, history: { replaceState: (a, b, u) => urls.push(u) } } });
+    extra: { document: D.doc, location: { search: "?view=all&market=moneyline&sort=conf", href: "http://localhost/track-record.html?view=all&market=moneyline&sort=conf" }, history: { replaceState: (a, b, u) => urls.push(u) } } });
   await T.buildTrackPage();
   const before = [...tbodyOf(T.trackCurrentModelHtml()).matchAll(/<tr data-href="[^"]*game=(\d+)"/g)].map((m) => m[1]);
   open(); await T.trackClosingSettled();
@@ -580,7 +612,7 @@ function selectHarness(handler, { acc = [A({ sport: "cfb", game_pk: 71, game_dat
     return { ok: true, json: async () => [] };
   };
   const T = loadScripts(["app.js", "js/metrics.js", "tests/fixtures/shrink-k-identity.js", "js/shrink.js", "js/ui.js", "js/shell.js", "js/data.js", "js/pages/track.js", "js/boot.js"], { page: "track", globals: {
-    console: { ...console, error() {}, warn: (m) => st.warns.push(String(m)) }, location: { search: "", href: "http://localhost/track-record.html" }, fetch } });
+    console: { ...console, error() {}, warn: (m) => st.warns.push(String(m)) }, location: { search: "?view=all", href: "http://localhost/track-record.html?view=all" }, fetch } });
   return { T, st };
 }
 const COLUMN_400 = { ok: false, status: 400, text: async () => '{"code":"42703","message":"column prediction_accuracy.spread_pick_prob does not exist"}', json: async () => ({}) };
@@ -643,9 +675,9 @@ test("pagination: 25 rows at a time with Show more; the shown count lives in the
   assert.equal((tbody.match(/<tr /g) || []).length, 25);
   assert.match(html, /data-trk-more[^>]*>Show more/);
   assert.match(html, /Showing 25 of 60/);
-  const more = await populated({ acc: many, search: "?n=50" }).T.buildTrackPage();
+  const more = await populated({ acc: many, search: "?view=all&n=50" }).T.buildTrackPage();
   assert.equal((more.slice(more.indexOf("<tbody>"), more.indexOf("</tbody>")).match(/<tr /g) || []).length, 50);
-  const all = await populated({ acc: many, search: "?n=75" }).T.buildTrackPage();
+  const all = await populated({ acc: many, search: "?view=all&n=75" }).T.buildTrackPage();
   assert.ok(!/data-trk-more/.test(all), "everything shown: no button");
 });
 
@@ -677,7 +709,7 @@ test("every card is isolated: a card handed unusable data renders the placeholde
 test("+EV view: URL view=ev renders the legacy profit tracker and +EV sections instead of the model cards, without throwing on empty sources", async () => {
   const { T, requested } = populated({ search: "?view=ev" });
   const html = await T.buildTrackPage();
-  assert.ok(html.includes("Model picks") && html.includes("+EV picks"));
+  assert.ok(html.includes("Recommended leans") && html.includes("+EV picks"));
   assert.ok(html.includes("+EV profit tracker") && html.includes("Graded parlays") && html.includes("+EV pick performance"));
   assert.ok(!html.includes("OVERALL RECORD") && !html.includes("Cumulative Prediction Performance"));
   assert.ok(requested.some((r) => r.startsWith("ev_pnl_daily")) && requested.some((r) => r.startsWith("ev_results")));
@@ -692,8 +724,8 @@ test("model view keeps the model-picks profit tracker (prediction_pnl_daily) bel
 
 test("state survives the 5-minute re-render: a second buildTrackPage keeps the URL / in-memory state", async () => {
   const { T } = populated({ search: "?range=30d&league=cfb&seg=league&chart=cfb" });
-  const a = await T.buildTrackPage(), b = await T.buildTrackPage();
-  assert.equal(a, b);
+  const a = await T.buildTrackPage(), b = await T.buildTrackPage(), ids = (h) => h.replace(/pnlg\d+/g, "pnlg");   // the profit chart's gradient id counts up per render
+  assert.equal(ids(a), ids(b));
   assert.match(a, /class="ca-pill on" data-pill="trk-range" data-key="30d"/);
   assert.match(a, /class="ca-pill on" data-pill="trk-seg" data-key="league"/);
   assert.match(a, /class="ca-pill on" data-pill="trk-chart" data-key="cfb"/);
@@ -760,7 +792,8 @@ const hit = (map) => ({ target: { closest: (sel) => map[sel] || null, matches: (
 
 test("interaction: range, archive, filters, Show more and the URL (non-default values only)", async () => {
   const D = fakeTrackDoc(), urls = [];
-  const many = Array.from({ length: 20 }, (_, i) => A({ sport: "cfb", game_pk: 700 + i, game_date: dayOff(-1 - (i % 5)) }));
+  // 30 games: under the identity k every spread and total is a lean, so the record view has 60 rows (the moneylines are left out)
+  const many = Array.from({ length: 30 }, (_, i) => A({ sport: "cfb", game_pk: 700 + i, game_date: dayOff(-1 - (i % 5)) }));
   const T2 = loadScripts(["app.js", "js/metrics.js", "tests/fixtures/shrink-k-identity.js", "js/shrink.js", "js/ui.js", "js/shell.js", "js/data.js", "js/pages/track.js", "js/boot.js"], { page: "track", globals: {
     document: D.doc, location: { search: "", href: "http://localhost/track-record.html" }, history: { replaceState: (a, b, u) => urls.push(u) },
     fetch: async (url) => { const { path } = urlParts(url); return { ok: true, json: async () => (path === "prediction_accuracy" ? many : path === "track_record_start" ? [] : []) }; } } });
@@ -782,6 +815,12 @@ test("interaction: range, archive, filters, Show more and the URL (non-default v
   assert.doesNotMatch(D.root.innerHTML, /archived pre-restart/);
   record("archive"); record("model");
   assert.equal(last().searchParams.has("archive"), false);
+  // the diagnostic: same cached rows (no refetch), every game incl. moneylines, its own banner; back to the record
+  record("all");
+  assert.equal(last().searchParams.get("view"), "all"); assert.match(D.root.innerHTML, /Diagnostic: the model's raw side on every game/);
+  assert.match(D.root.innerHTML, /Showing 25 of 90/, "every game: 30 moneylines + 30 spreads + 30 totals");
+  D.handlers.click(hit({ "[data-trk-record-back]": {} }));
+  assert.equal(last().searchParams.has("view"), false); assert.match(D.root.innerHTML, /Showing 25 of 60/, "the record: the 60 leans");
   D.handlers.click(hit({ "[data-pill]": { dataset: { pill: "trk-range", key: "all" } } }));
   assert.equal(last().search, "", "everything back to default: a clean URL");
   // a select change redraws the filters + table cards only and resets the page size
@@ -832,29 +871,32 @@ test("CSS contract: every ca-* class the +EV and Track Record filter bars emit e
   assert.ok(!/\.ca-ev-f[ {.]|\.ca-ev-search|\.ca-ev-cap/.test(css), "no dead CSS for the renamed shared classes");
 });
 
-test("Overall Record: the (i) tooltip says what the record combines AND carries the NFL restart note; no caption line, no header note", async () => {
-  const { T } = populated();
+test("Overall Record: the (i) tooltip says what the record counts AND carries the restart note; no caption line, no header note", async () => {
+  const { T } = populated({ search: "" });
   const html = await T.buildTrackPage();
   const card = html.slice(html.indexOf("OVERALL RECORD") - 120, html.indexOf("ACCURACY VS CLOSING LINE"));
-  assert.match(card, /<span class="ca-info" title="Combines moneyline winner picks with spread and total picks graded against the line\. NFL record restarted with the ML v2 model on [A-Z][a-z]{2} \d{1,2}, \d{4}; earlier NFL results are archived for comparison\."/);
+  assert.match(card, /<span class="ca-info" title="Only the spread and total leans the site showed \(the model.{1,5}s number after the shrink[^"]*Moneylines and other bets are tracked under \+EV picks\. The record restarted on [A-Z][a-z]{2} \d{1,2}, \d{4}; earlier results are in the archive\."/);
+  const diag = await populated().T.buildTrackPage();
+  assert.match(diag, /class="ca-info" title="Diagnostic: the model.{1,5}s raw side on every game[^"]*No lean\. The record restarted on/);
   assert.match(card, /class="ca-stat-label"[^>]*><span class="ca-stat-lt">OVERALL RECORD<\/span><span class="ca-info"/, "the (i) sits right next to the label");
   assert.ok(!card.includes("Moneyline winners + spread / total picks vs the line"), "the caption line moved into the tooltip");
   assert.ok(!html.includes("ca-trk-note") && !/ca-trk-sub/.test(html), "the restart-note line and the toggle row are gone from the page");
   assert.ok(!/ca-trk-arch|data-trk-archive|data-pill="trk-view"/.test(html), "no Archive pill and no Model / +EV toggle");
   const none = loadScripts(["app.js", "js/metrics.js", "tests/fixtures/shrink-k-identity.js", "js/shrink.js", "js/ui.js", "js/shell.js", "js/data.js", "js/pages/track.js", "js/boot.js"], { page: "track", globals: { fetch: async (u) => ({ ok: true, json: async () => (String(u).includes("prediction_accuracy") ? [A({ sport: "cfb", game_pk: 1, game_date: dayOff(-1) })] : []) } ) } });
-  assert.match(await none.buildTrackPage(), /title="Combines moneyline winner picks[^"]*NFL predictions switched to the ML model on Sep 28, 2026/, "no restart row: the fallback wording");
+  assert.match(await none.buildTrackPage(), /title="Only the spread and total leans[^"]*under \+EV picks\."/, "no restart row: no restart note");
   assert.ok(!fs.readFileSync(new URL("../js/pages/track.js", import.meta.url), "utf8").includes("__cappingAlphaChartSeries"), "dead legacy chart global removed");
 });
 
 /* ── fidelity task 4 (T1-T7) ──────────────────────────────────────────── */
 const optionsOf = (html, attr) => { const m = html.match(new RegExp(`<select class="ca-select" ${attr}="record">([\\s\\S]*?)</select>`)); return m ? [...m[1].matchAll(/<option value="([^"]*)"( selected)?>([^<]*)</g)].map((x) => [x[1], x[3], !!x[2]]) : null; };
 
-test("T2 Record select: Model picks (default) / +EV picks / NFL archive (pre-<restart day>), labelled, in the filter row, replacing the Archive pill and the toggle", async () => {
-  const html = await populated().T.buildTrackPage();
+test("T2 Record select: Recommended leans (default) / +EV picks / Every game (diagnostic) / Archive (before <restart day>), labelled, in the filter row", async () => {
+  const html = await populated({ search: "" }).T.buildTrackPage();
   const opts = optionsOf(html, "data-trk-record");
   assert.ok(opts, "a Record select exists");
-  assert.deepEqual(opts.map((o) => o.slice(0, 2)), [["model", "Model picks"], ["ev", "+EV picks"], ["archive", `NFL archive (pre-${new Date(`${dayOff(-5)}T12:00:00Z`).toLocaleDateString("en-US", { timeZone: "UTC", month: "short", day: "numeric" })})`]]);
-  assert.deepEqual(opts.filter((o) => o[2]).map((o) => o[0]), ["model"], "default = Model picks");
+  assert.deepEqual(opts.map((o) => o.slice(0, 2)), [["model", "Recommended leans"], ["ev", "+EV picks"], ["all", "Every game (diagnostic)"], ["archive", `Archive (before ${new Date(`${dayOff(-5)}T12:00:00Z`).toLocaleDateString("en-US", { timeZone: "UTC", month: "short", day: "numeric" })})`]]);
+  assert.deepEqual(opts.filter((o) => o[2]).map((o) => o[0]), ["model"], "default = Recommended leans");
+  assert.deepEqual(optionsOf(await populated().T.buildTrackPage(), "data-trk-record").filter((o) => o[2]).map((o) => o[0]), ["all"], "?view=all selects the diagnostic");
   const bar = html.slice(html.indexOf('id="trk-filters"'), html.indexOf('id="trk-search"'));
   assert.match(bar, /<label class="ca-f "><span>Record<\/span><select class="ca-select" data-trk-record="record">/, "labelled Record, inside the filter card");
   const labels = [...bar.matchAll(/<label class="ca-f[^"]*"><span>(.*?)<\/span>/g)].map((m) => m[1].replace(/<[^>]*>/g, ""));
@@ -865,7 +907,9 @@ test("T2 Record select: Model picks (default) / +EV picks / NFL archive (pre-<re
   assert.deepEqual(ev.filter((o) => o[2]).map((o) => o[0]), ["ev"], "?view=ev selects +EV picks (the +EV view has no filter row: the Record select stands alone under the title)");
   assert.ok((await populated({ search: "?view=ev" }).T.buildTrackPage()).includes('id="trk-recordbar"'));
   const noStart = optionsOf(await populated({ starts: [] }).T.buildTrackPage(), "data-trk-record");
-  assert.equal(noStart[2][1], "NFL archive", "no restart row: no date to quote");
+  assert.equal(noStart[3][1], "Archive (pre-restart)", "no restart row: no date to quote");
+  const split = optionsOf(await populated({ starts: [{ sport: "nfl", starts_at: `${dayOff(-5)}T12:00:00+00:00` }, { sport: "cfb", starts_at: `${dayOff(-3)}T12:00:00+00:00` }] }).T.buildTrackPage(), "data-trk-record");
+  assert.equal(split[3][1], "Archive (pre-restart)", "leagues restarted on different days: no single date to quote");
   const failed = loud(), err = await populated({ fail: ["track_record_start"], quiet: failed.console }).T.buildTrackPage();
   assert.ok(optionsOf(err, "data-trk-record") && err.includes('id="trk-error"'), "a failed load still offers the Record select");
 });
@@ -879,7 +923,7 @@ test("T2 Record select: switching source keeps all three data paths (model rows,
 
 test("T1 header: title and subtitle inline, range pills + date range on the right, nothing else", async () => {
   const html = await populated().T.buildTrackPage();
-  const row = html.slice(html.indexOf('class="ca-title-row"'), html.indexOf('class="ca-stats'));
+  const row = html.slice(html.indexOf('class="ca-title-row"'), html.indexOf('class="ca-trk-banner'));
   assert.match(row, /<div class="ca-title"><h1>Track Record<\/h1><p>Prediction performance across leagues and markets\.<\/p><\/div>/);
   const right = row.slice(row.indexOf('class="ca-title-right"'));
   assert.deepEqual([...right.matchAll(/data-key="([^"]+)"/g)].map((m) => m[1]), ["7d", "30d", "season", "all"]);
@@ -936,7 +980,7 @@ test("T7 results table: exact column list, Result chip, row height content; one 
 test("T7 filter row: the search card is its own card, redrawn on reset (clears the box); the Record select does not use the League/Market data attribute", async () => {
   const D = fakeTrackDoc(), urls = [];
   const T2 = loadScripts(["app.js", "js/metrics.js", "tests/fixtures/shrink-k-identity.js", "js/shrink.js", "js/ui.js", "js/shell.js", "js/data.js", "js/pages/track.js", "js/boot.js"], { page: "track", globals: {
-    document: D.doc, location: { search: "?q=lions", href: "http://localhost/track-record.html?q=lions" }, history: { replaceState: (a, b, u) => urls.push(u) },
+    document: D.doc, location: { search: "?view=all&q=lions", href: "http://localhost/track-record.html?view=all&q=lions" }, history: { replaceState: (a, b, u) => urls.push(u) },
     fetch: async (url) => ({ ok: true, json: async () => (urlParts(url).path === "prediction_accuracy" ? [A({ sport: "cfb", game_pk: 1, game_date: dayOff(-1) })] : []) }) } });
   const html = await T2.buildTrackPage();
   assert.ok(html.includes('value="lions"'), "the URL's search text fills the search card");
@@ -990,4 +1034,36 @@ test("T8: filter row is one line from a ~1331px container (F7), wraps below; sea
   assert.match(block, /\.ca-trk \.ca-f \.ca-select\{[^}]*text-overflow:ellipsis/, "long selected options ellipsise inside the closed select");
   assert.ok(!/11\.5px/.test(block), "the 12px font floor holds in the one-line band");
   assert.match(css, /@media \(max-width:1500px\)\{\.ca-trk \.ca-sfind\{padding-left:10px;padding-right:10px\}\.ca-trk \.ca-sfind \.ca-search\{padding:0 6px\}\}/, "Track search card side padding is tightened (scoped to .ca-trk so +EV is unchanged)");
+});
+
+/* ── the published record = what the site recommended ─────────────────── */
+test("record view (default): only the shrunk spread / total leans; no moneylines, no No-lean games; profit at -110; average edge", async () => {
+  // mixed k: NFL 0 (the shrink lands on the line -> never a lean), CFB 0.5
+  const acc = [
+    A({ sport: "cfb", game_pk: 901, game_date: dayOff(-1), home_team_name: "Texas", away_team_name: "Oklahoma", pred_margin: 8, market_spread: -3.5, spread_pick_correct: true, pred_total: 60.5, market_total: 54.5, total_pick_correct: false }),
+    A({ sport: "cfb", game_pk: 902, game_date: dayOff(-2), home_team_name: "Ohio State", away_team_name: "Oregon", pred_margin: 3.5, market_spread: -3.5, spread_pick_correct: true, pred_total: 50.5, market_total: 50.5, total_pick_correct: null }),
+    A({ sport: "nfl", game_pk: 903, game_date: dayOff(-1), home_team_name: "Kansas City Chiefs", away_team_name: "Detroit Lions", pred_margin: 10, market_spread: -1.5, pred_total: 60, market_total: 46.5 }),
+  ];
+  const html = await populated({ search: "", acc, starts: [], kFile: "tests/fixtures/shrink-k-mixed.js" }).T.buildTrackPage();
+  const tbody = html.slice(html.indexOf("<tbody>"), html.indexOf("</tbody>"));
+  // Texas: spread 8 vs 3.5 -> 5.75 (6.0 at the half point) -> lean home; total 60.5 vs 54.5 -> 57.5 -> lean over. Ohio State: on the number -> no lean. NFL: k 0 -> no lean.
+  assert.equal((tbody.match(/<tr /g) || []).length, 2, "the two Texas leans only");
+  assert.ok(tbody.includes("Texas"));
+  assert.ok(!tbody.includes("Ohio State") && !tbody.includes("Chiefs") && !/>Moneyline</.test(tbody), "no No-lean game, no NFL, no moneyline");
+  assert.match(html, /The record counts only what the site recommended/);
+  assert.match(html, /AVERAGE EDGE[\s\S]*?2\.8 pts/, "spread 5.75 -> 6.0 vs 3.5 = 2.5, total 57.5 vs 54.5 = 3.0; mean 2.75");
+  const profit = html.slice(html.indexOf('id="trk-profit"'));
+  assert.ok(profit.includes("at −110") && profit.includes("SPREAD") && profit.includes("TOTAL") && !profit.includes("MONEYLINE"), "the leans' profit tracker, not every model pick");
+  // nothing recommended in range: the empty message says why
+  const none = await populated({ search: "", acc: [acc[2]], starts: [], kFile: "tests/fixtures/shrink-k-mixed.js" }).T.buildTrackPage();
+  assert.match(none, /No graded leans in this range yet\. Most games show No lean after the shrink/);
+  // the same rows in the diagnostic: every graded market of all three games
+  const diag = await populated({ search: "?view=all", acc, starts: [], kFile: "tests/fixtures/shrink-k-mixed.js" }).T.buildTrackPage();
+  assert.ok(diag.includes("Ohio State") && diag.includes("Chiefs") && diag.includes("MONEYLINE"));
+});
+
+test("view=all round-trips through the URL; an unknown view falls back to the record", () => {
+  assert.equal(g.trackParse("?view=all").view, "all");
+  assert.equal(g.trackQuery(g.trackParse("?view=all")), "view=all");
+  assert.equal(g.trackParse("?view=zzz").view, "model");
 });

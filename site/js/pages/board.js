@@ -353,10 +353,12 @@ function boardFinalCell(g) {
   const t = (name, n, win) => `<span${win ? ` class="ca-bd-win"` : ""}>${boardAbbr(name, g.sport)} ${n}</span>`;
   return `<td class="ca-bd-final" title="${ctxEsc(`${g.away} ${sc.away}, ${g.home} ${sc.home}`)}">${t(g.away, sc.away, sc.away > sc.home)}${t(g.home, sc.home, sc.home > sc.away)}</td>`;
 }
-// One graded market's pick + W / L / P chip ("—" when the model made no pick, e.g. no market line).
+// One graded market's pick + W / L / P chip ("—" when the model made no pick, e.g. no market line). Spread / total chips only for the leans the
+// site showed (trackRows' rec, after the shrink); a graded side that was not a lean reads "No lean", like the game page.
 function boardResultCell(m, tr, g, cls = "") {
   const r = tr && tr[m];
   if (!r) return `<td data-m="${m}" class="ca-bd-res${cls}">${boardDash}</td>`;
+  if (m !== "moneyline" && !r.rec) return `<td data-m="${m}" class="ca-bd-res${cls}"><span class="muted" title="The model's number after the shrink was not a lean against this line">No lean</span></td>`;
   const pick = m === "total" ? (r.pick === "Over" ? "O" : "U") : ctxEsc(teamShort(r.pick, g.sport));
   const word = { W: "won", L: "lost", P: "pushed" }[r.result];
   const what = m === "total" ? `${r.pick} ${r.closing != null ? (+r.closing).toFixed(1) : ""}`.trim() : m === "spread" ? `${teamShort(r.pick, g.sport)} ${r.closing != null ? lineStr(r.closing) : ""}`.trim() : `${teamShort(r.pick, g.sport)} ML`;
