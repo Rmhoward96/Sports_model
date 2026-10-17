@@ -97,9 +97,9 @@ def _close_league(league: str, markets: set[str], now: datetime, deps: Deps, run
     cost = parsed if parsed is not None else len(api_markets)
     out["credits"] += cost                                             # count it the moment it is spent
     events, closes = _close_rows(response, league, markets, now)
-    out["closes"] += len(closes)
     out["leagues"][league] = {"events": len(events), "closes": len(closes), "credits": cost}
     if dry_run:
+        out["closes"] += len(closes)
         for c in closes:
             print(f"[take-close] DRY RUN would store close: {league} {c['event_id']} {c['market']} "
                   f"{c['minutes_to_start']:.1f} min to start", flush=True)
@@ -110,6 +110,7 @@ def _close_league(league: str, markets: set[str], now: datetime, deps: Deps, run
     priced = any(b.get("key") == C.REFERENCE for e in response for b in e.get("bookmakers") or [])
     missing = [] if priced else [C.REFERENCE]
     deps.log_call("close", league, "odds", cost, parse_credits(deps.remaining()), missing, run_id)
+    out["closes"] += len(closes)                                       # counted only once stored
 
 
 def run_close(now: datetime, deps: Deps, *, run_id: str = "local", dry_run: bool = False) -> dict:
@@ -142,7 +143,7 @@ def run_close(now: datetime, deps: Deps, *, run_id: str = "local", dry_run: bool
             _close_league(league, targets[league], now, deps, run_id, dry_run, out)
         except Exception as exc:  # noqa: BLE001 -- a failed league is not retried; the next run is 10 minutes away
             _warn(f"{league} close failed: {type(exc).__name__}: {exc}")
-            out["leagues"].setdefault(league, {"failed": f"{type(exc).__name__}: {exc}"[:200]})
+            out["leagues"][league] = {"failed": f"{type(exc).__name__}: {exc}"[:200]}   # also after a paid call: a write failure is a failure
     out["remaining"] = deps.remaining()
     return out
 

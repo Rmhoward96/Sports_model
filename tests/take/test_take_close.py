@@ -35,12 +35,13 @@ def started_pick(**over):
 
 
 class Rec:
-    def __init__(self, *, remaining="5000", cost="1", tables=(), ungraded=(), targets=None, odds=None, fail=()):
+    def __init__(self, *, remaining="5000", cost="1", tables=(), ungraded=(), targets=None, odds=None, fail=(), fail_write=()):
         self.order, self.args = [], {}
         self.results, self.closes, self.events_up = [], [], []
         self.remaining_value, self.cost, self.tables = remaining, cost, list(tables)
         self.ungraded, self.targets = list(ungraded), targets if targets is not None else {}
         self.odds, self.fail = odds if odds is not None else {}, set(fail)
+        self.fail_write = set(fail_write)
 
     def n(self, name):
         return self.order.count(name)
@@ -63,6 +64,8 @@ class Rec:
 
         def upsert_closes(rows):
             self._note("upsert_closes", rows)
+            if "upsert_closes" in self.fail_write:
+                raise RuntimeError("db down")
             self.closes += rows
             return len(rows)
 
@@ -168,10 +171,27 @@ def test_close_one_failing_league_warns_and_the_next_goes_on(capsys):
     assert "::warning::take-close: nhl close failed" in capsys.readouterr().out
 
 
+def test_close_write_failure_after_the_paid_call_is_a_failed_league_but_keeps_the_credits(capsys):
+    f = Rec(targets={"nhl": {"total"}}, odds={"nhl": [pin_event()]}, fail_write={"upsert_closes"})
+    out = run_close(NOW, f.deps())
+    assert set(out["leagues"]["nhl"]) == {"failed"} and out["credits"] == 1
+    assert "::warning::take-close: nhl close failed" in capsys.readouterr().out
+
+
 def test_close_missing_tables_warn_and_do_nothing(capsys):
     f = Rec(tables=["take_closes"])
     assert run_close(NOW, f.deps())["status"] == "no_table" and f.order == []
     assert "migration_take_these.sql" in capsys.readouterr().out
+
+
+def test_main_exits_1_when_every_attempted_league_fails_on_a_write(monkeypatch):
+    monkeypatch.setenv("DATABASE_URL", "x")
+    monkeypatch.setenv("ODDS_API_KEY", "y")
+    monkeypatch.setattr(take_close, "_now", lambda: NOW)
+    monkeypatch.setattr(take_close, "writes_disabled", lambda: False)
+    monkeypatch.setattr(take_close, "_db_deps",
+                        lambda: Rec(targets={"nhl": {"total"}}, odds={"nhl": [pin_event()]}, fail_write={"upsert_closes"}).deps())
+    assert take_close.main([]) == 1
 
 
 def test_main_exit_codes(monkeypatch):

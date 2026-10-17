@@ -65,10 +65,10 @@ DROP_STATE_SQL = (
     "WHERE active AND league = %s AND event_id = ANY(%s) AND NOT EXISTS ("
     "SELECT 1 FROM unnest(%s::text[], %s::text[], %s::text[]) AS k(e, m, s) "
     "WHERE k.e = take_pick_state.event_id AND k.m = take_pick_state.market AND k.s = take_pick_state.side)")
-# Games the API stopped listing: active rows of the league whose event has started are over, whatever the pull saw.
+# A pick on a game that has started is over, whatever the pull saw (or whether the league was pulled at all).
 EXPIRE_STATE_SQL = (
     "UPDATE take_pick_state s SET active = false, dropped_at = e.commence_time FROM take_events e "
-    "WHERE e.event_id = s.event_id AND s.active AND s.league = %s AND e.commence_time <= %s")
+    "WHERE e.event_id = s.event_id AND s.active AND e.commence_time <= %s")
 UPSERT_CLOSES_SQL = (
     _insert("take_closes", CLOSE_COLUMNS) + " ON CONFLICT (event_id, market) DO UPDATE SET "
     + _set_excluded(CLOSE_COLUMNS, ("event_id", "market"))
@@ -170,8 +170,8 @@ def sync_state(league: str, event_ids: list[str], picks: list[dict], pulled_at: 
                connect_timeout: int | None = db.LEDGER_CONNECT_TIMEOUT,
                statement_timeout_ms: int | None = db.LEDGER_STATEMENT_TIMEOUT_MS) -> None:
     """Make take_pick_state match this pull: upsert every pick as active (keeping first_seen), then deactivate
-    the league's active rows for the pulled `event_ids` whose key is not among `picks`, and the league's active rows
-    whose event has started by `pulled_at` (covers games the API stopped listing)."""
+    the league's active rows for the pulled `event_ids` whose key is not among `picks`. Games that have started are
+    ended separately, for every league, by `expire_started`."""
     if not picks and not event_ids:
         return
     with db._pg(connect_timeout) as conn, conn.cursor() as cur:
@@ -180,8 +180,19 @@ def sync_state(league: str, event_ids: list[str], picks: list[dict], pulled_at: 
             cur.executemany(UPSERT_STATE_SQL, [_state_tuple(p, pulled_at) for p in picks])
         cur.execute(DROP_STATE_SQL, (pulled_at, league, list(event_ids), [p["event_id"] for p in picks],
                                      [p["market"] for p in picks], [p["side"] for p in picks]))
-        cur.execute(EXPIRE_STATE_SQL, (league, pulled_at))
         conn.commit()
+
+
+def expire_started(now: datetime, *, connect_timeout: int | None = db.LEDGER_CONNECT_TIMEOUT,
+                   statement_timeout_ms: int | None = db.LEDGER_STATEMENT_TIMEOUT_MS) -> int:
+    """End every active pick (any league) whose event has started by `now`: active=false, dropped_at=commence_time.
+    Independent of the odds pull, so a skipped or floor-stopped league still expires. Returns the rows ended."""
+    with db._pg(connect_timeout) as conn, conn.cursor() as cur:
+        db._limit_statements(cur, statement_timeout_ms)
+        cur.execute(EXPIRE_STATE_SQL, (now,))
+        ended = cur.rowcount
+        conn.commit()
+    return ended
 
 
 def log_call(job: str, league: str | None, endpoint: str | None, credits_used: int | None,

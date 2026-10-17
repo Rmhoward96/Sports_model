@@ -39,13 +39,14 @@ class Rec:
     """Fake Deps that record every call in order."""
 
     def __init__(self, *, events=None, odds=None, remaining="5000", cost="3", tables=(), sports=None,
-                 pks=None, fail_odds=()):
+                 pks=None, fail_odds=(), fail_write=()):
         self.order, self.args, self.writes = [], {}, {}
         self.events = events if events is not None else {lg: [EVENT] for lg in constants.LEAGUES}
         self.odds = odds if odds is not None else {lg: NFL for lg in constants.LEAGUES}
         self.remaining_value, self.cost, self.tables, self.fail_odds = remaining, cost, list(tables), set(fail_odds)
         self.sports = sports if sports is not None else [{"key": k} for k in constants.LEAGUES.values()]
         self.pks = pks or {}
+        self.fail_write = set(fail_write)
 
     def n(self, name):
         return sum(1 for o in self.order if o == name)
@@ -78,6 +79,8 @@ class Rec:
         def writer(name):
             def write(*a, **k):
                 self._note(name, *a, **k)
+                if name in self.fail_write:
+                    raise RuntimeError("db down")
                 return len(a[0]) if a and isinstance(a[0], list) else 0
             return write
 
@@ -86,7 +89,7 @@ class Rec:
             fetch_sports=fetch_sports, remaining=lambda: self.remaining_value, last_cost=lambda: self.cost,
             match_game_pks=match, upsert_events=writer("upsert_events"), insert_prices=writer("insert_prices"),
             insert_picks=writer("insert_picks"), sync_state=writer("sync_state"), prune_prices=writer("prune_prices"),
-            log_call=writer("log_call"))
+            log_call=writer("log_call"), expire_started=writer("expire_started"))
 
 
 def test_pull_skips_league_with_no_events_and_spends_nothing():
@@ -161,9 +164,40 @@ def test_credits_are_the_sum_of_each_leagues_last_cost():
 def test_pull_dry_run_writes_nothing():
     f = Rec(odds={"nfl": with_edge()})
     out = run_pull(NOW, f.deps(), dry_run=True, leagues=("nfl",))
-    for w in ("upsert_events", "insert_prices", "insert_picks", "sync_state", "log_call", "prune_prices"):
+    for w in ("upsert_events", "insert_prices", "insert_picks", "sync_state", "log_call", "prune_prices",
+              "expire_started"):
         assert f.n(w) == 0, w
     assert out["picks"] == 1 and len(out["would_write"]) == 1 and f.n("fetch_odds") == 1
+
+
+def test_expiry_runs_once_after_the_loop_even_when_every_league_is_skipped():
+    f = Rec(events={lg: [] for lg in constants.LEAGUES})
+    out = run_pull(NOW, f.deps())
+    assert f.n("fetch_odds") == 0 and len(out["skipped"]) == 8
+    assert f.n("expire_started") == 1 and f.args["expire_started"][0] == ((NOW,), {})
+
+
+def test_expiry_runs_when_the_floor_stops_the_pull_and_when_a_league_fails():
+    f = Rec(remaining="1499")
+    run_pull(NOW, f.deps(), leagues=("nfl", "nba"))
+    assert f.n("fetch_odds") == 0 and f.n("expire_started") == 1
+    f = Rec(fail_odds={"nfl"})
+    run_pull(NOW, f.deps(), leagues=("nfl",))
+    assert f.n("expire_started") == 1
+
+
+def test_expiry_failure_only_warns(capsys):
+    f = Rec(fail_write={"expire_started"})
+    out = run_pull(NOW, f.deps(), leagues=("nfl",))
+    assert "::warning::take-pull: expiring started picks failed" in capsys.readouterr().out
+    assert "events" in out["leagues"]["nfl"]
+
+
+def test_write_failure_after_the_paid_call_is_a_failed_league_but_keeps_the_credits(capsys):
+    f = Rec(fail_write={"insert_prices"})
+    out = run_pull(NOW, f.deps(), leagues=("nfl",))
+    assert set(out["leagues"]["nfl"]) == {"failed"} and out["credits"] == 3
+    assert "::warning::take-pull: nfl pull failed" in capsys.readouterr().out
 
 
 def test_dry_run_reports_unknown_sport_keys(capsys):
@@ -224,6 +258,17 @@ def test_main_exit_codes(monkeypatch):
     assert take_pull.main(["--dry-run", "--league", "nfl"]) == 0
     monkeypatch.setattr(take_pull, "_db_deps", lambda: Rec(tables=["take_events"]).deps())
     assert take_pull.main([]) == 0                                        # missing tables: warn, exit 0
+
+
+def test_main_exits_1_when_every_attempted_league_fails_on_a_write(monkeypatch):
+    monkeypatch.setenv("DATABASE_URL", "x")
+    monkeypatch.setenv("ODDS_API_KEY", "y")
+    monkeypatch.setattr(take_pull, "_now", lambda: NOW)
+    monkeypatch.setattr(take_pull, "writes_disabled", lambda: False)
+    monkeypatch.setattr(take_pull, "_db_deps", lambda: Rec(fail_write={"upsert_events"}).deps())
+    assert take_pull.main(["--league", "nfl", "--league", "nba"]) == 1
+    monkeypatch.setattr(take_pull, "_db_deps", lambda: Rec(fail_write={"upsert_events"}, events={"nba": []}).deps())
+    assert take_pull.main(["--league", "nba"]) == 0                       # skipped leagues are not attempts
 
 
 def test_main_scheduled_respects_the_cadence(monkeypatch):

@@ -10,8 +10,8 @@ Every 2 hours (12:00-04:00 UTC; cadence = repo variable TAKE_PULL_EVERY_HOURS), 
      h2h, spreads, totals: 3 credits a league, 24 per full pull, about 12 pulls a day. Credit math: spec section 4.
   4. The prices are parsed and the pick engine (sportsmodel.take.picks) runs against Pinnacle's de-vigged fair.
   5. Writes, in this order: take_events (with game_pk for nfl/cfb/mlb), take_prices, take_picks (append-only),
-     take_pick_state, then one take_api_calls row with the credits used and remaining. Raw prices older than 7 days are
-     pruned after the last league.
+     take_pick_state, then one take_api_calls row with the credits used and remaining. After the last league (skipped
+     and failed leagues included) picks on games that have started are ended and raw prices older than 7 days pruned.
 
 A failure in one league warns and moves on; nothing is retried (the next pull is hours away). The run exits 1 only when
 every league it attempted failed. Missing tables: warn and exit 0. After each league it prints which of the 8 requested
@@ -65,6 +65,7 @@ class Deps:
     sync_state: Callable[[str, list[str], list[dict], datetime], None]
     prune_prices: Callable[[datetime], int]
     log_call: Callable[..., None]
+    expire_started: Callable[[datetime], int]                          # ends active picks whose game has started (all leagues)
 
 
 def _warn(msg: str) -> None:
@@ -142,8 +143,8 @@ def _pull_league(league: str, now: datetime, deps: Deps, run_id: str, dry_run: b
     print(f"[take-pull] {league} books seen: {seen}; missing: {missing}", flush=True)   # dry run too: the go-live check
     out["leagues"][league] = {"events": len(events), "prices": len(prices), "picks": len(picks), "credits": cost,
                               "books_missing": missing}
-    out["picks"] += len(picks)
     if dry_run:
+        out["picks"] += len(picks)
         out["would_write"] += picks
         return "ok"
     pks = deps.match_game_pks(league, events)
@@ -152,6 +153,7 @@ def _pull_league(league: str, now: datetime, deps: Deps, run_id: str, dry_run: b
     deps.insert_picks(picks, run_id)
     deps.sync_state(league, [e["event_id"] for e in events], picks, now)
     deps.log_call("pull", league, "odds", cost, parse_credits(deps.remaining()), missing, run_id)
+    out["picks"] += len(picks)                                         # counted only once stored
     return "ok"
 
 
@@ -171,11 +173,16 @@ def run_pull(now: datetime, deps: Deps, *, run_id: str = "local", dry_run: bool 
             state = _pull_league(league, now, deps, run_id, dry_run, out)
         except Exception as exc:  # noqa: BLE001 -- a failed league is not retried; the next league and pull go on
             _warn(f"{league} pull failed: {type(exc).__name__}: {exc}")
-            out["leagues"].setdefault(league, {"failed": f"{type(exc).__name__}: {exc}"[:200]})
+            out["leagues"][league] = {"failed": f"{type(exc).__name__}: {exc}"[:200]}   # also after a paid call: a write failure is a failure
             continue
         if state == "floor":
             out["skipped"] += list(leagues[i:])
             break
+    if not dry_run:
+        try:
+            out["expired"] = deps.expire_started(now)          # independent of the pull: skipped and floor-stopped leagues too
+        except Exception as exc:  # noqa: BLE001 -- housekeeping must not fail the run
+            _warn(f"expiring started picks failed: {type(exc).__name__}: {exc}")
     if not dry_run and out["leagues"]:
         try:
             out["pruned"] = deps.prune_prices(now - timedelta(days=C.PRICE_RETENTION_DAYS))
@@ -202,7 +209,8 @@ def _db_deps() -> Deps:
         insert_picks=lambda picks, run_id: store.insert_picks(picks, run_id, **timeouts),
         sync_state=lambda league, ids, picks, at: store.sync_state(league, ids, picks, at, **timeouts),
         prune_prices=lambda before: store.prune_prices(before, **timeouts),
-        log_call=lambda *a: store.log_call(*a, **timeouts))
+        log_call=lambda *a: store.log_call(*a, **timeouts),
+        expire_started=lambda now: store.expire_started(now, **timeouts))
 
 
 def main(argv: list[str] | None = None) -> int:

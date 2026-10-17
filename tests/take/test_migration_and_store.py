@@ -260,7 +260,7 @@ def test_insert_picks_is_insert_only_and_ordered_by_column(monkeypatch):
 def test_sync_state_upserts_each_pick_then_drops_the_vanished(monkeypatch):
     log, _ = _fake(monkeypatch)
     store.sync_state("nfl", ["ev1", "ev2"], [SAMPLE_PICK], NOW)
-    ups, drop, expire = _stmts(log)
+    ups, drop = _stmts(log)
     assert ups[0] == "many" and ups[1] == store.UPSERT_STATE_SQL
     (row,) = ups[2]
     assert row[store.STATE_COLUMNS.index("others")] == json.dumps(SAMPLE_PICK["others"])
@@ -268,24 +268,24 @@ def test_sync_state_upserts_each_pick_then_drops_the_vanished(monkeypatch):
     assert row[store.STATE_COLUMNS.index("first_seen")] == NOW == row[store.STATE_COLUMNS.index("last_seen")]
     assert drop[0] == "one" and drop[1] == store.DROP_STATE_SQL
     assert drop[2] == (NOW, "nfl", ["ev1", "ev2"], ["ev1"], ["spread"], ["home"])
-    assert expire[0] == "one" and expire[1] == store.EXPIRE_STATE_SQL and expire[2] == ("nfl", NOW)
-    assert log.index(("commit",)) > log.index(expire) > log.index(drop)
+    assert log.index(("commit",)) > log.index(drop)
 
 
 def test_sync_state_with_no_picks_still_drops_everything_for_the_pulled_events(monkeypatch):
     log, _ = _fake(monkeypatch)
     store.sync_state("nfl", ["ev1"], [], NOW)
-    drop, _expire = _stmts(log)
+    (drop,) = _stmts(log)
     assert drop[2] == (NOW, "nfl", ["ev1"], [], [], [])
 
 
-def test_sync_state_also_ends_active_rows_whose_game_has_started(monkeypatch):
+def test_expire_started_ends_every_leagues_started_picks(monkeypatch):
     sql = store.EXPIRE_STATE_SQL
     assert "active = false" in sql and "dropped_at = e.commence_time" in sql
-    assert "s.active" in sql and "s.league = %s" in sql and "e.commence_time <= %s" in sql
-    log, _ = _fake(monkeypatch)
-    store.sync_state("nfl", ["ev1"], [], NOW)
-    assert _stmts(log)[-1][2] == ("nfl", NOW)
+    assert "s.active" in sql and "e.commence_time <= %s" in sql and "league" not in sql
+    log, _ = _fake(monkeypatch, rowcount=4)
+    assert store.expire_started(NOW) == 4
+    (_, ran, params), = _stmts(log)
+    assert ran == store.EXPIRE_STATE_SQL and params == (NOW,) and ("commit",) in log
 
 
 def test_close_targets_groups_markets_by_league(monkeypatch):
