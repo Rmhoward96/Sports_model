@@ -1,0 +1,170 @@
+[
+  {
+    "id": "evt_nfl_1",
+    "sport_key": "americanfootball_nfl",
+    "commence_time": "2026-11-02T18:00:00Z",
+    "home_team": "Kansas City Chiefs",
+    "away_team": "Buffalo Bills",
+    "bookmakers": [
+      {
+        "key": "pinnacle",
+        "title": "Pinnacle",
+        "last_update": "2026-11-02T16:55:00Z",
+        "markets": [
+          {
+            "key": "h2h",
+            "last_update": "2026-11-02T16:55:00Z",
+            "outcomes": [
+              {
+                "name": "Kansas City Chiefs",
+                "price": -160
+              },
+              {
+                "name": "Buffalo Bills",
+                "price": 143
+              }
+            ]
+          },
+          {
+            "key": "spreads",
+            "last_update": "2026-11-02T16:55:00Z",
+            "outcomes": [
+              {
+                "name": "Kansas City Chiefs",
+                "price": -110,
+                "point": -3.0
+              },
+              {
+                "name": "Buffalo Bills",
+                "price": -110,
+                "point": 3.0
+              }
+            ]
+          },
+          {
+            "key": "totals",
+            "last_update": "2026-11-02T16:55:00Z",
+            "outcomes": [
+              {
+                "name": "Over",
+                "price": -108,
+                "point": 47.5
+              },
+              {
+                "name": "Under",
+                "price": -112,
+                "point": 47.5
+              }
+            ]
+          }
+        ]
+      },
+      {
+        "key": "draftkings",
+        "title": "DraftKings",
+        "last_update": "2026-11-02T16:57:00Z",
+        "markets": [
+          {
+            "key": "h2h",
+            "last_update": "2026-11-02T16:57:00Z",
+            "outcomes": [
+              {
+                "name": "KC Chiefs",
+                "price": -165
+              },
+              {
+                "name": "Buffalo Bills",
+                "price": 140
+              }
+            ]
+          },
+          {
+            "key": "spreads",
+            "last_update": "2026-11-02T16:57:00Z",
+            "outcomes": [
+              {
+                "name": "Kansas City Chiefs",
+                "price": -110,
+                "point": -3.5
+              },
+              {
+                "name": "Buffalo Bills",
+                "price": -110,
+                "point": 3.5
+              }
+            ]
+          },
+          {
+            "key": "totals",
+            "last_update": "2026-11-02T16:57:00Z",
+            "outcomes": [
+              {
+                "name": "Over",
+                "price": -108,
+                "point": 47.5
+              },
+              {
+                "name": "Under",
+                "price": -112,
+                "point": 47.5
+              }
+            ]
+          }
+        ]
+      },
+      {
+        "key": "fanduel",
+        "title": "FanDuel",
+        "last_update": "2026-11-02T16:58:00Z",
+        "markets": [
+          {
+            "key": "h2h",
+            "last_update": "2026-11-02T16:58:00Z",
+            "outcomes": [
+              {
+                "name": "Kansas City Chiefs",
+                "price": -170
+              },
+              {
+                "name": "Buffalo Bills",
+                "price": 145
+              }
+            ]
+          },
+          {
+            "key": "spreads",
+            "last_update": "2026-11-02T16:58:00Z",
+            "outcomes": [
+              {
+                "name": "Kansas City Chiefs",
+                "price": -110,
+                "point": -3.0
+              },
+              {
+                "name": "Buffalo Bills",
+                "price": -110,
+                "point": 3.0
+              }
+            ]
+          },
+          {
+            "key": "totals",
+            "last_update": "2026-11-02T16:58:00Z",
+            "outcomes": [
+              {
+                "name": "Over",
+                "price": -108,
+                "point": 47.5
+              },
+              {
+                "name": "Under",
+                "price": -112,
+                "point": 47.5
+              }
+            ]
+          }
+        ]
+      }
+    ]
+  }
+]

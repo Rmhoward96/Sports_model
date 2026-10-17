@@ -1,0 +1,61 @@
+[
+  {
+    "id": "evt_epl_1",
+    "sport_key": "soccer_epl",
+    "commence_time": "2026-11-07T12:30:00Z",
+    "home_team": "Arsenal",
+    "away_team": "Chelsea",
+    "bookmakers": [
+      {
+        "key": "pinnacle",
+        "title": "pinnacle",
+        "last_update": "2026-11-07T10:50:00Z",
+        "markets": [
+          {
+            "key": "h2h",
+            "last_update": "2026-11-07T10:50:00Z",
+            "outcomes": [
+              {
+                "name": "Arsenal",
+                "price": 115
+              },
+              {
+                "name": "Chelsea",
+                "price": 260
+              },
+              {
+                "name": "Draw",
+                "price": 250
+              }
+            ]
+          }
+        ]
+      },
+      {
+        "key": "fanduel",
+        "title": "fanduel",
+        "last_update": "2026-11-07T10:52:00Z",
+        "markets": [
+          {
+            "key": "h2h",
+            "last_update": "2026-11-07T10:52:00Z",
+            "outcomes": [
+              {
+                "name": "Arsenal",
+                "price": 110
+              },
+              {
+                "name": "Chelsea",
+                "price": 270
+              },
+              {
+                "name": "Draw",
+                "price": 245
+              }
+            ]
+          }
+        ]
+      }
+    ]
+  }
+]

@@ -125,6 +125,17 @@ def fetch_bookmaker_odds(cfg: "SportConfig | None", bookmakers: list[str], marke
     })
 
 
+def fetch_scores(cfg: "SportConfig | None", days_from: int = 3) -> list[dict]:
+    """Final and live scores for the sport over the last `days_from` days (billed, so a single attempt)."""
+    cfg = cfg or _mlb()
+    return _get_once(f"/sports/{cfg.odds_sport}/scores", {"daysFrom": days_from, "dateFormat": "iso"})
+
+
+def fetch_sports() -> list[dict]:
+    """The Odds API's sport list (free). Used to check that our sport keys exist."""
+    return _get("/sports", {})
+
+
 def fetch_event_props(event_id: str, markets: list[str], cfg: "SportConfig | None" = None, regions: str = "us") -> dict:
     cfg = cfg or _mlb()
     return _get(f"/sports/{cfg.odds_sport}/events/{event_id}/odds", {

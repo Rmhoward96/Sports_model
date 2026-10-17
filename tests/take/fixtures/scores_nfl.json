@@ -1,0 +1,40 @@
+[
+  {
+    "id": "evt_nfl_1",
+    "sport_key": "americanfootball_nfl",
+    "completed": true,
+    "commence_time": "2026-11-02T18:00:00Z",
+    "home_team": "Kansas City Chiefs",
+    "away_team": "Buffalo Bills",
+    "last_update": "2026-11-02T21:10:00Z",
+    "scores": [
+      {
+        "name": "Buffalo Bills",
+        "score": "24"
+      },
+      {
+        "name": "Kansas City Chiefs",
+        "score": "27"
+      }
+    ]
+  },
+  {
+    "id": "evt_nfl_2",
+    "sport_key": "americanfootball_nfl",
+    "completed": false,
+    "commence_time": "2026-11-02T21:25:00Z",
+    "home_team": "Dallas Cowboys",
+    "away_team": "Philadelphia Eagles",
+    "last_update": "2026-11-02T22:00:00Z",
+    "scores": [
+      {
+        "name": "Dallas Cowboys",
+        "score": "10"
+      },
+      {
+        "name": "Philadelphia Eagles",
+        "score": "7"
+      }
+    ]
+  }
+]
