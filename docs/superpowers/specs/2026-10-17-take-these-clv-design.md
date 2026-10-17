@@ -2,7 +2,7 @@
 
 ## Why
 
-The lean backtest (`docs/superpowers/reports/2026-10-16-lean-backtest.md`) found that the models add no information beyond the closing line in any sport. The one edge that is still realistic for a single bettor with 9 US books is **price**: a soft book posting a number better than the sharp market's fair price. Pinnacle is the sharp reference.
+The lean backtest (`docs/superpowers/reports/2026-10-16-lean-backtest.md`) found that the models add no information beyond the closing line in any sport. The one edge that is still realistic for a single bettor with several US books is **price**: a soft book posting a number better than the sharp market's fair price. Pinnacle is the sharp reference.
 
 The user bets a couple of hundred straights and parlays a week (0.25u–4u), tracked in Pikkit. They shop lines, try to bet at least a day before the game, and place quickly once they decide. Picking is intuition, a little research, and sometimes tailing pros. Their goal is consistent, profitable weeks, about +25u a month. They are on a 5-day losing streak and want to know whether it is variance or something deeper. In the Pikkit export (382 bets, Sep 1 – Oct 16), their beat-the-close rate fell from about 44% to 28% after Oct 5.
 
@@ -47,14 +47,15 @@ What is missing is **which bets to take**. This project gives them:
 
 ### What a pick is
 
-A **pick** is a (game, market, side) where one of the user's 9 books offers a price whose expected value against Pinnacle's no-vig fair probability, **taken from the same pull**, is at least the threshold:
+A **pick** is a (game, market, side) where one of the list's 8 books offers a price whose expected value against Pinnacle's no-vig fair probability, **taken from the same pull**, is at least the threshold:
 
 - Edge (EV) = `fair_prob × decimal(book_price) − 1`.
 - The edge must be **≥ 1.5%**. *My call:* the user raised the early-week monitor's flag from 1.0% to 1.5%, which is the clearest signal of their preference.
 
-**The user's 9 books:** DraftKings, FanDuel, BetMGM, Caesars, ESPN BET, Fanatics, Hard Rock, Bally and BetRivers. Their Odds API keys are in `board.USER_BOOKS`: draftkings, fanduel, betmgm, williamhill_us, espnbet, fanatics, hardrockbet, ballybet, betrivers.
+**The list's 8 books** (the user's answer to the builder check: drop BetRivers, swap Bet365 in for ESPN BET): DraftKings, FanDuel, BetMGM, Caesars, Fanatics, Hard Rock, Bally and Bet365. Odds API keys: draftkings, fanduel, betmgm, williamhill_us, fanatics, hardrockbet, ballybet, and Bet365's key (verify it on `/bookmakers`; Bet365 may only be listed under a non-US region or not at all for some leagues — if it is missing for a league, that league runs on the other 7 and the builder reports it).
+- This is a **new constant for this project only**. `board.USER_BOOKS` stays as it is: the +EV board, early monitor and ledger keep their 9 books.
 - The builder must confirm that each key returns data for each league.
-- ESPN BET may have been rebranded in the Odds API feed; flag any key that never appears.
+- Flag any key that never appears in a pull.
 - A book that is missing simply contributes no prices. It is not an error.
 
 **Fair price:**
@@ -100,19 +101,21 @@ A **pick** is a (game, market, side) where one of the user's 9 books offers a pr
 
 ### Pulls
 
-- **One bulk odds call per league per pull:** `markets=h2h,spreads,totals`, `bookmakers=` the 9 books plus pinnacle. Ten bookmakers are billed as one region, so a pull costs **3 credits**. This is the same billing trick as `early/polling.py`; reuse its helpers.
+- **One bulk odds call per league per pull:** `markets=h2h,spreads,totals`, `bookmakers=` the 8 books plus pinnacle. Up to ten bookmakers are billed as one region, so a pull costs **3 credits**. This is the same billing trick as `early/polling.py`; reuse its helpers.
 - **Odds API sport keys:** americanfootball_nfl, americanfootball_ncaaf, baseball_mlb, icehockey_nhl, basketball_nba, basketball_wnba, soccer_epl, soccer_usa_mls. The builder verifies them against the free `/sports` endpoint.
 - **Skip leagues with no games:** before buying odds, check the free `/events` endpoint and skip any league with no events in the next 7 days. Out-of-season leagues cost nothing.
 - **Cadence:** *my call.* Every 2 hours from 12:00 to 04:00 UTC, which is 9 pulls a day. It runs in a new GitHub Actions workflow, and the cadence is a repo variable.
 - **Game identity:** the Odds API event id. Leagues other than NFL, CFB and MLB have no `game_pk`. For NFL, CFB and MLB, the event is matched to `game_pk` with the existing team-name matcher only for the model-context field. A failed match just means no model context.
 - **Storage:** new tables keyed by event id. Do not overload `odds_snapshot`, which is keyed by `game_pk` and has no sport column. Schema is left to the builder. It needs events (league, teams, start time), every pulled price with its pull time, picks with first-seen and last-seen, Pinnacle closes, and graded results.
+- **Retention:** *my call.* Raw pulled prices (about 50,000 rows a day across six leagues) are kept for 7 days and then deleted by the pull job; the Supabase database is shared with every other job. Picks (with the Pinnacle prices they were computed from), closes and results are kept forever.
 
 ### Closing line and grading (for the test)
 
 **Close capture:**
 - A close job runs frequently (*my call:* every 10 minutes).
 - For every league with an ungraded pick whose game starts within the next 5–20 minutes, it makes one bulk call with `bookmakers=pinnacle` and only the markets that hold such picks. That costs 1 credit per market.
-- The close is Pinnacle's last price before the start.
+- The close is Pinnacle's last price before the start. *My call:* a close is valid only if it was taken 0–30 minutes before the start; anything earlier or after the start leaves the pick ungraded ("no close").
+- *My call:* the close job makes its own calls for all eight leagues, keyed by event id. It does not reuse `capture_close.py`'s NFL/CFB/MLB captures, which keeps one pipeline and needs no event-to-`game_pk` match for grading.
 - Model this on `scripts/capture_close.py` and reuse its window logic.
 - GitHub cron can run late, so record the minutes-to-start of each close. A close taken after the start is not a close; that pick stays ungraded and is reported as "no close".
 
@@ -120,10 +123,10 @@ A **pick** is a (game, market, side) where one of the user's 9 books offers a pr
 - **Close fair:** Pinnacle's no-vig closing probability for the pick's side, using the n-way de-vig for soccer moneylines.
 - **Edge vs. close (CLV)** = `close_fair × decimal(pick_price) − 1`, at the pick's line.
 - **Beat the close** = CLV > 0.
-- **If Pinnacle's closing line differs from the pick's line** (spreads and totals): *my call.*
-  - Beat-close is decided by direction. A move of ≥ 0.5 toward the pick (the pick got the better number) is a beat; a move away is a miss.
-  - CLV is left blank, because there is no line-conversion table.
-  - The report shows how many picks were graded this way.
+- **Reference line for spreads and totals:** *my call.* Every spread/total pick is graded at **R = Pinnacle's line at the pull that created the pick** (for a same-line pick R is the pick's line; for a better-line pick R is Pinnacle's line, the one the edge was computed at). This stops a better-line pick from counting as a "beat" just because its line differs from the close.
+  - **Pinnacle closes at R:** CLV = `close_fair(R) × decimal(pick_price) − 1`. For a better-line pick this is a lower bound.
+  - **Pinnacle's line moved from R:** beat-close is decided by the direction of **Pinnacle's own move** from R to its closing line. A move of ≥ 0.5 toward the pick's side (the market came to the pick) is a beat; a move away is a miss. CLV is left blank, because there is no line-conversion table.
+  - Better-line picks count toward the 300 and the pass test, and are also reported separately, as are the picks graded by direction.
 - **Results:** won / lost / push and units at the pick price. *My call:* finals come from the Odds API `/scores` endpoint, once a day per league that has picks to settle, at about 2 credits a call. Results are shown but are **not** part of the verdict.
 
 ---
@@ -159,7 +162,7 @@ A **pick** is a (game, market, side) where one of the user's 9 books offers a pr
 
 **Breakdowns** (the same metrics for each):
 - League.
-- Book, normalised. For example "Draftkings Sportsbook" becomes DraftKings.
+- Book, normalised. For example "Draftkings Sportsbook" becomes DraftKings. Every book in the export is shown under its own name, including ones outside the list (Novig, BetRivers, …).
 - Market: moneyline, spread, total, prop or other, parsed from bet_info.
 - Bet type: straight or parlay.
 - Parlay legs: 1, 2, 3, 4 and 5+.
@@ -176,6 +179,7 @@ A **pick** is a (game, market, side) where one of the user's 9 books offers a pr
 ## 3. The test (pre-registered, judged once)
 
 - **Sample:** list picks as defined in section 1 (first appearance per event, market and side), graded against a valid Pinnacle close. Picks with no close are reported but not counted.
+- **Test start:** *my call.* Only picks first seen on or after **2026-11-01 00:00 UTC** count. October credits are too short (about 5,700 left on Oct 13) for a steady pull schedule, so the list may run in October as a shakedown when credits allow, but those picks are shown, not judged. The pull and close workflows ship with an on/off repo variable.
 - **When:** the verdict is computed once, the first time **300 graded picks** exist across all leagues. The weekly report shows progress until then.
 - **Pass** requires all three of the following. *My call:* these mirror the early-week monitor's frozen test.
   1. **Beat-close rate ≥ 55%.**
