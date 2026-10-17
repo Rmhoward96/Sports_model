@@ -20,7 +20,8 @@ test("every page loads the scripts in order with the current cache key", () => {
     const srcs = [...html.matchAll(/<script src="([^"?]+)\?v=([^"]+)"/g)];
     const sport = ["nfl.html", "cfb.html", "mlb.html", "nba.html"].includes(f);   // the sport pages also load the left and right columns (js/pages/board-left.js, board-right.js) after board.js
     const take = f === "take.html";   // the Take These page also loads js/pages/take.js, last before boot
-    assert.deepEqual(srcs.map((m) => m[1]), sport ? order.flatMap((s) => (s === "js/pages/board.js" ? [s, "js/pages/board-left.js", "js/pages/board-right.js"] : [s])) : take ? order.flatMap((s) => (s === "js/boot.js" ? ["js/pages/take.js", s] : [s])) : order, f);
+    const scorecard = f === "scorecard.html";   // the Scorecard page also loads js/pikkit.js then js/pages/scorecard.js, last before boot
+    assert.deepEqual(srcs.map((m) => m[1]), sport ? order.flatMap((s) => (s === "js/pages/board.js" ? [s, "js/pages/board-left.js", "js/pages/board-right.js"] : [s])) : take ? order.flatMap((s) => (s === "js/boot.js" ? ["js/pages/take.js", s] : [s])) : scorecard ? order.flatMap((s) => (s === "js/boot.js" ? ["js/pikkit.js", "js/pages/scorecard.js", s] : [s])) : order, f);
     assert.ok(srcs.every((m) => m[2] === srcs[0][2]), `${f}: one cache key`);
     assert.equal(srcs[0][2], "20261016a", `${f}: the current cache key`);
     assert.match(html, /css\/theme\.css\?v=20261016a"/, `${f}: theme.css carries the same key`);
