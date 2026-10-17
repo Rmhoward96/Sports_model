@@ -5,7 +5,7 @@ const FILES = ["app.js", "js/metrics.js", "tests/fixtures/shrink-k-identity.js",
 const g = loadScripts(FILES);
 const NOW = new Date("2026-11-02T15:45:00Z");
 const P = (o) => ({ league: "nfl", market: "spread", side: "home", home_team: "Kansas City Chiefs", away_team: "Detroit Lions", line: -3.5, ref_line: -3.5,
-  price: -105, ev: 0.021, better_line: false, active: true, commence_time: "2026-11-02T18:00:00Z", game_pk: 1, ...o });
+  price: -105, ev: 0.021, better_line: false, active: true, commence_time: "2026-11-02T18:00:00Z", game_pk: 1, last_seen: "2026-11-02T15:40:00Z", ...o });
 
 test("takeAmerican uses a real minus sign", () => {
   assert.equal(g.takeAmerican(105), "+105");
@@ -37,6 +37,22 @@ test("takeSplit drops started and inactive picks", () => {
   assert.deepEqual(live.map((r) => r.event_id), ["b", "a"], "best edge first");
   assert.deepEqual(dropped.map((r) => r.event_id), ["e", "d", "c"], "most recent drop first; a started pick sorts by its start");
   assert.equal(rows.length, 5, "input untouched");
+});
+test("takeSplit puts stale picks (last_seen older than 150 minutes, or unparsable) after fresh ones, each group by edge", () => {
+  const rows = [P({ event_id: "old-big", ev: 0.09, last_seen: "2026-11-02T13:00:00Z" }), P({ event_id: "fresh-small", ev: 0.02 }),
+    P({ event_id: "bad", ev: 0.07, last_seen: "nope" }), P({ event_id: "none", ev: 0.06, last_seen: null }),
+    P({ event_id: "edge", ev: 0.03, last_seen: "2026-11-02T13:15:00Z" }), P({ event_id: "fresh-big", ev: 0.04 })];
+  const snapshot = JSON.stringify(rows);
+  const { live } = g.takeSplit(rows, NOW);
+  assert.deepEqual(live.map((r) => r.event_id), ["fresh-big", "edge", "fresh-small", "old-big", "bad", "none"], "13:15 is exactly 150 min old: still fresh");
+  assert.equal(JSON.stringify(rows), snapshot, "input rows untouched");
+});
+test("takeRow shows the stale badge only on a stale live pick", () => {
+  const base = { book: "draftkings", fair_prob: 0.52, good_until: -112, first_seen: "2026-11-02T10:00:00Z" };
+  const stale = g.takeRow(P({ ...base, last_seen: "2026-11-02T12:00:00Z" }), null, NOW, false);
+  assert.match(stale, /class="ca-take-stale">stale — recheck price</);
+  assert.doesNotMatch(g.takeRow(P({ ...base, last_seen: "2026-11-02T15:40:00Z" }), null, NOW, false), /ca-take-stale/);
+  assert.doesNotMatch(g.takeRow(P({ ...base, last_seen: "2026-11-02T12:00:00Z" }), null, NOW, true), /ca-take-stale/, "dropped rows are not badged");
 });
 test("takeModelNote agrees/disagrees/blank", () => {
   const pred = { pred_margin: 7, pred_total: 50 };            // identity shrink: model leans Chiefs by 7 against a -3.5 line
@@ -70,6 +86,14 @@ test("takeRow renders the pick, escapes names and shows the other books", () => 
   assert.ok(!html.includes("A<b>"));
 });
 
+test("takeProgressCard clamps the shown count to 300 while takeProgress keeps the raw one", () => {
+  const rows = Array.from({ length: 340 }, () => ({ first_seen: "2026-11-02T12:00:00Z", graded_by: "clv", clv: 0.01, beat: true }));
+  assert.equal(g.takeProgress(rows, null).graded, 340);
+  assert.equal(g.takeProgress(rows, null).shown, 300);
+  const card = g.takeProgressCard(rows, null, NOW);
+  assert.match(card, /<b>300<\/b> of 300 picks graded/); assert.match(card, /aria-valuenow="300"/); assert.match(card, /width:100\.0%/);
+  assert.doesNotMatch(card, /340/);
+});
 test("takeProgress compares instants, not strings: +00:00 at exactly Nov 1 counts, one second before does not", () => {
   const rows = [{ first_seen: "2026-11-01T00:00:00+00:00", graded_by: "clv", clv: 0.01, beat: true },
     { first_seen: "2026-10-31T23:59:59+00:00", graded_by: "clv", clv: 0.01, beat: true },

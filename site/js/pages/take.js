@@ -1,6 +1,6 @@
 /* Take These page (take.html): sportsbook prices that beat Pinnacle's no-vig fair price, from take_list_v (db/migration_take_these.sql),
    plus the progress of the one-time CLV test (take_test_v, take_verdict). Real data only: every section has an empty state.
-   The live table is every active pick whose game has not started; picks that dropped (price moved) or started in the last 24 hours are
+   The live table is every active pick whose game has not started (one not seen for TAKE_STALE_MIN minutes sorts last, badged stale); picks that dropped (price moved) or started in the last 24 hours are
    listed greyed beneath it. The Model column compares the pick with the shrunk model lean (shrinkLean, js/shrink.js) for the model
    leagues' spreads and totals; it is blank everywhere else.
    Depends on app.js (sb, sbAll, ctxEsc, pct1, pStr, evBookName), js/shrink.js, js/ui.js (bookBadge), js/shell.js (pageTitle) and
@@ -9,6 +9,7 @@ const TAKE_TEST_START = "2026-11-01T00:00:00Z";     // = TEST_START in src/sport
 const TAKE_NEEDED = 300;                           // = N_REQUIRED
 const TAKE_BEAT_MIN = 0.55;                        // = BEAT_MIN
 const TAKE_EV_MIN = 0.015;                         // = EV_MIN
+const TAKE_STALE_MIN = 150;                        // a live pick last verified longer ago than this (about two pull periods) is stale
 const TAKE_MODEL_LEAGUES = ["nfl", "cfb", "mlb"];  // = MODEL_LEAGUES
 
 /* ── pure helpers ─────────────────────────────────────────────────────── */
@@ -44,15 +45,19 @@ function takeAgo(iso, now) {
   const mins = Math.floor(Math.max(0, ms) / 60000);
   return mins < 1 ? "just now" : mins < 60 ? `${mins}m ago` : mins < 1440 ? `${Math.floor(mins / 60)}h ago` : `${Math.floor(mins / 1440)}d ago`;
 }
-// live = active and not started, best edge first; dropped = everything else (inactive, or started), most recent first. Never mutates the input.
+// A pick last seen more than TAKE_STALE_MIN minutes before now, or with no parsable last_seen, can no longer be trusted at its price.
+const takeIsStale = (r, now) => !((now.getTime() - Date.parse(r.last_seen)) <= TAKE_STALE_MIN * 60000);
+// live = active and not started: fresh picks first, then stale ones (takeIsStale), each best edge first; dropped = everything else
+// (inactive, or started), most recent first. Never mutates the input.
 function takeSplit(rows, now) {
   const t = now.getTime(), start = (r) => Date.parse(r.commence_time);
-  const live = [], dropped = [];
-  for (const r of rows || []) (r.active && start(r) > t ? live : dropped).push(r);
+  const fresh = [], stale = [], dropped = [];
+  for (const r of rows || []) (r.active && start(r) > t ? (takeIsStale(r, now) ? stale : fresh) : dropped).push(r);
   const when = (r) => Date.parse(r.dropped_at || r.commence_time) || 0;
-  live.sort((a, b) => b.ev - a.ev);
+  fresh.sort((a, b) => b.ev - a.ev);
+  stale.sort((a, b) => b.ev - a.ev);
   dropped.sort((a, b) => when(b) - when(a));
-  return { live, dropped };
+  return { live: [...fresh, ...stale], dropped };
 }
 // Does the shrunk model lean the same way as the pick? Only for a model league's spread or total with a prediction, and only when the
 // shrunk model leans at all (shrinkLean null -> blank). Spread: shrinkLean wants the HOME book line; ref_line is Pinnacle's line for the
@@ -80,7 +85,7 @@ function takeModelNote(p, pred) {
 function takeProgress(testRows, verdict) {
   const rows = (testRows || []).filter((r) => r && Date.parse(r.first_seen) >= Date.parse(TAKE_TEST_START) && (r.graded_by === "clv" || r.graded_by === "direction"));
   const clvs = rows.filter((r) => finite(r.clv)).map((r) => +r.clv);
-  return { graded: rows.length, needed: TAKE_NEEDED,
+  return { graded: rows.length, shown: Math.min(rows.length, TAKE_NEEDED), needed: TAKE_NEEDED,   // shown: the verdict judges the first 300 only
     beatRate: rows.length ? rows.filter((r) => r.beat === true).length / rows.length : null,
     meanClv: clvs.length ? clvs.reduce((a, b) => a + b, 0) / clvs.length : null,
     judged: !!verdict, passed: verdict ? !!verdict.passed : null };
@@ -99,9 +104,9 @@ function takeProgressCard(testRows, verdict, now) {
   } else if (before) {
     body = `<p>Test starts Nov 1; October picks are a shakedown and are not judged</p>`;
   } else {
-    const w = Math.min(100, (pr.graded / pr.needed) * 100);
-    body = `<div class="ca-take-bar" role="progressbar" aria-valuemin="0" aria-valuemax="${pr.needed}" aria-valuenow="${pr.graded}"><i style="width:${w.toFixed(1)}%"></i></div>
-      <p><b>${pr.graded}</b> of ${pr.needed} picks graded · beat the close ${takePct(pr.beatRate)} (needs ${Math.round(TAKE_BEAT_MIN * 100)}%) · mean CLV ${takeClv(pr.meanClv)}</p>`;
+    const w = (pr.shown / pr.needed) * 100;
+    body = `<div class="ca-take-bar" role="progressbar" aria-valuemin="0" aria-valuemax="${pr.needed}" aria-valuenow="${pr.shown}"><i style="width:${w.toFixed(1)}%"></i></div>
+      <p><b>${pr.shown}</b> of ${pr.needed} picks graded · beat the close ${takePct(pr.beatRate)} (needs ${Math.round(TAKE_BEAT_MIN * 100)}%) · mean CLV ${takeClv(pr.meanClv)}</p>`;
   }
   return `<section class="ca-card ca-take-progress" id="take-progress"><div class="ca-card-head"><h2>CLV test</h2></div>${body}</section>`;
 }
@@ -119,10 +124,11 @@ function takeRow(p, pred, now, dropped) {
   const when = new Date(p.commence_time).toLocaleString("en-US", { weekday: "short", hour: "numeric", minute: "2-digit" });
   const status = dropped ? (started ? "Started" : "Dropped") : takeCountdown(p.commence_time, now);
   const fairAm = typeof fairAmerican === "function" ? fairAmerican(+p.fair_prob) : null;
+  const stale = !dropped && takeIsStale(p, now);
   const note = takeModelNote(p, pred), noteCls = note === "model agrees" ? "pos" : note === "model disagrees" ? "neg" : "";
   return `<tr class="ca-take-row"><td data-label="League">${ctxEsc(TAKE_LEAGUE[p.league] || String(p.league).toUpperCase())}</td>
     <td data-label="Matchup" class="ca-take-match">${ctxEsc(`${away} @ ${home}`)}</td>
-    <td data-label="Start"><b>${ctxEsc(status)}</b><small>${ctxEsc(when)}</small></td>
+    <td data-label="Start"><b>${ctxEsc(status)}</b><small>${ctxEsc(when)}</small>${stale ? `<small class="ca-take-stale">${ctxEsc("stale — recheck price")}</small>` : ""}</td>
     <td data-label="Bet" class="ca-b">${ctxEsc(takeBetLabel(p))}</td>
     <td data-label="Book &amp; price"><span class="ca-dash-odds">${bookBadge(p.book)}<b>${takeAmerican(p.price)}</b></span>${others}</td>
     <td data-label="Fair">${takePct(p.fair_prob)}${fairAm != null ? `<small>${takeAmerican(fairAm)}</small>` : ""}</td>

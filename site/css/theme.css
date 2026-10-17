@@ -889,6 +889,7 @@ a.ca-ev-pr:hover{background:#FBFAF6}
 .ca-take-bar i{display:block;height:100%;background:var(--green)}
 .ca-take-table td small{display:block;color:var(--muted);font-size:12px;line-height:1.3}
 .ca-take-table .ca-take-other{white-space:nowrap}
+.ca-take-table .ca-take-stale{color:var(--amber);font-weight:600}
 .ca-take-table .ca-dash-odds{display:inline-flex;align-items:center;gap:6px}
 @media (max-width:639px){
   .ca-take-table thead{display:none}
