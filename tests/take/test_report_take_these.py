@@ -127,6 +127,20 @@ def test_direction_no_close_and_ungraded_counts():
     assert "Awaiting grade: 2" in grading                                        # the October no_close pick is not counted
 
 
+def test_unsettled_too_old_to_score_count():
+    old, recent = AS_OF - timedelta(days=4), AS_OF - timedelta(days=2)
+    rs = [{**row(1, outcome=None, units=None), "commence_time": old},                       # graded, never settled, too old
+          {**row(2, graded_by="no_close", clv=None, beat=None, outcome=None, units=None), "commence_time": old},
+          {**row(3, first_seen=OCT, outcome=None, units=None), "commence_time": old},      # shakedown counts too
+          {**row(4, outcome=None, units=None), "commence_time": recent},                   # still inside the /scores window
+          {**row(5), "commence_time": old},                                                # settled
+          {**row(6, graded_by=None, clv=None, beat=None, outcome=None, units=None), "commence_time": old}]   # not graded
+    md, _ = rep.build_report(AS_OF, rs, None, [])
+    assert "Unsettled (too old to score): 3" in section(md, "Grading")
+    md, _ = rep.build_report(AS_OF, rows(3), None, [])                                     # no commence_time at all
+    assert "Unsettled (too old to score): 0" in section(md, "Grading")
+
+
 def test_results_record_and_units():
     rs = [row(1, outcome="win", units=0.91), row(2, outcome="win", units=1.2), row(3, outcome="loss", units=-1.0),
           row(4, outcome="push", units=0.0), row(5, outcome=None, units=None), row(6, first_seen=OCT, outcome="win", units=5.0)]
@@ -144,6 +158,11 @@ def test_october_shakedown_is_labelled_not_judged():
     shake = section(md, "October shakedown (not judged)")
     assert "3 picks first seen before Nov 1" in shake and "2 graded" in shake
     assert "beat-close 50.0%" in shake and "mean CLV +0.0050" in shake and "W-L-P 1-1-0" in shake
+
+
+def test_october_shakedown_singular_pick():
+    md, _ = rep.build_report(AS_OF, rows(2) + [row(10, first_seen=OCT)], None, [])
+    assert "1 pick first seen before Nov 1, 1 graded" in section(md, "October shakedown (not judged)")
 
 
 def test_no_october_picks_says_so():

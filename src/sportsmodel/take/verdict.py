@@ -93,6 +93,5 @@ def decide(all_rows: list[dict], existing: dict | None, as_of: datetime) -> dict
 def verdict_row(decision: dict, judged_at: datetime) -> dict:
     """A judged decision as the take_verdict row (store.VERDICT_COLUMNS without id)."""
     return {"judged_at": judged_at, "n": decision["n"], "beat_rate": decision["beat_rate"],
-            "mean_clv": decision["mean_clv"] if decision["mean_clv"] is not None else 0.0,   # NOT NULL; fails its criterion
-            "lower": decision["lower"] if decision["lower"] is not None else 0.0,
+            "mean_clv": decision["mean_clv"], "lower": decision["lower"],     # None when no judged pick has a CLV
             "passed": decision["passed"], "criteria": decision["criteria"], "pick_ids": decision["pick_ids"]}

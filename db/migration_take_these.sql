@@ -153,8 +153,8 @@ CREATE TABLE IF NOT EXISTS take_verdict (
   judged_at  timestamptz NOT NULL,
   n          integer NOT NULL,
   beat_rate  double precision NOT NULL,
-  mean_clv   double precision NOT NULL,
-  lower      double precision NOT NULL,           -- cluster-bootstrap 95% lower bound on mean CLV
+  mean_clv   double precision,                    -- NULL when no judged pick has a CLV
+  lower      double precision,                    -- cluster-bootstrap 95% lower bound on mean CLV (NULL likewise)
   passed     boolean NOT NULL,
   criteria   jsonb NOT NULL,
   pick_ids   bigint[] NOT NULL

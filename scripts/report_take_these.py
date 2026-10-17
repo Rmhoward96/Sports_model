@@ -60,6 +60,14 @@ def _record(rows: list[dict]) -> tuple[int, int, int, float, int]:
     return n["win"], n["loss"], n["push"], sum(float(r["units"] or 0) for r in done), len(done)
 
 
+def _too_old(rows: list[dict], as_of: datetime) -> int:
+    """Graded picks (test or shakedown) still without an outcome whose game started over 3 days ago: past the /scores
+    daysFrom window, so they stay unsettled for good."""
+    cutoff = as_utc(as_of) - timedelta(days=3)
+    return sum(1 for r in rows if r.get("graded_by") is not None and r.get("outcome") is None
+               and r.get("commence_time") is not None and as_utc(r["commence_time"]) < cutoff)
+
+
 def _breakdown(rows: list[dict], key: str, order: tuple[str, ...]) -> list[tuple]:
     groups: dict[str, list[dict]] = defaultdict(list)
     for r in rows:
@@ -143,7 +151,8 @@ def build_report(as_of: datetime, rows: list[dict], verdict_row: dict | None, ca
     out += ["", "## Grading", "",
             f"- Graded by line direction (no CLV): {sum(1 for r in test if r['graded_by'] == 'direction')}",
             f"- No valid close (not counted in the test): {sum(1 for r in after if r.get('graded_by') == 'no_close')}",
-            f"- Awaiting grade: {sum(1 for r in after if r.get('graded_by') is None)}"]
+            f"- Awaiting grade: {sum(1 for r in after if r.get('graded_by') is None)}",
+            f"- Unsettled (too old to score): {_too_old(rows, as_of)}"]
 
     w, l, p, units, settled = _record(after)
     out += ["", "## Results", "", f"W-L-P {w}-{l}-{p}, {units:+.3f} units ({settled} settled; 1 unit staked per pick at "
@@ -154,7 +163,7 @@ def build_report(as_of: datetime, rows: list[dict], verdict_row: dict | None, ca
         graded = [r for r in october if r.get("graded_by") is not None]
         s = V.stats([r for r in graded if r["graded_by"] in ("clv", "direction")])
         w, l, p, units, _ = _record(october)
-        out += [f"{len(october)} picks first seen before {C.TEST_START:%b} {C.TEST_START.day}, {len(graded)} graded: "
+        out += [f"{len(october)} pick{'s' if len(october) != 1 else ''} first seen before {C.TEST_START:%b} {C.TEST_START.day}, {len(graded)} graded: "
                 f"beat-close {_pct(s['beat_rate'])}, mean CLV {_clv(s['mean_clv'])}, W-L-P {w}-{l}-{p}, "
                 f"{units:+.3f} units. Not judged."]
     else:

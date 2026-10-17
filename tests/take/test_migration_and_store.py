@@ -387,3 +387,14 @@ def test_recent_calls_reads_the_log_since(monkeypatch):
         {"job": "scores", "league": None, "credits_used": 2, "books_missing": None, "called_at": called}]
     (_, sql, params), = _stmts(log)
     assert "FROM take_api_calls" in sql and "called_at >= %s" in sql and params == (NOW - timedelta(days=7),)
+
+
+def test_unsettled_window_matches_the_scores_days_from():
+    window = "e.commence_time > now() - interval '3 days' AND e.commence_time < now() - interval '3 hours'"
+    assert window in store.UNSETTLED_LEAGUES_SQL and window in store.UNSETTLED_SQL
+
+
+def test_verdict_mean_clv_and_lower_are_nullable():
+    table = _create_table("take_verdict")
+    assert re.search(r"mean_clv\s+double precision,", table) and re.search(r"\blower\s+double precision,", table)
+    assert re.search(r"beat_rate\s+double precision NOT NULL", table)

@@ -88,7 +88,8 @@ UNGRADED_SQL = (
     "WHERE r.pick_id IS NULL AND e.commence_time <= %s ORDER BY p.id")
 _UNSETTLED_FROM = (
     "FROM take_results r JOIN take_picks p ON p.id = r.pick_id JOIN take_events e ON e.event_id = p.event_id "
-    "WHERE r.outcome IS NULL AND e.commence_time < now() - interval '3 hours'")
+    "WHERE r.outcome IS NULL AND e.commence_time > now() - interval '3 days' "
+    "AND e.commence_time < now() - interval '3 hours'")
 UNSETTLED_LEAGUES_SQL = f"SELECT DISTINCT e.league {_UNSETTLED_FROM} ORDER BY e.league"
 UNSETTLED_SQL = (f"SELECT p.id, p.event_id, p.market, p.side, p.line, p.price, p.league {_UNSETTLED_FROM} "
                  "AND p.league = %s ORDER BY p.id")
@@ -249,7 +250,8 @@ def insert_results(rows: list[dict], *, connect_timeout: int | None = db.LEDGER_
 
 def unsettled_leagues(*, connect_timeout: int | None = db.LEDGER_CONNECT_TIMEOUT,
                       statement_timeout_ms: int | None = db.LEDGER_STATEMENT_TIMEOUT_MS) -> list[str]:
-    """Leagues with a graded pick still missing its outcome whose event started over 3 hours ago."""
+    """Leagues with a graded pick still missing its outcome whose event started 3 hours to 3 days ago (the /scores
+    daysFrom=3 window; an older pick keeps outcome NULL)."""
     return [r[0] for r in _read(UNSETTLED_LEAGUES_SQL, None, connect_timeout, statement_timeout_ms)]
 
 

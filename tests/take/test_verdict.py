@@ -134,8 +134,12 @@ def test_verdict_row_maps_the_table_columns():
     r = verdict_row(d, AS_OF)
     assert set(r) == {"judged_at", "n", "beat_rate", "mean_clv", "lower", "passed", "criteria", "pick_ids"}
     assert r["judged_at"] == AS_OF and r["n"] == 300 and r["passed"] is True and len(r["pick_ids"]) == 300
-    none = verdict_row({**d, "mean_clv": None, "lower": None, "passed": False}, AS_OF)
-    assert none["mean_clv"] == 0.0 and none["lower"] == 0.0         # the table columns are NOT NULL
+
+
+def test_verdict_row_keeps_an_undefined_mean_clv_and_lower_as_none():
+    direction = [row(i, graded_by="direction", clv=None) for i in range(1, 301)]
+    r = verdict_row(decide(direction, None, AS_OF), AS_OF)
+    assert r["mean_clv"] is None and r["lower"] is None and r["passed"] is False and r["beat_rate"] == 1.0
 
 
 def test_cluster_lower_deterministic():
