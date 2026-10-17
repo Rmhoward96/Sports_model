@@ -1,0 +1,56 @@
+name: take-these-pull
+
+# "Take these" price pull (scripts/take_pull.py, db/migration_take_these.sql). Every 2 hours at minute 0, 12:00-04:00 UTC
+# (hours 12-23 and 0-4: 17 slots, 9 of them on the 2-hour cadence): for each of the 8 leagues (nfl, cfb, mlb, nhl, nba,
+# wnba, epl, mls) a free /events call, and when something starts within 7 days ONE odds call with bookmakers = the 7 list
+# books + pinnacle (8 keys = one billed region) x 3 markets (h2h, spreads, totals) = 3 credits a league, at most 24 a pull
+# (spec section 4). Prices are stored 7 days; picks (EV >= +1.5% against Pinnacle's de-vigged fair) are kept forever.
+# The pull skips below 1,500 credits remaining. The cadence is repo variable TAKE_PULL_EVERY_HOURS (default 2: the script
+# runs only on hours divisible by it). The scheduled job runs only while repo variable TAKE_THESE is 'on'; a manual run
+# (workflow_dispatch) always runs. Crons are UTC.
+on:
+  schedule:
+    - cron: "0 12-23,0-4 * * *"
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: "Pull once (paid odds calls) and print the picks it would store; write nothing"
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+# Overlapping pulls would double-spend credits and race on the same rows; queue instead.
+concurrency:
+  group: take-these-pull
+  cancel-in-progress: false
+
+jobs:
+  pull:
+    if: vars.TAKE_THESE == 'on' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    steps:
+      - uses: actions/checkout@v5
+      - name: Install uv
+        uses: astral-sh/setup-uv@v10.0.1
+        with:
+          enable-cache: true
+      - name: Sync deps
+        run: uv sync
+      - name: Pull prices and store the picks
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+          ODDS_API_KEY: ${{ secrets.ODDS_API_KEY }}
+          TAKE_PULL_EVERY_HOURS: ${{ vars.TAKE_PULL_EVERY_HOURS }}
+          EVENT_NAME: ${{ github.event_name }}
+          DRY_RUN: ${{ inputs.dry_run }}      # empty on schedule events, "true"/"false" on workflow_dispatch
+        run: |
+          if [ "$EVENT_NAME" = "schedule" ]; then
+            uv run python scripts/take_pull.py --scheduled
+          elif [ "$DRY_RUN" = "true" ]; then
+            uv run python scripts/take_pull.py --dry-run
+          else
+            uv run python scripts/take_pull.py
+          fi

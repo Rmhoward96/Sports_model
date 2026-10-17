@@ -1,0 +1,51 @@
+name: take-these-close
+
+# "Take these" grading and close capture (scripts/take_close.py, db/migration_take_these.sql). Every 10 minutes (minutes
+# 3, 13, ... 53). First it grades every started, ungraded pick against its stored close (free, runs even with no credits).
+# Then, only when an ungraded pick starts in 5-20 minutes, it makes ONE Pinnacle-only odds call per league holding one,
+# asking for just the markets those picks need: one credit per market (spec section 4). Nothing to close means nothing
+# spent. A close counts only if taken 0-30 minutes before the start. Close capture skips below 300 credits remaining.
+# The scheduled job runs only while repo variable TAKE_THESE is 'on'; a manual run (workflow_dispatch) always runs.
+# Crons are UTC.
+on:
+  schedule:
+    - cron: "3-59/10 * * * *"
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: "Make the paid calls but write nothing (no grades, no closes); print what it would do"
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+# Overlapping runs would double-spend credits and race on the same rows; queue instead.
+concurrency:
+  group: take-these-close
+  cancel-in-progress: false
+
+jobs:
+  close:
+    if: vars.TAKE_THESE == 'on' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v5
+      - name: Install uv
+        uses: astral-sh/setup-uv@v10.0.1
+        with:
+          enable-cache: true
+      - name: Sync deps
+        run: uv sync
+      - name: Grade started picks and capture closes
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+          ODDS_API_KEY: ${{ secrets.ODDS_API_KEY }}
+          DRY_RUN: ${{ inputs.dry_run }}      # empty on schedule events, "true"/"false" on workflow_dispatch
+        run: |
+          if [ "$DRY_RUN" = "true" ]; then
+            uv run python scripts/take_close.py --dry-run
+          else
+            uv run python scripts/take_close.py
+          fi
