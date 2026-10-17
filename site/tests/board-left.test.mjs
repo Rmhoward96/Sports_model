@@ -58,8 +58,9 @@ const leftOf = (html) => html.slice(html.indexOf('id="board-left"'), html.indexO
 const card = (html, id) => { const l = leftOf(html), i = l.indexOf(`id="${id}"`); if (i < 0) return ""; const nxt = ["board-season-perf", "board-model-market", "board-market-intel", "board-key-insights"].map((x) => l.indexOf(`id="${x}"`, i + 5)).filter((j) => j > 0); return l.slice(i, nxt.length ? Math.min(...nxt) : l.length); };
 const text = (h) => h.replace(/<[^>]*>/g, " ").replace(/\s+/g, " ").trim();
 const wl = (html) => { const m = card(html, "board-season-perf").match(/<span class="ca-bl-wl">(\d+) - (\d+)<\/span><small class="[^"]*">([\d.]+)%<\/small>/); return m ? { w: +m[1], l: +m[2], pct: +m[3] } : null; };
-// Independent count of the graded picks (moneyline always, spread / total when the model has a side) of the games the filter keeps.
-const expectTally = (keep) => { let w = 0, l = 0; for (const [i, a] of ACC.entries()) if (keep(a, i)) for (const g of [a.winner_correct, a.spread_pick_correct, a.total_pick_correct]) g ? w++ : l++; return { w, l }; };
+// Independent count of the leans the site showed of the games the filter keeps: with the identity shrink every spread (5 vs 3) and total (47 vs 44)
+// is a lean; moneylines are never part of the record.
+const expectTally = (keep) => { let w = 0, l = 0; for (const [i, a] of ACC.entries()) if (keep(a, i)) for (const g of [a.spread_pick_correct, a.total_pick_correct]) g ? w++ : l++; return { w, l }; };
 
 test("the four cards mount in the left column in order, each with its title (and Track Record link, pills, rows)", async () => {
   const html = await populated().G.buildBoardPage("nfl"), l = leftOf(html);
@@ -78,16 +79,17 @@ test("the four cards mount in the left column in order, each with its title (and
   assert.ok(!/NaN|undefined|Infinity/.test(l), "no NaN / undefined in the column");
 });
 
-test("Season Performance = Track Record's numbers: W-L-P from trackTally(trackRows), units / ROI from prediction_pnl_daily ($10 a bet), edge vs the no-vig close", async () => {
+test("Season Performance = Track Record's Recommended leans: W-L-P from trackTally of the rec rows, units / ROI at -110 from trackPnlDaily ($10 a bet), edge = shrunk number vs the line", async () => {
   const P = populated(), html = await P.G.buildBoardPage("nfl"), sp = card(html, "board-season-perf");
   const season = expectTally(() => true);
-  assert.deepEqual(wl(html), { w: season.w, l: season.l, pct: +(season.w / (season.w + season.l) * 100).toFixed(1) }, "the season record = every graded pick");
-  const tr = P.G.trackTally(P.G.trackRows(ACC, [], new Map()));
+  assert.deepEqual(wl(html), { w: season.w, l: season.l, pct: +(season.w / (season.w + season.l) * 100).toFixed(1) }, "the season record = every lean the site showed (no moneylines)");
+  const tr = P.G.trackTally(P.G.trackRows(ACC, [], new Map()).filter((r) => r.rec));
   assert.equal(tr.w, season.w); assert.equal(tr.l, season.l);
-  assert.ok(sp.includes("+5.8u") && sp.includes("11 bets"), "units = sum of pnl / 10 (15 + 25 - 22 + 40 = 58 -> +5.8u); bets = sum of n");
-  assert.ok(sp.includes("+52.7%"), "ROI = pnl / (decided bets x $10) = 58 / (6 wins + 5 losses = 11 x 10) = 52.7%");
-  // the edge: the model's 60% on the home side vs the close 1.70 / 2.30 (no-vig home = (1/1.7) / (1/1.7 + 1/2.3) = 57.5%) -> +2.5 on the 12 moneyline picks
-  assert.ok(sp.includes("+2.5%") && sp.includes("12 ML picks"), text(sp));
+  // 17-7 at -110: 17 x 9.09 - 7 x 10 = 84.5 -> +8.5u over 24 bets, ROI 84.5 / 240 = 35.2%
+  assert.ok(sp.includes("+8.5u") && sp.includes("24 bets"), text(sp));
+  assert.ok(sp.includes("+35.2%"), text(sp));
+  // the edge: spreads 2 pts (5 vs 3), totals 3 pts (47 vs 44) -> 2.5 pts over 24 leans
+  assert.ok(sp.includes("2.5 pts") && sp.includes("24 leans") && !sp.includes("ML picks"), text(sp));
   assert.ok(sp.includes("Season 2026 · Sep 24 – Oct 4, 2026"), "the caption names the period the numbers cover");
 });
 
@@ -107,7 +109,7 @@ test("the selected period: a past week shows THAT week's numbers (title, caption
   const wk3 = expectTally((a) => a.game_date >= "2026-09-22" && a.game_date <= "2026-09-28");
   assert.ok(sp.includes("<h2>Week 3 Performance</h2>") && sp.includes("Sep 22 – Sep 28, 2026"), "titled and dated by the week");
   assert.deepEqual({ w: wl(past).w, l: wl(past).l }, wk3);
-  assert.ok(sp.includes("+4.0u") && sp.includes("5 bets"), "the week's units: (15 + 25) / 10 over 2 + 3 bets");
+  assert.ok(sp.includes("+3.3u") && sp.includes("12 bets"), "the week's units: 8-4 at -110 = 32.7 / 10 over 12 leans");
   assert.deepEqual([...sp.matchAll(/data-key="(\w+)" role="tab" aria-selected="(\w+)"/g)].map((m) => [m[1], m[2]]), [["period", "true"], ["season", "false"]], "Week 3 | Season, the week selected");
   assert.ok(sp.includes(">Week 3</button>") && sp.includes(">Season</button>"));
   const wk4 = await populated({ search: "?week=4" }).G.buildBoardPage("nfl"), c = await populated().G.buildBoardPage("nfl");
@@ -130,18 +132,20 @@ test("a week before the published record (archived) says so instead of showing z
   const html = card(await populated({ search: "?week=3", starts }).G.buildBoardPage("nfl"), "board-season-perf");
   assert.ok(html.includes("Week 3 is before the published NFL record, which restarted Sep 29, 2026 with the ML v2 model. Earlier results are archived."), text(html));
   const none = card(await populated({ search: "?week=3", acc: [] }).G.buildBoardPage("nfl"), "board-season-perf");
-  assert.ok(none.includes("No graded NFL picks in Week 3 yet.") && !none.includes("ca-bl-grid"));
+  assert.ok(none.includes("No graded NFL leans in Week 3 yet.") && !none.includes("ca-bl-grid"));
   const seasonNone = card(await populated({ acc: [] }).G.buildBoardPage("nfl"), "board-season-perf");
-  assert.ok(seasonNone.includes("No graded NFL picks in the published record yet."));
+  assert.ok(seasonNone.includes("No graded NFL leans in the published record yet. Most games show No lean after the shrink"));
 });
 
 test("blPerf: a week's units come from the pnl rows of its dates only; no pnl rows -> units / ROI are dashes, W-L still shown", () => {
-  const G = populated().G, rows = G.trackRows(ACC, [], new Map());
-  const wk = G.blPerf("nfl", rows, PNL, new Map(), "2026-09-29", "2026-10-05");
-  assert.equal(wk.units, 1.8); assert.equal(wk.bets, 6); assert.equal(wk.roi, 18 / (6 * 10) * 100, "decided bets: 3 wins + 3 losses");
-  const none = G.blPerf("nfl", rows, [], new Map(), "2026-09-22", "2026-09-28");
+  const G = populated().G, rows = G.trackRows(ACC, [], new Map()).filter((r) => r.rec), pnl = G.trackPnlDaily(rows);
+  const wk = G.blPerf("nfl", rows, pnl, "2026-09-29", "2026-10-05"), won = 9 * 10 * 100 / 110 - 3 * 10;
+  assert.equal(wk.w, 9); assert.equal(wk.l, 3); assert.equal(wk.bets, 12);
+  assert.ok(Math.abs(wk.roi - won / 120 * 100) < 1e-9, "decided bets: 9 wins + 3 losses at -110");
+  assert.deepEqual({ ...wk.edge }, { mean: 2.5, n: 12 }, "the mean of the leans' shrunk-number edges");
+  const none = G.blPerf("nfl", rows, [], "2026-09-22", "2026-09-28");
   assert.equal(none.units, null); assert.equal(none.roi, null); assert.ok(none.w + none.l > 0);
-  assert.equal(none.edge, null, "no closing prices: no edge");
+  assert.equal(G.blPerf("nfl", [], [], "2026-09-22", "2026-09-28").edge, null, "no leans: no edge");
   assert.deepEqual([...G.blWeekUnits("nfl", PNL)], [4, 1.8], "units per NFL week, oldest first (week 3: 15 + 25, week 4: -22 + 40)");
   assert.deepEqual([...G.blWeekUnits("nfl", [PNL[0], { ...PNL[3], game_date: "2026-10-11" }])], [1.5, 0, 4], "a week with no bets between the first and last is a zero bar");
 });
@@ -256,7 +260,7 @@ test("MLB (live, no graded picks yet) / NBA (no model): honest empty states in e
   const mlb = await populated({ sport: "mlb", acc: [], pnl: [], any: [] }).G.buildBoardPage("mlb");
   const l = leftOf(mlb);
   assert.ok(!l.includes("ca-board-slot") && !l.includes("ca-bl-grid") && !l.includes("ca-scatter") && !l.includes("ca-bl-in\"") && !/paused/.test(l), "no numbers, chart, insight rows, and no hard-coded pause text");
-  assert.ok(card(mlb, "board-season-perf").includes("No graded MLB picks in the published record yet."), text(card(mlb, "board-season-perf")));
+  assert.ok(card(mlb, "board-season-perf").includes("No graded MLB leans in the published record yet."), text(card(mlb, "board-season-perf")));
   assert.ok(card(mlb, "board-model-market").includes("No graded games with a market line yet."));
   assert.ok(card(mlb, "board-market-intel").includes("ca-bl-pulse"), "MLB reads the live market like NFL / CFB");
   const nba = await populated({ sport: "nba", acc: [], pnl: [] }).G.buildBoardPage("nba");
@@ -267,25 +271,25 @@ test("MLB (live, no graded picks yet) / NBA (no model): honest empty states in e
   assert.ok(card(rec, "board-season-perf").includes("ca-bl-grid") && card(rec, "board-season-perf").includes("Season 2026"), "an MLB record is shown for the MLB season");
 });
 
-test("data: the left column's reads (record per sport, pnl per sport, props / rest days for NFL only), fail-closed scope, no margin_dist, memoised per sport", async () => {
+test("data: the left column's reads (record per sport, props / rest days for NFL only; units come from the record, not prediction_pnl_daily), no margin_dist, memoised per sport", async () => {
   const P = populated(), D = await P.G.buildBoardPage("nfl");
   void D;
   const has = (p) => P.requested.filter((u) => u.startsWith(p));
   assert.equal(has("prediction_accuracy?sport=eq.nfl&actual_winner=not.is.null").length, 1, "the record's graded games (one page)");
-  assert.equal(has("prediction_pnl_daily?sport=eq.nfl").length, 1);
+  assert.equal(has("prediction_pnl_daily").length, 0, "the units are the leans at -110 (trackPnlDaily), not the every-pick pnl view");
   assert.equal(has("track_record_start").length, 1); assert.ok(has("nfl_prop_pnl?season=eq.2026").length === 1 && has("team_game_log?sport=eq.nfl&season=eq.2026").length === 1);
   assert.ok(!P.requested.some((u) => /margin_dist|total_dist/.test(u)));
   assert.ok(has("game_closing_prices?market=eq.moneyline").length >= 1, "closing prices of the record's games");
   await P.G.buildBoardPage("nfl");
-  assert.equal(has("prediction_pnl_daily").length, 1, "a second render within a minute reuses the loaded record");
+  assert.equal(has("prediction_accuracy?sport=eq.nfl&actual_winner=not.is.null").length, 1, "a second render within a minute reuses the loaded record");
   const C = populated({ sport: "cfb", acc: ACC.map((a) => ({ ...a, sport: "cfb" })) }); await C.G.buildBoardPage("cfb");
   assert.ok(C.requested.some((u) => u.startsWith("power_rankings_current?sport=eq.cfb")) && !C.requested.some((u) => u.startsWith("nfl_prop_pnl") || u.startsWith("team_game_log")), "CFB reads conferences, not props / rest days");
   const M = populated({ sport: "mlb", acc: [], pnl: [] }); await M.G.buildBoardPage("mlb");
   assert.ok(!M.requested.some((u) => u.startsWith("nfl_prop_pnl") || u.startsWith("team_game_log") || u.startsWith("power_rankings_current")), "MLB reads neither NFL props / rest days nor CFB conferences");
   const N = populated({ sport: "nba", acc: [], pnl: [] }); await N.G.buildBoardPage("nba");
   assert.ok(!N.requested.some((u) => u.startsWith("ev_current") || u.startsWith("nfl_prop_pnl") || u.startsWith("power_rankings_current")), "a sport with no model reads only its (empty) record");
-  const q = quiet(), F = await populated({ fail: ["prediction_pnl_daily"], q }).G.buildBoardPage("nfl");
-  assert.ok(card(F, "board-season-perf").includes("couldn't load") && card(F, "board-key-insights").includes("Home favorites"), "one failed source only affects the cards that need it");
+  const q = quiet(), F = await populated({ fail: ["nfl_prop_pnl"], q }).G.buildBoardPage("nfl");
+  assert.ok(wl(F) && card(F, "board-key-insights").includes("Home favorites"), "one failed source only affects the cards that need it");
 });
 
 test("scatterChart: nothing for no finite dot; dots, dashed baseline and solid trend positioned by percentage; symmetric x domain", () => {

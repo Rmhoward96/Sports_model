@@ -31,13 +31,23 @@ const TRACK_CONF_OPTS = [["", "All Confidence"], ...TRACK_BAND_KEYS.map((k, i) =
 const TRACK_RESULT_OPTS = [["", "All Results"], ["W", "Win"], ["L", "Loss"], ["P", "Push"]];
 const TRACK_SORTS = [["recent", "Most Recent"], ["conf", "Highest Confidence"]];
 const TRACK_SEGS = [["market", "Market"], ["league", "League"], ["confidence", "Confidence"]];
-// The Record select (F2): one control for the three sources. "archive" = the model view scoped to the pre-restart NFL rows (state.archive).
-const trackRecordKey = (s) => (s.view === "ev" ? "ev" : s.archive ? "archive" : "model");
+// The Record select (F2): one control for the four sources.
+//   model   = the published record: only the spread / total leans the site showed after the shrink (rows with r.rec), since the restart
+//   ev      = +EV picks (their own sources)
+//   all     = diagnostic: the model's raw side on every game since the restart (not recommendations)
+//   archive = every game before the restart (state.archive, model view)
+const trackRecordKey = (s) => (s.view === "ev" ? "ev" : s.view === "all" ? "all" : s.archive ? "archive" : "model");
+const TRACK_VIEWS = ["model", "ev", "all"];
 function trackRecordOpts(starts) {
-  const st = starts && starts.get ? starts.get("nfl") : null;
-  return [["model", "Model picks"], ["ev", "+EV picks"], ["archive", st ? `NFL archive (pre-${trackStartDay(st.starts_at)})` : "NFL archive"]];
+  const day = trackRestartDay(starts);
+  return [["model", "Recommended leans"], ["ev", "+EV picks"], ["all", "Every game (diagnostic)"], ["archive", day ? `Archive (before ${day})` : "Archive (pre-restart)"]];
 }
-const trackStartDay = (iso) => new Date(iso).toLocaleDateString("en-US", { timeZone: "America/New_York", month: "short", day: "numeric" });
+const trackStartDay = (iso, year) => new Date(iso).toLocaleDateString("en-US", { timeZone: "America/New_York", month: "short", day: "numeric", ...(year ? { year: "numeric" } : {}) });
+// The restart day when every league restarted on the same day ("Oct 14"), else "" (the tip lists them per league).
+function trackRestartDay(starts, year) {
+  const days = [...new Set([...(starts && starts.values ? starts.values() : [])].map((st) => trackStartDay(st.starts_at, year)))];
+  return days.length === 1 ? days[0] : "";
+}
 const TRACK_DEFAULT = { range: "all", archive: false, view: "model", chart: "overall", market: "all", league: "", conf: "", result: "", sort: "recent", q: "", seg: "market", n: TRACK_PAGE };
 const TRACK_PARAMS = ["range", "archive", "view", "chart", "market", "league", "conf", "result", "sort", "q", "seg", "n"];
 const TRACK_WIN = "#1E8E4E", TRACK_LOSS = "#A5BFEA", TRACK_PUSH = "#B9B3A5";
@@ -151,7 +161,7 @@ function trackParse(search) {
   let p;
   try { p = new URLSearchParams(search || ""); } catch { p = new URLSearchParams(""); }
   const get = (k) => p.get(k) || "", pick = (v, list, d) => (list.some(([k]) => k === v) ? v : d), n = parseInt(get("n"), 10);
-  return { range: pick(get("range"), TRACK_RANGES, "all"), archive: get("archive") === "1", view: get("view") === "ev" ? "ev" : "model",
+  return { range: pick(get("range"), TRACK_RANGES, "all"), archive: get("archive") === "1", view: TRACK_VIEWS.includes(get("view")) ? get("view") : "model",
     chart: pick(get("chart"), TRACK_CHARTS, "overall"), market: pick(get("market"), TRACK_MARKET_OPTS, "all"),
     league: SPORTS.includes(get("league")) ? get("league") : "", conf: TRACK_BAND_KEYS.includes(get("conf")) ? get("conf") : "",
     result: ["W", "L", "P"].includes(get("result")) ? get("result") : "", sort: pick(get("sort"), TRACK_SORTS, "recent"), q: get("q").slice(0, 80),
@@ -209,8 +219,13 @@ async function trackLoad() {
   }, 0)));
   return D;
 }
-// One render context: the cached load plus the URL state and the rows inside range / record.
-const trackCtx = (D) => { const s = trackState(); return { ...D, s, scope: trackScope(D.rows, s, D.today) }; };
+// One render context: the cached load plus the URL state and the rows inside range / record. The published record (model view) keeps
+// only what the site recommended (r.rec); the diagnostic and the archive keep every game. The archive toggle only applies to the model view.
+const trackIsRecord = (s) => s.view === "model" && !s.archive;
+const trackCtx = (D) => {
+  const s = trackState(), archive = s.view === "model" && !!s.archive, rows = trackIsRecord(s) ? (D.rows || []).filter((r) => r.rec) : D.rows;
+  return { ...D, s, scope: trackScope(rows, { range: s.range, archive }, D.today) };
+};
 
 /* ── small view helpers ───────────────────────────────────────────────── */
 const trackPct = (x) => (x == null ? "—" : `${(x * 100).toFixed(1)}%`);
@@ -240,15 +255,14 @@ const trackClosingTitle = (r) => (r.closing != null || r.market !== "moneyline" 
 const trackClosingText = (r) => (r.closing == null ? (r.market === "moneyline" && r.closingState === "loading" ? "…" : "—") : r.market === "moneyline" ? oddsStr(r.closing) : r.market === "total" ? (+r.closing).toFixed(1) : trackLine(r.closing));
 
 /* ── stat cards ───────────────────────────────────────────────────────── */
-// The record mixes two kinds of graded pick, so the card says so (tooltip on the label + a caption).
-const TRACK_RECORD_TIP = "Combines moneyline winner picks with spread and total picks graded against the line";
-// The restart note (formerly a header line) and what the record combines: the (i) tooltip on OVERALL RECORD.
+// What the record counts (the (i) tooltip on OVERALL RECORD) plus the restart note.
+const TRACK_RECORD_TIP = "Only the spread and total leans the site showed (the model's number after the shrink, at least a quarter point off the line), graded against the closing line. Moneylines and other bets are tracked under +EV picks";
+const TRACK_ALL_TIP = "Diagnostic: the model's raw side on every game (moneyline winner, spread and total against the line), including games the site showed as No lean";
 function trackRecordTip(C) {
-  const st = C.starts && C.starts.get ? C.starts.get("nfl") : null;
-  const when = st ? new Date(st.starts_at).toLocaleDateString("en-US", { timeZone: "America/New_York", month: "short", day: "numeric", year: "numeric" }) : "";
-  const note = st ? `NFL record restarted with ${st.model_version === "nfl-sim-ml-v2" ? "the ML v2 model" : st.model_version} on ${when}; earlier NFL results are archived for comparison.`
-    : "NFL predictions switched to the ML model on Sep 28, 2026; earlier games were graded against the previous model.";
-  return `${TRACK_RECORD_TIP}. ${note}`;
+  const starts = C.starts && C.starts.values ? [...C.starts.entries()] : [], day = trackRestartDay(C.starts, true);
+  const when = day || starts.map(([sp, st]) => `${trackSportName(sp)} ${trackStartDay(st.starts_at, true)}`).join(", ");
+  const note = starts.length ? ` The record restarted on ${when}; earlier results are in the archive.` : "";
+  return `${C.s && !trackIsRecord(C.s) ? TRACK_ALL_TIP : TRACK_RECORD_TIP}.${note}`;
 }
 function trackStatRecord(C) {
   const t = trackTally(C.scope), tip = trackRecordTip(C);
@@ -278,6 +292,11 @@ function trackStatStreak(C) {
     sub: `Last 5: ${s.w} - ${s.l} - ${s.p}` });
 }
 function trackStatAvg(C) {
+  if (C.s && trackIsRecord(C.s)) {   // the record has no moneylines: the average edge of the leans instead (shrunk number vs the line, points)
+    const es = C.scope.map((r) => r.recEdge).filter(finite).map(Number), mean = es.length ? es.reduce((a, b) => a + b, 0) / es.length : null;
+    if (mean == null) return statCard({ label: "AVERAGE EDGE", value: "—", sub: "No graded leans in this range." });
+    return statCard({ label: "AVERAGE EDGE", value: `${mean.toFixed(1)} pts`, sub: "Shrunk number vs the line", tip: "How far the site's shrunk number sat from the line on each lean, on average" });
+  }
   const ps = C.scope.filter((r) => r.market === "moneyline").map((r) => r.prob).filter(finite).map(Number), mean = ps.length ? ps.reduce((a, b) => a + b, 0) / ps.length : null;
   if (mean == null) return statCard({ label: "AVERAGE CONFIDENCE", value: "—", sub: "No graded moneyline picks in this range." });
   return statCard({ label: "AVERAGE CONFIDENCE", value: trackPct(mean), sub: "On moneyline picks", visual: donut(mean, { size: 72, stroke: 11 }) });
@@ -335,7 +354,7 @@ function trackTr(r) {
 function trackTableCard(C) {
   const s = C.s, list = trackFilter(C.scope, s), shown = list.slice(0, s.n);
   let body;
-  if (!C.scope.length) body = emptyMsg(s.archive ? "No archived pre-restart picks in this range." : "No graded picks in this range yet.");
+  if (!C.scope.length) body = emptyMsg(trackIsRecord(s) ? "No graded leans in this range yet. Most games show No lean after the shrink; moneylines and other bets are under +EV picks." : s.view === "model" ? "No archived pre-restart picks in this range." : "No graded picks in this range yet.");
   else if (!list.length) body = `${emptyMsg("No predictions match these filters.")}<p class="ca-trk-reset"><button class="ca-btn" data-trk-reset>Reset filters</button></p>`;
   else {
     body = `<div class="ca-table-wrap"><table class="ca-table ca-dash-table ca-trk-table"><thead><tr><th>Date</th><th>League</th><th>Matchup / Player</th><th>Market</th><th>Model Prediction</th><th>Closing Line</th><th title="${ctxEsc(TRACK_PROB_TIP)}">Model Prob.</th><th>Result</th><th>Confidence</th><th>Final Score / Outcome</th><th>View</th></tr></thead><tbody>${shown.map(trackTr).join("")}</tbody></table></div>
@@ -357,11 +376,14 @@ function trackModelCard(C) {
     <p class="ca-cap">${m.n} graded moneyline picks · lower Brier is better · well calibrated = within 3 points.</p>` : emptyMsg("No graded moneyline picks in this range yet.");
   return `<section class="ca-card ca-trk-rail-card" id="trk-model"><div class="ca-card-head"><h2>Model Calibration</h2></div>${body}</section>`;
 }
-// The model picks' profit tracker (prediction_pnl_daily, already cut at the record start); not offered for the archive.
+// Profit tracker. The record: the leans at −110 (trackPnlDaily over the in-record rec rows). The diagnostic: every model pick
+// (prediction_pnl_daily, already cut at the record start). Not offered for the archive.
 function trackProfitCard(C) {
-  if (C.s.archive) return "";
-  const s = getSettings(), U = unitLabel(s);
-  return `<div class="ca-trk-legacy" id="trk-profit">${pnlSection(`Profit tracker <span style="font-size:.6em;opacity:.6">${U} per bet</span>`, `What ${U} on every model pick would have made — moneyline (predicted winner), spread &amp; total picks — at the closing price (median across books). Spread/total with no captured price assume −110.`,
+  if (C.s.view === "model" && C.s.archive) return "";
+  const s = getSettings(), U = unitLabel(s), unit = `<span style="font-size:.6em;opacity:.6">${U} per bet</span>`;
+  if (trackIsRecord(C.s)) return `<div class="ca-trk-legacy" id="trk-profit">${pnlSection(`Profit tracker ${unit}`, `What ${U} on every lean the site showed would have made, at −110 against the closing line.`,
+    trackPnlDaily((C.rows || []).filter((r) => r.rec && r.inRecord !== false)), [["spread", "SPREAD"], ["total", "TOTAL"]], s)}</div>`;
+  return `<div class="ca-trk-legacy" id="trk-profit">${pnlSection(`Profit tracker ${unit}`, `Diagnostic: what ${U} on every model pick would have made — moneyline (predicted winner), spread &amp; total picks — at the closing price (median across books). Spread/total with no captured price assume −110.`,
     C.predPnl, [["moneyline", "MONEYLINE"], ["spread", "SPREAD"], ["total", "TOTAL"]], s)}</div>`;
 }
 
@@ -391,7 +413,10 @@ function trackErrorHtml(C) {
 }
 function trackModelHtml(C) {
   if (C.error) return trackErrorHtml(C);
-  const banner = C.s.archive ? `<p class="ca-trk-banner">Showing archived pre-restart NFL results (the earlier model). They are kept for comparison and are not part of the published record. <button class="ca-link" data-trk-record-back>Back to the record</button></p>` : "";
+  const back = `<button class="ca-link" data-trk-record-back>Back to the record</button>`;
+  const banner = C.s.view === "all" ? `<p class="ca-trk-banner">Diagnostic: the model's raw side on every game since the restart, including games the site showed as No lean. These are not recommendations and are not part of the published record. ${back}</p>`
+    : C.s.archive ? `<p class="ca-trk-banner">Showing archived pre-restart results (every game, earlier methods). They are kept for comparison and are not part of the published record. ${back}</p>`
+    : `<p class="ca-trk-banner">The record counts only what the site recommended: spread and total leans that survive the shrink, graded against the closing line. Moneylines and other bets are under +EV picks.</p>`;
   return `${trackTitle(C)}${banner}
     <div class="ca-stats ca-trk-stats">${["trk-record", "trk-line", "trk-total", "trk-streak", "trk-avg"].map((id) => trackCard(id, C)).join("")}</div>
     <div class="ca-trk-r1">${trackCard("trk-cum", C)}${trackCard("trk-market", C)}</div>
@@ -458,14 +483,14 @@ function trackSet(key, value) {
   if (["market", "league", "conf", "result", "sort", "q"].includes(key)) s.n = TRACK_PAGE;
   trackSync(s);
 }
-// The Record select: model picks / +EV picks / the pre-restart NFL archive. Only the +EV view needs different data (refetch); the
-// archive is the model view's rows scoped to before the restart (redraw from the cached load).
+// The Record select: recommended leans / +EV picks / every game / the pre-restart archive. Only the +EV view needs different data
+// (refetch); the others are the same cached rows scoped differently (redraw).
 function trackSetRecord(key) {
   const s = trackState(), was = s.view;
-  s.view = key === "ev" ? "ev" : "model";
+  s.view = key === "ev" || key === "all" ? key : "model";
   s.archive = key === "archive";
   trackSync(s);
-  if (s.view !== was) render(); else trackRerender();
+  if ((s.view === "ev") !== (was === "ev")) render(); else trackRerender();
 }
 function wireTrackPage() {
   const root = document.getElementById("trk-root");

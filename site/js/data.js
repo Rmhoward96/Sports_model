@@ -289,6 +289,11 @@ function trackClosingMap(rows) {
 const trackNum0 = (x) => (x === 0 ? 0 : x);   // never -0
 const trackGradeOf = (b) => (b === true ? "W" : b === false ? "L" : "P");
 
+// The shrunk lean of one graded market (js/shrink.js), or null when shrink.js is not loaded.
+const trackLean = (sport, market, model, line) => (typeof shrinkLean === "function" ? shrinkLean(sport, market, model, line) : null);
+// Units of one bet at -110: a win pays 100 / 110, a loss costs 1, a push is refunded.
+const TRACK_WIN_110 = 100 / 110;
+const trackRecUnits = (result) => (result === "W" ? TRACK_WIN_110 : result === "L" ? -1 : 0);
 // One row per graded pick of a graded game: moneyline (always), spread (when a market line is stored AND the model has a side), total
 // (likewise). A spread / total with no model pick (model exactly on the line, or no model numbers) is not a bet and gets no row,
 // like prediction_pnl's no-bet exclusion (R23). Confidence is the model's moneyline win probability, so only moneyline rows carry it. A game without actual_winner is ungraded and gives no rows (the same population as prediction_pnl).
@@ -298,6 +303,10 @@ const trackGradeOf = (b) => (b === true ? "W" : b === false ? "L" : "P");
 // "game_pk|side" -> moneyline closing price (from trackClosingMap). `closingFailed` (optional Set of game_pks whose closing fetch
 // failed) lets a moneyline row without a price say why: closingState "failed" (the fetch failed) or "none" (the fetch worked and
 // no price was captured); null when the price is known or `closingFailed` was not supplied.
+// rec = the site actually showed this pick as a lean: a spread / total whose SHRUNK model number (js/shrink.js shrinkLean, the
+// current k) leans the same side at the stored market line; a moneyline is never rec (the model favourite is not a bet: moneyline
+// bets come from the +EV board). recEdge = the shrunk points off the line on a rec row, else null. A rec row without a prediction_pnl
+// match carries units at a flat -110 (trackRecUnits). Without js/shrink.js nothing is rec (fails closed: no raw pick is ever counted).
 function trackRows(accuracyRows, pnlRows, closing, closingFailed) {
   const units = new Map();
   for (const p of pnlRows || []) if (p && finite(p.pnl)) units.set(`${p.game_pk}|${p.market}`, unitsFromPnl(p.pnl));
@@ -309,8 +318,12 @@ function trackRows(accuracyRows, pnlRows, closing, closingFailed) {
     const finalScore = `${am === 0 ? "Tie" : `${r.actual_winner}${am != null ? ` by ${Math.abs(am)}` : ""}`}${at != null ? ` · ${at} total` : ""}`;
     const base = { date: r.game_date, sport: r.sport, game_pk: r.game_pk, home: r.home_team_name, away: r.away_team_name,
       matchup: `${r.away_team_name} @ ${r.home_team_name}`, winner: r.actual_winner, finalScore };
-    const push = (market, side, pick, closingLine, modelLine, prob, grade) => out.push({ ...base, market, side, pick, closing: closingLine, modelLine, prob, conf: market === "moneyline" ? conf : null,
-      result: trackGradeOf(grade), won: grade === true ? true : grade === false ? false : null, units: units.get(`${r.game_pk}|${market}`) ?? null });
+    const push = (market, side, pick, closingLine, modelLine, prob, grade, lean = null) => {
+      const rec = !!lean && lean.side === side, result = trackGradeOf(grade);
+      out.push({ ...base, market, side, pick, closing: closingLine, modelLine, prob, conf: market === "moneyline" ? conf : null,
+        result, won: grade === true ? true : grade === false ? false : null, rec, recEdge: rec ? Math.abs(lean.edge) : null,
+        units: units.get(`${r.game_pk}|${market}`) ?? (rec ? trackRecUnits(result) : null) });
+    };
     const mlSide = r.predicted_winner === r.home_team_name ? "home" : r.predicted_winner === r.away_team_name ? "away" : null;
     push("moneyline", mlSide, r.predicted_winner ?? null, mlSide && closing && closing.has(`${r.game_pk}|${mlSide}`) ? closing.get(`${r.game_pk}|${mlSide}`) : null, null, conf, r.winner_correct);
     if (closingFailed && mlSide && !(closing && closing.has(`${r.game_pk}|${mlSide}`))) out[out.length - 1].closingState = closingFailed.has(String(r.game_pk)) ? "failed" : "none";
@@ -318,12 +331,12 @@ function trackRows(accuracyRows, pnlRows, closing, closingFailed) {
     if (ms != null) {
       const edge = pm == null ? null : pm + ms, side = edge == null || edge === 0 ? null : edge > 0 ? "home" : "away";
       if (side) push("spread", side, side === "home" ? r.home_team_name : r.away_team_name,
-        trackNum0(side === "home" ? ms : -ms), trackNum0(side === "home" ? r05(-pm) : r05(pm)), numOrNull(r.spread_pick_prob), r.spread_pick_correct);
+        trackNum0(side === "home" ? ms : -ms), trackNum0(side === "home" ? r05(-pm) : r05(pm)), numOrNull(r.spread_pick_prob), r.spread_pick_correct, trackLean(r.sport, "spread", pm, ms));
     }
     const mt = numOrNull(r.market_total), pt = numOrNull(r.pred_total);
     if (mt != null) {
       const side = pt == null || pt === mt ? null : pt > mt ? "over" : "under";
-      if (side) push("total", side, side === "over" ? "Over" : "Under", mt, r05(pt), numOrNull(r.total_pick_prob), r.total_pick_correct);
+      if (side) push("total", side, side === "over" ? "Over" : "Under", mt, r05(pt), numOrNull(r.total_pick_prob), r.total_pick_correct, trackLean(r.sport, "total", pt, mt));
     }
   }
   const mkt = (r) => TRACK_MARKETS.indexOf(r.market);
@@ -333,6 +346,20 @@ function trackRows(accuracyRows, pnlRows, closing, closingFailed) {
 function trackTally(rows) {
   const rs = rows || [], w = rs.filter((r) => r.result === "W").length, l = rs.filter((r) => r.result === "L").length, p = rs.filter((r) => r.result === "P").length;
   return { w, l, p, n: rs.length, pct: w + l ? w / (w + l) : null };
+}
+// The recommended leans' profit in prediction_pnl_daily's shape ({ game_date, sport, market, n, wins, losses, pushes, pnl }, $10 a
+// bet at -110), oldest first: the record's profit tracker and the sport pages' Season Performance. Only rec rows count.
+function trackPnlDaily(rows) {
+  const by = new Map();
+  for (const r of rows || []) {
+    if (!r || !r.rec) continue;
+    const k = `${r.date}|${r.sport}|${r.market}`;
+    const d = by.get(k) || { game_date: r.date, sport: r.sport, market: r.market, n: 0, wins: 0, losses: 0, pushes: 0, pnl: 0 };
+    d.n += 1; d.wins += r.result === "W" ? 1 : 0; d.losses += r.result === "L" ? 1 : 0; d.pushes += r.result === "P" ? 1 : 0;
+    d.pnl += 10 * trackRecUnits(r.result);
+    by.set(k, d);
+  }
+  return [...by.values()].sort((a, b) => (a.game_date < b.game_date ? -1 : a.game_date > b.game_date ? 1 : a.sport < b.sport ? -1 : a.sport > b.sport ? 1 : TRACK_MARKETS.indexOf(a.market) - TRACK_MARKETS.indexOf(b.market)));
 }
 // Moneyline closing prices of the graded games. The unfiltered view scan is near the 3s anon statement limit, so the ids go in
 // small chunks (30), at most 3 in flight at once (seven at once pushed chunks past the limit and blanked whole batches). A failed

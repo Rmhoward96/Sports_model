@@ -2,9 +2,10 @@
    Key Insights. Real data only: every number is computed from graded rows, every card has an honest empty state, nothing is invented.
    Mounts into board.js: BOARD_CARDS[id] = (D) => html for the four BOARD_SLOTS.left ids, one BOARD_LOADERS entry that puts everything
    this column needs into D.left (memoised for a minute per sport: a period change re-renders the page but the season's record does not change).
-   Season Performance: the model's graded picks inside the published record (track_record_start), tallied by the same trackRows /
-   trackTally the Track Record page uses (so W-L and win % equal Track Record's "Performance by League" row for the league), units from
-   prediction_pnl_daily ($10 a bet, / 10 = units: the Track Record profit tracker's source, ROI = pnl / (decided bets x $10)). It shows the
+   Season Performance: what the site recommended inside the published record (track_record_start): the spread / total leans that survive
+   the shrink (trackRows' rec), tallied by the same trackRows / trackTally the Track Record page uses (so W-L and win % equal Track Record's
+   "Performance by League" row for the league in its Recommended leans view), units at -110 from trackPnlDaily ($10 a bet, / 10 = units:
+   the Track Record profit tracker's source, ROI = pnl / (decided bets x $10)). It shows the
    SELECTED PERIOD: a past week / day opens on that week's (day's) numbers, the current period opens on the season; a Week / Season toggle
    under the title switches, and the title and caption always name the period the numbers cover.
    Model vs. Market: graded games binned by how far the model's number was from the market's (x), against how often the home / over side
@@ -28,30 +29,25 @@ const blSeasonStart = (sport, today) => (sport === "mlb" ? `${seasonOf(today)}-0
 const blRecordRows = (acc, closingMap, starts) => trackRows(acc, [], closingMap).filter((r) => inTrackRecord(starts, r.sport, r.date));
 const blAccInRecord = (acc, starts) => (acc || []).filter((r) => r && r.actual_winner != null && inTrackRecord(starts, r.sport, r.game_date));
 
-// Mean gap (pp) between the model's win probability and the market's no-vig closing probability, over the moneyline picks with both closing prices.
-function blEdge(rows, closing) {
-  const v = [];
-  for (const r of rows || []) {
-    if (r.market !== "moneyline" || r.conf == null || !r.side || !closing) continue;
-    const a = americanToProb(closing.get(`${r.game_pk}|${r.side}`)), b = americanToProb(closing.get(`${r.game_pk}|${r.side === "home" ? "away" : "home"}`));
-    if (Number.isFinite(a) && Number.isFinite(b) && a + b > 0) v.push((r.conf - a / (a + b)) * 100);
-  }
+// Mean edge (points) of the leans: how far the site's shrunk number sat from the line (trackRows' recEdge).
+function blLeanEdge(rows) {
+  const v = (rows || []).map((r) => r.recEdge).filter(finite).map(Number);
   return v.length ? { mean: v.reduce((s, x) => s + x, 0) / v.length, n: v.length } : null;
 }
-// Units per game week of the scope (oldest first, weeks with no bets between the first and last are 0), from prediction_pnl_daily rows.
+// Units per game week of the scope (oldest first, weeks with no bets between the first and last are 0), from trackPnlDaily rows.
 function blWeekUnits(sport, pnl) {
   const by = new Map(), key = (d) => (BOARD_RANKED.includes(sport) ? weekOf(sport, d) : Math.floor(dayDiff(d, pnl[0].game_date) / 7));
   for (const r of pnl || []) if (r && finite(r.pnl)) by.set(key(r.game_date), (by.get(key(r.game_date)) || 0) + +r.pnl);
   const ks = [...by.keys()].sort((a, b) => a - b);
   return ks.length ? Array.from({ length: ks[ks.length - 1] - ks[0] + 1 }, (_, i) => unitsFromPnl(by.get(ks[0] + i) || 0)).slice(-10) : [];
 }
-// The numbers of one scope [from, to] (YYYY-MM-DD, inclusive): W-L-P + win % (trackTally of the record rows), units / ROI (prediction_pnl_daily:
-// pnl / 10, ROI = pnl over the decided bets x $10), the mean ML edge, and the units per week for the bars.
-function blPerf(sport, rows, pnl, closing, from, to) {
+// The numbers of one scope [from, to] (YYYY-MM-DD, inclusive): W-L-P + win % (trackTally of the leans), units / ROI (trackPnlDaily:
+// pnl / 10, ROI = pnl over the decided bets x $10), the mean lean edge, and the units per week for the bars.
+function blPerf(sport, rows, pnl, from, to) {
   const rs = (rows || []).filter((r) => r.date >= from && r.date <= to), t = trackTally(rs);
   const pr = (pnl || []).filter((r) => r && r.game_date >= from && r.game_date <= to), a = pnlAgg(pr), decided = a.w + a.l;
   return { ...t, graded: new Set(rs.map((r) => String(r.game_pk))).size, bets: a.n, units: pr.length ? unitsFromPnl(a.pnl) : null,
-    roi: decided ? a.pnl / (decided * 10) * 100 : null, edge: blEdge(rs, closing), weeks: pr.length ? blWeekUnits(sport, pr) : [] };
+    roi: decided ? a.pnl / (decided * 10) * 100 : null, edge: blLeanEdge(rs), weeks: pr.length ? blWeekUnits(sport, pr) : [] };
 }
 
 // ── Season Performance's period ──
@@ -63,15 +59,17 @@ function blScopeOf(D, pick) {
   const per = D.period, over = per.to < D.today, key = pick || (over ? "period" : "season");
   const season = blSeasonStart(D.sport, D.today);
   if (key === "period") return { key, from: per.from, to: per.to, word: blPeriodWord(per), caption: rangeLabel(per.from, per.kind === "week" ? per.to : per.from) };
-  const ds = ((D.left && D.left.rec) || []).map((r) => r.date).filter((d) => d >= season && d <= D.today).sort(), name = LIVE_SPORTS.includes(D.sport) ? `Season ${seasonOf(D.today)}` : "Published record";
+  const ds = ((D.left && D.left.picks) || []).map((r) => r.date).filter((d) => d >= season && d <= D.today).sort(), name = LIVE_SPORTS.includes(D.sport) ? `Season ${seasonOf(D.today)}` : "Published record";
   return { key, from: season, to: D.today, word: "Season", caption: ds.length ? `${name} · ${rangeLabel(ds[0], ds[ds.length - 1])}` : name };
 }
 function blScope(D) { const st = blState(); return blScopeOf(D, st.perfFor === blKey(D.period) ? st.perf : null); }
 // The sentence for a scope with no graded picks: a week before the record restart (archived), a period with none yet, or an empty record.
-function blNoPicksMsg(D, L, sc) {
+// `leans`: Season Performance's wording (it counts only the leans the site showed); Model Projections keeps "picks".
+function blNoPicksMsg(D, L, sc, leans = false) {
   const name = boardName(D.sport), rs = L.starts && L.starts.get ? L.starts.get(D.sport) : null, since = rs && rs.starts_at ? etDateStr(rs.starts_at) : "";
   if (sc.key === "period" && since && sc.to < since) return `${sc.word} is before the published ${name} record, which restarted ${fullDate(since)}${rs.model_version === "nfl-sim-ml-v2" ? " with the ML v2 model" : ""}. Earlier results are archived.`;
-  return sc.key === "period" ? `No graded ${name} picks in ${sc.word} yet.` : `No graded ${name} picks in the published record yet.`;
+  const noun = leans ? "leans" : "picks", msg = sc.key === "period" ? `No graded ${name} ${noun} in ${sc.word} yet.` : `No graded ${name} ${noun} in the published record yet.`;
+  return leans ? `${msg} Most games show No lean after the shrink; moneylines and other bets are on the +EV page.` : msg;
 }
 
 // ── Model vs. Market ──
@@ -215,7 +213,7 @@ async function blCfbConf() {
 }
 // Everything the column needs for a sport; each source fails on its own (a failed one leaves its field out and its card says so).
 async function blLoadAll(D) {
-  const sport = D.sport, L = { sport, starts: null, failed: {}, rec: [], accRec: [], closing: new Map(), pnl: [], props: [], pulse: null, rest: null, conf: null };
+  const sport = D.sport, L = { sport, starts: null, failed: {}, rec: [], picks: [], accRec: [], closing: new Map(), pnl: [], props: [], pulse: null, rest: null, conf: null };
   const startsP = trackStarts();      // the record scope, loaded once for the record and the pulse (fails closed)
   const part = (k, p) => p.then((v) => { L[k] = v; }).catch((e) => { L.failed[k] = true; console.error(`board left: ${k} failed to load`, e); });
   const recordP = (async () => {
@@ -224,8 +222,10 @@ async function blLoadAll(D) {
     L.starts = st.starts;
     const rows = blAccInRecord(acc, st.starts), closing = trackClosingMap(await trackClosing(rows.map((r) => r.game_pk)).catch(() => []));
     L.accRec = rows; L.closing = closing; L.rec = blRecordRows(rows, closing, st.starts);
+    L.picks = L.rec.filter((r) => r.rec);      // what the site recommended: Season Performance counts only these
+    L.pnl = trackPnlDaily(L.picks);
   })();
-  const jobs = [part("record", recordP), part("pnl", sbAll(`prediction_pnl_daily?sport=eq.${sport}&select=*&order=game_date.asc,market.asc`))];
+  const jobs = [part("record", recordP)];
   if (LIVE_SPORTS.includes(sport)) {
     jobs.push(part("pulse", blPulseLoad(sport, D.nowMs, D.today, startsP)));
     if (sport === "nfl") {
@@ -261,24 +261,24 @@ const blFailed = (id, title) => blEmpty(id, title, "This panel couldn't load.");
 
 function blSeasonPerf(D) {
   const L = D.left, id = "board-season-perf", name = boardName(D.sport);
-  if (!L || L.failed.record || L.failed.pnl) return blFailed(id, "Season Performance");
+  if (!L || L.failed.record) return blFailed(id, "Season Performance");
   if (!L.rec.length && !blLive(D)) return blEmpty(id, "Season Performance", `${blNoModel(D)} No graded ${name} picks in the published record.`);
-  const per = D.period, sc = blScope(D), p = blPerf(D.sport, L.rec, L.pnl, L.closing, sc.from, sc.to);
+  const per = D.period, sc = blScope(D), p = blPerf(D.sport, L.picks || [], L.pnl, sc.from, sc.to);
   const title = sc.key === "period" ? `${sc.word} Performance` : "Season Performance";
   const toggle = `<div class="ca-bl-scope">${pills("bl-scope", [["period", ctxEsc(blPeriodWord(per))], ["season", "Season"]], sc.key)}</div>`;
   const head = `${blHead(title, `<a class="ca-link" href="track-record.html"><span class="ca-bl-v">View </span>Track Record →</a>`)}${toggle}<p class="ca-bl-cap">${ctxEsc(sc.caption)}</p>`;
-  if (!p.n) return blCard(id, `${head}${emptyMsg(blNoPicksMsg(D, L, sc))}`);
+  if (!p.n) return blCard(id, `${head}${emptyMsg(blNoPicksMsg(D, L, sc, true))}`);
   const pct = p.pct == null ? "—" : `${(p.pct * 100).toFixed(1)}%`;
   const bars = p.weeks.length > 1 ? miniBars(p.weeks, { w: 46, h: 30 }) : "";
   const boxes = [
     statCard({ label: "W - L", value: `<span class="ca-bl-wl">${p.w} - ${p.l}</span><small class="${p.pct != null && p.pct >= 0.5 ? "pos" : ""}">${pct}</small>`, sub: p.p ? `${p.p} push${p.p > 1 ? "es" : ""}` : "no pushes",
-      tip: "Moneyline, spread and total picks graded W or L (pushes do not count in the win %): the same record as Track Record's Performance by League." }),
+      tip: "The spread and total leans the site showed (after the shrink), graded W or L against the closing line (pushes do not count in the win %): the same record as Track Record's Recommended leans for this league." }),
     statCard({ label: "Units", value: p.units == null ? "—" : uStr(p.units), valueClass: p.units == null ? "" : signCls(p.units), sub: p.units == null ? "No bets priced" : `${p.bets} bets`,
-      tip: "Profit at the price captured for each pick, 1 unit = $10 a bet (the Track Record profit tracker's source, prediction_pnl_daily)." }),
+      tip: "Profit at −110 on each lean, 1 unit = $10 a bet (the Track Record profit tracker)." }),
     statCard({ label: "ROI", value: p.roi == null ? "—" : pStr(p.roi), valueClass: p.roi == null ? "" : signCls(p.roi), visual: bars ? `<span title="Units by week">${bars}</span>` : "",
       tip: "Profit divided by the stake on the decided bets (pushes are refunded)." }),
-    statCard({ label: "Avg. Edge", value: p.edge ? pStr(p.edge.mean) : "—", valueClass: p.edge ? signCls(p.edge.mean) : "", sub: p.edge ? `${p.edge.n} ML picks` : "No priced ML picks",
-      tip: "Average gap between the model's win probability and the market's no-vig closing probability on its moneyline picks." }),
+    statCard({ label: "Avg. Edge", value: p.edge ? `${p.edge.mean.toFixed(1)} pts` : "—", sub: p.edge ? `${p.edge.n} lean${p.edge.n === 1 ? "" : "s"}` : "No leans",
+      tip: "Average distance between the site's shrunk number and the line on its leans." }),
   ].join("");
   return blCard(id, `${head}<div class="ca-bl-grid">${boxes}</div>`, "ca-bl-perf");
 }

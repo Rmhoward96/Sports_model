@@ -49,18 +49,10 @@ function gmShrunkLines(pred) {
 // The side the model favors in each market: moneyline favorite; spread / total only when the SHRUNK model's half-point
 // line is off the market line by at least a quarter point (same rule as the legacy lean, on the shrunk number); null when unknowable or on the line.
 function gmLean(pred) {
-  const p = pred || {}, wp = numOrNull(p.home_win_prob), h = numOrNull(p.pred_home_score), a = numOrNull(p.pred_away_score);
-  const ls = numOrNull(p.market_spread), lt = numOrNull(p.market_total), S = gmShrunkLines(p);
-  const out = { ml: wp == null ? null : wp >= 0.5 ? "home" : "away", spread: null, total: null };
-  if (ls != null && h != null && a != null) {
-    const edge = shrinkHalf(S.sMargin, -ls) + ls;      // the shrunk model margin (half point) minus the market's expected home margin (-ls); exactly 0 at k = 0
-    out.spread = Math.abs(edge) < 0.25 ? null : edge > 0 ? "home" : "away";
-  }
-  if (lt != null && h != null && a != null) {
-    const edge = shrinkHalf(S.sTotal, lt) - lt;        // the same half-point rule as the spread; exactly 0 at k = 0
-    out.total = Math.abs(edge) < 0.25 ? null : edge > 0 ? "over" : "under";
-  }
-  return out;
+  const p = pred || {}, wp = numOrNull(p.home_win_prob), S = gmShrunkLines(p);
+  const spread = S.hasSpread ? shrinkLean(p.sport, "spread", S.margin, numOrNull(p.market_spread)) : null;   // js/shrink.js: the shared half-point rule
+  const total = S.hasTotal ? shrinkLean(p.sport, "total", S.total, numOrNull(p.market_total)) : null;
+  return { ml: wp == null ? null : wp >= 0.5 ? "home" : "away", spread: spread ? spread.side : null, total: total ? total.side : null };
 }
 
 // "Mon, Oct 12 · 7:00 PM ET" (Eastern); "" for a missing / invalid time.
