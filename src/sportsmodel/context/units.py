@@ -12,9 +12,10 @@ Per team-game offense metrics (``UNIT_GAME_COLUMNS``), one row per team per game
     its week. Using only weeks <= the game's week keeps it leak-free; a new season
     restarts it (so CFBD definition drift across seasons washes out).
 * ``pass_plays`` / ``run_plays`` -- plays by unit that game; ``pass_rate`` = dropbacks /
-  (dropbacks + designed runs). CFB split counts are not always supplied by CFBD; when
-  missing, ``pass_rate`` falls back to ``CFB_DEFAULT_PASS_RATE`` (0.5, a round league
-  average) and the play columns stay NaN.
+  (dropbacks + designed runs). CFB split counts are derived from CFBD's
+  totalPPA / ppa (``scripts/build_cfb_advanced.py``); when still missing, ``pass_rate``
+  falls back to ``CFB_DEFAULT_PASS_RATE`` (0.5, a round league average) and the play
+  columns stay NaN.
 
 NFL conventions (nflverse pbp, REG + POST, 2-pt tries and plays without EPA dropped):
 dropbacks = ``play_type == "pass"`` (incl. sacks) or ``qb_scramble == 1``; designed runs
