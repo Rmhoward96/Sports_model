@@ -112,8 +112,8 @@ A **pick** is a (game, market, side) where one of the list's 8 books offers a pr
 ### Closing line and grading (for the test)
 
 **Close capture:**
-- A close job runs frequently (*my call:* every 10 minutes).
-- For every league with an ungraded pick whose game starts within the next 5–20 minutes, it makes one bulk call with `bookmakers=pinnacle` and only the markets that hold such picks. That costs 1 credit per market.
+- A close job runs frequently (*my call:* every 5 minutes, from the take-these-watch job).
+- For every league with an ungraded pick whose game starts within the next 5–12 minutes, it makes one bulk call with `bookmakers=pinnacle` and only the markets that hold such picks. That costs 1 credit per market.
 - The close is Pinnacle's last price before the start. *My call:* a close is valid only if it was taken 0–30 minutes before the start; anything earlier or after the start leaves the pick ungraded ("no close").
 - *My call:* the close job makes its own calls for all eight leagues, keyed by event id. It does not reuse `capture_close.py`'s NFL/CFB/MLB captures, which keeps one pipeline and needs no event-to-`game_pk` match for grading.
 - Model this on `scripts/capture_close.py` and reuse its window logic.

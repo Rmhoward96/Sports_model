@@ -64,7 +64,7 @@ Each script has its own GitHub Actions workflow. The site adds two static pages,
 - Judged once. The verdict row is append-only.
 
 **Close and retention**
-- A close is valid only if taken 0–30 minutes before start. The close job targets ungraded picks starting in 5–20 minutes.
+- A close is valid only if taken 0–30 minutes before start. The close job targets ungraded picks starting in 5–12 minutes.
 - Raw prices are kept 7 days; picks, closes, results and the verdict are kept forever.
 
 **Pull schedule and on/off switch**
@@ -140,7 +140,7 @@ Shared row shapes, used by Tasks 2–7. They are plain dicts; the keys are bindi
   - `MARKETS = ("ml", "spread", "total")`, `API_MARKET = {"ml": "h2h", "spread": "spreads", "total": "totals"}`.
   - `EV_MIN = 0.015`, `EPS = 1e-12`, `PRICE_MIN = -250`, `PRICE_MAX = 500`, `PIN_MAX_AGE_MIN = 30`.
   - `PULL_FLOOR = 1500`, `CLOSE_FLOOR = 300`, `SCORES_FLOOR = 300`.
-  - `CLOSE_LO_MIN = 5`, `CLOSE_HI_MIN = 20`, `CLOSE_VALID_MAX_MIN = 30`, `EVENTS_HORIZON_DAYS = 7`, `PRICE_RETENTION_DAYS = 7`.
+  - `CLOSE_LO_MIN = 5`, `CLOSE_HI_MIN = 12`, `CLOSE_VALID_MAX_MIN = 30`, `EVENTS_HORIZON_DAYS = 7`, `PRICE_RETENTION_DAYS = 7`.
   - `TEST_START = datetime(2026, 11, 1, tzinfo=UTC)`, `N_REQUIRED = 300`, `BEAT_MIN = 0.55`, `RESAMPLES = 10_000`, `SEED = 20261017`, `LOWER_PERCENTILE = 2.5`, `DIRECTION_STEP = 0.5`.
   - `@dataclass(frozen=True) class League: key: str; odds_sport: str`, duck-typed for the `odds.fetch_*` functions, plus `league(key) -> League`.
   - `budget_ok(remaining, floor: int) -> tuple[bool, str | None]`: use `early.polling.parse_credits`. Unknown remaining → `(True, None)`. Below the floor → `(False, "<n> Odds API credits left (< <floor>): skipping")`.
