@@ -122,7 +122,8 @@ function populated({ search = "", moves = [], lastBuild = true, value = false } 
   const pred = { game_pk: 1, sport: "nfl", home_team_name: HOME, away_team_name: EVIL_AWAY, commence_time: iso(48), home_win_prob: 0.6, pred_home_score: 30, pred_away_score: 20, market_spread: -3, market_total: 41.5 };
   const evPnl = [{ game_date: day(5), sport: "nfl", market: "moneyline", n: 10, wins: 6, losses: 3, pushes: 1, pnl: 50 }, { game_date: day(2), sport: "nfl", market: "prop", n: 2, wins: 1, losses: 1, pushes: 0, pnl: 0 }];
   const results = [{ sport: "nfl", game_pk: 11, market: "moneyline", side: "home", won: true, clv: 0.03 }, { sport: "nfl", game_pk: 12, market: "moneyline", side: "home", won: false, clv: -0.01 }];
-  const gradedPick = (pk) => ({ sport: "nfl", game_pk: pk, market: "moneyline", side: "home", true_prob: 0.6, best_price: 100, created_at: iso(-100), commence_time: iso(-24) });
+  // ev_game_record rows (the pick ledger view): the result and the first-shown pick context in ONE row
+  const gradedPick = (pk) => ({ sport: "nfl", game_pk: pk, market: "moneyline", side: "home", base_prob: 0.6, best_price: 100, first_shown_at: iso(-100), commence_time: iso(-24) });
   const propRes = [{ sport: "nfl", game_pk: 21, player_id: "p1", market: "rec_yds", line: 50.5, model_version: "v1", side: "over", model_prob: 0.6, result: "win", profit: 0.9091, clv: 0.02, commence_time: iso(-24) }];
   const propPk = [{ game_pk: 21, player_id: "p1", market: "rec_yds", line: 50.5, model_version: "v1", best_price: -110 }];
   const requested = [];
@@ -133,10 +134,10 @@ function populated({ search = "", moves = [], lastBuild = true, value = false } 
     else if (path === "ev_current") rows = q.includes("sport=eq.nfl") ? evNfl : [];
     else if (path === "ev_prop_picks_current") rows = q.includes("sport=eq.nfl") ? props : [];
     else if (path === "ev_pnl_daily") rows = evPnl;
-    else if (path === "ev_results") rows = results;
+    else if (path === "ev_game_record") rows = results.map((r) => ({ ...gradedPick(r.game_pk), ...r }));
     else if (path === "ev_prop_results") rows = propRes;
     else if (path === "ev_prop_picks") rows = q.includes("select=created_at") ? (lastBuild ? [{ created_at: iso(-1) }] : []) : q.includes("created_at=gte") ? [] : propPk;
-    else if (path === "ev_picks") rows = q.includes("select=created_at") ? (lastBuild ? [{ created_at: iso(-1) }] : []) : q.includes("created_at=gte") ? [{ sport: "nfl", game_pk: 1, market: "moneyline", side: "home", created_at: iso(-1) }] : [gradedPick(11), gradedPick(12)];
+    else if (path === "ev_picks") rows = q.includes("select=created_at") ? (lastBuild ? [{ created_at: iso(-1) }] : []) : q.includes("created_at=gte") ? [{ sport: "nfl", game_pk: 1, market: "moneyline", side: "home", created_at: iso(-1) }] : [];
     else if (path === "line_moves_current") { if (moves === 404) return { ok: false, status: 404, text: async () => "not found", json: async () => ({}) }; rows = moves.map((m) => m(iso)); }
     return { ok: true, json: async () => rows };
   };
