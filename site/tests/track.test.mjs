@@ -712,7 +712,7 @@ test("+EV view: URL view=ev renders the legacy profit tracker and +EV sections i
   assert.ok(html.includes("Recommended leans") && html.includes("+EV picks"));
   assert.ok(html.includes("+EV profit tracker") && html.includes("Graded parlays") && html.includes("+EV pick performance"));
   assert.ok(!html.includes("OVERALL RECORD") && !html.includes("Cumulative Prediction Performance"));
-  assert.ok(requested.some((r) => r.startsWith("ev_pnl_daily")) && requested.some((r) => r.startsWith("ev_results")));
+  assert.ok(requested.some((r) => r.startsWith("ev_pnl_daily")) && requested.some((r) => r.startsWith("ev_game_record")));
   assert.ok(!requested.some((r) => r.startsWith("prediction_accuracy")), "the model view's data is not fetched in the +EV view");
   assert.ok(!/NaN|undefined/.test(clean(html)));
 });

@@ -191,24 +191,39 @@ test("exposure classes are explicit: parlays are their own row (only when presen
 
 // ---- deterministic pick price ----------------------------------------------------------------
 const urlParts = (url) => { const u = new URL(url); return { path: u.pathname.split("/").pop(), q: u.search }; };
-test("evGradedPicks keeps the LATEST rebuild per pick, reads every page in a total created_at order, no cap warning", async () => {
+test("evGradedPicks reads ev_game_record (one row per pick) in the old pick shape, reads every page, no cap warning", async () => {
   const q = quiet(); const urls = [];
-  const row = (k, price, at) => ({ sport: "nfl", game_pk: 1, market: "moneyline", side: "home", best_price: price, created_at: at, ...k });
-  const rows = [row({}, 120, "2026-09-30T12:00:00Z"), row({}, 100, "2026-09-30T08:00:00Z"), row({ side: "away" }, -110, "2026-09-30T09:00:00Z")];   // unordered on purpose
+  const row = (k, price, at) => ({ sport: "nfl", game_pk: 1, market: "moneyline", side: "home", matchup: "A @ B", commence_time: "2026-10-15T17:00:00Z", base_prob: 0.55, ev_best: 0.04, best_book: "fanduel", best_price: price, first_shown_at: at, ...k });
+  const rows = [row({}, 120, "2026-10-14T12:00:00Z"), row({ side: "away" }, -110, "2026-10-14T09:00:00Z")];
   const D = loadScripts(FILES, { globals: { console: q.console, fetch: async (u) => { urls.push(u); return { ok: true, json: async () => rows }; } } });
   const picks = await D.evGradedPicks();
-  assert.equal(picks.length, 2);
-  assert.equal(picks.find((p) => p.side === "home").best_price, 120);
-  assert.match(urls[0], /order=created_at\.asc,sport\.asc,game_pk\.asc,market\.asc,side\.asc,model_version\.asc/, "ties broken by the primary key");
+  assert.equal(picks.length, 2, "no latest-per-key reduction: the view already has one row per bet");
+  const home = picks.find((p) => p.side === "home");
+  assert.equal(home.best_price, 120);
+  assert.equal(home.created_at, "2026-10-14T12:00:00Z", "first_shown_at is exposed as created_at");
+  assert.equal(home.true_prob, 0.55, "true_prob is the fair probability (base_prob)");
+  assert.equal(home.pinnacle_price, null);
+  assert.equal("first_shown_at" in home, false);
+  assert.match(urls[0], /^ev_game_record\?|\/ev_game_record\?/, "reads the ledger-backed view");
+  assert.doesNotMatch(urls[0], /is_pick|ev_picks/, "no is_pick filter: the view has no such column");
+  assert.match(urls[0], /order=first_shown_at\.asc,sport\.asc,game_pk\.asc,market\.asc,side\.asc/, "ties broken by the key");
   assert.match(urls[0], /&limit=1000&offset=0$/); assert.equal(urls.length, 1, "a short first page ends the read");
-  assert.doesNotMatch(urls[0], /limit=4000/);
   assert.equal(q.logs.warn.length, 0);
-  // 1,500 pick rows: two pages, the newest rows (page 2) are kept
-  const all = Array.from({ length: 1500 }, (_, i) => row({ game_pk: i }, 100 + i, "2026-09-30T08:00:00Z"));
+  // 1,500 pick rows: two pages
+  const all = Array.from({ length: 1500 }, (_, i) => row({ game_pk: i }, 100 + i, "2026-10-14T08:00:00Z"));
   const D2 = loadScripts(FILES, { globals: { console: q.console, fetch: async (u) => { const off = +u.match(/offset=(\d+)/)[1]; return { ok: true, json: async () => all.slice(off, off + 1000) }; } } });
   const p2 = await D2.evGradedPicks();
   assert.equal(p2.length, 1500); assert.ok(p2.some((p) => p.game_pk === 1499));
   assert.equal(q.logs.warn.length, 0);
+});
+
+test("evResultsRows reads ev_game_record newest-graded first", async () => {
+  const urls = [];
+  const D = loadScripts(FILES, { globals: { fetch: async (u) => { urls.push(u); return { ok: true, json: async () => [{ sport: "nfl", game_pk: 1, market: "moneyline", side: "home", won: true, clv: 0.02, graded_at: "2026-10-16T00:00:00Z" }] }; } } });
+  const rows = await D.evResultsRows();
+  assert.equal(rows.length, 1); assert.equal(rows[0].won, true);
+  assert.match(urls[0], /ev_game_record\?order=graded_at\.desc&limit=1000/);
+  assert.doesNotMatch(urls[0], /ev_results/);
 });
 
 test("gradedLinePicks: the latest-created pick row sets the price whatever the input order", () => {
@@ -248,7 +263,8 @@ function populated({ search = "", watch = null, predH = 0, value = false } = {})
     { game_date: dayAgo(3), sport: "cfb", market: "spread", n: 4, wins: 1, losses: 3, pushes: 0, pnl: -20 },
     { game_date: dayAgo(2), sport: "nfl", market: "prop", n: 2, wins: 1, losses: 1, pushes: 0, pnl: 0 }];
   const results = [{ sport: "nfl", game_pk: 11, market: "moneyline", side: "home", won: true }, { sport: "nfl", game_pk: 12, market: "moneyline", side: "home", won: false }];
-  const gradedPick = (pk) => ({ sport: "nfl", game_pk: pk, market: "moneyline", side: "home", true_prob: 0.6, best_price: 100, created_at: iso(-100), commence_time: iso(-72) });
+  // ev_game_record rows (the pick ledger view): the result and the first-shown pick context in ONE row
+  const gradedPick = (pk) => ({ sport: "nfl", game_pk: pk, market: "moneyline", side: "home", base_prob: 0.6, best_price: 100, first_shown_at: iso(-100), commence_time: iso(-72) });
   const requested = [];
   const fetch = async (url) => {
     const { path, q } = urlParts(url); requested.push(path);
@@ -257,9 +273,9 @@ function populated({ search = "", watch = null, predH = 0, value = false } = {})
     else if (path === "ev_current") rows = q.includes("sport=eq.nfl") ? evCurrentNfl : [];
     else if (path === "ev_prop_picks_current") rows = q.includes("sport=eq.nfl") ? props : [];
     else if (path === "ev_pnl_daily") rows = evPnl;
-    else if (path === "ev_results") rows = results;
+    else if (path === "ev_game_record") rows = results.map((r) => ({ ...gradedPick(r.game_pk), ...r }));
     // iso(-0.01): flagged 36 seconds ago, so the pick stays inside today's ET day even when the suite runs just after midnight
-    else if (path === "ev_picks") rows = q.includes("created_at=gte") ? [{ sport: "nfl", game_pk: 1, market: "moneyline", side: "home", created_at: iso(-0.01) }] : [gradedPick(11), gradedPick(12)];
+    else if (path === "ev_picks") rows = q.includes("created_at=gte") ? [{ sport: "nfl", game_pk: 1, market: "moneyline", side: "home", created_at: iso(-0.01) }] : [];
     return { ok: true, json: async () => rows };
   };
   const storage = new Map(); if (watch) storage.set("ca-watchlist", JSON.stringify(watch));

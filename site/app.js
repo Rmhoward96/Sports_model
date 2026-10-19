@@ -618,21 +618,18 @@ function parlaySection(parlays) {
   return `<section class="section"><div class="section-title"><div><h2>+EV parlays</h2><p>Juiced favorites (worse than -250) recombined into a plus-money +EV ticket · <em>all legs must win</em></p></div></div><div class="parlay-grid">${live.map(parlayCard).join("")}</div></section>`;
 }
 
-// +EV pick PERFORMANCE (track record): graded picks from ev_results, joined to
-// the ev_picks that produced them for matchup/price context. clv = closing-line
-// value vs the Pinnacle close (the honest scoreboard).
-async function evResultsRows() { return sb("ev_results?order=graded_at.desc&limit=1000"); }
-// A pick can have several rebuild rows: keep the LATEST (max created_at) per (sport, game_pk, market, side)
-// so the price shown is deterministic. Every pick row is read (sbAll pages past PostgREST's 1,000-row clamp);
-// the order ends on the primary key so the pages are stable.
+// +EV pick PERFORMANCE (track record): graded game-line picks from ev_game_record (db/migration_ev_record_ledger.sql):
+// every +EV pick that was ever shown, graded at the price it was FIRST shown at (the append-only pick ledger), one
+// bet per (sport, game_pk, market). The view already carries the matchup / price context, so no ev_picks join.
+// clv = closing-line value vs the Pinnacle close (the honest scoreboard).
+async function evResultsRows() { return sb("ev_game_record?order=graded_at.desc&limit=1000"); }
+// One row per pick already (the view keeps the first-shown side per market), shaped like the old ev_picks rows the
+// consumers read: first_shown_at -> created_at; true_prob is the fair (de-vigged) probability = base_prob;
+// the view has no Pinnacle price, so pinnacle_price is null. Every row is read (sbAll pages past PostgREST's
+// 1,000-row clamp); the order ends on the key so the pages are stable.
 async function evGradedPicks() {
-  const rows = await sbAll("ev_picks?is_pick=eq.true&select=sport,game_pk,market,side,matchup,commence_time,true_prob,base_prob,ev_best,best_book,best_price,pinnacle_price,created_at&order=created_at.asc,sport.asc,game_pk.asc,market.asc,side.asc,model_version.asc");
-  const latest = new Map();
-  for (const r of rows || []) {
-    const k = `${r.sport}|${r.game_pk}|${r.market}|${r.side}`, prev = latest.get(k);
-    if (!prev || String(r.created_at || "") >= String(prev.created_at || "")) latest.set(k, r);
-  }
-  return [...latest.values()];
+  const rows = await sbAll("ev_game_record?select=sport,game_pk,market,side,matchup,commence_time,base_prob,ev_best,best_book,best_price,first_shown_at&order=first_shown_at.asc,sport.asc,game_pk.asc,market.asc,side.asc");
+  return (rows || []).map(({ first_shown_at, ...r }) => ({ ...r, true_prob: r.base_prob, pinnacle_price: null, created_at: first_shown_at }));
 }
 
 function evTrackSection(results, picks) {
