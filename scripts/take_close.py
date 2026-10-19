@@ -1,10 +1,11 @@
 """Grade and close capture for the 'take these' list (.github/workflows/take-these-close.yml).
 
-Every 10 minutes (minutes 3, 13, ... 53), in this order:
+Run every tick (5 minutes) by the take-these-watch job (scripts/take_watch.py); take-these-close.yml is the manual
+dispatch. In this order:
 
   1. GRADE (free, always runs, even with no credits): every pick whose game has started and that has no result yet is
      graded against its stored close (CLV, direction, or no_close) and written to take_results.
-  2. TARGETS: leagues and markets holding ungraded picks whose game starts in 5-20 minutes. None: done, nothing spent.
+  2. TARGETS: leagues and markets holding ungraded picks whose game starts in 5-12 minutes. None: done, nothing spent.
   3. A free /sports call refreshes the credit header; below 300 credits remaining the paid calls are skipped.
   4. Per target league, ONE odds call for bookmakers=pinnacle and only the markets with a target pick: one credit per
      market. Credit math: spec section 4.
@@ -147,7 +148,7 @@ def run_close(now: datetime, deps: Deps, *, run_id: str = "local", dry_run: bool
             break
         try:
             _close_league(league, targets[league], now, deps, run_id, dry_run, out)
-        except Exception as exc:  # noqa: BLE001 -- a failed league is not retried; the next run is 10 minutes away
+        except Exception as exc:  # noqa: BLE001 -- a failed league is not retried; the next tick is 5 minutes away
             _warn(f"{league} close failed: {type(exc).__name__}: {exc}")
             out["leagues"][league] = {"failed": f"{type(exc).__name__}: {exc}"[:200]}   # also after a paid call: a write failure is a failure
     out["remaining"] = deps.remaining()

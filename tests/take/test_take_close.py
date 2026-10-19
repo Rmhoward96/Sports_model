@@ -14,7 +14,7 @@ _SPEC.loader.exec_module(take_close)
 run_close, Deps = take_close.run_close, take_close.Deps
 
 NOW = datetime(2026, 11, 2, 17, 50, tzinfo=UTC)
-START = NOW + timedelta(minutes=10)                                     # inside the 5-20 minute target window
+START = NOW + timedelta(minutes=10)                                     # inside the 5-12 minute target window
 
 
 def pin_event(event_id="e1", start=START, total=47.5):

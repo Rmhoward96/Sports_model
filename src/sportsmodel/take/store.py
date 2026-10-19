@@ -76,6 +76,7 @@ UPSERT_CLOSES_SQL = (
 INSERT_RESULTS_SQL = _insert("take_results", RESULT_COLUMNS) + " ON CONFLICT (pick_id) DO NOTHING"
 INSERT_VERDICT_SQL = _insert("take_verdict", VERDICT_COLUMNS) + " ON CONFLICT (id) DO NOTHING"
 
+LAST_PULL_SQL = "SELECT max(called_at) FROM take_api_calls WHERE job = 'pull'"
 CLOSE_TARGETS_SQL = (
     "SELECT DISTINCT e.league, p.market FROM take_picks p JOIN take_events e ON e.event_id = p.event_id "
     "LEFT JOIN take_results r ON r.pick_id = p.id WHERE r.pick_id IS NULL "
@@ -211,6 +212,13 @@ def recent_calls(since: datetime, *, connect_timeout: int | None = db.LEDGER_CON
     keys = ("job", "league", "credits_used", "books_missing", "called_at")
     sql = f"SELECT {', '.join(keys)} FROM take_api_calls WHERE called_at >= %s ORDER BY called_at, id"
     return [dict(zip(keys, r)) for r in _read(sql, (since,), connect_timeout, statement_timeout_ms)]
+
+
+def last_pull_at(*, connect_timeout: int | None = db.LEDGER_CONNECT_TIMEOUT,
+                 statement_timeout_ms: int | None = db.LEDGER_STATEMENT_TIMEOUT_MS) -> datetime | None:
+    """When the last paid pull call was logged (None if there never was one)."""
+    rows = _read(LAST_PULL_SQL, None, connect_timeout, statement_timeout_ms)
+    return rows[0][0] if rows else None
 
 
 def close_targets(now: datetime, lo_min: float, hi_min: float, *,

@@ -1,15 +1,13 @@
 name: take-these-close
 
-# "Take these" grading and close capture (scripts/take_close.py, db/migration_take_these.sql). Every 10 minutes (minutes
-# 3, 13, ... 53). First it grades every started, ungraded pick against its stored close (free, runs even with no credits).
-# Then, only when an ungraded pick starts in 5-20 minutes, it makes ONE Pinnacle-only odds call per league holding one,
-# asking for just the markets those picks need: one credit per market (spec section 4). Nothing to close means nothing
-# spent. A close counts only if taken 0-30 minutes before the start. Close capture skips below 300 credits remaining.
-# The scheduled job runs only while repo variable TAKE_THESE is 'on'; a manual run (workflow_dispatch) always runs.
-# Crons are UTC.
+# "Take these" grading and close capture (scripts/take_close.py, db/migration_take_these.sql), manual runs only:
+# take-these-watch runs it on schedule (every 5 minutes) because GitHub cron never landed this workflow's runs inside a
+# game's pre-start window. First it grades every started, ungraded pick against its stored close (free, runs even with
+# no credits). Then, only when an ungraded pick starts in 5-12 minutes, it makes ONE Pinnacle-only odds call per league
+# holding one, asking for just the markets those picks need: one credit per market (spec section 4). Nothing to close
+# means nothing spent. A close counts only if taken 0-30 minutes before the start. Close capture skips below 300 credits
+# remaining. A manual run (workflow_dispatch) always runs, whatever TAKE_THESE says.
 on:
-  schedule:
-    - cron: "3-59/10 * * * *"
   workflow_dispatch:
     inputs:
       dry_run:
@@ -42,7 +40,7 @@ jobs:
         env:
           DATABASE_URL: ${{ secrets.DATABASE_URL }}
           ODDS_API_KEY: ${{ secrets.ODDS_API_KEY }}
-          DRY_RUN: ${{ inputs.dry_run }}      # empty on schedule events, "true"/"false" on workflow_dispatch
+          DRY_RUN: ${{ inputs.dry_run }}      # "true"/"false" on workflow_dispatch
         run: |
           if [ "$DRY_RUN" = "true" ]; then
             uv run python scripts/take_close.py --dry-run

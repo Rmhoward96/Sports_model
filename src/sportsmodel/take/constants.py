@@ -40,9 +40,16 @@ PULL_FLOOR = 1500
 CLOSE_FLOOR = 300
 SCORES_FLOOR = 300
 
+# Close targets: picks whose game starts 5-12 minutes from now. The watcher ticks every 5 minutes, so this 7-minute
+# window gives every game at least one capture and at most two, and is closer to the true close than 5-20 was.
 CLOSE_LO_MIN = 5
-CLOSE_HI_MIN = 20
+CLOSE_HI_MIN = 12
 CLOSE_VALID_MAX_MIN = 30
+
+# The watcher (scripts/take_watch.py): one long-running job per scheduled start, because GitHub cron drops and delays runs.
+WATCH_MINUTES = 340                      # deadline per run; the workflow starts one every 2 hours (timeout 355)
+WATCH_TICK_SEC = 300                     # one tick (close, then pull when due) every 5 minutes, anchored to the start
+PULL_HOURS_UTC = frozenset(range(12, 24)) | frozenset(range(0, 5))   # hours 12-23 and 0-4: the old pull cron's hours
 EVENTS_HORIZON_DAYS = 7
 PRICE_RETENTION_DAYS = 7
 

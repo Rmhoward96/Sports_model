@@ -383,6 +383,19 @@ def test_missing_tables_checks_to_regclass_in_order(monkeypatch):
     assert calls == [(list(store.TABLES), db.LEDGER_CONNECT_TIMEOUT, db.LEDGER_STATEMENT_TIMEOUT_MS)]
 
 
+def test_last_pull_at_reads_the_newest_pull_call(monkeypatch):
+    assert "max(called_at)" in store.LAST_PULL_SQL and "FROM take_api_calls" in store.LAST_PULL_SQL
+    assert "job = 'pull'" in store.LAST_PULL_SQL
+    log, _ = _fake(monkeypatch, fetch=[(NOW,)])
+    assert store.last_pull_at() == NOW
+    (_, sql, params), = _stmts(log)
+    assert sql == store.LAST_PULL_SQL and params is None
+    _fake(monkeypatch, fetch=[(None,)])
+    assert store.last_pull_at() is None                  # max() over no pull rows is one NULL row
+    _fake(monkeypatch, fetch=[])
+    assert store.last_pull_at() is None
+
+
 def test_recent_calls_reads_the_log_since(monkeypatch):
     called = NOW - timedelta(days=1)
     log, _ = _fake(monkeypatch, fetch=[("pull", "nfl", 3, ["fanatics"], called), ("scores", None, 2, None, called)])

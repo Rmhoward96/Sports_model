@@ -1,6 +1,7 @@
 """Price pull for the 'take these' list: pull prices -> find picks -> store (.github/workflows/take-these-pull.yml).
 
-Every 2 hours (12:00-04:00 UTC; cadence = repo variable TAKE_PULL_EVERY_HOURS), for each of the 8 leagues in order
+Run by the take-these-watch job (scripts/take_watch.py) about every 2 hours in 12:00-04:00 UTC (cadence = repo variable
+TAKE_PULL_EVERY_HOURS); take-these-pull.yml is the manual dispatch. For each of the 8 leagues in order
 (nfl, cfb, mlb, nhl, nba, wnba, epl, mls):
 
   1. A free Odds API /events call. If no event starts within 7 days the league is skipped and costs nothing.

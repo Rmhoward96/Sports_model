@@ -1,0 +1,63 @@
+name: take-these-watch
+
+# "Take these" watcher (scripts/take_watch.py, db/migration_take_these.sql). One job that stays alive for 340 minutes and,
+# every 5 minutes (ticks anchored to the start), runs the close (grade started picks, capture Pinnacle closes for picks
+# starting in 5-12 minutes) and then, when due, the price pull (hours 12-23 and 0-4 UTC, at least TAKE_PULL_EVERY_HOURS,
+# default 2, since the last logged pull). It replaces the schedules of take-these-pull and take-these-close, which stay
+# as manual runs only.
+# Why: GitHub cron is best-effort and this repo has dozens of scheduled workflows. On 2026-10-18 the hourly pull ran 6
+# times, 15-55 minutes late, and the every-10-minutes close never ran inside a game's 5-20 minute pre-start window, so no
+# close was captured. A job that is already running does not depend on the cron for its timing.
+# Coverage: a new run is scheduled every 2 hours (minute 7) and each lives 340 minutes, so there is overlap. The
+# concurrency group runs ONE at a time and queues at most one more; the queued run starts the moment the running one ends.
+# Credits (spec section 4): a pull is at most 24 credits (3 markets x 8 leagues, only leagues with games in 7 days), at
+# most once per 2 hours and only in pull hours; the close is 1 credit per market per league and only when a pick starts in
+# 5-12 minutes. Pull skips below 1,500 credits remaining, close below 300.
+# No step starts, dispatches or restarts any workflow.
+# To stop: set repo variable TAKE_THESE to anything but 'on' (no new scheduled start), and cancel the running run in the
+# Actions tab to stop at once. The scheduled job runs only while TAKE_THESE is 'on'; a manual run (workflow_dispatch)
+# always runs. Crons are UTC.
+on:
+  schedule:
+    - cron: "7 */2 * * *"
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: "Watch with paid calls but write nothing (no grades, closes, prices or picks); print what it would do"
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+# One watcher at a time: overlapping watchers would double-spend credits and race on the same rows. A pending run waits
+# (never cancels the running one) and starts as soon as it ends.
+concurrency:
+  group: take-these-watch
+  cancel-in-progress: false
+
+jobs:
+  watch:
+    if: vars.TAKE_THESE == 'on' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    timeout-minutes: 355
+    steps:
+      - uses: actions/checkout@v5
+      - name: Install uv
+        uses: astral-sh/setup-uv@v10.0.1
+        with:
+          enable-cache: true
+      - name: Sync deps
+        run: uv sync
+      - name: Watch - close every tick, pull when due
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+          ODDS_API_KEY: ${{ secrets.ODDS_API_KEY }}
+          TAKE_PULL_EVERY_HOURS: ${{ vars.TAKE_PULL_EVERY_HOURS }}
+          DRY_RUN: ${{ inputs.dry_run }}      # empty on schedule events, "true"/"false" on workflow_dispatch
+        run: |
+          if [ "$DRY_RUN" = "true" ]; then
+            uv run python scripts/take_watch.py --dry-run
+          else
+            uv run python scripts/take_watch.py
+          fi
